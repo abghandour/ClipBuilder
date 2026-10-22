@@ -282,7 +282,7 @@ extension WizardFormPlanTests {
         let custom = WizardFormPlan(recipe: .custom)
         #expect(custom.step1Controls == [.sources, .outcome, .recipe, .length, .brief,
             .styleReference, .fightResearch, .layouts, .iteration, .planningModels])
-        #expect(custom.step2Controls == [.output, .pacing, .audio, .musicTrack, .text,
+        #expect(custom.step2Controls == [.output, .pacing, .audio, .dub, .musicTrack, .text,
             .overlayStyle, .transitions, .cameraFocus, .framingCamera, .bRoll, .bumpers, .branding, .presentationModels,
             .captionPosition, .captionStyle, .nameTags, .nameTagStyleID, .nameTagPosition])
         #expect(custom.step1Controls.union(custom.step2Controls) == Set(WizardFormPlan.Control.allCases))
@@ -296,7 +296,8 @@ extension WizardFormPlanTests {
         }
         let highlights = WizardFormPlan(recipe: .podcastHighlights)
         #expect(!highlights.step1Controls.contains(.iteration))
-        #expect(!highlights.step2Controls.contains(.audio))
+        #expect(highlights.step2Controls.contains(.audio))
+        #expect(highlights.step2Controls.contains(.dub))
         #expect(!highlights.step2Controls.contains(.branding))
         #expect(highlights.step2Controls.contains(.cameraFocus))
         #expect(highlights.step2Controls.contains(.nameTags))

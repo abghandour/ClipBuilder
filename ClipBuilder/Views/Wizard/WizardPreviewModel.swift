@@ -49,6 +49,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
         visual.overlayTexts = overlayTexts
         visual.cameraFocus = options.podcastFraming == .original ? WizardCameraFocus.original
             : options.highlightFraming?.rawValue ?? ""
+        visual.interviewZoom = options.interviewZoom ?? 0
         look = options.lookPreset ?? "none"
         lookIntensity = options.lookIntensity
         captionLanguage = options.captionLanguage
@@ -178,6 +179,9 @@ nonisolated struct PreviewKey: Hashable, Sendable {
                     return value
                 }
                 person = taggedPeople.first { $0.key == person?.key } ?? person
+            }
+            if person == nil {
+                person = WizardPreviewFraming.fallbackPerson(roster: roster, people: taggedPeople)
             }
             try Task.checkCancellation()
             var scene = WizardPreviewComposite.Scene(videoURL: record.videoURL, time: time,

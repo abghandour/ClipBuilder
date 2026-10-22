@@ -6,6 +6,11 @@ nonisolated enum InterviewFocusPlanning {
     static let moveSeconds = 0.8
     static let deadZoneCenter = 0.05
     static let deadZoneHeight = 0.08
+    /// Room the two-shot keeps around the VIP's face, as fractions of the
+    /// face: half a face either side and a quarter above and below, so the
+    /// VIP is never the one clipped at an edge when both people are in frame.
+    static let vipMarginX = 0.5
+    static let vipMarginY = 0.25
 
     struct Shot: Sendable, Equatable {
         enum Kind: Sendable, Equatable { case tight, twoShot }
@@ -15,8 +20,11 @@ nonisolated enum InterviewFocusPlanning {
 
     /// Faces are normalized, top-left source coordinates. Work in source-height
     /// units so FaceGuard's margins and the canvas aspect use the same scale.
+    /// `zoom` is the user's pull-back: 0 keeps the conversation crop height on
+    /// the tight shot, 1 opens both shots to the full source height (a 9:16
+    /// column of a 16:9 source shows both people head to knees).
     static func rects(vipFace: CGRect, otherFaces: [CGRect], sourceAspect: Double,
-                      canvasAspect: Double) -> (tight: FreeCropRect, twoShot: FreeCropRect, note: String?) {
+                      canvasAspect: Double, zoom: Double = 0) -> (tight: FreeCropRect, twoShot: FreeCropRect, note: String?) {
         let sourceAspect = max(0.001, sourceAspect)
         let aspect = max(0.001, canvasAspect)
         let bounds = CGRect(x: 0, y: 0, width: sourceAspect, height: 1)
@@ -32,15 +40,21 @@ nonisolated enum InterviewFocusPlanning {
         let vip = scaled(vipFace)
         let others = otherFaces.map(scaled).filter { !$0.isNull && !$0.isEmpty }
         let maxHeight = min(1, sourceAspect / aspect)
-        let height = min(maxHeight, CenterStageService.Tuning.conversation.minCropHeightFraction)
+        let zoom = min(1, max(0, zoom.isFinite ? zoom : 0))
+        let closeHeight = min(maxHeight, CenterStageService.Tuning.conversation.minCropHeightFraction)
+        let height = closeHeight + (maxHeight - closeHeight) * zoom
         let width = height * aspect
         let seed = CGRect(x: min(sourceAspect - width, max(0, vip.midX - width / 2)),
                           y: min(1 - height, max(0, vip.minY - height * FaceGuard.headroom)),
                           width: width, height: height)
         let tight = FaceGuard.contain(seed, faces: [vip], bounds: bounds)
         guard !others.isEmpty else { return (normalised(tight), normalised(tight), nil) }
-        let faces = [vip] + others
-        let union = faces.dropFirst().reduce(vip) { $0.union($1) }
+        // The VIP comes first even while the interviewer talks: the two-shot
+        // is planned around a VIP face with generous room, so a cut that
+        // cannot hold everyone clips the interviewer, never the VIP.
+        let roomy = vip.insetBy(dx: -vip.width * vipMarginX, dy: -vip.height * vipMarginY).intersection(bounds)
+        let faces = [roomy] + others
+        let union = faces.dropFirst().reduce(roomy) { $0.union($1) }
         let padded = faces.map { $0.insetBy(dx: -$0.width * FaceGuard.margin, dy: -$0.height * FaceGuard.margin) }
             .reduce(CGRect.null) { $0.union($1) }.intersection(bounds)
         // Keep at least the tight shot's height; the shared VIP face guarantees
@@ -58,13 +72,13 @@ nonisolated enum InterviewFocusPlanning {
         }
         // Both faces cannot fit. Go as far toward the interviewer as possible
         // while keeping the VIP's whole face and margin inside the frame.
-        let towardRight = others.reduce(0) { $0 + $1.midX } / Double(others.count) >= vip.midX
-        let paddedVIP = vip.insetBy(dx: -vip.width * FaceGuard.margin, dy: -vip.height * FaceGuard.margin)
+        let towardRight = others.reduce(0) { $0 + $1.midX } / Double(others.count) >= roomy.midX
+        let paddedVIP = roomy.insetBy(dx: -roomy.width * FaceGuard.margin, dy: -roomy.height * FaceGuard.margin)
             .intersection(bounds)
         let x = towardRight ? paddedVIP.minX : paddedVIP.maxX - twoWidth
         let anchored = FaceGuard.contain(CGRect(x: min(sourceAspect - twoWidth, max(0, x)),
                                                y: preferred.minY, width: twoWidth, height: twoHeight),
-                                         faces: [vip], bounds: bounds)
+                                         faces: [roomy], bounds: bounds)
         return (normalised(tight), normalised(anchored),
                 "Two-shot cannot hold both faces; the interviewer is partly in frame")
     }

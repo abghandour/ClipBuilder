@@ -424,6 +424,19 @@ extension AppStore {
         }
     }
 
+    /// Re-read the registry after a per-person value changed outside the
+    /// people actions (a tag position picked in a wizard's people editor).
+    func reloadPeople() async {
+        guard let database else { return }
+        do {
+            let loaded = try await database.fetchPeople()
+            guard self.database === database else { return }
+            people = loaded
+        } catch {
+            presentError("Could not reload the people list", error)
+        }
+    }
+
     /// "New Person…" from a marker's dropdown — creates the registry entry
     /// and refreshes the people list. Returns the new record.
     func createPerson(named name: String) async -> PersonRecord? {

@@ -5,6 +5,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var quality: EncodeQuality = .balanced
     var preset: RenderPreset = .portrait1080
     var cameraFocus = ""
+    /// Interview focus pull-back, 0 (tight) to 1 (full height).
+    var interviewZoom = 0.0
     var captions = false
     var englishCaptions = false
     var captionPosition: String?
@@ -47,18 +49,20 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     /// under the reel; `musicTrack` names it, nil = random by duration.
     var music = false
     var musicTrack: String?
+    var dub = false
+    var dubLanguage: String?
     var outputMode: MiniWizardFlow.OutputMode = .separateVideos
 
     init() {}
 
     enum CodingKeys: String, CodingKey {
-        case quality, preset, cameraFocus, captions, englishCaptions, captionPosition, captionStyleID
+        case quality, preset, cameraFocus, interviewZoom, captions, englishCaptions, captionPosition, captionStyleID
         case introVideo, outroVideo, introBumper, outroBumper
         case safeAreaOnly, safeAreaPlatforms
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case watermark, watermarkOverlay, watermarkOpacity
         case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, outputMode, transition, look
-        case muteSourceAudio, music, musicTrack
+        case muteSourceAudio, music, musicTrack, dub, dubLanguage
     }
 
     /// Saved presets: every key optional so a preset written by an older
@@ -69,6 +73,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         quality = try c.decodeIfPresent(EncodeQuality.self, forKey: .quality) ?? base.quality
         preset = try c.decodeIfPresent(RenderPreset.self, forKey: .preset) ?? base.preset
         cameraFocus = try c.decodeIfPresent(String.self, forKey: .cameraFocus) ?? base.cameraFocus
+        interviewZoom = min(1, max(0, try c.decodeIfPresent(Double.self, forKey: .interviewZoom) ?? base.interviewZoom))
         captions = try c.decodeIfPresent(Bool.self, forKey: .captions) ?? base.captions
         englishCaptions = try c.decodeIfPresent(Bool.self, forKey: .englishCaptions) ?? base.englishCaptions
         captionPosition = try c.decodeIfPresent(String.self, forKey: .captionPosition)
@@ -98,6 +103,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         muteSourceAudio = try c.decodeIfPresent(Bool.self, forKey: .muteSourceAudio) ?? base.muteSourceAudio
         music = try c.decodeIfPresent(Bool.self, forKey: .music) ?? base.music
         musicTrack = try c.decodeIfPresent(String.self, forKey: .musicTrack)
+        dub = try c.decodeIfPresent(Bool.self, forKey: .dub) ?? false
+        dubLanguage = try c.decodeIfPresent(String.self, forKey: .dubLanguage)
         if quality == .custom { quality = .balanced }
         if preset == .custom { preset = .portrait1080 }
     }
@@ -116,11 +123,13 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         render.preset = preset
         result.renderSettings = render
         result.highlightFraming = CropRecipe.Kind(rawValue: cameraFocus)
+        result.interviewZoom = interviewZoom
         result.podcastFraming = cameraFocus == WizardCameraFocus.original ? .original : .followSpeaker
         result.addCaptions = captions
         result.captionPosition = captionPosition
         result.captionStyleID = captionStyleID
         result.captionLanguage = englishCaptions ? "en" : nil
+        result.dubLanguage = dub ? (dubLanguage ?? DubLanguageChoices.defaultLanguage) : nil
         result.includeIntroBumper = introVideo
         result.includeOutroBumper = outroVideo
         // Library paths resolve to this Mac's files in AppStore.generateMiniVideos.
@@ -214,6 +223,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.nameTagPosition = defaults.string(forKey: key(.nameTagPosition))
         result.safeAreaPlatforms = defaults.stringArray(forKey: key(.safeAreaPlatforms))
         result.cameraFocus = defaults.string(forKey: key(.cameraFocus)) ?? ""
+        result.interviewZoom = min(1, max(0, defaults.double(forKey: key(.interviewZoom))))
         result.overlayTemplate = defaults.string(forKey: key(.overlayTemplate))
         result.overlayTexts = defaults.stringArray(forKey: key(.overlayTexts)) ?? []
         result.watermarkOverlay = defaults.string(forKey: key(.watermarkOverlay))
@@ -235,6 +245,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         }
         result.look = defaults.string(forKey: key(.look)) ?? ""
         result.musicTrack = defaults.string(forKey: key(.musicTrack))
+        result.dubLanguage = defaults.string(forKey: key(.dubLanguage)) ?? profile.editing?.footage.dubLanguage
+        if defaults.object(forKey: key(.dub)) == nil { result.dub = result.dubLanguage != nil }
         for (field, path) in booleanFields {
             if defaults.object(forKey: key(field)) != nil { result[keyPath: path] = defaults.bool(forKey: key(field)) }
         }
@@ -253,6 +265,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         defaults.set(nameTagPosition, forKey: key(.nameTagPosition))
         defaults.set(safeAreaPlatforms, forKey: key(.safeAreaPlatforms))
         defaults.set(cameraFocus, forKey: key(.cameraFocus))
+        defaults.set(interviewZoom, forKey: key(.interviewZoom))
         defaults.set(overlayTemplate, forKey: key(.overlayTemplate))
         defaults.set(overlayTexts, forKey: key(.overlayTexts))
         defaults.set(watermarkOverlay, forKey: key(.watermarkOverlay))
@@ -265,12 +278,13 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         defaults.set(transition, forKey: key(.transition))
         defaults.set(look, forKey: key(.look))
         defaults.set(musicTrack, forKey: key(.musicTrack))
+        defaults.set(dubLanguage, forKey: key(.dubLanguage))
         for (field, path) in Self.booleanFields { defaults.set(self[keyPath: path], forKey: key(field)) }
     }
 
     private static var booleanFields: [(MiniWizardMemory.Field, WritableKeyPath<Self, Bool>)] {
         [(.captions, \.captions), (.englishCaptions, \.englishCaptions), (.introVideo, \.introVideo),
          (.outroVideo, \.outroVideo), (.nameTags, \.nameTags), (.watermark, \.watermark), (.overlay, \.overlay),
-         (.safeAreaOnly, \.safeAreaOnly), (.muteSourceAudio, \.muteSourceAudio), (.music, \.music)]
+         (.safeAreaOnly, \.safeAreaOnly), (.muteSourceAudio, \.muteSourceAudio), (.music, \.music), (.dub, \.dub)]
     }
 }

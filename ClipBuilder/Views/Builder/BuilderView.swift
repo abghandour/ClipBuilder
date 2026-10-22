@@ -9,6 +9,7 @@ struct BuilderView: View {
     @Environment(\.undoManager) private var undoManager
 
     @State private var playingClip: TimelineClip?
+    @State private var showDubSetup = false
     @State private var showScenePicker = false
     @State private var showBRollPicker = false
     @AppStorage("builder.browserTab") private var browserTab = "scenes"
@@ -92,7 +93,13 @@ struct BuilderView: View {
             .accessibilityHidden(true)
         }
         .screenTitle(store.openTimeline?.name ?? "Timeline", subtitle: "\(store.activeProject?.name ?? "Project") · \(model.document.videoTrack.count) clips · \(model.totalDuration.timecode)")
+        .sheet(isPresented: $showDubSetup) { DubSetupSheet() }
         .toolbar {
+            ToolbarItem {
+                Button("Dub…", systemImage: "waveform") { showDubSetup = true }
+                    .lineLimit(1).fixedSize()
+                    .disabled(model.document.videoTrack.isEmpty)
+            }
             // The open timeline's name is the switcher: every timeline in the
             // project is one click away, the same way the sidebar header
             // switches projects.

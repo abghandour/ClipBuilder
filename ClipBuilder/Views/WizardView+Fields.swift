@@ -209,8 +209,9 @@ extension WizardView {
                         .lineLimit(1).fixedSize()
                         .focused($sourcesFocused)
                 }
-                // Every analyzed video contributes until one is clicked off;
-                // the grid then narrows the run to the videos still selected.
+                // Nothing is selected until a video is clicked; the picks are
+                // remembered across launches. "All" in the picker turns the
+                // batch limit off and every analyzed video contributes.
                 WizardSourceGrid(videos: analyzedVideos,
                                  selectedPaths: Set(analyzedVideos.filter(videoContributes).compactMap(\.path)),
                                  isExpanded: $sourceGridExpanded,

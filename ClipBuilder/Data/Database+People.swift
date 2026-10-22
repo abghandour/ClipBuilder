@@ -58,7 +58,11 @@ extension Database {
     }
 
     func fetchPeople() throws -> [PersonRecord] {
-        try connection.query("SELECT * FROM people ORDER BY name COLLATE NOCASE, id").map { row in
+        try connection.query("""
+            SELECT people.*, (SELECT value FROM person_tag_fields f WHERE f.person_key = people.key AND f.field = ?)
+                AS tag_position
+            FROM people ORDER BY name COLLATE NOCASE, id
+            """, [.text(NameTagPlanner.positionField)]).map { row in
             PersonRecord(id: row["id"]?.intValue ?? 0,
                          key: row["key"]?.stringValue ?? "",
                          name: row["name"]?.stringValue ?? "",
@@ -67,7 +71,8 @@ extension Database {
                          avatarVideoID: row["avatar_video_id"]?.intValue,
                          avatarTime: row["avatar_time"]?.doubleValue,
                          avatarBoxJSON: row["avatar_box"]?.stringValue,
-                         category: row["category"]?.stringValue.flatMap(PersonCategory.init(rawValue:)))
+                         category: row["category"]?.stringValue.flatMap(PersonCategory.init(rawValue:)),
+                         tagPosition: row["tag_position"]?.stringValue)
         }
     }
 

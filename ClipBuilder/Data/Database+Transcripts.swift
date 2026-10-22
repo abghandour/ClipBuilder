@@ -294,6 +294,35 @@ extension Database {
         return true
     }
 
+    /// Strict dub preparation only replaces answered spans, preserving the
+    /// rest of the translation track and carrying source speaker attribution.
+    func storeDubTranslations(videoID: Int64, transcriptionKey: String, originals: [TranscriptRow],
+                              target: String, answered: [Int64: String], provider: String?, model: String?) throws {
+        try connection.transaction {
+            for row in originals {
+                guard let text = answered[row.id] else { continue }
+                let values: [SQLValue] = [.integer(videoID), .text(transcriptionKey), .text(target),
+                                         .real(row.startTime), .real(row.endTime)]
+                let existing = try connection.query("""
+                    SELECT speaker_key FROM transcripts WHERE video_id = ? AND transcription_key = ?
+                        AND language = ? AND is_translation = 1 AND start_time = ? AND end_time = ?
+                    """, values).first
+                let speaker = existing?["speaker_key"]?.stringValue ?? row.speakerKey
+                try connection.execute("""
+                    DELETE FROM transcripts WHERE video_id = ? AND transcription_key = ?
+                        AND language = ? AND is_translation = 1 AND start_time = ? AND end_time = ?
+                    """, values)
+                try connection.execute("""
+                    INSERT INTO transcripts (video_id, transcription_key, language, is_translation,
+                        start_time, end_time, text, speaker_key, provider, model, technique, transcription_created_at)
+                    VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'numbered-translation-batch', ?)
+                    """, values + [.text(text), speaker.map(SQLValue.text) ?? .null,
+                                   provider.map(SQLValue.text) ?? .null, model.map(SQLValue.text) ?? .null,
+                                   row.transcriptionCreatedAt.map(SQLValue.text) ?? .null])
+            }
+        }
+    }
+
     /// Set who says these lines (nil restores the automatic attribution).
     func setTranscriptSpeaker(ids: [Int64], speaker: TranscriptRow.SpeakerAttribution) throws {
         guard !ids.isEmpty else { return }

@@ -37,8 +37,10 @@ nonisolated enum WizardNameTags {
                          options: WizardOptions, captionStyle: CaptionStyle, profile: BrandProfile,
                          imageAspects: [UUID: CGFloat] = [:]) -> [TextOverlayItem] {
         guard options.usesNameTags else { return [] }
-        let names = people.filter { !$0.name.isEmpty && !$0.hidden }.map {
-            NameTagPlanner.Person(key: $0.key, name: $0.displayName, role: tagText[$0.key] ?? "")
+        let names = people.filter { !$0.hidden }.compactMap { person in
+            person.tagName.map {
+                NameTagPlanner.Person(key: person.key, name: $0, role: tagText[person.key] ?? "", position: person.tagPosition)
+            }
         }
         let style = profile.tagStyle(id: options.nameTagStyleID)
         let tags = NameTagPlanner.plan(areas: areas, people: names,
@@ -50,7 +52,7 @@ nonisolated enum WizardNameTags {
     static func ordinary(scene: SceneRecord, duration: Double, people: [PersonRecord], tagText: [String: String],
                          options: WizardOptions, captionStyle: CaptionStyle, profile: BrandProfile,
                          imageAspects: [UUID: CGFloat] = [:]) -> [TextOverlayItem] {
-        let identified = people.filter { !$0.name.isEmpty && !$0.hidden && scene.tags.contains($0.tag) }
+        let identified = people.filter { $0.tagName != nil && !$0.hidden && scene.tags.contains($0.tag) }
         guard identified.count == 1 else { return [] }
         let area = NameTagPlanner.Area(
             rect: CGRect(x: 0, y: 0, width: options.renderSettings.width, height: options.renderSettings.height),

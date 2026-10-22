@@ -14,7 +14,7 @@ nonisolated enum InterviewFaceSampling {
     static func sampleTimes(video: VideoRecord, range: ClosedRange<Double>, turns: [SpeakerTurn],
                             roster: [VideoPersonRecord], limit: Int = maximumSamples) -> [Double] {
         guard range.upperBound > range.lowerBound else { return [] }
-        var tiles = VIPRecipePlanning.namedTiles(CropRecipePlanner.tiles(video: video, roster: roster), roster: roster)
+        var tiles = feedTiles(video: video, roster: roster, turns: turns)
         if tiles.isEmpty { tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 1, h: 1)] }
         let vipTiles = VIPRecipePlanning.tiles(tiles, roster: roster).map(\.index)
         let hold = max(CropRecipe(kind: .interview).minimumHold, VIPRotation.minimumHold)
@@ -26,6 +26,14 @@ nonisolated enum InterviewFaceSampling {
             + moves.dropFirst().map { min(range.upperBound, $0.time + InterviewFocusPlanning.moveSeconds) }
         times = Array(Set(times)).sorted()
         return thinned(times, limit: limit)
+    }
+
+    /// The planner's feed naming, including the speech fallback for a VIP
+    /// whose portrait lands nowhere, so the sampled face lands on the same feed.
+    static func feedTiles(video: VideoRecord, roster: [VideoPersonRecord], turns: [SpeakerTurn]) -> [PodcastTile] {
+        let named = VIPRecipePlanning.namedTiles(CropRecipePlanner.tiles(video: video, roster: roster), roster: roster)
+        let placed = VIPRecipePlanning.placingUnplacedVIP(named, roster: roster, turns: turns).tiles
+        return VIPRecipePlanning.namingLastFreeFeed(placed, roster: roster)
     }
 
     /// Every `limit`-th pick spread over the list, first and last kept.
@@ -61,7 +69,7 @@ nonisolated enum InterviewFaceSampling {
     static func refinedRoster(video: VideoRecord, roster: [VideoPersonRecord], range: ClosedRange<Double>,
                               turns: [SpeakerTurn], log: @escaping @Sendable (String) -> Void) async -> [VideoPersonRecord] {
         guard video.isPresent, roster.count >= 2 else { return roster }
-        let tiles = VIPRecipePlanning.namedTiles(CropRecipePlanner.tiles(video: video, roster: roster), roster: roster)
+        let tiles = feedTiles(video: video, roster: roster, turns: turns)
         let feeds = tiles.filter { $0.personKey != nil }
         guard !feeds.isEmpty else {
             log("Interview focus: no feed is linked to a person; keeping the roster portraits")

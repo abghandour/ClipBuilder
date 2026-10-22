@@ -186,13 +186,15 @@ actor MultitrackRenderer {
     /// of a final pass over the whole video. `CLIPBUILDER_OVERLAY_FUSION=off`
     /// keeps the final pass for same-binary measurement.
     private let overlayFusionEnabled: Bool
+    private let dubSynthesizer: DubSynthesizer
     private let render: RenderEngine
     private let centerStageService = CenterStageService()
 
     init(render: RenderEngine, segmentCache: RenderSegmentCache = .shared,
          finishingCacheEnabled: Bool = true, assemblyCacheEnabled: Bool = true,
          framingCacheEnabled: Bool = true, incrementalFinishing: IncrementalFinishing = .editsOnly,
-         overlayFusionEnabled: Bool = true) {
+         overlayFusionEnabled: Bool = true, dubSynthesizer: DubSynthesizer = .shared) {
+        self.dubSynthesizer = dubSynthesizer
         self.segmentCache = segmentCache
         self.overlayFusionEnabled = overlayFusionEnabled
             && ProcessInfo.processInfo.environment["CLIPBUILDER_OVERLAY_FUSION"] != "off"
@@ -286,7 +288,13 @@ actor MultitrackRenderer {
                                   muteSource: Bool = false, compositeEffect: EffectSpec? = nil,
                                   emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
         // Overlay blocks render as their flattened text/image items.
-        let document = Self.removingMissingEdgeBumpers(document.expandingOverlayBlocks(), emit: emit)
+        var preparedDocument = Self.removingMissingEdgeBumpers(document.expandingOverlayBlocks(), emit: emit)
+        let hasDub = preparedDocument.dub?.enabled == true && !(preparedDocument.dubLines ?? []).isEmpty
+        if hasDub, let lines = preparedDocument.dubLines {
+            emit("Preparing \(lines.count) dubbed line(s)…")
+            preparedDocument.dubLines = try await dubSynthesizer.restoringAudio(lines: lines)
+        }
+        let document = preparedDocument
         var bumperSpans = document.videoTrack.filter(\.bumper).map { $0.startTime..<($0.startTime + $0.duration) }
         var clips = Self.resolveClips(document: document, scenes: scenes, centerStageCamera: centerStageCamera)
         for index in clips.indices {
@@ -639,7 +647,8 @@ actor MultitrackRenderer {
             finishingKey = try? await RenderFinishingKey.make(
                 segmentDigests: segmentDigests, transitions: transitions, transitionDuration: transitionDuration,
                 overlays: overlayPlan.remaining, settings: RenderContext.settings,
-                encoder: FFmpeg.encodeArgs + FFmpeg.intermediateCacheIdentity)
+                encoder: FFmpeg.encodeArgs + FFmpeg.intermediateCacheIdentity,
+                dub: document.dub, dubLines: document.dub == nil ? nil : document.dubLines)
         }
         try Task.checkCancellation()
         // Ranges need the actual hard-cut groups and their encoded lengths;
@@ -659,13 +668,16 @@ actor MultitrackRenderer {
                 assemblyGroups.withLock { $0 = identified }
             }
         }
-        let onGroups = rangesAllowed && finishingKey != nil ? collectGroups : nil
+        // Range identities describe pre-dub audio. A full finishing key includes
+        // the reviewed dub; range reuse resumes for ordinary undubbed renders.
+        let onGroups = rangesAllowed && finishingKey != nil && !hasDub ? collectGroups : nil
         var complete = true
         let assemblyArtifacts = Mutex<[RenderSegmentCache.Entry]>([])
         let assemblyCache = assemblyCacheEnabled && canReuseAssembly ? RenderEngine.AssemblyCache(
             cache: segmentCache, stagingDirectory: scratch,
             record: { entry in assemblyArtifacts.withLock { $0.append(entry) } },
-            hit: { emit("Assembly cache hit; crossfade encode=0") }) : nil
+            hit: { emit("Assembly cache hit; crossfade encode=0") },
+            dub: document.dub, dubLines: document.dub == nil ? nil : document.dubLines) : nil
         var assembled = scratch.appendingPathComponent("assembled.mp4")
         var rangeArtifacts: [RenderSegmentCache.Entry] = []
         let finishingWasCached: Bool
@@ -693,6 +705,19 @@ actor MultitrackRenderer {
             }
 
             let videoDuration = await FFmpeg.duration(of: assembled)
+
+            // Dub the assembled source before music, so the speech duck never
+            // lowers the music bed. Fail the render if reviewed speech is missing.
+            if hasDub, let settings = document.dub, let lines = document.dubLines {
+                emit("Mixing \(lines.count) dubbed line(s)…")
+                let track = scratch.appendingPathComponent("dub_track.caf")
+                try await DubMixer.buildTrack(lines: lines, duration: videoDuration, output: track,
+                                              directory: dubSynthesizer.directory)
+                let withDub = scratch.appendingPathComponent("with_dub.mp4")
+                try await DubMixer.overlay(video: assembled, track: track, lines: lines,
+                                           settings: settings, output: withDub)
+                assembled = withDub
+            }
 
             // Music track (blocks with silence-filled gaps + original-audio ducking).
             if !document.soundTrack.isEmpty {
@@ -952,6 +977,14 @@ actor MultitrackRenderer {
             item.startTime = start - lower
             item.duration = stop - start
             return item
+        }
+        document.dubLines = input.dubLines?.compactMap { line in
+            guard line.start < upper, line.start + line.duration > lower else { return nil }
+            var line = line
+            // Preserve a negative start when the window cuts into speech;
+            // the mixer trims that elapsed audio instead of restarting it.
+            line.start -= lower
+            return line
         }
         // An overlay already on screen at the cut is shown settled, not
         // animating in again; one that outlives the window does not animate out.

@@ -380,3 +380,40 @@ extension MiniWizardSettingsTests {
         #expect(settings.step2Options(base: WizardStep2Options()).safeAreaPlatforms == nil)
     }
 }
+
+extension MiniWizardSettingsTests {
+    @Test func dubbingDecodesOldPresetsAndRoundTripsWithoutWizardDefaults() throws {
+        let old = try JSONDecoder().decode(MiniWizardSettings.self, from: Data("{}".utf8))
+        #expect(!old.dub && old.dubLanguage == nil)
+        var settings = MiniWizardSettings()
+        settings.dub = true; settings.dubLanguage = "pt-BR"
+        let decoded = try JSONDecoder().decode(MiniWizardSettings.self, from: JSONEncoder().encode(settings))
+        #expect(decoded == settings)
+        let suite = "DubMini-" + UUID().uuidString
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        defaults.set("fr-FR", forKey: "wizard.dubLanguage")
+        let profile = Fixtures.brand(name: "Dub")
+        #expect(!MiniWizardSettings.remembered(profile: profile, defaults: defaults).dub)
+        settings.remember(profileName: profile.profileName, defaults: defaults)
+        let remembered = MiniWizardSettings.remembered(profile: profile, defaults: defaults)
+        #expect(remembered.dub && remembered.dubLanguage == "pt-BR")
+        #expect(defaults.string(forKey: "wizard.dubLanguage") == "fr-FR")
+        #expect(MiniWizardMemory.key(for: .dub, profileName: "Dub") == "mini.Dub.dub")
+        #expect(MiniWizardMemory.key(for: .dubLanguage, profileName: "Dub") == "mini.Dub.dubLanguage")
+        var base = WizardOptions(); base.dubLanguage = "fr-FR"
+        #expect(settings.previewOptions(profile: profile, base: base).dubLanguage == "pt-BR")
+        settings.dub = false
+        #expect(settings.previewOptions(profile: profile, base: base).dubLanguage == nil)
+    }
+
+    @Test func conversationalFootageRetainsDubWhileSuppressingMusicAndMute() {
+        var video = Fixtures.video(); video.videoType = VideoType.interview.rawValue
+        var settings = MiniWizardSettings()
+        settings.dub = true; settings.dubLanguage = "en-US"
+        settings.music = true; settings.muteSourceAudio = true
+        let effective = settings.effective(for: MiniWizardFlow(video: video), introAvailable: false, outroAvailable: false)
+        #expect(effective.dub && effective.dubLanguage == "en-US")
+        #expect(!effective.music && !effective.muteSourceAudio)
+    }
+}

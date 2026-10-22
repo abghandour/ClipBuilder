@@ -83,6 +83,7 @@ final class AppStore {
     let teamSync = TeamSyncState()
     var teamSyncCoordinator: TeamSyncCoordinator { teamSync.coordinator }
     let jobs = AppJobs()
+    let dubReviews = DubReviewCoordinator()
     let googleDrive = GoogleDriveTransfers.shared
     @ObservationIgnored var sourceDiscoveryTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored var didShowAutoDriveUploadNotice = false
@@ -739,7 +740,9 @@ final class AppStore {
         self.ai = ai
         analyzer = Analyzer(ai: ai)
         podcastAnalysis = PodcastAnalysisService(ai: ai)
-        wizard = WizardEngine(ai: ai, render: renderEngine)
+        wizard = WizardEngine(ai: ai, render: renderEngine, reviewDub: { [dubReviews] prepared, projectID, profileName in
+            try await dubReviews.review(prepared, projectID: projectID, profileName: profileName)
+        })
         multitrackRenderer = MultitrackRenderer(render: renderEngine)
         let instagramPersistence = InstagramTokenPersistence()
         instagram = instagramService ?? InstagramService(ai: ai, persistTokenRefresh: { refresh, connection, token in
@@ -748,6 +751,7 @@ final class AppStore {
         fightResearchService = FightResearchService(ai: ai)
         opensProfiles = openProfile
         jobs.store = self
+        dubReviews.store = self
         instagramPersistence.store = self
 
         builder.onTimelineAutosave = { [weak self] id, document in

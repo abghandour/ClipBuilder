@@ -206,7 +206,7 @@ extension WizardView {
     /// The same four tabs as Express: Picture, Audio (where the recipe has
     /// sound choices), Overlays, Package. The open tab is remembered.
     @ViewBuilder var settingsTabs: some View {
-        let tabs = WizardSettingsTab.available(audio: lookCapabilities.audioMusic)
+        let tabs = WizardSettingsTab.available(audio: true)
         let current = (WizardSettingsTab(rawValue: settingsTabRaw) ?? .picture).effective(in: tabs)
         Picker("Settings", selection: Binding(get: { current }, set: { settingsTabRaw = $0.rawValue })) {
             ForEach(tabs, id: \.self) { tab in

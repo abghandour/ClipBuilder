@@ -277,7 +277,8 @@ extension AppStore {
                     let storedScenes = (try? await database.fetchScenes(
                         videoID: current.id, projectID: pipelineProjectID
                     )) ?? []
-                    var wizard = Self.wizardOptionsFromForm(transcriptsAvailable: transcriptsAvailable, log: log)
+                    var wizard = Self.wizardOptionsFromForm(transcriptsAvailable: transcriptsAvailable,
+                                                            profileDubLanguage: editingDefaults.footage.dubLanguage, log: log)
                     wizard.projectID = pipelineProjectID
                     wizard.accountBenchmarks = igBenchmarks
                     // The pipeline's selected videos own its source scope, even
@@ -405,6 +406,7 @@ extension AppStore {
     /// and the pipeline sheet. The running pipeline supplies its own per-video
     /// source scope, Automatic workflow, and critique choice.
     static func wizardOptionsFromForm(transcriptsAvailable: Bool, defaults: UserDefaults = .standard,
+                                      profileDubLanguage: String? = nil,
                                       log: (String) -> Void = { _ in }) -> WizardOptions {
         WizardDefaults.migrateLegacy(defaults: defaults)
         let copied = AISettingsJSON.decode(WizardOptions.self, defaults.string(forKey: AISettingsPreferences.snapshotKey))
@@ -426,6 +428,8 @@ extension AppStore {
         step2.addCaptions = text.captions
         step2.enableTextOverlays = text.headlines
         step2.highlightFraming = defaults.string(forKey: "wizard.highlightFraming").flatMap(CropRecipe.Kind.init(rawValue:))
+        step2.interviewZoom = defaults.object(forKey: "wizard.interviewZoom") == nil
+            ? nil : min(1, max(0, defaults.double(forKey: "wizard.interviewZoom")))
         step2.podcastFraming = PodcastFramingMode(rawValue: defaults.string(forKey: "wizard.podcastFraming") ?? "") ?? .followSpeaker
         step2.framingCamera = defaults.string(forKey: "wizard.framingCamera") ?? WizardDefaults.fallbackFramingCamera
         let layoutMode = WizardLayoutMode(rawValue: defaults.string(forKey: WizardDefaults.layoutModeKey) ?? "")
@@ -458,6 +462,8 @@ extension AppStore {
         step2.overlayAnimation = defaults.string(forKey: "wizard.overlayAnimation").flatMap { $0.isEmpty ? nil : $0 }
         step2.overlayPlacement = defaults.string(forKey: "wizard.overlayPlacement").flatMap { $0.isEmpty ? nil : $0 }
         step2.captionLanguage = defaults.string(forKey: "wizard.captionLanguage").flatMap { $0.isEmpty ? nil : $0 }
+        step2.dubLanguage = (defaults.string(forKey: "wizard.dubLanguage") ?? profileDubLanguage)
+            .flatMap { $0.isEmpty ? nil : $0 }
         step2.useBRoll = defaults.object(forKey: "wizard.useBRoll") == nil || defaults.bool(forKey: "wizard.useBRoll")
         step2.brollInstructions = defaults.string(forKey: "wizard.brollInstructions") ?? ""
         var options = WizardOptions.merge(step1: step1, step2: step2, base: base)

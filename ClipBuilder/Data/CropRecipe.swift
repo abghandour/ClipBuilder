@@ -124,6 +124,8 @@ nonisolated struct CropRecipe: Sendable, Hashable, Identifiable {
     var minimumHold = 1.5
     /// Seconds a rotating cell shows each person.
     var rotationSeconds = 5.0
+    /// Interview focus pull-back, 0 (tight on the VIP) to 1 (full source height).
+    var interviewZoom = 0.0
     /// Still cells (a fixed feed or person) get the tracking camera inside
     /// their feed instead of a fixed crop of it.
     var tracking = true
@@ -133,6 +135,7 @@ nonisolated struct CropRecipe: Sendable, Hashable, Identifiable {
 
     static let holdRange = 0.4...30.0
     static let rotationRange = 1.0...60.0
+    static let interviewZoomRange = 0.0...1.0
     static let builtIn: [CropRecipe] = Kind.allCases.map { CropRecipe(kind: $0) }
 }
 
@@ -172,6 +175,10 @@ nonisolated enum CropRecipePlanner {
         var layout: CropLayoutRef
         var slots: [Slot]
         var notes: [String] = []
+        /// The feed tiles the plan was cut from, named by portrait and (for
+        /// Interview focus) by the speech fallback, so name tags follow the
+        /// same identities as the picture.
+        var tiles: [PodcastTile] = []
     }
 
     /// One stretch of the recording with a stable talker.
@@ -358,9 +365,22 @@ nonisolated enum CropRecipePlanner {
             tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 1, h: 1)]
         }
         if recipe.kind == .vip || recipe.kind == .interview { tiles = VIPRecipePlanning.namedTiles(tiles, roster: roster) }
+        var interviewNote: String?
+        if recipe.kind == .interview {
+            let placed = VIPRecipePlanning.placingUnplacedVIP(tiles, roster: roster, turns: turns)
+            tiles = VIPRecipePlanning.namingLastFreeFeed(placed.tiles, roster: roster)
+            interviewNote = placed.note
+        }
         let vipTiles = VIPRecipePlanning.tiles(tiles, roster: roster)
         if recipe.kind == .interview, vipTiles.isEmpty {
-            throw Failure(description: "Interview focus needs a VIP on this recording.")
+            let vips = roster.filter(\.isVIP)
+            guard !vips.isEmpty else { throw Failure(description: "Interview focus needs a VIP on this recording.") }
+            // A VIP exists but no feed holds their portrait: an analysis before
+            // portraits were snapped to faces can leave a box covering the
+            // whole frame, which places nobody.
+            let names = vips.map { $0.name.isEmpty ? $0.key : $0.name }.joined(separator: ", ")
+            throw Failure(description: "Interview focus cannot place \(names) in the picture: the portrait from analysis "
+                + "does not land on a feed. Analyze this recording again with people detection; a resumed run keeps the old roster.")
         }
         // A single camera may have several stored person columns. Only separate
         // recorded feeds call for Interview focus's two-cell layout.
@@ -400,6 +420,7 @@ nonisolated enum CropRecipePlanner {
             throw Failure(description: "No speaker turns for this file; run Analyze so the recording knows who talks when.")
         }
         var notes: [String] = []
+        if let interviewNote { notes.append(interviewNote) }
         if recipe.kind == .vip, vipTiles.isEmpty {
             notes.append("No VIP on this recording; following the talker.")
         }
@@ -419,7 +440,7 @@ nonisolated enum CropRecipePlanner {
             let otherFaces = tiles.filter { !indices.contains($0.index) }.map(face)
             let rectangles = Dictionary(uniqueKeysWithValues: vipTiles.map { tile in
                 (tile.index, InterviewFocusPlanning.rects(vipFace: face(tile), otherFaces: otherFaces,
-                    sourceAspect: sourceAspect, canvasAspect: canvasAspect))
+                    sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: recipe.interviewZoom))
             })
             for tile in vipTiles {
                 if let note = rectangles[tile.index]?.note, !notes.contains(note) { notes.append(note) }
@@ -450,7 +471,8 @@ nonisolated enum CropRecipePlanner {
             }
             if recipe.highlightTalker { notes.append("The talker is not outlined in Full Screen.") }
             return Plan(layout: ref, slots: [Slot(subject: .vip, path: path,
-                talking: merged(segments.filter { indices.contains($0.talker) }.map { $0.start...$0.end }))], notes: notes)
+                talking: merged(segments.filter { indices.contains($0.talker) }.map { $0.start...$0.end }))],
+                notes: notes, tiles: tiles)
         }
         func rect(_ index: Int, area: ScreenCropArea) -> FreeCropRect? {
             guard let tile = tiles.first(where: { $0.index == index }) else { return nil }
@@ -607,6 +629,6 @@ nonisolated enum CropRecipePlanner {
         if recipe.highlightTalker, ref.isFullScreen {
             notes.append("The talker is not outlined in Full Screen.")
         }
-        return Plan(layout: ref, slots: slots, notes: notes)
+        return Plan(layout: ref, slots: slots, notes: notes, tiles: tiles)
     }
 }

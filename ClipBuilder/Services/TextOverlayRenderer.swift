@@ -125,14 +125,25 @@ nonisolated struct TextOverlayRenderer {
         CGFloat(CTLineGetTypographicBounds(line(text, font: font), nil, nil, nil))
     }
 
-    /// Word-wrap to a pixel width (port of _wrap_text, over markup words).
-    private func wrap(_ words: [Word], font: CTFont, maxWidth: CGFloat) -> [[Word]] {
+    /// Word-wrap to a pixel width (port of _wrap_text, over markup words),
+    /// and to the item's words-per-line cap when it has one.
+    private func wrap(_ words: [Word], font: CTFont, maxWidth: CGFloat, maxWords: Int? = nil) -> [[Word]] {
+        Self.lines(words, maxWords: maxWords) { lineWidth(Self.plainText($0), font: font) <= maxWidth }
+    }
+
+    /// Greedy line breaking: a word joins the current line while the line
+    /// still `fits` and stays under `maxWords` (nil = no word cap). Pure, so
+    /// the cap is testable without fonts.
+    static func lines(_ words: [Word], maxWords: Int?, fits: ([Word]) -> Bool) -> [[Word]] {
         guard !words.isEmpty else { return [] }
+        let cap = maxWords.map { max(1, $0) }
         var lines: [[Word]] = []
         var current = [words[0]]
         for word in words.dropFirst() {
-            let candidate = Self.plainText(current + [word])
-            if lineWidth(candidate, font: font) <= maxWidth {
+            if let cap, current.count >= cap {
+                lines.append(current)
+                current = [word]
+            } else if fits(current + [word]) {
                 current.append(word)
             } else {
                 lines.append(current)
@@ -341,7 +352,7 @@ nonisolated struct TextOverlayRenderer {
 
     private func metrics(item: TextOverlayItem, words: [Word], size: CGFloat, maxWidth: CGFloat) -> LineMetrics {
         let font = resolveFont(size: size, family: item.fontfamily, bold: item.bold, italic: item.italic)
-        let lines = wrap(words, font: font, maxWidth: maxWidth)
+        let lines = wrap(words, font: font, maxWidth: maxWidth, maxWords: item.resolvedWordsPerLine)
         let lineHeight = CTFontGetAscent(font) + CTFontGetDescent(font)
         let spacing = (size * 0.15).rounded(.down)
         let total = lineHeight * CGFloat(lines.count) + spacing * CGFloat(max(0, lines.count - 1))
@@ -583,7 +594,7 @@ nonisolated struct TextOverlayRenderer {
                                             spacing: CGFloat, totalHeight: CGFloat, maxWidth: CGFloat) {
             let font = resolveFont(size: size, family: item.fontfamily ?? "Anton",
                                    bold: item.bold, italic: item.italic)
-            let lines = wrap(words, font: font, maxWidth: boxWidth)
+            let lines = wrap(words, font: font, maxWidth: boxWidth, maxWords: item.resolvedWordsPerLine)
             let lineHeight = CTFontGetAscent(font) + CTFontGetDescent(font)
             let spacing = (size * 0.08).rounded(.down)
             let total = lineHeight * CGFloat(lines.count) + spacing * CGFloat(max(0, lines.count - 1))

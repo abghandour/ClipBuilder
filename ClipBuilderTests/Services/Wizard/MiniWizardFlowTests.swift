@@ -31,16 +31,15 @@ struct MiniWizardFlowTests {
         #expect(flow.showsNameTags)
     }
 
-    @Test("Settings tabs: Audio only for fight and training footage", arguments: VideoType.allCases)
+    @Test("Settings tabs: Audio offers dubbing for every footage type", arguments: VideoType.allCases)
     func settingsTabs(type: VideoType) {
         var video = Fixtures.video()
         video.videoType = type.rawValue
         let flow = MiniWizardFlow(video: video)
-        let fight = type == .fight || type == .training
-        #expect(flow.settingsTabs == (fight ? [.picture, .audio, .overlays, .package] : [.picture, .overlays, .package]))
-        #expect(flow.effectiveSettingsTab(.audio) == (fight ? .audio : .picture))
+        #expect(flow.settingsTabs == [.picture, .audio, .overlays, .package])
+        #expect(flow.effectiveSettingsTab(.audio) == .audio)
         #expect(flow.effectiveSettingsTab(.package) == .package)
-        #expect(MiniWizardFlow().settingsTabs == [.picture, .overlays, .package])
+        #expect(MiniWizardFlow().settingsTabs == [.picture, .audio, .overlays, .package])
     }
 
     @Test("Unknown types use highlights unless exchanges exist")
@@ -349,5 +348,17 @@ extension MiniWizardFlowTests {
         let effective = settings.effective(for: podcast, introAvailable: false, outroAvailable: false)
         #expect(effective.nameTagStyleID == settings.nameTagStyleID)
         #expect(effective.step2Options(base: WizardStep2Options()).nameTagStyleID == settings.nameTagStyleID)
+    }
+}
+
+extension MiniWizardFlowTests {
+    @Test func conversationalAudioSummaryIncludesLocalizedDubChip() {
+        var video = Fixtures.video(); video.videoType = VideoType.podcast.rawValue
+        let flow = MiniWizardFlow(video: video, hasTranscript: true, footageKind: .transcript)
+        var settings = MiniWizardSettings(); settings.dub = true; settings.dubLanguage = "pt-BR"
+        let summary = flow.runSummaryCard(candidates: [], exchangeCount: 1, settings: settings)
+        let chip = "\(Locale.current.localizedString(forLanguageCode: "pt") ?? "pt-BR") dub"
+        #expect(summary.sections.first { $0.title == "Audio" }?.items == [chip])
+        #expect(flow.settingsSummary(settings).contains(chip))
     }
 }

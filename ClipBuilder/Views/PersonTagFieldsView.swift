@@ -105,6 +105,7 @@ struct PersonTagFieldsView: View {
             guard let database = store.database else { return }
             do {
                 let loaded = try await database.personTagFields(personKey: person.key)
+                    .filter { $0.field != NameTagPlanner.positionField }
                 try Task.checkCancellation()
                 guard store.database === database else { return }
                 fields = withStyleFields(loaded)
@@ -173,6 +174,7 @@ struct PersonTagFieldsView: View {
                     try await database.clearPersonTagField(personKey: person.key, field: field.field)
                 }
                 let loaded = try await database.personTagFields(personKey: person.key)
+                    .filter { $0.field != NameTagPlanner.positionField }
                 guard store.database === database else { return }
                 fields = withStyleFields(loaded)
                 store.personTagFieldsVersion &+= 1

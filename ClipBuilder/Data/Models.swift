@@ -186,6 +186,9 @@ nonisolated struct PersonRecord: Identifiable, Sendable, Hashable {
     var avatarBoxJSON: String? = nil
     /// The role the user filed this person under; nil = not categorized yet.
     var category: PersonCategory? = nil
+    /// Where this person's name tag sits (a `NameTagPlanner.Corner` raw
+    /// value), chosen in the people editor; nil follows the run's position.
+    var tagPosition: String? = nil
 
     var avatarBox: VideoPersonRecord.PortraitBox? {
         avatarBoxJSON?.data(using: .utf8)
@@ -206,6 +209,17 @@ nonisolated struct PersonRecord: Identifiable, Sendable, Hashable {
 
     /// True until the user confirms or types a name.
     var isUnnamed: Bool { name.isEmpty }
+
+    /// What a name tag calls this person: the confirmed name, else the name
+    /// the analyzer read when it minted the key ("tanner-boser"), which is
+    /// what the people editor and the People screen already show. nil for a
+    /// generic key ("person-2") or a descriptive one with a counter in it
+    /// ("fighter-1-primary"), which is no name to burn into a video.
+    var tagName: String? {
+        if !name.isEmpty { return name }
+        guard let keyName, !key.split(separator: "-").contains(where: { $0.allSatisfy(\.isNumber) }) else { return nil }
+        return keyName
+    }
 
     /// Still waiting on the user: no confirmed name yet. The People screen
     /// files these under Unknown until a name is confirmed.

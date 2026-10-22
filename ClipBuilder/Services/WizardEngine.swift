@@ -21,12 +21,13 @@ import Foundation
 
 nonisolated struct WizardOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
+        case dubLanguage
         case strikeStats, strikeUnits, strikeSpeedCallouts, strikeGrapplingCard, strikeRoundCard
         case safeAreaOnly = "safe_area_only"
         case safeAreaPlatforms = "safe_area_platforms"
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case captionPosition, captionStyleID, nameTagsOnly, workflow, critiqueTargetScore, critiqueMaxVersions, musicTrack, overlayStyle, overlayAnimation, overlayPlacement
-        case highlightFraming, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
+        case highlightFraming, interviewZoom, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
         case fixedOverlayTemplate, fixedOverlayStart, fixedOverlayDuration, fixedOverlayTexts, introBumperPath, outroBumperPath, watermarkOverlayTemplate, watermarkOpacity, transitionChoice, lookPreset, lookIntensity
     }
 
@@ -44,6 +45,8 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var captionPosition: String?
     var captionStyleID: String?
     var captionLanguage: String?
+    var dubLanguage: String?
+    var effectiveCaptionLanguage: String? { captionLanguage ?? dubLanguage }
     var workflow: WizardWorkflow?
     var resolvedWorkflow: WizardWorkflow { workflow ?? .automatic }
     var muteSource = false
@@ -104,6 +107,8 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var highlightMaxSeconds: Double? = nil
     var highlightMaxCount: Int? = nil
     var highlightFraming: CropRecipe.Kind? = nil
+    /// Interview focus pull-back, 0...1; nil keeps the tight default.
+    var interviewZoom: Double? = nil
     var useBRoll = true
     var brollInstructions = ""
     var podcastFraming: PodcastFramingMode = .followSpeaker
@@ -453,9 +458,13 @@ actor WizardEngine {
     typealias CaptionTranslation = @Sendable (Int64, [TranscriptRow], String, Database) async throws -> Int
     private let translateCaptions: CaptionTranslation?
     private let captionOnDevice: TranscriptTranslator.InstalledTranslation
+    typealias DubReviewer = @Sendable (DubPreparation.Prepared, Int64?, String) async throws -> DubPreparation.Prepared
+    private let reviewDub: DubReviewer?
 
     init(ai: AIService, render: RenderEngine, translateCaptions: CaptionTranslation? = nil,
-         captionOnDevice: @escaping TranscriptTranslator.InstalledTranslation = TranscriptTranslator.translateInstalled) {
+         captionOnDevice: @escaping TranscriptTranslator.InstalledTranslation = TranscriptTranslator.translateInstalled,
+         reviewDub: DubReviewer? = nil) {
+        self.reviewDub = reviewDub
         self.translateCaptions = translateCaptions
         self.captionOnDevice = captionOnDevice
         self.ai = ai
@@ -2674,7 +2683,7 @@ actor WizardEngine {
     func prepareCaptionTranslations(plan: WizardPlan, options: WizardOptions,
                                     sceneMap: [Int64: SceneRecord], database: Database,
                                     emit: @escaping @Sendable (String) -> Void) async throws {
-        guard options.addCaptions, let target = options.captionLanguage, !target.isEmpty else { return }
+        guard options.addCaptions, let target = options.effectiveCaptionLanguage, !target.isEmpty else { return }
         var rangesByVideo: [Int64: [(start: Double, end: Double)]] = [:]
         var sources: [SceneRecord] = []
         for clip in plan.clips {
@@ -3617,6 +3626,8 @@ actor WizardEngine {
                                              transitions: [String]) -> TimelineDocument {
         var prepared = TimelineDocument()
         prepared.renderSettings = document.renderSettings
+        prepared.dub = document.dub
+        prepared.dubLines = document.dubLines
         let ordered = document.videoTrack.filter { $0.track == 0 && !$0.isCutaway }
             .sorted { $0.startTime < $1.startTime }
         // Consecutive pieces of one cut (a podcast cut's VIP feed changes) share
@@ -3688,6 +3699,10 @@ actor WizardEngine {
 
         var clipURLs: [URL] = []
         var clipTransitions: [String] = []
+        var introCard: URL?
+        var outroCard: URL?
+        var pendingCards: [(png: URL, output: URL, duration: Double)] = []
+        var retainedCards: [(source: URL, destination: URL)] = []
 
         // Brand-kit layers burned onto EVERY clip: the corner watermark and
         // the full-video result headline. Rendered once, reused per clip.
@@ -3739,31 +3754,6 @@ actor WizardEngine {
         let clipCount = plan.clips.count
         let captionFallbacks = WizardCaptionFallbackLog()
         let brandOverlayFiles = brandOverlays
-        let extracted = try await WizardTiming.measure("extract clips", emit: emit) {
-            try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job in
-                try await self.extractPlannedClip(job.clip, index: job.index, of: clipCount,
-                                                  scene: job.scene, sceneMap: sceneMap, options: options,
-                                                  captionStyle: captionStyle, captionFallbacks: captionFallbacks,
-                                                  brandOverlays: brandOverlayFiles, topOverlays: clipWatermark,
-                                                  podcastDocument: podcastCuts[job.index], nameTagPeople: people, tagText: tagText, profile: profile,
-                                                  database: database, scratch: scratch,
-                                                  emit: emit)
-            }
-        }
-
-        for url in extracted {
-            if clipURLs.count > clipTransitions.count && !clipURLs.isEmpty {
-                // Boundary after a previous clip: planner transition if
-                // available, else hard fade.
-                clipTransitions.append(plan.transitions[safe: clipURLs.count - 1] ?? "fade")
-            }
-            clipURLs.append(url)
-        }
-
-        guard !clipURLs.isEmpty else {
-            throw AIError.notConfigured("No clips could be extracted for this plan")
-        }
-
         var editPlan = plan
         if !options.enableTextOverlays {
             for index in editPlan.clips.indices {
@@ -3811,7 +3801,7 @@ actor WizardEngine {
         try FileManager.default.createDirectory(at: cards, withIntermediateDirectories: true)
         func retainCard(_ url: URL, duration: Double, at time: Double, transition: String?) throws {
             let retained = cards.appendingPathComponent(url.lastPathComponent)
-            try FileManager.default.copyItem(at: url, to: retained)
+            retainedCards.append((url, retained))
             var clip = TimelineClip()
             clip.videoFile = retained.path
             clip.sourceStart = 0
@@ -3829,9 +3819,8 @@ actor WizardEngine {
            let png = BrandRenderer.titleCard(title, brandName: profile.brandName, accent: accent,
                                              logoURL: profile.logoURL, to: scratch) {
             let card = scratch.appendingPathComponent("intro_card.mp4")
-            try await BrandRenderer.cardClip(png: png, duration: 2.0, output: card)
-            clipURLs.insert(card, at: 0)
-            clipTransitions.insert("fade", at: 0)
+            pendingCards.append((png, card, 2.0))
+            introCard = card
             BumperPlanner.insertGap(in: &document, at: 0, duration: 2)
             if let first = document.videoTrack.indices.min(by: { document.videoTrack[$0].startTime < document.videoTrack[$1].startTime }) {
                 document.videoTrack[first].transIn = "fade"
@@ -3843,9 +3832,8 @@ actor WizardEngine {
            profile.logoURL != nil || !(profile.socials["instagram"]?.handle ?? "").isEmpty,
            let png = BrandRenderer.outroCard(profile: profile, to: scratch) {
             let card = scratch.appendingPathComponent("outro_card.mp4")
-            try await BrandRenderer.cardClip(png: png, duration: 2.5, output: card)
-            clipTransitions.append("fadeblack")
-            clipURLs.append(card)
+            pendingCards.append((png, card, 2.5))
+            outroCard = card
             try retainCard(card, duration: 2.5,
                 at: document.videoTrack.map { $0.startTime + $0.duration }.max() ?? 0, transition: "fadeblack")
             emit("Branded outro card appended")
@@ -3894,9 +3882,72 @@ actor WizardEngine {
         document.overlayBlocks += finalOverlayBlocks
         finalOverlayBlocks.removeAll { $0.uid == foldedWatermarkID }
         if !batchWatermark.isEmpty { emit("Watermark folded into clip segment") }
+        if let language = options.dubLanguage, !language.isEmpty {
+            guard let reviewDub else {
+                throw ScriptError.invalid("Review the dubbed lines in Clip Builder before rendering.")
+            }
+            var speechDocument = document
+            // Generated title/outro cards have no source transcript.
+            for index in speechDocument.videoTrack.indices {
+                if speechDocument.videoTrack[index].videoFile?.hasPrefix(cards.path + "/") == true {
+                    speechDocument.videoTrack[index].bumper = true
+                }
+            }
+            let settings = DubSettings(language: language, voices: profile.editing?.dubVoices ?? [:])
+            emit("Preparing dub…")
+            let prepared = try await DubPreparation.prepare(document: speechDocument, scenes: Array(sceneMap.values),
+                settings: settings, database: database, ai: ai, onDevice: captionOnDevice, log: emit)
+            emit("Review dubbed lines before rendering")
+            let reviewed = try await reviewDub(prepared, options.projectID, profile.profileName)
+            try Task.checkCancellation()
+            document.dub = reviewed.settings
+            document.dubLines = reviewed.lines
+        }
+
+        // Even generated title/outro videos wait for the approved dub review.
+        for card in pendingCards {
+            try Task.checkCancellation()
+            try await BrandRenderer.cardClip(png: card.png, duration: card.duration, output: card.output)
+        }
+        for card in retainedCards {
+            try FileManager.default.copyItem(at: card.source, to: card.destination)
+        }
+        let extracted = try await WizardTiming.measure("extract clips", emit: emit) {
+            try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job in
+                try await self.extractPlannedClip(job.clip, index: job.index, of: clipCount,
+                                                  scene: job.scene, sceneMap: sceneMap, options: options,
+                                                  captionStyle: captionStyle, captionFallbacks: captionFallbacks,
+                                                  brandOverlays: brandOverlayFiles, topOverlays: clipWatermark,
+                                                  podcastDocument: podcastCuts[job.index], nameTagPeople: people, tagText: tagText, profile: profile,
+                                                  database: database, scratch: scratch,
+                                                  emit: emit)
+            }
+        }
+
+        for url in extracted {
+            if clipURLs.count > clipTransitions.count && !clipURLs.isEmpty {
+                // Boundary after a previous clip: planner transition if
+                // available, else hard fade.
+                clipTransitions.append(plan.transitions[safe: clipURLs.count - 1] ?? "fade")
+            }
+            clipURLs.append(url)
+        }
+
+        guard !clipURLs.isEmpty else {
+            throw AIError.notConfigured("No clips could be extracted for this plan")
+        }
+
+        if let introCard {
+            clipURLs.insert(introCard, at: 0)
+            clipTransitions.insert("fade", at: 0)
+        }
+        if let outroCard {
+            clipTransitions.append("fadeblack")
+            clipURLs.append(outroCard)
+        }
         emit("Assembling \(clipURLs.count) segments...")
         let assembled = scratch.appendingPathComponent("assembled.mp4")
-        if !bumperLog.isEmpty || !cutaways.isEmpty || !finalOverlayBlocks.isEmpty {
+        if !bumperLog.isEmpty || !cutaways.isEmpty || !finalOverlayBlocks.isEmpty || document.dub?.enabled == true {
             // Ordinary clips already contain their captions/branding/layouts.
             // Bumpers, cutaways and the whole-video overlays are added here, using the
             // same exclusive compositor as Builder. The editable document retains originals.
@@ -3980,7 +4031,7 @@ actor WizardEngine {
                                                                    sourceVideoPaths: Array(Set(plan.clips.compactMap { sceneMap[$0.sceneID]?.videoPath })).sorted(),
                                                                    sourceSceneIDs: plan.clips.map(\.sceneID), modelPrompts: AIRunCapture.current?.prompts ?? [:]),
                                                                roles: (plan.provenance.map { [AIRole(role: "Plan", provenance: $0)] } ?? [])
-                                                                   + (AIRunCapture.current?.roles.filter { $0.provenance.task == "broll" } ?? []))
+                                                                   + (AIRunCapture.current?.roles.filter { $0.provenance.task == "broll" || $0.provenance.task == "translate" } ?? []))
         try await database.saveGeneratedTraits(videoID: recordID,
                                                traits: .derive(document: document,
                                                                scenes: Array(sceneMap.values),
@@ -4087,7 +4138,7 @@ actor WizardEngine {
             let sourceSegments: [TranscriptSegment]
             do {
                 sourceSegments = try await captionSegments(videoID: scene.videoID, filename: scene.videoFilename,
-                    start: clip.start, end: clip.end, language: options.captionLanguage,
+                    start: clip.start, end: clip.end, language: options.effectiveCaptionLanguage,
                     database: database, fallbacks: captionFallbacks, emit: emit)
             } catch {
                 if error is CancellationError { throw error }
@@ -4102,7 +4153,7 @@ actor WizardEngine {
             try Task.checkCancellation()
             let pages = CaptionOverlayPlan.pages(segments: sourceSegments, renderer: renderer,
                 sourceStart: clip.start, speed: captionSpeed, duration: duration,
-                position: options.captionPositionOverride ?? "auto", language: options.captionLanguage ?? "",
+                position: options.captionPositionOverride ?? "auto", language: options.effectiveCaptionLanguage ?? "",
                 speakerTurns: turns, speakerRows: speakerRows)
             let captionPlan = try CaptionOverlayPlan.plan(pages: pages, style: captionStyle)
             if captionPlan.usedRevealFallback { emit("Captions: input limit reached; simplified word reveal or motion for this clip") }

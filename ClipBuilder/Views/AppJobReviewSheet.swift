@@ -11,6 +11,8 @@ struct AppJobReviewSheet: View {
     var body: some View {
         Group {
             switch job.result {
+            case .dub(let review):
+                DubReviewSheet(jobID: job.id, review: review)
             case let .favorites(candidates, proposals, provenance):
                 AIFavoritesReviewSheet(jobID: job.id, candidates: candidates, proposals: proposals, provenance: provenance)
             case let .soundbites(video, items, provenance):

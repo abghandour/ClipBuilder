@@ -11,6 +11,17 @@ extension WizardView {
 
     /// Sound & music.
     @ViewBuilder var audioFields: some View {
+        WizardControlRow(dubLanguage.isEmpty ? "Dub" : "Dub to \(DubLanguageChoices.name(dubLanguage))") {
+            Toggle("Dub to \(DubLanguageChoices.name(dubLanguage.isEmpty ? DubLanguageChoices.defaultLanguage : dubLanguage))",
+                   isOn: Binding(get: { !dubLanguage.isEmpty }, set: {
+                       dubLanguage = $0 ? (store.editingDefaults.footage.dubLanguage ?? DubLanguageChoices.defaultLanguage) : ""
+                   }))
+                .lineLimit(1).fixedSize()
+        }
+        if !dubLanguage.isEmpty {
+            DubLanguagePicker(language: Binding(get: { dubLanguage }, set: { dubLanguage = $0 ?? "" }))
+                .formDependent()
+        }
         if lookCapabilities.audioMusic {
             FormGroupHeader("Sound & music")
             WizardControlRow("Audio") {
@@ -117,7 +128,8 @@ extension WizardView {
         if lookFormPlan.step2Controls.contains(.nameTags) {
             WizardControlRow("Name tags") { Toggle("Name tags", isOn: $nameTags) }
             if nameTags {
-                NameTagControls(style: $nameTagStyleID, position: $nameTagPosition, profile: store.activeProfile)
+                NameTagControls(style: $nameTagStyleID, position: $nameTagPosition, profile: store.activeProfile,
+                                people: eligibleSourcePeople)
                     .formDependent()
             }
         }
@@ -194,6 +206,12 @@ extension WizardView {
         if lookFormPlan.step2Controls.contains(.cameraFocus) {
             FormGroupHeader("Camera focus")
             WizardCameraFocusPicker(selection: cameraFocusBinding, allowsOriginal: lookCapabilities.offersOriginalFraming)
+            if cameraFocusBinding.wrappedValue == CropRecipe.Kind.interview.rawValue {
+                WizardControlRow("Pull back") {
+                    InterviewZoomSlider(zoom: $interviewZoom)
+                }
+                FormCaption(InterviewZoomSlider.caption)
+            }
         }
         if lookFormPlan.step2Controls.contains(.framingCamera) {
             WizardControlRow("Framing camera") {

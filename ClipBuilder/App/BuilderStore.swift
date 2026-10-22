@@ -270,6 +270,13 @@ final class BuilderTimelineModel {
     static let stripHeight: CGFloat = TimelineLayoutSnapshot.stripHeight
     static let laneSpacing: CGFloat = 6
 
+    func setDub(settings: DubSettings?, lines: [DubLine]?) {
+        registerUndo("Change dub")
+        document.dub = settings
+        document.dubLines = lines
+        documentDidChange()
+    }
+
     // MARK: - Undo
 
     /// Push the pre-mutation document as an undo step. Continuous edits

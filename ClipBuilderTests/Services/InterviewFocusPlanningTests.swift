@@ -30,6 +30,30 @@ struct InterviewFocusPlanningTests {
         #expect(rectangle(pair.tight).contains(vip))
     }
 
+    @Test func pullBackOpensBothShotsTowardFullHeight() {
+        let tight = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [host],
+            sourceAspect: sourceAspect, canvasAspect: canvasAspect)
+        let half = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [host],
+            sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: 0.5)
+        let wide = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [host],
+            sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: 1)
+        let close = CenterStageService.Tuning.conversation.minCropHeightFraction
+        #expect(abs(half.tight.hFrac - (close + (1 - close) / 2)) < 0.001)
+        #expect(wide.tight.hFrac == 1 && wide.twoShot.hFrac == 1)
+        #expect(half.twoShot.hFrac >= half.tight.hFrac && half.twoShot.hFrac >= tight.twoShot.hFrac)
+        // The tight shot stays centred on the VIP; the two-shot still slides toward the host.
+        #expect(rectangle(wide.tight).contains(vip))
+        #expect(abs((wide.tight.xFrac + wide.tight.wFrac / 2) - vip.midX) < 0.001)
+        #expect(wide.twoShot.xFrac > wide.tight.xFrac)
+        for face in [vip, host] {
+            #expect(rectangle(wide.twoShot).insetBy(dx: -0.0001, dy: -0.0001).contains(face))
+        }
+        // Out-of-range values clamp instead of producing an impossible crop.
+        let over = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [host],
+            sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: 3)
+        #expect(over.tight == wide.tight)
+    }
+
     @Test(arguments: [0.05, 0.85])
     func distantFacesSaturateAndKeepVIPWhole(vipX: Double) {
         let vip = CGRect(x: vipX, y: 0.2, width: 0.08, height: 0.12)
@@ -38,7 +62,10 @@ struct InterviewFocusPlanningTests {
             sourceAspect: sourceAspect, canvasAspect: canvasAspect)
         #expect(pair.twoShot.hFrac == 1)
         #expect(pair.note == "Two-shot cannot hold both faces; the interviewer is partly in frame")
-        let padded = vip.insetBy(dx: -vip.width * FaceGuard.margin, dy: -vip.height * FaceGuard.margin)
+        let room = vip.insetBy(dx: -vip.width * InterviewFocusPlanning.vipMarginX, dy: -vip.height * InterviewFocusPlanning.vipMarginY)
+            .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+        let padded = room.insetBy(dx: -room.width * FaceGuard.margin, dy: -room.height * FaceGuard.margin)
+            .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
         #expect(rectangle(pair.twoShot).insetBy(dx: -0.0001, dy: -0.0001).contains(padded))
         #expect(rectangle(pair.twoShot).minX >= 0 && rectangle(pair.twoShot).maxX <= 1.0001)
         if vipX < 0.5 {
@@ -46,6 +73,20 @@ struct InterviewFocusPlanningTests {
         } else {
             #expect(abs(rectangle(pair.twoShot).maxX - padded.maxX) < 0.0001)
         }
+    }
+
+    @Test func twoShotKeepsHalfAFaceOfRoomAroundTheVIP() {
+        // A 9:16 column of a 16:9 source at full height is 0.316 wide; the
+        // interviewer at 0.365 and the VIP at 0.59 fit, but only just, so
+        // without the VIP's extra room the VIP's head would sit on the edge.
+        let vip = CGRect(x: 0.56, y: 0.15, width: 0.05, height: 0.09)
+        let host = CGRect(x: 0.355, y: 0.2, width: 0.02, height: 0.02)
+        let pair = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [host],
+            sourceAspect: 16.0 / 9, canvasAspect: 9.0 / 16, zoom: 1)
+        let two = rectangle(pair.twoShot)
+        #expect(two.maxX >= vip.maxX + vip.width * InterviewFocusPlanning.vipMarginX - 0.0001)
+        #expect(two.minX <= vip.minX - vip.width * InterviewFocusPlanning.vipMarginX + 0.0001)
+        #expect(two.minY <= vip.minY - vip.height * InterviewFocusPlanning.vipMarginY + 0.0001)
     }
 
     @Test func deadZoneUsesTwoShotForEntireClip() {

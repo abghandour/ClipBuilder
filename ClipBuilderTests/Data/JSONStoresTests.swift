@@ -43,6 +43,19 @@ struct JSONStoresTests {
         defaults.set(false, forKey: "wizard.favoritesOnly")
         WizardDefaults.migrateLegacy(defaults: defaults)
         #expect(!defaults.bool(forKey: "wizard.favoritesOnly"))
+
+        // Footage starts with nothing selected: the batch limit turns on once
+        // for installs that still had the old "everything" scope, and a later
+        // explicit "All" choice is kept.
+        let freshName = "EmptyFootage-\(UUID().uuidString)"
+        let fresh = try #require(UserDefaults(suiteName: freshName))
+        defer { fresh.removePersistentDomain(forName: freshName) }
+        WizardDefaults.migrateLegacy(defaults: fresh)
+        #expect(fresh.bool(forKey: "wizard.limitToSelection"))
+        #expect(fresh.string(forKey: "wizard.selectedRunIDs") == nil)
+        fresh.set(false, forKey: "wizard.limitToSelection")
+        WizardDefaults.migrateLegacy(defaults: fresh)
+        #expect(!fresh.bool(forKey: "wizard.limitToSelection"))
     }
 
     @Test("favorite index preserves order and follows rebuilds and copy updates")

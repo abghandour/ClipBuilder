@@ -11,7 +11,7 @@ nonisolated struct WizardFormPlan: Sendable {
 
     enum Control: String, CaseIterable, Sendable {
         case sources, outcome, recipe, length, brief, styleReference, fightResearch, layouts, iteration, planningModels
-        case output, pacing, audio, musicTrack, text, overlayStyle, transitions, cameraFocus, framingCamera
+        case output, pacing, audio, dub, musicTrack, text, overlayStyle, transitions, cameraFocus, framingCamera
         case nameTags, nameTagStyleID, nameTagPosition
         case bRoll, bumpers, branding, presentationModels, captionPosition, captionStyle
     }
@@ -26,7 +26,7 @@ nonisolated struct WizardFormPlan: Sendable {
     }
 
     var step2Controls: Set<Control> {
-        var controls: Set<Control> = [.output, .pacing, .transitions, .presentationModels]
+        var controls: Set<Control> = [.output, .pacing, .audio, .dub, .transitions, .presentationModels]
         if capabilities.audioMusic { controls.formUnion([.audio, .musicTrack]) }
         if capabilities.onScreenText { controls.formUnion([.text, .overlayStyle, .captionPosition, .captionStyle]) }
         if capabilities.offersCameraFocus { controls.formUnion([.nameTags, .nameTagStyleID, .nameTagPosition]) }

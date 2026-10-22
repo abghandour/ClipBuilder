@@ -8,6 +8,8 @@ import Foundation
 nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
     var renderSettings = RenderSettings()
     var pacing = EditPacing()
+    var dub: DubSettings?
+    var dubLines: [DubLine]?
     var videoTrack: [TimelineClip] = []
     var soundTrack: [SoundItem] = []
     var textOverlays: [TextOverlayItem] = []
@@ -60,7 +62,8 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
 
     enum CodingKeys: String, CodingKey {
         case renderSettings = "render_settings"
-        case pacing
+        case pacing, dub
+        case dubLines = "dub_lines"
         case videoTrack = "video_track"
         case soundTrack = "sound_track"
         case textOverlays = "text_overlays"
@@ -79,6 +82,8 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         renderSettings = try container.decodeIfPresent(RenderSettings.self, forKey: .renderSettings)
             ?? RenderSettings()
         pacing = try container.decodeIfPresent(EditPacing.self, forKey: .pacing) ?? EditPacing()
+        dub = try container.decodeIfPresent(DubSettings.self, forKey: .dub)
+        dubLines = try container.decodeIfPresent([DubLine].self, forKey: .dubLines)
         videoTrack = try container.decodeIfPresent([TimelineClip].self, forKey: .videoTrack) ?? []
         soundTrack = try container.decodeIfPresent([SoundItem].self, forKey: .soundTrack) ?? []
         textOverlays = try container.decodeIfPresent([TextOverlayItem].self, forKey: .textOverlays) ?? []
@@ -1222,6 +1227,15 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
     var strokeWidthEm: Double = 0       // outline width as a fraction of font size
     var shadowOpacity: Double = 0       // drop shadow strength, 0 = none
     var highlightColor: String?         // color for *starred* words in `text`
+    /// Most words on one line before the text wraps, on top of the pixel
+    /// width; nil = the default, 0 = width only. Captions have "Words per
+    /// page"; this is the overlay equivalent.
+    var wordsPerLine: Int?
+    static let defaultWordsPerLine = 6
+    var resolvedWordsPerLine: Int? {
+        let value = wordsPerLine ?? Self.defaultWordsPerLine
+        return value <= 0 ? nil : min(12, max(1, value))
+    }
     // Pro compositions ("hero" = kicker bar + gradient headline,
     // "tag" = skewed chip); nil = plain line rendering.
     var design: String?
@@ -1266,6 +1280,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         case strokeWidthEm = "stroke_width_em"
         case shadowOpacity = "shadow_opacity"
         case highlightColor = "highlight_color"
+        case wordsPerLine = "words_per_line"
         case tagStyle = "tag_style"
         case design, kicker
         case accentColor = "accent_color"
@@ -1307,6 +1322,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         strokeWidthEm = try container.decodeIfPresent(Double.self, forKey: .strokeWidthEm) ?? 0
         shadowOpacity = try container.decodeIfPresent(Double.self, forKey: .shadowOpacity) ?? 0
         highlightColor = try container.decodeIfPresent(String.self, forKey: .highlightColor)
+        wordsPerLine = try container.decodeIfPresent(Int.self, forKey: .wordsPerLine)
         design = try container.decodeIfPresent(String.self, forKey: .design)
         tagStyle = try container.decodeIfPresent(TagStyle.self, forKey: .tagStyle)
         kicker = try container.decodeIfPresent(String.self, forKey: .kicker)
@@ -1328,6 +1344,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         try container.encode(fontsize, forKey: .fontsize)
         try container.encode(fontcolor, forKey: .fontcolor)
         try container.encode(boxOpacity, forKey: .boxOpacity)
+        try container.encodeIfPresent(wordsPerLine, forKey: .wordsPerLine)
         try container.encode(transIn, forKey: .transIn)
         try container.encode(transOut, forKey: .transOut)
         try container.encode(position, forKey: .position)

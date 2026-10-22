@@ -97,6 +97,19 @@ Stated as the defaults this plan builds unless the user says otherwise:
     the interviewer as far as the frame allows, so part of them is in the
     picture. The plan notes "Two-shot cannot hold both faces; the
     interviewer is partly in frame" so the log says why.
+  - VIP placement fallback (October 22, 2026): a single VIP whose portrait
+    lands on no feed is placed on the feed that speaks longest
+    (`VIPRecipePlanning.placingUnplacedVIP`), with a plan note; the face
+    sampler names feeds the same way.
+  - Pull back (added October 22, 2026, after the user asked for a wider
+    interview frame): `WizardOptions.interviewZoom` (0...1, "Pull back" slider
+    under Camera focus in Express and the full wizard, saved per profile and
+    in presets as `interviewZoom`) raises the tight shot's height from the
+    0.6 minimum toward the full source height; the two-shot never drops below
+    the tight shot, so at 100 % both shots are full-height columns: the tight
+    one centred on the VIP, the two-shot slid toward the interviewer, and the
+    move between them is a pan only. `CropRecipe.interviewZoom` carries it
+    into the planner.
   - When the two-shot and the tight shot differ by less than the dead zone
     (centre shift under 5 % of the source width and height under 8 %
     different) the two-shot is used for the whole clip and the camera never

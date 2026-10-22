@@ -75,8 +75,8 @@ nonisolated struct MiniWizardFlow: Sendable {
     var showsCameraFocus: Bool { isPodcastOrInterview }
     var showsAudioOptions: Bool { isFightOrTraining }
 
-    /// Audio only exists for fight and training footage; the other tabs always show.
-    var settingsTabs: [SettingsTab] { SettingsTab.available(audio: showsAudioOptions) }
+    /// Every source can be dubbed; Music and mute retain their own footage rules.
+    var settingsTabs: [SettingsTab] { SettingsTab.available(audio: true) }
     /// A remembered tab that this footage does not offer opens Picture.
     func effectiveSettingsTab(_ tab: SettingsTab) -> SettingsTab { tab.effective(in: settingsTabs) }
     var showsNameTags: Bool { isPodcastOrInterview }
@@ -189,6 +189,7 @@ nonisolated struct MiniWizardFlow: Sendable {
             audio.append(settings.muteSourceAudio ? "Source muted" : "Source audio")
             if settings.music { audio.append(settings.musicTrackName.map { "Music: \($0)" } ?? "Random music") }
         }
+        if settings.dub { audio.append(DubLanguageChoices.summary(settings.dubLanguage ?? DubLanguageChoices.defaultLanguage)) }
         var overlays: [String] = []
         if settings.safeAreaOnly {
             let selected = settings.safeAreaPlatforms?.compactMap(SocialPlatform.init(rawValue:)) ?? []
@@ -218,6 +219,7 @@ nonisolated struct MiniWizardFlow: Sendable {
     private func presentationSummary(_ settings: MiniWizardSettings) -> [String] {
         var parts = [settings.quality.label, settings.preset.label]
         if settings.captions { parts.append("captions") }
+        if settings.dub { parts.append(DubLanguageChoices.summary(settings.dubLanguage ?? DubLanguageChoices.defaultLanguage)) }
         if let name = settings.overlayName { parts.append("overlay \(name)") }
         if settings.introVideo { parts.append("intro video") }
         if settings.outroVideo { parts.append("outro video") }

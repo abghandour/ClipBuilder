@@ -13,6 +13,7 @@ nonisolated enum WizardPresetBridge {
         render.preset = settings.preset
         fields["renderSettings"] = JSONSetting.dictionaryValue(render)
         let focus = settings.cameraFocus.trimmingCharacters(in: .whitespacesAndNewlines)
+        fields["interviewZoom"] = .number(settings.interviewZoom)
         if focus == WizardCameraFocus.original {
             fields["podcastFraming"] = .string(PodcastFramingMode.original.rawValue)
             fields["highlightFraming"] = .null
@@ -20,6 +21,10 @@ nonisolated enum WizardPresetBridge {
             fields["podcastFraming"] = .string(PodcastFramingMode.followSpeaker.rawValue)
             fields["highlightFraming"] = .string(focus)
         }
+        fields["dubLanguage"] = settings.dub ? .string(settings.dubLanguage ?? DubLanguageChoices.defaultLanguage) : .string("")
+        // Keep the remembered choice even when the toggle is off in an Express preset.
+        fields["dub"] = .bool(settings.dub)
+        fields["miniDubLanguage"] = settings.dubLanguage.map(JSONSetting.string) ?? .null
         fields["addCaptions"] = .bool(settings.captions)
         fields["captionPosition"] = settings.captionPosition.map(JSONSetting.string) ?? .null
         fields["captionStyleID"] = settings.captionStyleID.map(JSONSetting.string) ?? .null
@@ -67,6 +72,13 @@ nonisolated enum WizardPresetBridge {
         } else if let framing = fields["highlightFraming"]?.string, CropRecipe.Kind(rawValue: framing) != nil {
             settings.cameraFocus = framing
         }
+        if let zoom = fields["interviewZoom"]?.number { settings.interviewZoom = min(1, max(0, zoom)) }
+        if let value = fields["dubLanguage"] {
+            settings.dubLanguage = value.string.flatMap { $0.isEmpty ? nil : $0 }
+            settings.dub = value.string?.isEmpty == false
+        }
+        if let value = fields["miniDubLanguage"] { settings.dubLanguage = value.string }
+        if let value = fields["dub"]?.bool { settings.dub = value }
         if let captions = fields["addCaptions"]?.bool { settings.captions = captions }
         if let value = fields["captionPosition"] { settings.captionPosition = value.string }
         if let value = fields["captionStyleID"] { settings.captionStyleID = value.string }

@@ -24,6 +24,62 @@ struct InterviewFocusRecipeTests {
          SpeakerTurn(videoID: 1, start: 22, end: 40, cluster: 0, confidence: 1, personKey: "guest", tile: 0)]
     }
 
+    @Test func unplacedVIPGoesToTheFeedThatSpeaksLongest() throws {
+        // Portraits from an analysis before face snapping cover the whole frame.
+        let saturated = VideoPersonRecord.PortraitBox(x: 1, y: 1, w: 1, h: 1)
+        var roster = roster()
+        roster[0].portraitBox = saturated
+        roster[1].portraitBox = saturated
+        var video = video()
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, faceX: 0.36, faceY: 0.29),
+                     PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, faceX: 0.57, faceY: 0.21)]
+        video.podcastTilesJSON = String(decoding: try JSONEncoder().encode(tiles), as: UTF8.self)
+        // Turns carry a tile but no person key; the guest answers for 30 of 40 s on tile 1.
+        let turns = [SpeakerTurn(videoID: 1, start: 0, end: 30, cluster: 1, confidence: 1, personKey: nil, tile: 1),
+                     SpeakerTurn(videoID: 1, start: 30, end: 36, cluster: 0, confidence: 1, personKey: nil, tile: 0),
+                     SpeakerTurn(videoID: 1, start: 36, end: 40, cluster: 1, confidence: 1, personKey: nil, tile: 1)]
+        let placed = VIPRecipePlanning.placingUnplacedVIP(tiles, roster: roster, turns: turns)
+        #expect(placed.tiles.first { $0.index == 1 }?.personKey == "guest")
+        #expect(placed.tiles.first { $0.index == 0 }?.personKey == nil)
+        #expect(placed.note?.contains("Guest") == true)
+        #expect(InterviewFaceSampling.feedTiles(video: video, roster: roster, turns: turns).first { $0.index == 1 }?.personKey == "guest")
+        // A VIP already on a feed, or two VIPs, are left alone.
+        #expect(VIPRecipePlanning.placingUnplacedVIP(tiles, roster: self.roster(), turns: turns).note == nil)
+        var twoVIPs = roster
+        twoVIPs[1].vip = true
+        #expect(VIPRecipePlanning.placingUnplacedVIP(tiles, roster: twoVIPs, turns: turns).note == nil)
+
+        var recipe = CropRecipe(kind: .interview)
+        let tight = try CropRecipePlanner.plan(recipe, video: video, range: 0...40, turns: turns, roster: roster,
+            layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16)
+        recipe.interviewZoom = 1
+        let wide = try CropRecipePlanner.plan(recipe, video: video, range: 0...40, turns: turns, roster: roster,
+            layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16)
+        #expect(tight.notes.contains { $0.contains("speaks longest") })
+        #expect(tight.tiles.first { $0.index == 1 }?.personKey == "guest", "name tags read the placed feed identity")
+        #expect(tight.tiles.first { $0.index == 0 }?.personKey == "host", "the one feed left is the interviewer's")
+        // Name tags: the guest is in every shot, the host in the two-shots,
+        // and concurrent tags never sit on top of each other.
+        let people = [NameTagPlanner.Person(key: "guest", name: "Guest"), NameTagPlanner.Person(key: "host", name: "Host")]
+        let areas = NameTagPlanner.areas(plan: tight, tiles: tight.tiles, roster: roster, layouts: ScreenCropStore.builtIn,
+            canvas: CGSize(width: 1080, height: 1920), duration: 40, sourceAspect: 16.0 / 9)
+        let tags = NameTagPlanner.plan(areas: areas, people: people, settings: .init())
+        let guest = tags.filter { $0.personKey == "guest" }.sorted { $0.start < $1.start }
+        #expect(guest.first?.start == 0 && guest.last?.end == 40)
+        #expect(zip(guest, guest.dropFirst()).allSatisfy { abs($0.end - $1.start) < 0.001 })
+        let host = tags.filter { $0.personKey == "host" }
+        #expect(!host.isEmpty)
+        for h in host {
+            for g in guest where g.start < h.end && g.end > h.start {
+                #expect(!g.rect.intersects(h.rect))
+            }
+        }
+        let tightFirst = try #require(tight.slots.first?.path?.first)
+        let wideFirst = try #require(wide.slots.first?.path?.first)
+        #expect(tightFirst.x + tightFirst.w / 2 > 0.5, "the tight shot centres on the guest's feed")
+        #expect(wideFirst.h > tightFirst.h && abs(wideFirst.h - 1) < 0.001)
+    }
+
     @Test func kindAndDefaultsMatchSpecification() throws {
         #expect(CropRecipe.Kind.interview.rawValue == "interview_focus")
         #expect(CropRecipe.Kind.interview.name == "Interview focus")

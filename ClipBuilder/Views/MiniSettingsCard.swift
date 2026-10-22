@@ -78,6 +78,12 @@ struct MiniSettingsCard: View {
                     ? "The AI picks the layout for each \(run.footageKind == .qa ? "exchange" : "pick") when you generate."
                     : "Chosen by the highlights model when the candidates were found.")
                 : WizardCameraFocus.summary(settings.cameraFocus))
+            if settings.cameraFocus == CropRecipe.Kind.interview.rawValue {
+                MiniRow("Pull back") {
+                    InterviewZoomSlider(zoom: $settings.interviewZoom)
+                }
+                FormCaption(InterviewZoomSlider.caption)
+            }
         }
         MiniRow("Look") {
             lookPicker
@@ -136,7 +142,8 @@ struct MiniSettingsCard: View {
             if settings.nameTags {
                 MiniDependents {
                     NameTagControls(style: $settings.nameTagStyleID,
-                                    position: $settings.nameTagPosition, profile: store.activeProfile)
+                                    position: $settings.nameTagPosition, profile: store.activeProfile,
+                                    videoIDs: flow.video.map { [$0.id] })
                 }
             }
         }
@@ -323,48 +330,56 @@ struct MiniSettingsCard: View {
         .pickerStyle(.menu)
     }
 
-    /// Fight and training footage: drop the source's sound, lay a track under the reel.
+    /// Dubbing for every source; mute and music keep their fight/training rules.
     @ViewBuilder
     private var audioRows: some View {
-        MiniRow("Mute source audio") {
-            Toggle("Mute source audio", isOn: $settings.muteSourceAudio)
-        }
-        FormCaption(settings.muteSourceAudio
-            ? "Muted: the reel plays without the recording's sound."
-            : "Off: the crowd, the commentary and the impacts stay in.")
-        MiniRow("Music") {
-            Toggle("Music", isOn: $settings.music)
-        }
-        if settings.music {
-            MiniDependents {
-                MiniRow("Track") {
-                    Picker("Track", selection: Binding(
-                        get: { settings.musicTrackName ?? "" },
-                        set: { settings.musicTrack = $0.isEmpty ? nil : $0 })) {
-                        Text("Random").tag("")
-                        if let musicTracks, !musicTracks.isEmpty {
-                            Divider()
-                            ForEach(musicTracks, id: \.self) { track in
-                                Text(track).lineLimit(1).truncationMode(.middle).tag(track)
+        if flow.showsAudioOptions {
+            MiniRow("Mute source audio") {
+                Toggle("Mute source audio", isOn: $settings.muteSourceAudio)
+            }
+            FormCaption(settings.muteSourceAudio
+                ? "Muted: the reel plays without the recording's sound."
+                : "Off: the crowd, the commentary and the impacts stay in.")
+            MiniRow("Music") {
+                Toggle("Music", isOn: $settings.music)
+            }
+            if settings.music {
+                MiniDependents {
+                    MiniRow("Track") {
+                        Picker("Track", selection: Binding(
+                            get: { settings.musicTrackName ?? "" },
+                            set: { settings.musicTrack = $0.isEmpty ? nil : $0 })) {
+                            Text("Random").tag("")
+                            if let musicTracks, !musicTracks.isEmpty {
+                                Divider()
+                                ForEach(musicTracks, id: \.self) { track in
+                                    Text(track).lineLimit(1).truncationMode(.middle).tag(track)
+                                }
+                            } else if let name = settings.musicTrackName {
+                                Text(name).tag(name)
                             }
-                        } else if let name = settings.musicTrackName {
-                            Text(name).tag(name)
                         }
+                        .pickerStyle(.menu)
+                        .accessibilityLabel("Track")
                     }
-                    .pickerStyle(.menu)
-                    .accessibilityLabel("Track")
+                    FormCaption(musicTracks?.isEmpty == true
+                        ? "The music library is empty; add tracks under Resources › Music."
+                        : settings.musicTrackName == nil
+                            ? "Random picks a track that fits the reel's length."
+                            : settings.muteSourceAudio ? "Music only." : "Mixed under the source audio.")
                 }
-                FormCaption(musicTracks?.isEmpty == true
-                    ? "The music library is empty; add tracks under Resources › Music."
-                    : settings.musicTrackName == nil
-                        ? "Random picks a track that fits the reel's length."
-                        : settings.muteSourceAudio ? "Music only." : "Mixed under the source audio.")
+                .task {
+                    let tracks = await Task.detached { WizardEngine.availableMusic().map(\.name) }.value
+                    musicTracks = tracks
+                    if let chosen = settings.musicTrackName, !tracks.contains(chosen) { settings.musicTrack = nil }
+                }
             }
-            .task {
-                let tracks = await Task.detached { WizardEngine.availableMusic().map(\.name) }.value
-                musicTracks = tracks
-                if let chosen = settings.musicTrackName, !tracks.contains(chosen) { settings.musicTrack = nil }
-            }
+        }
+        MiniRow("Dub") {
+            Toggle("Dub", isOn: $settings.dub)
+        }
+        if settings.dub {
+            MiniDependents { DubLanguagePicker(language: $settings.dubLanguage) }
         }
     }
 

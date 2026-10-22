@@ -33,6 +33,15 @@ struct TextOverlayForm: View {
             .pickerStyle(.segmented)
             .labelStyle(.iconOnly)
             .help("Where the text sits in its box. Text that outgrows the box extends toward the other side, then wraps.")
+            Picker("Words per line", selection: Binding(
+                get: { item.wordsPerLine ?? TextOverlayItem.defaultWordsPerLine },
+                set: { item.wordsPerLine = $0 == TextOverlayItem.defaultWordsPerLine ? nil : $0 })) {
+                Text("Width only").tag(0)
+                ForEach([3, 4, 5, 6, 7, 8, 10, 12], id: \.self) { count in
+                    Text(count == TextOverlayItem.defaultWordsPerLine ? "\(count) (default)" : String(count)).tag(count)
+                }
+            }
+            .help("Start a new line after this many words even when more would fit the width, like Words per page for captions. Width only wraps on width alone.")
 
             ColorPicker("Text color",
                         selection: overlayColorBinding($item.fontcolor),

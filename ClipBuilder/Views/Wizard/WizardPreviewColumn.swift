@@ -25,19 +25,22 @@ struct WizardPreviewColumn: View {
         var generation: Int
         var transcriptVersion: Int
         var people: [PersonRecord]
+        /// Bumped when a tag field (Role, Team, handle) is saved for a person.
+        var tagFieldsVersion: Int
         var language: String?
         var tagStyle: TagStyle
         var reloadID: Int
         var cameraFocus: String
+        var interviewZoom: Double
         var canvasAspect: Double
     }
 
     private var contentKey: ContentKey {
         ContentKey(scene: model.selectedScene, generation: store.profileGeneration,
             transcriptVersion: store.transcriptCountsVersion, people: store.people,
-            language: options.captionLanguage, tagStyle: profile.tagStyle(id: options.nameTagStyleID), reloadID: reloadID,
+            tagFieldsVersion: store.personTagFieldsVersion, language: options.captionLanguage, tagStyle: profile.tagStyle(id: options.nameTagStyleID), reloadID: reloadID,
             cameraFocus: options.podcastFraming == .original ? WizardCameraFocus.original : options.highlightFraming?.rawValue ?? "",
-            canvasAspect: options.renderSettings.aspectRatio)
+            interviewZoom: options.interviewZoom ?? 0, canvasAspect: options.renderSettings.aspectRatio)
     }
 
     private func key(overlayTexts: [String]) -> PreviewKey? {
@@ -98,9 +101,14 @@ struct WizardPreviewColumn: View {
                                   language: options.captionLanguage, tagStyleID: options.nameTagStyleID, profile: profile, options: options)
             if !Task.isCancelled { refresh() }
         }
-        // Typing replacements is deliberately not an invalidation trigger.
-        // The actual cache key includes the text snapshot used by the next render.
+        // The cache key includes the text snapshot used by the next render.
         .onChange(of: key(overlayTexts: []), initial: true) { _, _ in refresh() }
+        // Typed replacement texts re-render after a short pause so the preview
+        // shows what the user wrote without rendering on every keystroke.
+        .task(id: options.fixedOverlayTexts ?? []) {
+            try? await Task.sleep(for: .milliseconds(400))
+            if !Task.isCancelled { refresh() }
+        }
         .onDisappear { model.cancel() }
     }
 

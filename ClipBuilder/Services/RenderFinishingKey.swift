@@ -20,6 +20,8 @@ nonisolated struct RenderFinishingKey: Encodable, Sendable {
     var encoder: [String]
     var segmentVersion = RenderSegmentCache.rendererVersion
     var maximumOverlap: Double? = nil
+    var dub: DubSettings? = nil
+    var dubLines: [DubLine]? = nil
 
     /// Scratch inputs are immutable for this stage. Stream their complete
     /// contents off the main actor; first/last-block fingerprints would miss
@@ -28,10 +30,11 @@ nonisolated struct RenderFinishingKey: Encodable, Sendable {
     static func make(segments: [URL], transitions: [String?], transitionDuration: Double,
                      overlays: [MultitrackRenderer.TimedOverlayPNG], settings: RenderSettings,
                      encoder: [String], maximumOverlap: Double? = nil,
-                     version: String = "multitrack-finishing-v1") async throws -> String {
+                     version: String = "multitrack-finishing-v1",
+                     dub: DubSettings? = nil, dubLines: [DubLine]? = nil) async throws -> String {
         try await make(segmentDigests: digests(of: segments), transitions: transitions,
                        transitionDuration: transitionDuration, overlays: overlays, settings: settings,
-                       encoder: encoder, maximumOverlap: maximumOverlap, version: version)
+                       encoder: encoder, maximumOverlap: maximumOverlap, version: version, dub: dub, dubLines: dubLines)
     }
 
     /// Callers that also plan finishing ranges digest the segments once and
@@ -40,14 +43,15 @@ nonisolated struct RenderFinishingKey: Encodable, Sendable {
     static func make(segmentDigests: [String], transitions: [String?], transitionDuration: Double,
                      overlays: [MultitrackRenderer.TimedOverlayPNG], settings: RenderSettings,
                      encoder: [String], maximumOverlap: Double? = nil,
-                     version: String = "multitrack-finishing-v1") async throws -> String {
+                     version: String = "multitrack-finishing-v1",
+                     dub: DubSettings? = nil, dubLines: [DubLine]? = nil) async throws -> String {
         let timing = PerfSignpost.begin("FinishingCacheKey")
         defer { PerfSignpost.end(timing) }
         let input = try Self(
             segments: segmentDigests, transitions: transitions,
             transitionDuration: transitionDuration,
             overlays: overlayIdentities(overlays), settings: settings, encoder: encoder,
-            maximumOverlap: maximumOverlap)
+            maximumOverlap: maximumOverlap, dub: dub, dubLines: dubLines)
         try Task.checkCancellation()
         return try RenderSegmentCache.key(input, version: version)
     }

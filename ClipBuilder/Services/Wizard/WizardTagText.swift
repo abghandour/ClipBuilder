@@ -8,7 +8,7 @@ extension WizardEngine {
                         emit: @escaping @Sendable (String) -> Void) async throws -> [PersonTagField] {
         guard options.usesNameTags else { return [] }
         try Task.checkCancellation()
-        let people = try await database.fetchPeople().filter { !$0.hidden && !$0.name.isEmpty }
+        let people = try await database.fetchPeople().filter { !$0.hidden && $0.tagName != nil }
         var ranges: [Int64: [ClosedRange<Double>]] = [:]
         var keys: Set<String> = []
         for clip in plan.clips {
@@ -58,7 +58,7 @@ extension WizardEngine {
                 if let key = turn.personKey { keys.insert(key) }
             }
         }
-        let eligible = people.filter { keys.contains($0.key) && !$0.hidden && !$0.name.isEmpty }
+        let eligible = people.filter { keys.contains($0.key) && !$0.hidden && $0.tagName != nil }
         let cached = try await database.personTagFields().filter { $0.field == field && keys.contains($0.personKey) }
         let pending = eligible.filter { person in !cached.contains { $0.personKey == person.key } }.map { person in
             TagTextWriter.Person(key: person.key, name: person.displayName, category: person.category?.label ?? "",

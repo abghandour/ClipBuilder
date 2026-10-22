@@ -27,7 +27,7 @@ nonisolated enum WizardPreviewFraming {
                 guard let box = person.portraitBox else { return false }
                 return tile.contains(x: box.x + box.w / 2, y: box.y + box.h / 2)
             }
-        let person = people.first { !$0.hidden && !$0.name.isEmpty && $0.key == (entry?.key ?? tile.personKey) }
+        let person = people.first { !$0.hidden && $0.tagName != nil && $0.key == (entry?.key ?? tile.personKey) }
         let face: CGRect
         if let box = entry?.portraitBox {
             face = CGRect(x: box.x, y: box.y, width: box.w, height: box.h)
@@ -37,6 +37,16 @@ nonisolated enum WizardPreviewFraming {
             face = CGRect(x: tile.x, y: tile.y, width: tile.w, height: tile.h)
         }
         return (person, face)
+    }
+
+    /// Who the preview tag names when the scene has no identified speaker:
+    /// a named person from this video's roster first, then any named person,
+    /// so the tag shows what the user typed in the people editor instead of a
+    /// sample name.
+    static func fallbackPerson(roster: [VideoPersonRecord], people: [PersonRecord]) -> PersonRecord? {
+        let named = people.filter { !$0.hidden && $0.tagName != nil }
+        let rosterKeys = Set(roster.map(\.key))
+        return named.first { rosterKeys.contains($0.key) } ?? named.first
     }
 
     static func resolve(options: WizardOptions, record: SceneRecord, video: VideoRecord?,
@@ -59,7 +69,9 @@ nonisolated enum WizardPreviewFraming {
             guard let video else {
                 throw CropRecipePlanner.Failure(description: "The file's frame size is unknown; analyze it first.")
             }
-            let plan = try CropRecipePlanner.plan(CropRecipe(kind: kind), video: video,
+            var recipe = CropRecipe(kind: kind)
+            recipe.interviewZoom = options.interviewZoom ?? 0
+            let plan = try CropRecipePlanner.plan(recipe, video: video,
                 range: record.startTime...record.endTime, turns: turns, roster: roster,
                 layouts: layouts, canvasAspect: options.renderSettings.aspectRatio)
             return (.cells(cells(plan: plan, layouts: layouts, video: video, time: time,
@@ -72,6 +84,12 @@ nonisolated enum WizardPreviewFraming {
         }
     }
 
+    static func recipe(options: WizardOptions) -> CropRecipe {
+        var recipe = CropRecipe(kind: options.highlightFraming ?? .talker)
+        recipe.interviewZoom = options.interviewZoom ?? 0
+        return recipe
+    }
+
     /// Called from the preview's background task. Cache misses keep the cheap
     /// still framing; preview never launches another tracking decode.
     static func resolveCached(options: WizardOptions, record: SceneRecord, video: VideoRecord?,
@@ -82,7 +100,7 @@ nonisolated enum WizardPreviewFraming {
         let fallback = resolve(options: options, record: record, video: video, face: face,
             turns: turns, roster: roster, people: people, layouts: layouts)
         guard case .cells(var cells) = fallback.framing, let video,
-              let plan = try? CropRecipePlanner.plan(CropRecipe(kind: options.highlightFraming ?? .talker),
+              let plan = try? CropRecipePlanner.plan(recipe(options: options),
                 video: video, range: record.startTime...record.endTime, turns: turns, roster: roster,
                 layouts: layouts, canvasAspect: options.renderSettings.aspectRatio) else { return fallback }
         let time = (record.startTime + record.endTime) / 2
@@ -140,7 +158,7 @@ nonisolated enum WizardPreviewFraming {
                 sourceAspect: Double(video.width) / Double(video.height), center: keyframe == nil ? slot.focus : nil,
                 face: keyframe == nil ? portrait : nil)
             let source = CGRect(x: crop.xFrac, y: crop.yFrac, width: crop.wFrac, height: crop.hFrac)
-            let person = people.first { !$0.hidden && !$0.name.isEmpty && $0.key == (entry?.key ?? tile?.personKey) }
+            let person = people.first { !$0.hidden && $0.tagName != nil && $0.key == (entry?.key ?? tile?.personKey) }
             let face = entry?.portraitBox.map { CGRect(x: $0.x, y: $0.y, width: $0.w, height: $0.h) }
             return WizardPreviewComposite.Cell(source: source, area: area, person: person, face: face,
                                                isTalking: slot.talking.contains { $0.contains(time) })

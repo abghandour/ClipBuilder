@@ -5,10 +5,11 @@ import Testing
 @Suite("Mini Wizard memory")
 struct MiniWizardMemoryTests {
     @Test func everyAnswerHasAStableDistinctProfileKey() {
-        let names: Set<String> = ["videoPath", "footageKind", "length", "quality", "preset", "cameraFocus",
+        let names: Set<String> = ["videoPath", "footageKind", "length", "quality", "preset", "cameraFocus", "interviewZoom",
             "captions", "englishCaptions", "captionPosition", "captionStyleID", "introVideo", "outroVideo", "nameTags", "nameTagContent", "nameTagStyle", "nameTagStyleID", "nameTagPosition", "watermark", "outputMode",
             "overlay", "overlayTemplate", "overlayStart", "overlayDuration", "overlayTexts", "introBumper", "outroBumper", "watermarkOverlay", "watermarkOpacity", "transition", "look",
-                                  "muteSourceAudio", "music", "musicTrack", "settingsTab", "safeAreaOnly", "safeAreaPlatforms"]
+                                  "muteSourceAudio", "music", "musicTrack", "settingsTab", "safeAreaOnly", "safeAreaPlatforms",
+                                  "dub", "dubLanguage"]
         #expect(Set(MiniWizardMemory.Field.allCases.map(\.rawValue)) == names)
         for profile in ["First", "First.Second", "Profile with spaces", "عربي"] {
             let keys = MiniWizardMemory.Field.allCases.map { MiniWizardMemory.key(for: $0, profileName: profile) }
@@ -68,6 +69,8 @@ struct MiniWizardMemoryTests {
         first.muteSourceAudio = true
         first.music = true
         first.musicTrack = "Intros/hype.mp3"
+        first.dub = true
+        first.dubLanguage = "pt-BR"
         let second = MiniWizardSettings()
         first.remember(profileName: "First", defaults: defaults)
         second.remember(profileName: "Second", defaults: defaults)
@@ -77,7 +80,7 @@ struct MiniWizardMemoryTests {
                          forKey: MiniWizardMemory.key(for: .footageKind, profileName: name))
             defaults.set(MiniWizardFlow.Length.fifteen.rawValue,
                          forKey: MiniWizardMemory.key(for: .length, profileName: name))
-            for field in MiniWizardMemory.Field.allCases where ![.captionPosition, .captionStyleID, .nameTagContent, .nameTagStyle, .nameTagStyleID, .nameTagPosition, .overlayTemplate, .overlayDuration, .introBumper, .outroBumper, .watermarkOverlay, .watermarkOpacity, .musicTrack, .settingsTab, .safeAreaPlatforms].contains(field) {
+            for field in MiniWizardMemory.Field.allCases where ![.captionPosition, .captionStyleID, .nameTagContent, .nameTagStyle, .nameTagStyleID, .nameTagPosition, .overlayTemplate, .overlayDuration, .introBumper, .outroBumper, .watermarkOverlay, .watermarkOpacity, .musicTrack, .settingsTab, .safeAreaPlatforms, .dubLanguage].contains(field) {
                 #expect(defaults.object(forKey: MiniWizardMemory.key(for: field, profileName: name)) != nil)
             }
         }

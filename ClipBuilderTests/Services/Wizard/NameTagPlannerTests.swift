@@ -147,6 +147,17 @@ extension NameTagPlannerTests {
         scene.tags = []
         #expect(WizardNameTags.ordinary(scene: scene, duration: 10, people: people, tagText: [:],
             options: options, captionStyle: CaptionStyle(), profile: Fixtures.brand()).isEmpty)
+        // An unconfirmed person whose key carries a name is tagged with that
+        // name (what the people editor shows); a counter key stays untagged.
+        let read = [PersonRecord(id: 3, key: "tanner-boser", name: "", descriptor: ""),
+                    PersonRecord(id: 4, key: "fighter-1-primary", name: "", descriptor: "")]
+        scene.tags = ["person:tanner-boser"]
+        let tagged = WizardNameTags.ordinary(scene: scene, duration: 10, people: read, tagText: [:],
+            options: options, captionStyle: CaptionStyle(), profile: Fixtures.brand())
+        #expect(tagged.count == 1 && tagged.first?.text.contains("Tanner Boser") == true)
+        scene.tags = ["person:fighter-1-primary"]
+        #expect(WizardNameTags.ordinary(scene: scene, duration: 10, people: read, tagText: [:],
+            options: options, captionStyle: CaptionStyle(), profile: Fixtures.brand()).isEmpty)
     }
 
     @Test func explicitOffOverridesLegacyMiniNameTagsOnlyAndIntroductionsStayInOldPlans() {
@@ -198,6 +209,46 @@ extension NameTagPlannerTests {
                 #expect(area.rect.intersects(face))
             }
         }
+    }
+
+    @Test func twoShotTagsBothPeopleOnTheirOwnSides() throws {
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, personKey: "ann", faceX: 0.36, faceY: 0.29),
+                     PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, personKey: "bob", faceX: 0.57, faceY: 0.21)]
+        // A full-screen slot whose path holds a two-shot then a tight shot on bob.
+        let plan = CropRecipePlanner.Plan(layout: .fullScreen, slots: [.init(subject: .vip, path: [
+            .init(t: 0, x: 0.25, y: 0, w: 0.45, h: 0.8), .init(t: 5, x: 0.48, y: 0, w: 0.2, h: 0.36)])], tiles: tiles)
+        let areas = NameTagPlanner.areas(plan: plan, tiles: tiles, roster: [], layouts: ScreenCropStore.builtIn,
+            canvas: frame.size, duration: 10, sourceAspect: 16.0 / 9)
+        #expect(areas.first?.spans.map(\.personKey) == ["ann", "bob", "bob"])
+        let tags = NameTagPlanner.plan(areas: areas, people: people, settings: .init())
+        let ann = try #require(tags.first { $0.personKey == "ann" })
+        let bob = tags.filter { $0.personKey == "bob" }
+        #expect(ann.start == 0 && ann.end == 5)
+        #expect(bob.map(\.start) == [0] && bob.map(\.end) == [10] || bob.map(\.start) == [0, 5])
+        #expect(ann.corner == .bottomLeading || ann.corner == .topLeading)
+        #expect(!ann.rect.intersects(try #require(bob.first).rect))
+    }
+
+    @Test func fixedCornerStacksConcurrentTagsAndPerPersonCornerWins() throws {
+        let area = NameTagPlanner.Area(rect: frame, spans: [
+            .init(start: 0, end: 5, personKey: "ann", faceBox: CGRect(x: 200, y: 400, width: 120, height: 160)),
+            .init(start: 0, end: 5, personKey: "bob", faceBox: CGRect(x: 760, y: 400, width: 120, height: 160))])
+        // Both on the run's corner: the second stacks below the first, no overlap.
+        let stacked = NameTagPlanner.plan(areas: [area], people: people, settings: .init(position: "topTrailing"))
+        #expect(stacked.count == 2 && stacked.allSatisfy { $0.corner == .topTrailing })
+        let a = try #require(stacked.first { $0.personKey == "ann" })
+        let b = try #require(stacked.first { $0.personKey == "bob" })
+        #expect(!a.rect.intersects(b.rect) && b.rect.minY >= a.rect.maxY)
+        // Bob's own corner overrides the run's.
+        var own = people
+        own[1].position = "bottomLeading"
+        let split = NameTagPlanner.plan(areas: [area], people: own, settings: .init(position: "topTrailing"))
+        #expect(split.first { $0.personKey == "bob" }?.corner == .bottomLeading)
+        #expect(split.first { $0.personKey == "ann" }?.corner == .topTrailing)
+        // Auto placement keeps them apart as well.
+        let auto = NameTagPlanner.plan(areas: [area], people: people, settings: .init())
+        let rects = auto.map(\.rect)
+        #expect(rects.count == 2 && !rects[0].intersects(rects[1]))
     }
 
     @Test func allOverlappingCornersChooseTheLeastCoveredOne() throws {

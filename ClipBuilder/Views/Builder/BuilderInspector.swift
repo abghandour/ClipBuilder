@@ -8,7 +8,10 @@ struct BuilderInspector: View {
     var body: some View {
         let model = store.builder
         ScrollView {
-            inspectorContent(model: model)
+            VStack(alignment: .leading, spacing: 0) {
+                DubInspector()
+                inspectorContent(model: model)
+            }
                 // With "Show scroll bars: Always" the scroller takes width;
                 // content whose height follows its width (stills, wrapped
                 // text) can then flip the scroller on and off forever. Keep

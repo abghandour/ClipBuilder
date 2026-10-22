@@ -54,6 +54,7 @@ enum TranscriptTranslator {
                                              ai: AIService, database: Database, batchSize: Int = 25,
                                              timeout: TimeInterval = 120,
                                              onDevice: InstalledTranslation = translateInstalled,
+                                             allowOriginalFallback: Bool = true,
                                              log: @Sendable (String) async -> Void = { _ in }) async throws -> Outcome {
         try Task.checkCancellation()
         guard !originals.isEmpty else { return Outcome(segments: 0, summary: "") }
@@ -118,6 +119,26 @@ enum TranscriptTranslator {
         try Task.checkCancellation()
         let stored = try await database.fetchTranscripts(videoID: videoID, transcriptionKey: transcriptionKey)
             .filter { $0.isTranslation && $0.language == target }
+        // Dubbing must never speak the source text as if it were translated.
+        // Fail before replacing any rows; ordinary captions keep their legacy
+        // fallback policy unless this caller explicitly opts into strictness.
+        if !allowOriginalFallback, originals.contains(where: { row in
+            answered[row.id] == nil && !stored.contains {
+                $0.startTime == row.startTime && $0.endTime == row.endTime
+                    && $0.provider != "original" && !$0.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            }
+        }) {
+            throw AIError.unusableResponse("The translator did not translate every dub line.")
+        }
+        if !allowOriginalFallback {
+            // A dub job may fill just one missing range. Keep existing rows,
+            // word timings and hand-set speakers intact elsewhere in the set.
+            try Task.checkCancellation()
+            try await database.storeDubTranslations(videoID: videoID, transcriptionKey: transcriptionKey,
+                originals: originals, target: target, answered: answered,
+                provider: provenance?.provider ?? "apple", model: provenance?.model)
+            return Outcome(segments: originals.count, summary: "Prepared \(originals.count) dub lines to \(target).")
+        }
         // An unanswered row must not overwrite an already stored translation.
         let segments = originals.compactMap { row -> TranscriptSegment? in
             if answered[row.id] == nil,

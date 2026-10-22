@@ -20,4 +20,14 @@ struct PersonRecordTests {
         }
         #expect(PersonRecord.keyName("jack-della-maddalena") == "Jack Della Maddalena")
     }
+
+    @Test("a name tag uses the confirmed name, else the name read into the key, never a counter key")
+    func tagName() {
+        #expect(PersonRecord(id: 1, key: "tanner-boser", name: "", descriptor: "").tagName == "Tanner Boser")
+        #expect(PersonRecord(id: 1, key: "tanner-boser", name: "Tanner B.", descriptor: "").tagName == "Tanner B.")
+        for key in ["person-2", "speaker-1", "fighter-1-primary", "octagon-fighter-2", "3"] {
+            #expect(PersonRecord(id: 1, key: key, name: "", descriptor: "").tagName == nil, "\(key)")
+        }
+        #expect(PersonRecord(id: 1, key: "fighter-1-primary", name: "Carlos Prates", descriptor: "").tagName == "Carlos Prates")
+    }
 }

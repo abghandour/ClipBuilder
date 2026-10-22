@@ -477,6 +477,8 @@ actor RenderEngine {
         var stagingDirectory: URL
         var record: @Sendable (RenderSegmentCache.Entry) -> Void
         var hit: @Sendable () -> Void
+        var dub: DubSettings? = nil
+        var dubLines: [DubLine]? = nil
     }
 
     /// Concatenate normalized clips with per-gap transitions or hard cuts —
@@ -595,7 +597,8 @@ actor RenderEngine {
             key = try? await RenderFinishingKey.make(segments: clips, transitions: transitions.map { $0 },
                 transitionDuration: duration, overlays: [], settings: RenderContext.settings,
                 encoder: FFmpeg.encodeArgs + FFmpeg.intermediateCacheIdentity,
-                maximumOverlap: maximumOverlap, version: "multitrack-assembly-v1")
+                maximumOverlap: maximumOverlap, version: "multitrack-assembly-v1",
+                dub: cache?.dub, dubLines: cache?.dubLines)
         } else {
             key = nil
         }

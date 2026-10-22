@@ -5,6 +5,11 @@ struct NameTagControls: View {
     @Binding var style: String?
     @Binding var position: String?
     let profile: BrandProfile
+    /// The people the tags will label, editable in place (name and the
+    /// style's description line). Either list them, or name the videos
+    /// whose rosters hold them; nil for both shows no editor.
+    var people: [PersonRecord]? = nil
+    var videoIDs: [Int64]? = nil
 
     private var resolvedStyle: Binding<String?> {
         Binding(get: {
@@ -36,5 +41,10 @@ struct NameTagControls: View {
             .onAppear {
                 if position == "auto" { position = nil }
             }
+        if people != nil || videoIDs != nil {
+            MiniRow("People") {
+                NameTagPeopleEditor(people: people, videoIDs: videoIDs, styleID: style, profile: profile)
+            }
+        }
     }
 }

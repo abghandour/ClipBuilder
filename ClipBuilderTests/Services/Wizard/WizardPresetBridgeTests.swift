@@ -70,3 +70,19 @@ struct WizardPresetBridgeTests {
         #expect(back[0].settings == express && back[0].savedAt == mini[0].savedAt)
     }
 }
+
+extension WizardPresetBridgeTests {
+    @Test func dubToggleAndRememberedLanguageRoundTripThroughPresets() {
+        for enabled in [true, false] {
+            var settings = MiniWizardSettings()
+            settings.dub = enabled; settings.dubLanguage = "pt-BR"
+            let fields = WizardPresetBridge.wizardFields(from: settings)
+            #expect(fields["dubLanguage"] == (enabled ? .string("pt-BR") : .string("")))
+            #expect(WizardPresetBridge.miniSettings(from: fields) == settings)
+        }
+        let imported = WizardPresetBridge.miniSettings(from: ["dubLanguage": .string("en-US")])
+        #expect(imported.dub && imported.dubLanguage == "en-US")
+        let disabled = WizardPresetBridge.miniSettings(from: ["dubLanguage": .null], base: imported)
+        #expect(!disabled.dub && disabled.dubLanguage == nil)
+    }
+}

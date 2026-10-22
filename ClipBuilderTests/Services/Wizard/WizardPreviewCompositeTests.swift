@@ -7,6 +7,20 @@ import UniformTypeIdentifiers
 
 @Suite("Wizard preview composite")
 struct WizardPreviewCompositeTests {
+    @Test func fallbackTagPersonPrefersThisVideoRosterThenAnyNamedPerson() {
+        let roster = [VideoPersonRecord(videoID: 1, personID: 2, key: "guest", name: "Guest",
+            descriptor: "", portraitAt: 0, portraitBox: nil, vip: false)]
+        let host = PersonRecord(id: 1, key: "host", name: "Marcello Spinelli", descriptor: "Press")
+        let guest = PersonRecord(id: 2, key: "guest", name: "Tanner Boser", descriptor: "")
+        let unnamed = PersonRecord(id: 3, key: "guest", name: "", descriptor: "")
+        var hiddenGuest = guest
+        hiddenGuest.hidden = true
+        #expect(WizardPreviewFraming.fallbackPerson(roster: roster, people: [host, guest])?.key == "guest")
+        #expect(WizardPreviewFraming.fallbackPerson(roster: roster, people: [host, hiddenGuest])?.key == "host")
+        #expect(WizardPreviewFraming.fallbackPerson(roster: [], people: [host, guest])?.key == "host")
+        #expect(WizardPreviewFraming.fallbackPerson(roster: roster, people: [unnamed]) == nil)
+    }
+
     @Test func vipPreviewShowsGuestWhileHostTalks() throws {
         var video = Fixtures.video()
         video.podcastLayout = PodcastLayout.splitHorizontal.rawValue
@@ -28,6 +42,40 @@ struct WizardPreviewCompositeTests {
         #expect(!cells[0].isTalking)
         #expect(CameraFocusChooser.allowedLayouts(feeds: 2, hasVIP: true).contains(.vip))
         #expect(!CameraFocusChooser.allowedLayouts(feeds: 2).contains(.vip))
+    }
+
+    @Test func interviewPullBackChangesPreviewFramingAndKey() {
+        var video = Fixtures.video()
+        video.podcastLayout = PodcastLayout.singleCamera.rawValue
+        let vip = VideoPersonRecord(videoID: video.id, personID: 1, key: "vip", name: "VIP",
+            descriptor: "", portraitAt: 5, portraitBox: .init(x: 0.3, y: 0.2, w: 0.08, h: 0.16), vip: true)
+        let host = VideoPersonRecord(videoID: video.id, personID: 2, key: "host", name: "Host",
+            descriptor: "", portraitAt: 5, portraitBox: .init(x: 0.55, y: 0.2, w: 0.08, h: 0.16), vip: false)
+        let turn = SpeakerTurn(videoID: video.id, start: 0, end: 10, cluster: 0, confidence: 1,
+            personKey: "vip", tile: 0)
+        var scene = Fixtures.scene()
+        scene.startTime = 0
+        scene.endTime = 10
+        var options = WizardOptions()
+        options.highlightFraming = .interview
+        func cells(zoom: Double?) -> [WizardPreviewComposite.Cell]? {
+            options.interviewZoom = zoom
+            let result = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
+                turns: [turn], roster: [vip, host], people: [], layouts: ScreenCropStore.builtIn)
+            #expect(result.warning == nil, "\(result.warning ?? "")")
+            guard case .cells(let cells) = result.framing else { Issue.record("Expected interview cell"); return nil }
+            return cells
+        }
+        guard let tight = cells(zoom: nil), let wide = cells(zoom: 1) else { return }
+        #expect(tight.count == 1 && wide.count == 1)
+        #expect(wide[0].source.height > tight[0].source.height)
+        #expect(abs(wide[0].source.height - 1) < 0.001)
+        #expect(WizardPreviewComposite.Framing.cells(tight) != WizardPreviewComposite.Framing.cells(wide))
+        let profile = Fixtures.brand()
+        options.interviewZoom = nil
+        let before = PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: [])
+        options.interviewZoom = 1
+        #expect(PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: []) != before)
     }
 
     @Test func safeAreaControlsInvalidatePreviewKey() {

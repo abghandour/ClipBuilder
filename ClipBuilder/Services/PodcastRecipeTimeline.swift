@@ -19,7 +19,9 @@ enum PodcastRecipeTimeline {
         do {
             guard kind == .vip || !tiles.isEmpty else { throw CropRecipePlanner.Failure(description: "no feed tiles") }
             guard kind == .vip || !turns.isEmpty else { throw CropRecipePlanner.Failure(description: "no speaker turns") }
-            plan = try CropRecipePlanner.plan(CropRecipe(kind: kind), video: video, range: range,
+            var recipe = CropRecipe(kind: kind)
+            recipe.interviewZoom = options.interviewZoom ?? 0
+            plan = try CropRecipePlanner.plan(recipe, video: video, range: range,
                 turns: turns, roster: roster, layouts: layouts, canvasAspect: settings.aspectRatio)
         } catch {
             log("Camera focus \(kind.name) could not be applied: \(error) — following speaker")
@@ -58,7 +60,7 @@ enum PodcastRecipeTimeline {
         }
         for index in builder.document.cropBlocks.indices { builder.document.cropBlocks[index].duration = duration }
         if let plan, options.usesNameTags {
-            let areas = NameTagPlanner.areas(plan: plan, tiles: tiles, roster: roster, layouts: layouts,
+            let areas = NameTagPlanner.areas(plan: plan, tiles: plan.tiles.isEmpty ? tiles : plan.tiles, roster: roster, layouts: layouts,
                 canvas: CGSize(width: settings.width, height: settings.height), duration: duration,
                 sourceAspect: Double(video.width) / Double(max(1, video.height)))
             builder.document.textOverlays += WizardNameTags.overlays(areas: areas, people: people, tagText: tagText,

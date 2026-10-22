@@ -55,12 +55,14 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var captionPosition: String?
     var captionStyleID: String?
     var captionLanguage: String?
+    var dubLanguage: String?
     var pinnedOverlayTemplate: String?
     var overlayStyle: String?
     var overlayAnimation: String?
     var overlayPlacement: String?
     var allowedTransitions: [String]?
     var highlightFraming: CropRecipe.Kind?
+    var interviewZoom: Double?
     var podcastFraming: PodcastFramingMode?
     var framingCamera: String?
     var useBRoll: Bool?
@@ -108,12 +110,14 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         case captionPosition
         case captionStyleID
         case captionLanguage
+        case dubLanguage
         case pinnedOverlayTemplate
         case overlayStyle
         case overlayAnimation
         case overlayPlacement
         case allowedTransitions
         case highlightFraming
+        case interviewZoom
         case podcastFraming
         case framingCamera
         case useBRoll
@@ -197,12 +201,14 @@ nonisolated extension WizardOptions {
         result.captionPosition = captionPosition
         result.captionStyleID = captionStyleID
         result.captionLanguage = captionLanguage
+        result.dubLanguage = dubLanguage
         result.pinnedOverlayTemplate = pinnedOverlayTemplate
         result.overlayStyle = overlayStyle
         result.overlayAnimation = overlayAnimation
         result.overlayPlacement = overlayPlacement
         result.allowedTransitions = allowedTransitions
         result.highlightFraming = highlightFraming
+        result.interviewZoom = interviewZoom
         result.podcastFraming = podcastFraming
         result.framingCamera = framingCamera
         result.useBRoll = useBRoll
@@ -282,12 +288,14 @@ nonisolated extension WizardOptions {
         result.captionPosition = step2.captionPosition
         result.captionStyleID = step2.captionStyleID
         result.captionLanguage = step2.captionLanguage
+        result.dubLanguage = step2.dubLanguage
         result.pinnedOverlayTemplate = step2.pinnedOverlayTemplate
         result.overlayStyle = step2.overlayStyle
         result.overlayAnimation = step2.overlayAnimation
         result.overlayPlacement = step2.overlayPlacement
         result.allowedTransitions = step2.allowedTransitions
         result.highlightFraming = step2.highlightFraming
+        result.interviewZoom = step2.interviewZoom ?? base.interviewZoom
         result.podcastFraming = step2.podcastFraming ?? base.podcastFraming
         result.framingCamera = step2.framingCamera ?? base.framingCamera
         result.useBRoll = step2.useBRoll ?? base.useBRoll

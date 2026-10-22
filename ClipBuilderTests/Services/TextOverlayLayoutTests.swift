@@ -221,4 +221,48 @@ struct TextOverlayLayoutTests {
         #expect(hiddenGreen == 0)
     }
 
+
+    @Test func wordsPerLineCapsLinesBeforeWidthDoes() {
+        let words = TextOverlayRenderer.parseMarkup((1...13).map { "w\($0)" }.joined(separator: " "))
+        let capped = TextOverlayRenderer.lines(words, maxWords: 6) { _ in true }
+        #expect(capped.map(\.count) == [6, 6, 1])
+        let widthOnly = TextOverlayRenderer.lines(words, maxWords: nil) { _ in true }
+        #expect(widthOnly.map(\.count) == [13])
+        // The width still wins when it is tighter than the cap.
+        let narrow = TextOverlayRenderer.lines(words, maxWords: 6) { $0.count <= 2 }
+        #expect(narrow.map(\.count) == Array(repeating: 2, count: 6) + [1])
+        #expect(TextOverlayRenderer.lines([], maxWords: 6) { _ in true }.isEmpty)
+    }
+
+    @Test func wordsPerLineDefaultsToSixAndZeroMeansWidthOnly() throws {
+        var item = TextOverlayItem(text: "a")
+        #expect(item.wordsPerLine == nil && item.resolvedWordsPerLine == 6)
+        item.wordsPerLine = 0
+        #expect(item.resolvedWordsPerLine == nil)
+        item.wordsPerLine = 40
+        #expect(item.resolvedWordsPerLine == 12)
+        item.wordsPerLine = 4
+        let data = try JSONEncoder().encode(item)
+        #expect(String(decoding: data, as: UTF8.self).contains("\"words_per_line\":4"))
+        #expect(try JSONDecoder().decode(TextOverlayItem.self, from: data).wordsPerLine == 4)
+        let legacy = try JSONDecoder().decode(TextOverlayItem.self, from: Data(#"{"text":"old"}"#.utf8))
+        #expect(legacy.wordsPerLine == nil && legacy.resolvedWordsPerLine == 6)
+    }
+
+    @Test func cappedOverlayRendersTallerThanWidthOnly() throws {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: directory) }
+        // A fitted box sizes its font to the box: one line spans the width,
+        // two capped lines share the height and come out much narrower.
+        var capped = item("one two three four five six seven eight nine ten", alignment: "center", w: 0.95, h: 0.06, fontsize: 60)
+        capped.boxOpacity = 0
+        capped.bgcolor = nil
+        var wide = capped
+        wide.wordsPerLine = 0
+        capped.wordsPerLine = 5
+        let cappedBounds = try opaqueBounds(try renderer.render(capped, to: directory))
+        let wideBounds = try opaqueBounds(try renderer.render(wide, to: directory))
+        #expect(cappedBounds.width < wideBounds.width * 0.8, "\(cappedBounds) vs \(wideBounds)")
+    }
 }

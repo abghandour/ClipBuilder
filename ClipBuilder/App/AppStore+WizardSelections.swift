@@ -205,7 +205,8 @@ extension AppStore {
 
     /// The page and Outputs reopen saved selections with the same step-2 defaults.
     func wizardSelectionRenderOptions(transcriptsAvailable: Bool) -> WizardOptions {
-        var options = Self.wizardOptionsFromForm(transcriptsAvailable: transcriptsAvailable)
+        var options = Self.wizardOptionsFromForm(transcriptsAvailable: transcriptsAvailable,
+                                                 profileDubLanguage: editingDefaults.footage.dubLanguage)
         let copied = AISettingsJSON.decode(WizardOptions.self,
             UserDefaults.standard.string(forKey: AISettingsPreferences.snapshotKey))
         options.renderSettings = WizardDefaults.resolvedRenderSettings(run: nil, copied: copied,

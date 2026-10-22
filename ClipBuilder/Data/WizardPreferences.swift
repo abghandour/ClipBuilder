@@ -241,6 +241,7 @@ nonisolated enum WizardDefaults {
     static let selectedLayoutsKey = "wizard.selectedLayouts"
     static let limitTransitionsKey = "wizard.limitTransitions"
     static let allowedTransitionsKey = "wizard.allowedTransitions"
+    static let emptyFootageDefaultKey = "wizard.emptyFootageDefaultApplied"
 
     static func migrateLegacy(defaults: UserDefaults = .standard) {
         WizardCameraFocus.migrate(defaults: defaults)
@@ -284,6 +285,15 @@ nonisolated enum WizardDefaults {
         }
         if defaults.object(forKey: brandingOverrideKey) == nil {
             defaults.set(WizardBrandingOverride.savedDefault.rawValue, forKey: brandingOverrideKey)
+        }
+        // Footage used to start with every analyzed video selected (batch
+        // limit off). It now starts with nothing selected, once; "All" and
+        // "Favorites" remain explicit picker choices afterwards.
+        if !defaults.bool(forKey: emptyFootageDefaultKey) {
+            if !defaults.bool(forKey: "wizard.limitToSelection"), !defaults.bool(forKey: "wizard.favoritesOnly") {
+                defaults.set(true, forKey: "wizard.limitToSelection")
+            }
+            defaults.set(true, forKey: emptyFootageDefaultKey)
         }
     }
 

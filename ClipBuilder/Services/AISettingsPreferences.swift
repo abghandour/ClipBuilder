@@ -19,6 +19,7 @@ import Foundation
         "aiInstructions": "wizard.aiInstructions", "formatPreset": "wizard.formatPreset",
         "tastePreset": "wizard.tastePreset",
         "captionLanguage": "wizard.captionLanguage",
+        "dubLanguage": "wizard.dubLanguage",
         "strikeStats": "wizard.strikeStats", "strikeUnits": "wizard.strikeUnits",
         "strikeSpeedCallouts": "wizard.strikeSpeedCallouts", "strikeGrapplingCard": "wizard.strikeGrapplingCard",
         "strikeRoundCard": "wizard.strikeRoundCard",
@@ -30,7 +31,7 @@ import Foundation
         "musicTrack": "wizard.musicTrack", "overlayStyle": "wizard.overlayStyle",
         "overlayAnimation": "wizard.overlayAnimation", "overlayPlacement": "wizard.overlayPlacement",
         "pinnedOverlayTemplate": "wizard.pinnedOverlayTemplate", "framingCamera": "wizard.framingCamera",
-        "highlightFraming": "wizard.highlightFraming", "useBRoll": "wizard.useBRoll",
+        "highlightFraming": "wizard.highlightFraming", "interviewZoom": "wizard.interviewZoom", "useBRoll": "wizard.useBRoll",
         "brollInstructions": "wizard.brollInstructions",
         "podcastFraming": "wizard.podcastFraming", "critiqueLoop": "wizard.critiqueLoop",
         "critiqueTargetScore": "wizard.critiqueTargetScore", "critiqueMaxVersions": "wizard.critiqueMaxVersions",
@@ -65,6 +66,7 @@ import Foundation
         var options = WizardOptions()
         options.renderSettings = profile.defaultRenderSettings
         options.pacing = profile.defaultPacing
+        options.dubLanguage = profile.editing?.footage.dubLanguage
         var result = JSONSetting.dictionary(options)
         if let saved = AISettingsJSON.decode(
             [String: JSONSetting].self, defaults.string(forKey: snapshotKey))

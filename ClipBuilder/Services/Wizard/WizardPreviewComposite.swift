@@ -141,7 +141,7 @@ nonisolated enum WizardPreviewComposite {
                     let position = options.captionPositionOverride ?? "auto"
                     // The production plan supplies emphasis, emoji and word reveal as well as highlighting.
                     let plan = try CaptionOverlayPlan.plan(pages: [.init(caption: page, position: position,
-                        language: options.captionLanguage ?? "")], style: style)
+                        language: options.effectiveCaptionLanguage ?? "")], style: style)
                     let middleTime = (page.start + page.end) / 2
                     if let overlay = plan.overlays.last(where: { $0.raster.activeIndex == middleWord })
                         ?? plan.overlays.first(where: { $0.start <= middleTime && middleTime < $0.end })
@@ -287,7 +287,7 @@ nonisolated enum WizardPreviewComposite {
                               width: cell.area.width * canvas.width, height: cell.area.height * canvas.height)
             let person = cell.person
             let key = person?.key ?? "preview"
-            names.append(.init(key: key, name: person?.displayName ?? "Alex Morgan", role: person?.descriptor ?? "Guest"))
+            names.append(.init(key: key, name: person?.tagName ?? "Alex Morgan", role: person?.descriptor ?? "Guest"))
             let source = visibleSource(cell.source, frame: scene.sourceSize, canvas: rect.size)
             let face = cell.face.map {
                 CGRect(x: rect.minX + ($0.minX - source.minX) / source.width * rect.width,

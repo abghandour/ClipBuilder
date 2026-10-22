@@ -51,6 +51,7 @@ struct WizardView: View {
     @State var captionPosition: String?
     @State var captionStyleID: String?
     @AppStorage("wizard.captionLanguage") var captionLanguage = ""
+    @AppStorage("wizard.dubLanguage") var dubLanguage = ""
     @AppStorage(WizardDefaults.workflowKey) var reviewWorkflowRaw = WizardWorkflow.automatic.rawValue
     @AppStorage("wizard.musicTrack") var musicTrackRaw = ""
     @AppStorage("wizard.overlayStyle") var overlayStyleRaw = ""
@@ -68,6 +69,7 @@ struct WizardView: View {
     @State var musicTracks: [String] = []
     @State var overlayTemplates: [String] = []
     @AppStorage("wizard.highlightFraming") private var highlightFramingRaw = ""
+    @AppStorage("wizard.interviewZoom") var interviewZoom = 0.0
     @AppStorage("wizard.useBRoll") var useBRoll = true
     @AppStorage("wizard.brollInstructions") var brollInstructions = ""
     @AppStorage("wizard.podcastFraming") private var podcastFramingRaw = PodcastFramingMode.followSpeaker.rawValue
@@ -77,7 +79,10 @@ struct WizardView: View {
     @AppStorage("wizard.bumperOutro") var includeOutroBumper = false
     @AppStorage("wizard.bumperMiddle") var includeMiddleBumper = false
     @AppStorage(WizardDefaults.brandingOverrideKey) private var brandingOverrideRaw = WizardBrandingOverride.savedDefault.rawValue
-    @AppStorage("wizard.limitToSelection") var limitToSelection = false
+    /// On by default: footage starts with nothing selected and the clicked
+    /// videos are remembered across launches. "All" is an explicit choice
+    /// in the source picker.
+    @AppStorage("wizard.limitToSelection") var limitToSelection = true
     @AppStorage("wizard.favoritesOnly") var favoritesOnly = false
     /// Express parity: kept selections render as separate videos or one reel.
     @AppStorage("wizard.outputMode") var outputModeRaw = MiniWizardFlow.OutputMode.separateVideos.rawValue
@@ -351,7 +356,7 @@ struct WizardView: View {
         return saved.intersection(Set(projectPeople.map(\.key)))
     }
 
-    private var eligibleSourcePeople: [PersonRecord] {
+    var eligibleSourcePeople: [PersonRecord] {
         guard limitToSelection, !selectedRunIDs.isEmpty else { return projectPeople }
         var tags = Set<String>()
         for runID in selectedRunIDs {
@@ -422,6 +427,9 @@ struct WizardView: View {
         configurationForm
         .frame(minWidth: 360, maxWidth: .infinity, maxHeight: .infinity)
         .onAppear {
+            if UserDefaults.standard.object(forKey: "wizard.dubLanguage") == nil {
+                dubLanguage = store.editingDefaults.footage.dubLanguage ?? ""
+            }
             adoptAnswers(for: store.activeProfile)
             loadCaptionChoices()
             enteredWithHandoff = store.pendingWizardPrompt?.proposesFootage == false || store.pendingWizardTemplate != nil
@@ -1321,6 +1329,7 @@ struct WizardView: View {
         options.renderSettings = effectiveRenderSettings
         options.pacing = effectivePacing
         options.captionLanguage = captionLanguage.isEmpty ? nil : captionLanguage
+        options.dubLanguage = dubLanguage.isEmpty ? nil : dubLanguage
         options.workflow = reviewWorkflow
         options.projectID = store.activeProjectID
         options.musicTrack = musicTrackRaw.isEmpty ? nil : musicTrackRaw
@@ -1356,6 +1365,7 @@ struct WizardView: View {
             ?? (durationMode == .custom ? min(180, max(3, customDuration)) : nil)
         options.formatPreset = formatPreset
         options.highlightFraming = CropRecipe.Kind(rawValue: highlightFramingRaw)
+        options.interviewZoom = highlightFramingRaw == CropRecipe.Kind.interview.rawValue ? interviewZoom : nil
         options.useBRoll = useBRoll
         options.brollInstructions = brollInstructions
         options.podcastFraming = PodcastFramingMode(rawValue: podcastFramingRaw) ?? .followSpeaker

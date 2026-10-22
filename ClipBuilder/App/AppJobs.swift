@@ -9,7 +9,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
     case teamSync
     case personResearch
     case criticBrief, evaluateCritic, fightScore
-    case postText, transcriptTranslation
+    case postText, transcriptTranslation, dub
 
     var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief }
     /// Routine cycles finish quietly; the outcome goes to the activity log only.
@@ -46,6 +46,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .evaluateCritic: "Evaluate Critic"
         case .postText: "Post Text"
         case .transcriptTranslation: "Translate Transcript"
+        case .dub: "Dub"
         }
     }
 
@@ -54,7 +55,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .aiFavorites: "curate"
         case .gapReport, .generateRequest: "wizard"
         case .instagramPublish: "instagram"
-        case .socialExport: "builder"
+        case .socialExport, .dub: "builder"
         case .profileStarter, .overlayTemplate, .imageSearch, .resourceExport, .resourceImport,
              .evaluateReelModel, .publishLessons, .teamSync: "app"
         case .criticBrief, .evaluateCritic, .postText: "wizard"
@@ -87,6 +88,7 @@ nonisolated struct SceneSearchContext: Equatable, Sendable {
 }
 
 nonisolated enum AppJobResult: Equatable, Sendable {
+    case dub(DubReview)
     case favorites(candidates: [SceneRecord], proposals: [SceneCurator.Proposal], provenance: AIProvenance?)
     case soundbites(video: VideoRecord, items: [SoundbiteFinder.Soundbite], provenance: AIProvenance?)
     case duplicateReport(videos: [VideoRecord], groups: [DuplicateFinder.Group], provenance: AIProvenance?)
@@ -333,6 +335,11 @@ final class AppJobs {
 
     func dismiss(_ id: UUID) {
         guard let job = items.first(where: { $0.id == id }), job.status != .running else { return }
+        if case .dub(let review) = job.result, case .render(let requestID) = review.target,
+           store?.dubReviews.isPending(requestID) == true {
+            store?.dubReviews.cancel(requestID)
+            return
+        }
         removeItem(id)
     }
 
@@ -429,7 +436,10 @@ final class AppJobs {
         }
         if job.status == .done && job.result == nil { removeItem(id) }
         let finished = items.filter { $0.status != .running }
-        for job in finished.prefix(max(0, finished.count - Self.finishedLimit)) { removeItem(job.id) }
+        for job in finished.prefix(max(0, finished.count - Self.finishedLimit)) {
+            if case .dub = job.result { dismiss(job.id) }
+            else { removeItem(job.id) }
+        }
     }
 
     private func removeItem(_ id: UUID) {

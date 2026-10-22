@@ -385,7 +385,7 @@ nonisolated enum WizardPlanRules {
               options.formatPreset == "interview" || options.formatPreset == "podcast" else { return plan }
         var plan = plan
         var introduced = Set<String>()
-        let named = people.filter { !$0.name.isEmpty && !$0.hidden }
+        let named = people.filter { $0.tagName != nil && !$0.hidden }
         for index in plan.clips.indices {
             if options.formatPreset == "podcast",
                let scene = sceneMap[plan.clips[index].sceneID] {
