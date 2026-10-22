@@ -1,0 +1,155 @@
+import CoreGraphics
+import Foundation
+import Testing
+@testable import Clip_Builder
+
+struct InterviewFocusRecipeTests {
+    private func roster() -> [VideoPersonRecord] {
+        [VideoPersonRecord(videoID: 1, personID: 1, key: "guest", name: "Guest", descriptor: "", portraitAt: 0,
+            portraitBox: .init(x: 0.34, y: 0.2, w: 0.04, h: 0.1), vip: true),
+         VideoPersonRecord(videoID: 1, personID: 2, key: "host", name: "Host", descriptor: "", portraitAt: 0,
+            portraitBox: .init(x: 0.52, y: 0.2, w: 0.04, h: 0.1), vip: false)]
+    }
+
+    private func video() -> VideoRecord {
+        var video = Fixtures.video()
+        video.width = 1920; video.height = 1080; video.duration = 40
+        video.podcastLayout = PodcastLayout.singleCamera.rawValue
+        return video
+    }
+
+    private func turns() -> [SpeakerTurn] {
+        [SpeakerTurn(videoID: 1, start: 0, end: 15, cluster: 0, confidence: 1, personKey: "guest", tile: 0),
+         SpeakerTurn(videoID: 1, start: 15, end: 22, cluster: 1, confidence: 1, personKey: "host", tile: 1),
+         SpeakerTurn(videoID: 1, start: 22, end: 40, cluster: 0, confidence: 1, personKey: "guest", tile: 0)]
+    }
+
+    @Test func kindAndDefaultsMatchSpecification() throws {
+        #expect(CropRecipe.Kind.interview.rawValue == "interview_focus")
+        #expect(CropRecipe.Kind.interview.name == "Interview focus")
+        #expect(CropRecipe.Kind.interview.summary == "Tight on the VIP while they talk; a slow pull back brings the interviewer in while they ask.")
+        #expect(WizardCameraFocus.summary("interview_focus") == CropRecipe.Kind.interview.summary)
+        #expect(CropRecipe.builtIn.contains { $0.kind == .interview })
+        #expect(try JSONDecoder().decode(CropRecipe.Kind.self, from: JSONEncoder().encode(CropRecipe.Kind.interview)) == .interview)
+        #expect(CropRecipePlanner.layoutName(kind: .interview, people: 1) == CropLayoutRef.fullScreenName)
+        for feeds in [2, 3, 4] {
+            #expect(CropRecipePlanner.layoutName(kind: .interview, people: feeds) == "50-50 Horizontal")
+        }
+        let recipe = CropRecipe(kind: .interview)
+        #expect(CropRecipePlanner.defaultSlots(recipe, areas: 1, tiles: []) == [.vip])
+        #expect(CropRecipePlanner.defaultSlots(recipe, areas: 2, tiles: []) == [.vip, .talker])
+    }
+
+    @Test func singleCameraUsesPlainFullScreenPathOnRelativeClock() throws {
+        for tracking in [false, true] {
+            var recipe = CropRecipe(kind: .interview)
+            recipe.tracking = tracking
+            let plan = try CropRecipePlanner.plan(recipe, video: video(), range: 10...30,
+                turns: turns(), roster: roster(), layouts: [], canvasAspect: 9.0 / 16)
+            #expect(plan.layout.isFullScreen && plan.slots.count == 1)
+            let slot = try #require(plan.slots.first)
+            #expect(slot.subject == .vip && slot.region == nil && slot.trackingSpans == nil && slot.window == nil && slot.focus == nil)
+            let path = try #require(slot.path)
+            #expect(path.map(\.t) == [0, 5, 5.8, 12, 12.8, 20])
+            #expect(path[2].h > path[0].h)
+            #expect(CenterStageService.pathMatchesCanvas(path, sourceSize: CGSize(width: 1920, height: 1080), canvasAspect: 9.0 / 16))
+        }
+    }
+
+    @Test func storedPersonColumnsStillUseSingleCameraPathAndFaceCenterFallback() throws {
+        var video = video()
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, personKey: "guest", faceX: 0.36, faceY: 0.25),
+                     PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, personKey: "host", faceX: 0.54, faceY: 0.25)]
+        video.podcastTilesJSON = String(decoding: try JSONEncoder().encode(tiles), as: UTF8.self)
+        var roster = roster()
+        roster[0].portraitBox = .init(x: 1, y: 1, w: 1, h: 1)
+        roster[1].portraitBox = nil
+        let plan = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video,
+            turns: turns(), roster: roster, layouts: [], canvasAspect: 9.0 / 16)
+        #expect(plan.layout.isFullScreen)
+        let path = try #require(plan.slots.first?.path)
+        #expect(abs(path[0].x + path[0].w / 2 - 0.36) < 0.0001)
+        #expect(path[0].h == 0.6)
+    }
+
+    @Test func separateFeedsUseVIPOnTopAndTalkerBelow() throws {
+        for layout in [PodcastLayout.splitHorizontal, .grid] {
+            var video = video()
+            video.podcastLayout = layout.rawValue
+            let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, personKey: "guest"),
+                         PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, personKey: "host")]
+            video.podcastTilesJSON = String(decoding: try JSONEncoder().encode(tiles), as: UTF8.self)
+            let plan = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video,
+                turns: turns(), roster: roster(), layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16)
+            #expect(plan.layout.name == "50-50 Horizontal")
+            #expect(plan.slots.map(\.subject) == [.vip, .talker])
+            #expect(plan.slots[0].region == FreeCropRect(xFrac: 0, yFrac: 0, wFrac: 0.5, hFrac: 1))
+            let bottom = try #require(plan.slots[1].path)
+            #expect(bottom.contains { $0.t == 15 && $0.x >= 0.5 })
+        }
+    }
+
+    @Test func severalVIPsUseExistingRotationWithSlowMoves() throws {
+        var roster = roster()
+        roster.append(VideoPersonRecord(videoID: 1, personID: 3, key: "guest2", name: "Guest 2", descriptor: "", portraitAt: 0,
+            portraitBox: .init(x: 0.75, y: 0.2, w: 0.04, h: 0.1), vip: true))
+        let turns = [SpeakerTurn(videoID: 1, start: 0, end: 20, cluster: 1, confidence: 1, personKey: "host", tile: 1)]
+        let plan = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video(), range: 0...20,
+            turns: turns, roster: roster, layouts: [], canvasAspect: 9.0 / 16)
+        let path = try #require(plan.slots.first?.path)
+        #expect(path.map(\.t) == [0, 6, 6.8, 12, 12.8, 20])
+        #expect(path[0].x != path[2].x && path[0].x == path[4].x)
+        #expect(plan.slots[0].trackingSpans == nil && plan.slots[0].region == nil)
+    }
+
+    @Test func closeFacesRemainStaticAndImpossibleTwoShotReportsWhy() throws {
+        var roster = roster()
+        roster[1].portraitBox = .init(x: 0.38, y: 0.2, w: 0.04, h: 0.1)
+        let still = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video(),
+            turns: turns(), roster: roster, layouts: [], canvasAspect: 9.0 / 16)
+        #expect(still.slots[0].path?.map(\.t) == [0, 40])
+        #expect(still.slots[0].region == nil)
+        roster[1].portraitBox = .init(x: 0.85, y: 0.2, w: 0.04, h: 0.1)
+        let distant = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video(),
+            turns: turns(), roster: roster, layouts: [], canvasAspect: 9.0 / 16)
+        #expect(distant.notes == ["Two-shot cannot hold both faces; the interviewer is partly in frame"])
+        #expect(distant.slots[0].path?.contains { $0.h == 1 } == true)
+    }
+
+    @MainActor @Test func builderAndPodcastTimelineInstallCameraPath() throws {
+        let plan = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video(), range: 10...30,
+            turns: turns(), roster: roster(), layouts: [], canvasAspect: 9.0 / 16)
+        let builder = BuilderTimelineModel(mode: .transient)
+        var source = video(); source.duration = 20
+        builder.compose(plan, source: .video(source), highlightTalker: false)
+        let composed = try #require(builder.document.videoTrack.first)
+        #expect(composed.centerStage && composed.cameraPath == plan.slots[0].path)
+        #expect(composed.cameraPathSource == "recipe" && composed.areaRegion == nil)
+        let scene = Fixtures.scene(id: 42, start: 10, end: 30)
+        let document = PodcastRecipeTimeline.build(kind: .interview, video: video(), range: 10...30,
+            sourceScene: scene, turns: turns(), roster: roster(), layouts: [], settings: RenderSettings(), tagText: [:])
+        let clip = try #require(document.videoTrack.first)
+        #expect(document.videoTrack.count == 1)
+        #expect(clip.centerStage && clip.cameraPath == plan.slots[0].path)
+        #expect(clip.sourceStart == 10 && clip.sourceEnd == 30 && clip.duration == 20)
+        #expect(clip.sceneID == scene.id && clip.areaRegion == nil)
+    }
+
+    @MainActor @Test func wizardCutDocumentsPreserveInterviewPath() throws {
+        var scene = Fixtures.scene(id: 42, start: 10, end: 30)
+        scene.tags = ["podcast", "podcast-exchange"]
+        var plan = Fixtures.plan(clips: [Fixtures.planClip(sceneID: scene.id, start: 10, end: 30)])
+        plan.framing = .interview
+        var options = WizardOptions()
+        options.formatPreset = "podcast"
+        let cuts = WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: [scene.id: scene], options: options,
+            videos: [video()], turns: [1: turns()], rosters: [1: roster()], layouts: [])
+        let document = try #require(cuts[0])
+        let clip = try #require(document.videoTrack.first)
+        let path = try #require(clip.cameraPath)
+        #expect(document.videoTrack.count == 1 && clip.centerStage && clip.areaRegion == nil)
+        #expect(path.map(\.t) == [0, 5, 5.8, 12, 12.8, 20])
+        #expect(clip.sourceStart == 10 && clip.sourceEnd == 30 && clip.duration == 20)
+        #expect(CenterStageService.pathMatchesCanvas(path, sourceSize: CGSize(width: 1920, height: 1080)))
+    }
+}

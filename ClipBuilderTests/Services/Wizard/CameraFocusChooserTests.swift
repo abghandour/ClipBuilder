@@ -23,7 +23,7 @@ struct CameraFocusChooserTests {
             #expect(!single.contains(kind.rawValue))
         }
         let multi = CameraFocusChooser.prompt(exchanges: exchanges, feeds: [11: 2, 22: 3], options: WizardOptions())
-        for kind in CropRecipe.Kind.allCases where kind != .vip && kind != .vipBRoll {
+        for kind in CropRecipe.Kind.allCases where kind != .vip && kind != .vipBRoll && kind != .interview {
             #expect(multi.contains(kind.rawValue) && multi.contains(kind.name) && multi.contains(kind.summary))
         }
         // VIP focus is offered only to exchanges whose recording has a VIP.
@@ -34,9 +34,23 @@ struct CameraFocusChooserTests {
         let gated = CameraFocusChooser.prompt(exchanges: withVIP, feeds: [11: 2, 22: 3], options: WizardOptions())
         #expect(gated.contains(CropRecipe.Kind.vip.summary) && gated.contains("VIP people: João"))
         #expect(gated.contains(CropRecipe.Kind.vipBRoll.summary))
+        #expect(!gated.contains(CropRecipe.Kind.interview.summary))
+        withVIP[0].nonVIPPeople = 1
+        let interview = CameraFocusChooser.prompt(exchanges: withVIP, feeds: [11: 1, 22: 3], options: WizardOptions())
+        #expect(interview.contains(CropRecipe.Kind.interview.summary))
         for feeds in [1, 2, 3] {
             #expect(!CameraFocusChooser.allowedLayouts(feeds: feeds).contains(.vipBRoll))
             #expect(CameraFocusChooser.allowedLayouts(feeds: feeds, hasVIP: true).contains(.vipBRoll))
+        }
+    }
+
+    @Test func interviewNeedsVIPAndOneOrTwoNonVIPPeopleRegardlessOfFeedCount() {
+        for feeds in [1, 2, 3, 4] {
+            for others in [0, 1, 2, 3] {
+                #expect(!CameraFocusChooser.allowedLayouts(feeds: feeds, nonVIPPeople: others).contains(.interview))
+                #expect(CameraFocusChooser.allowedLayouts(feeds: feeds, hasVIP: true, nonVIPPeople: others)
+                    .contains(.interview) == (others == 1 || others == 2))
+            }
         }
     }
 
@@ -93,6 +107,7 @@ struct CameraFocusChooserTests {
         #expect(exchange.speakers.map(\.seconds) == [4, 6])
         #expect(exchange.speakers.map(\.turns) == [2, 1])
         #expect(exchange.asker == "Ana" && exchange.answerer == "guest")
+        #expect(exchange.nonVIPPeople == 1)
         let excerpt = CameraFocusChooser.excerpt(exchange.transcript)
         #expect(excerpt.count == 400)
         #expect(excerpt.hasPrefix("Abertura") && excerpt.hasSuffix("Encerramento"))

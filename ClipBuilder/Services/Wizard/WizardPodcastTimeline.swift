@@ -18,6 +18,17 @@ nonisolated enum WizardPodcastTimeline {
             turns[id] = try await database.fetchSpeakerTurns(videoID: id)
             rosters[id] = try await database.fetchVideoPeople(videoID: id)
         }
+        // Interview focus frames from face positions seen in the clip itself.
+        let kind = options.highlightFraming ?? (options.podcastFraming == .splitZoom ? .grid : plan.framing ?? .talker)
+        if kind == .interview {
+            for id in ids.sorted() {
+                guard let video = videos.first(where: { $0.id == id }), let roster = rosters[id] else { continue }
+                let clips = plan.clips.filter { sceneMap[$0.sceneID]?.videoID == id && $0.end > $0.start }
+                guard let start = clips.map(\.start).min(), let end = clips.map(\.end).max() else { continue }
+                rosters[id] = await InterviewFaceSampling.refinedRoster(video: video, roster: roster, range: start...end,
+                                                                        turns: turns[id] ?? [], log: log)
+            }
+        }
         let people = options.usesNameTags ? try await database.fetchPeople() : []
         let tagText = options.usesNameTags
             ? try await database.tagText(field: profile.tagStyle(id: options.nameTagStyleID).description.field) : [:]

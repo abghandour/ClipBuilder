@@ -857,6 +857,13 @@ actor CenterStageService {
     /// Kept off the main actor; callers may retry at a later clip timestamp.
     @concurrent
     static func faceCenter(source: URL, at time: Double, region: FreeCropRect? = nil) async throws -> CGRect? {
+        try await faces(source: source, at: time, region: region).max { $0.width * $0.height < $1.width * $1.height }
+    }
+
+    /// Every face on the frame (or on `region` of it), in normalized
+    /// top-left coordinates of the full frame.
+    @concurrent
+    static func faces(source: URL, at time: Double, region: FreeCropRect? = nil) async throws -> [CGRect] {
         try Task.checkCancellation()
         let asset = AVURLAsset(url: source)
         let generator = AVAssetImageGenerator(asset: asset)
@@ -875,7 +882,7 @@ actor CenterStageService {
         if let region {
             let rect = CGRect(x: region.xFrac * Double(image.width), y: region.yFrac * Double(image.height),
                 width: region.wFrac * Double(image.width), height: region.hFrac * Double(image.height)).integral
-            guard let crop = image.cropping(to: rect) else { return nil }
+            guard let crop = image.cropping(to: rect) else { return [] }
             detectionImage = crop
         } else { detectionImage = image }
         let faces = try await DetectFaceRectanglesRequest(.revision3).perform(on: detectionImage)
@@ -886,7 +893,7 @@ actor CenterStageService {
             return CGRect(x: region.xFrac + box.minX * region.wFrac,
                 y: region.yFrac + (1 - box.maxY) * region.hFrac,
                 width: box.width * region.wFrac, height: box.height * region.hFrac)
-        }.max { $0.width * $0.height < $1.width * $1.height }
+        }
     }
 
     // MARK: - Camera path

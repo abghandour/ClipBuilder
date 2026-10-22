@@ -2613,7 +2613,8 @@ actor WizardEngine {
         try Task.checkCancellation()
         let choices = CameraFocusChooser.parse(text, ids: Set(exchanges.map(\.id)), allowed: CropRecipe.Kind.allCases)
         for (index, exchange) in zip(pending, exchanges) {
-            let allowed = CameraFocusChooser.allowedLayouts(feeds: feeds[exchange.id] ?? 1, hasVIP: !exchange.vipNames.isEmpty)
+            let allowed = CameraFocusChooser.allowedLayouts(feeds: feeds[exchange.id] ?? 1, hasVIP: !exchange.vipNames.isEmpty,
+                                                            nonVIPPeople: exchange.nonVIPPeople)
             let choice = choices[exchange.id].flatMap { allowed.contains($0.kind) ? $0 : nil }
             let kind = choice?.kind ?? CameraFocusChooser.fallback(speakers: exchange.speakers.count, allowed: allowed)
             result[index].plan.framing = kind

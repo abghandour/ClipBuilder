@@ -15,12 +15,14 @@ nonisolated enum CameraFocusChooser {
         var asker: String?
         var answerer: String?
         var vipNames: [String] = []
+        var nonVIPPeople: Int = 0
         var transcript: String
     }
 
-    static func allowedLayouts(feeds: Int, hasVIP: Bool = false) -> [CropRecipe.Kind] {
+    static func allowedLayouts(feeds: Int, hasVIP: Bool = false, nonVIPPeople: Int = 0) -> [CropRecipe.Kind] {
         CropRecipe.Kind.allCases.filter {
-            ($0 == .vip || $0 == .vipBRoll) ? hasVIP : ($0 == .talker || (feeds >= 2 && CropRecipePlanner.layoutName(kind: $0, people: feeds) != nil))
+            if $0 == .interview { return hasVIP && (1...2).contains(nonVIPPeople) }
+            return ($0 == .vip || $0 == .vipBRoll) ? hasVIP : ($0 == .talker || (feeds >= 2 && CropRecipePlanner.layoutName(kind: $0, people: feeds) != nil))
         }
     }
 
@@ -71,6 +73,9 @@ nonisolated enum CameraFocusChooser {
             vipNames: Set(clips.compactMap { sceneMap[$0.sceneID]?.videoID }.flatMap {
                 (rosters[$0] ?? []).filter(\.isVIP).map(\.displayName)
             }).sorted(),
+            nonVIPPeople: Set(clips.compactMap { sceneMap[$0.sceneID]?.videoID }.flatMap {
+                (rosters[$0] ?? []).filter { !$0.isVIP }.map(\.key)
+            }).count,
             transcript: transcript.joined(separator: " "))
     }
 
@@ -83,7 +88,8 @@ nonisolated enum CameraFocusChooser {
     /// Feeds are keyed by take ID. Mixed-source takes use the most restrictive available feed count.
     static func prompt(exchanges: [Exchange], feeds: [Int64: Int], options: WizardOptions) -> String {
         let layouts = CropRecipe.Kind.allCases.filter { kind in
-            exchanges.contains { allowedLayouts(feeds: feeds[$0.id] ?? 1, hasVIP: !$0.vipNames.isEmpty).contains(kind) }
+            exchanges.contains { allowedLayouts(feeds: feeds[$0.id] ?? 1, hasVIP: !$0.vipNames.isEmpty,
+                                                nonVIPPeople: $0.nonVIPPeople).contains(kind) }
         }
         let descriptions = layouts.map { "\($0.rawValue) — \($0.name): \($0.summary)" }.joined(separator: "\n")
         let lines = exchanges.map { exchange in
@@ -92,7 +98,8 @@ nonisolated enum CameraFocusChooser {
                 "\($0.name): \(Int(($0.seconds / max(total, 0.001) * 100).rounded()))% talk time, \($0.turns) turns"
             }.joined(separator: "; ")
             let count = feeds[exchange.id] ?? 1
-            let allowed = allowedLayouts(feeds: count, hasVIP: !exchange.vipNames.isEmpty).map(\.rawValue).joined(separator: ", ")
+            let allowed = allowedLayouts(feeds: count, hasVIP: !exchange.vipNames.isEmpty,
+                                         nonVIPPeople: exchange.nonVIPPeople).map(\.rawValue).joined(separator: ", ")
             let roles = [exchange.asker.map { "asks: \($0)" }, exchange.answerer.map { "answers: \($0)" }]
                 .compactMap { $0 }.joined(separator: "; ")
             return "id: \(exchange.id) | duration: \(String(format: "%.1f", exchange.duration))s | recording feeds/tiles: \(count) | allowed: \(allowed) | VIP people: \(exchange.vipNames.joined(separator: ", ")) | speakers: \(speakers) | \(roles) | original transcript: \(excerpt(exchange.transcript))"

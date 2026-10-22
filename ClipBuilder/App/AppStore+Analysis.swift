@@ -254,11 +254,51 @@ extension AppStore {
                         suggestedFilename = result.suggestedFilename
                         enqueueAutoTranslation(videoID: video.id)
                     } else {
+                        // The people pass runs first, as it does for podcasts:
+                        // the roster lands on the video with portraits and VIP
+                        // flags, and the tagging prompt then sees everyone in
+                        // the footage as a known person.
+                        var scenePeople = knownPeople
+                        var peoplePassNew: [DetectedNewPerson] = []
+                        var peoplePassFilename: String?
+                        if detectPeople {
+                            if checkpoint.peoplePassDone == true {
+                                appendLog(\.analysisLog, ["\(video.filename): the people pass is already done — reusing its roster"])
+                                peoplePassNew = checkpoint.newPeople
+                                peoplePassFilename = checkpoint.suggestedFilename
+                            } else {
+                                progress(0.03, "detecting people")
+                                let peopleBefore = Set(currentPeople.map(\.key))
+                                let people = try await analyzer.detectPeopleOnly(
+                                    video: video, profile: profile, database: database,
+                                    provider: provider, model: model, log: logSink(\.analysisLog))
+                                let found = people.roster.filter { !peopleBefore.contains($0.key) }.map {
+                                    DetectedNewPerson(key: $0.key, descriptor: $0.descriptor,
+                                                      suggestedName: $0.name.isEmpty ? nil : $0.name,
+                                                      videoURL: video.url, videoFilename: video.filename,
+                                                      sampleTime: $0.portraitAt)
+                                }
+                                let filename = people.suggestedFilename
+                                peoplePassNew = found
+                                peoplePassFilename = filename
+                                checkpoint = await updateAnalysisCheckpoint(videoID: videoID) {
+                                    $0.peoplePassDone = true
+                                    $0.newPeople = found
+                                    $0.suggestedFilename = filename
+                                } ?? checkpoint
+                            }
+                            guard generation == profileGeneration, !Task.isCancelled else { return }
+                            // Everyone the pass found, captured identities included.
+                            let registry = (try? await database.fetchPeople()) ?? []
+                            let rosterKeys = Set(((try? await database.fetchVideoPeople(videoID: video.id)) ?? []).map(\.key))
+                            let captured = Set(scenePeople.map(\.key))
+                            scenePeople += registry.filter { rosterKeys.contains($0.key) && !captured.contains($0.key) }
+                        }
                         let result = try await analyzer.analyzeVisual(
                             video: video, profile: profile, database: database,
                             runName: runName, provider: provider, model: model,
                             instructions: instructions, notes: notes,
-                            knownPeople: knownPeople,
+                            knownPeople: scenePeople,
                             personMarkers: markers,
                             detectPeople: detectPeople,
                             autoZoomUnframed: autoZoomUnframed,
@@ -273,8 +313,9 @@ extension AppStore {
                             },
                             log: logSink(\.analysisLog), progress: progress)
                         runID = result.runID
-                        videoNewPeople = result.newPeople
-                        suggestedFilename = result.suggestedFilename
+                        let passKeys = Set(peoplePassNew.map(\.key))
+                        videoNewPeople = peoplePassNew + result.newPeople.filter { !passKeys.contains($0.key) }
+                        suggestedFilename = peoplePassFilename ?? result.suggestedFilename
                     }
                     if checkpoint.runID == nil {
                         // The batch is on disk: from here only the later
@@ -678,7 +719,13 @@ extension AppStore {
         Task {
             do {
                 let turns = try await database.fetchSpeakerTurns(videoID: video.id)
-                let roster = try await database.fetchVideoPeople(videoID: video.id)
+                var roster = try await database.fetchVideoPeople(videoID: video.id)
+                if kind == .interview {
+                    // Faces at the shot starts, so the shots centre on where
+                    // the people sit in this clip rather than at the portrait.
+                    roster = await InterviewFaceSampling.refinedRoster(video: video, roster: roster,
+                        range: range ?? 0...video.duration, turns: turns, log: logSink(\.analysisLog))
+                }
                 let recipe = CropRecipe(kind: kind, highlightTalker: highlightTalker)
                 let plan = try CropRecipePlanner.plan(recipe, video: video, range: range, turns: turns, roster: roster,
                                                       layouts: ScreenCropStore.all(),

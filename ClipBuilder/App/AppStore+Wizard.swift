@@ -549,8 +549,13 @@ extension AppStore {
                 options: review.options, threshold: review.highlightThreshold, ai: ai, people: review.people, log: logSink(\.analysisLog))
             try Task.checkCancellation()
             guard generation == profileGeneration else { throw CancellationError() }
+            var roster = review.roster
+            if candidate.framing == .interview {
+                roster = await InterviewFaceSampling.refinedRoster(video: review.video, roster: roster,
+                    range: candidate.sourceStart...candidate.sourceEnd, turns: review.turns, log: logSink(\.analysisLog))
+            }
             let document = PodcastHighlightTimeline.build(candidate: candidate, video: review.video, scenes: review.scenes,
-                turns: review.turns, roster: review.roster, segments: review.segments, layouts: ScreenCropStore.all(),
+                turns: review.turns, roster: roster, segments: review.segments, layouts: ScreenCropStore.all(),
                 settings: review.options.renderSettings, threshold: review.highlightThreshold, options: review.options, plannedCuts: cuts, people: review.people,
                 tagText: tagText, profile: profile, imageAspects: imageAspects, log: logSink(\.analysisLog))
             let name = "\(review.video.filename) — \(candidate.title)"
@@ -635,8 +640,13 @@ extension AppStore {
                             options: request.options, threshold: request.highlightThreshold, ai: ai, people: request.people, log: logSink(\.analysisLog))
                         try Task.checkCancellation()
                         guard generation == profileGeneration else { throw CancellationError() }
+                        var roster = request.roster
+                        if candidate.framing == .interview {
+                            roster = await InterviewFaceSampling.refinedRoster(video: request.video, roster: roster,
+                                range: candidate.sourceStart...candidate.sourceEnd, turns: request.turns, log: logSink(\.analysisLog))
+                        }
                         let document = PodcastHighlightTimeline.build(candidate: candidate, video: request.video, scenes: request.scenes,
-                            turns: request.turns, roster: request.roster, segments: request.segments, layouts: ScreenCropStore.all(),
+                            turns: request.turns, roster: roster, segments: request.segments, layouts: ScreenCropStore.all(),
                             settings: request.options.renderSettings, threshold: request.highlightThreshold,
                             options: request.options, plannedCuts: cuts, people: request.people,
                             tagText: tagText, profile: profile, imageAspects: imageAspects, log: logSink(\.analysisLog))

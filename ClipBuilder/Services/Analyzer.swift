@@ -1059,6 +1059,7 @@ actor Analyzer {
             throw AIError.emptyResponse("people detection (unparseable JSON)")
         }
 
+        var pixelBoxKeys: Set<String> = []
         var entries: [(key: String, descriptor: String, portraitAt: Double,
                        portraitJSON: String?, rangesJSON: String?, vip: Bool?)] = []
         var seenKeys = Set<String>()
@@ -1066,6 +1067,10 @@ actor Analyzer {
         // named through the review flows instead).
         let knownByKey = Dictionary(uniqueKeysWithValues: knownPeople.map { ($0.key, $0) })
         var corrections: [(person: PersonRecord, name: String)] = []
+        // Pixel answers refer to the frames the model saw, which are fitted
+        // inside the analysis image budget, not to the source size.
+        let frameSize = PortraitBoxParsing.frameSize(width: video.width, height: video.height,
+                                                     longestEdge: AnalysisImageBudget.longestEdge)
         for raw in rawPeople {
             let rawKey = (raw["key"] as? String ?? "").lowercased()
             var key = rawKey.map { $0.isLetter || $0.isNumber ? $0 : "-" }
@@ -1090,12 +1095,14 @@ actor Analyzer {
             if let portrait = raw["portrait"] as? [String: Any] {
                 portraitAt = min(max(0, (portrait["at"] as? NSNumber)?.doubleValue ?? portraitAt),
                                  max(0, duration - 0.1))
-                let box = VideoPersonRecord.PortraitBox(
-                    x: min(max(0, (portrait["x"] as? NSNumber)?.doubleValue ?? 0), 1),
-                    y: min(max(0, (portrait["y"] as? NSNumber)?.doubleValue ?? 0), 1),
-                    w: min(max(0.02, (portrait["w"] as? NSNumber)?.doubleValue ?? 0.3), 1),
-                    h: min(max(0.02, (portrait["h"] as? NSNumber)?.doubleValue ?? 0.6), 1))
-                portraitJSON = (try? JSONEncoder().encode(box))
+                let parsed = PortraitBoxParsing.normalise(.init(
+                    x: (portrait["x"] as? NSNumber)?.doubleValue ?? 0,
+                    y: (portrait["y"] as? NSNumber)?.doubleValue ?? 0,
+                    w: (portrait["w"] as? NSNumber)?.doubleValue ?? 0.3,
+                    h: (portrait["h"] as? NSNumber)?.doubleValue ?? 0.6),
+                    width: frameSize.width, height: frameSize.height)
+                if parsed.wasPixels { pixelBoxKeys.insert(key); log("Portrait box for \(key) given in pixels; normalised") }
+                portraitJSON = (try? JSONEncoder().encode(parsed.box))
                     .flatMap { String(data: $0, encoding: .utf8) }
             }
             let ranges = (raw["ranges"] as? [[String: Any]] ?? []).compactMap { range -> [String: Double]? in
@@ -1130,6 +1137,33 @@ actor Analyzer {
                 portraitJSON = String(decoding: try JSONSerialization.data(withJSONObject: metadata), as: UTF8.self)
             }
             entries.append((key, descriptor, portraitAt, portraitJSON, rangesJSON, raw["vip"] as? Bool))
+        }
+        // Pixel answers are at the provider's unknown frame scale; the faces on
+        // the frame at that moment decide where each person's portrait sits.
+        if !pixelBoxKeys.isEmpty {
+            let moments = Set(entries.filter { pixelBoxKeys.contains($0.key) }.map(\.portraitAt))
+            for moment in moments.sorted() {
+                try Task.checkCancellation()
+                let pending = entries.indices.filter { entries[$0].portraitAt == moment && pixelBoxKeys.contains(entries[$0].key) }
+                let boxes: [(key: String, box: VideoPersonRecord.PortraitBox)] = pending.compactMap { index in
+                    guard let json = entries[index].portraitJSON,
+                          let box = try? JSONDecoder().decode(VideoPersonRecord.PortraitBox.self, from: Data(json.utf8)) else { return nil }
+                    return (entries[index].key, box)
+                }
+                let faces = (try? await CenterStageService.faces(source: video.url, at: moment)) ?? []
+                let snapped = PortraitBoxParsing.snapped(boxes: boxes, toFaces: faces)
+                for index in pending {
+                    let key = entries[index].key
+                    guard let box = snapped[key], let json = entries[index].portraitJSON else {
+                        log("Portrait box for \(key): no face to snap to at \(moment.timecode); keeping the model's box")
+                        continue
+                    }
+                    var metadata = (try? JSONSerialization.jsonObject(with: Data(json.utf8)) as? [String: Any]) ?? [:]
+                    metadata["x"] = box.x; metadata["y"] = box.y; metadata["w"] = box.w; metadata["h"] = box.h
+                    entries[index].portraitJSON = String(decoding: try JSONSerialization.data(withJSONObject: metadata), as: UTF8.self)
+                    log("Portrait box for \(key) snapped to the face seen at \(moment.timecode)")
+                }
+            }
         }
 
         for entry in entries {

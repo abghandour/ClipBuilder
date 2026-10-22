@@ -414,7 +414,7 @@ nonisolated enum PodcastHighlightFinder {
             Every range must include at least one full sentence of the answer; never end on the question.
             Give each a short title, one-line reason, decimal score 0–10, standalone boolean, and rapid_exchange=true only for rapid back-and-forth.
             Choose a framing id for every candidate from:
-            \(CropRecipe.Kind.allCases.filter { ($0 != .vip && $0 != .vipBRoll) || !vipKeys.isEmpty }.map { "\($0.rawValue): \($0.summary)" }.joined(separator: "\n"))
+            \(CropRecipe.Kind.allCases.filter { ($0 != .vip && $0 != .vipBRoll && $0 != .interview) || !vipKeys.isEmpty }.map { "\($0.rawValue): \($0.summary)" }.joined(separator: "\n"))
             \(highlightFraming.map { "Use the requested framing \($0.rawValue) for every candidate." } ?? "Choose the best framing for the exchange.")
             Score rubric: 10 = must post, 8–9 = strong, 7 = worth posting, below 7 = skip.
             Scores must not all be identical: distinguish candidates using the rubric and decimal precision.

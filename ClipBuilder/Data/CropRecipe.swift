@@ -76,6 +76,7 @@ nonisolated struct CropRecipe: Sendable, Hashable, Identifiable {
         case talker
         case vip
         case vipBRoll = "vip_broll"
+        case interview = "interview_focus"
         /// Everyone at once: 50/50, thirds, 2×2 or 2×3 by head count.
         case grid
         /// The talker in the top half, everyone else across the bottom.
@@ -89,6 +90,7 @@ nonisolated struct CropRecipe: Sendable, Hashable, Identifiable {
             switch self {
             case .vip: "VIP focus"
             case .vipBRoll: "VIP B-Roll Focus"
+            case .interview: "Interview focus"
             case .talker: "Talker full screen"
             case .grid: "Everyone in a grid"
             case .talkerAndRest: "Talker and the rest"
@@ -101,6 +103,7 @@ nonisolated struct CropRecipe: Sendable, Hashable, Identifiable {
             switch self {
             case .vip: "Keep the VIP on screen: the VIP full screen, and their reaction while others talk."
             case .vipBRoll: "Follow the talker, with short breaks to the VIPs on their expressive moments."
+            case .interview: "Tight on the VIP while they talk; a slow pull back brings the interviewer in while they ask."
             case .talker: "One person at a time, cutting to whoever is talking."
             case .grid: "Every feed in its own cell; 50/50 for two, thirds for three, 2×2 for four, 2×3 for five or six."
             case .talkerAndRest: "The talker in the top half; the others share the bottom."
@@ -188,6 +191,7 @@ nonisolated enum CropRecipePlanner {
     static func layoutName(kind: CropRecipe.Kind, people: Int) -> String? {
         switch kind {
         case .talker, .vip, .vipBRoll: return CropLayoutRef.fullScreenName
+        case .interview: return people < 2 ? CropLayoutRef.fullScreenName : "50-50 Horizontal"
         case .talkerAndPrevious, .talkerAndRotation: return "50-50 Horizontal"
         case .grid:
             switch people {
@@ -213,6 +217,7 @@ nonisolated enum CropRecipePlanner {
     static func defaultSlots(_ recipe: CropRecipe, areas: Int, tiles: [PodcastTile]) -> [CropRecipeSubject] {
         switch recipe.kind {
         case .vip: return [.vip]
+        case .interview: return areas < 2 ? [.vip] : [.vip, .talker]
         case .talker, .vipBRoll: return [.talker]
         case .grid: return tiles.sorted { $0.index < $1.index }.prefix(areas).map { .tile($0.index) }
         case .talkerAndRest: return [.talker] + (1..<max(1, areas)).map { .others($0) }
@@ -349,13 +354,20 @@ nonisolated enum CropRecipePlanner {
         }
         let sourceAspect = Double(video.width) / Double(video.height)
         var tiles = tiles(video: video, roster: roster)
-        if recipe.kind == .vip, tiles.isEmpty {
+        if recipe.kind == .vip || recipe.kind == .interview, tiles.isEmpty {
             tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 1, h: 1)]
         }
-        if recipe.kind == .vip { tiles = VIPRecipePlanning.namedTiles(tiles, roster: roster) }
+        if recipe.kind == .vip || recipe.kind == .interview { tiles = VIPRecipePlanning.namedTiles(tiles, roster: roster) }
         let vipTiles = VIPRecipePlanning.tiles(tiles, roster: roster)
-        let people = max(1, tiles.count)
-        guard recipe.kind == .talker || recipe.kind == .vip || recipe.kind == .vipBRoll || tiles.count >= 2 else {
+        if recipe.kind == .interview, vipTiles.isEmpty {
+            throw Failure(description: "Interview focus needs a VIP on this recording.")
+        }
+        // A single camera may have several stored person columns. Only separate
+        // recorded feeds call for Interview focus's two-cell layout.
+        let interviewFeeds = video.podcastLayout == PodcastLayout.singleCamera.rawValue
+            ? 1 : max(1, VIPRecipePlanning.recordedFeeds(video: video, roster: roster).count)
+        let people = recipe.kind == .interview ? interviewFeeds : max(1, tiles.count)
+        guard recipe.kind == .talker || recipe.kind == .vip || recipe.kind == .vipBRoll || recipe.kind == .interview || tiles.count >= 2 else {
             throw Failure(description: "This recipe needs a recording with two or more feeds or people; only the full-screen talker works here.")
         }
         guard let layoutName = recipe.layout ?? layoutName(kind: recipe.kind, people: people) else {
@@ -377,14 +389,14 @@ nonisolated enum CropRecipePlanner {
         guard !subjects.isEmpty, subjects.count <= areas.count, subjects.count <= TimelineDocument.maxTracks else {
             throw Failure(description: "The layout has \(areas.count) areas for \(subjects.count) subjects (at most \(TimelineDocument.maxTracks)).")
         }
-        let hold = recipe.kind == .vip || recipe.kind == .vipBRoll
+        let hold = recipe.kind == .vip || recipe.kind == .vipBRoll || recipe.kind == .interview
             ? max(recipe.minimumHold, VIPRotation.minimumHold) : recipe.minimumHold
         var segments = segments(turns: turns, tiles: tiles, range: span, hold: hold)
         if recipe.kind == .vip, tiles.count == 1, segments.isEmpty {
             segments = [.init(start: span.lowerBound, end: span.upperBound, talker: tiles[0].index, recent: [])]
         }
         let needsTurns = subjects.contains { if case .tile = $0 { false } else if case .person = $0 { false } else { true } }
-        guard !needsTurns || !segments.isEmpty || (recipe.kind == .vip && !vipTiles.isEmpty) else {
+        guard !needsTurns || !segments.isEmpty || ((recipe.kind == .vip || recipe.kind == .interview) && !vipTiles.isEmpty) else {
             throw Failure(description: "No speaker turns for this file; run Analyze so the recording knows who talks when.")
         }
         var notes: [String] = []
@@ -394,6 +406,52 @@ nonisolated enum CropRecipePlanner {
         let faces = Dictionary(uniqueKeysWithValues: tiles.map { ($0.index, faceFocus(of: $0, roster: roster)) })
         let faceBoxes = faces.compactMapValues { $0.faceBox }
         let faceCenters = faces.compactMapValues { $0.center }
+        if recipe.kind == .interview, interviewFeeds < 2, ref.isFullScreen {
+            func face(_ tile: PodcastTile) -> CGRect {
+                if let box = faceBoxes[tile.index], box.minX < 1, box.minY < 1 { return box }
+                // Phase 3 refines these bounds at shot starts. Until then a
+                // layout face centre (or the tile centre) supplies a small box.
+                let center = faceCenters[tile.index] ?? (x: tile.centerX, y: tile.centerY)
+                return CGRect(x: min(0.98, max(0, center.x - 0.01)),
+                              y: min(0.98, max(0, center.y - 0.01)), width: 0.02, height: 0.02)
+            }
+            let indices = vipTiles.map(\.index)
+            let otherFaces = tiles.filter { !indices.contains($0.index) }.map(face)
+            let rectangles = Dictionary(uniqueKeysWithValues: vipTiles.map { tile in
+                (tile.index, InterviewFocusPlanning.rects(vipFace: face(tile), otherFaces: otherFaces,
+                    sourceAspect: sourceAspect, canvasAspect: canvasAspect))
+            })
+            for tile in vipTiles {
+                if let note = rectangles[tile.index]?.note, !notes.contains(note) { notes.append(note) }
+            }
+            let moves = InterviewFocusPlanning.moves(segments: segments, vipTiles: indices, range: span, hold: hold)
+            let rotation = VIPRecipePlanning.events(segments: segments, tiles: tiles, roster: roster,
+                turns: turns, start: span.lowerBound, end: span.upperBound)
+            var path: [CameraPathKeyframe]
+            if vipTiles.count == 1, let pair = rectangles[vipTiles[0].index] {
+                path = InterviewFocusPlanning.path(moves: moves, tight: pair.tight, twoShot: pair.twoShot, length: length)
+            } else {
+                // Merge shot-kind changes with the existing VIP rotation, sharing
+                // one hold clock so their combined moves cannot twitch.
+                let times = Set(moves.map(\.time) + rotation.map(\.time)).sorted()
+                var shots: [(time: Double, shot: InterviewFocusPlanning.Shot)] = []
+                for boundary in times {
+                    let time = shots.last.map { max(boundary, $0.time + hold) } ?? span.lowerBound
+                    if !shots.isEmpty && time >= span.upperBound - VIPRotation.tail { break }
+                    guard let tile = rotation.last(where: { $0.time <= time })?.tile,
+                          let pair = rectangles[tile] else { continue }
+                    let kind = moves.last(where: { $0.time <= time })?.kind ?? .tight
+                    let still = InterviewFocusPlanning.inDeadZone(tight: pair.tight, twoShot: pair.twoShot)
+                    let rect = still || kind == .twoShot ? pair.twoShot : pair.tight
+                    if shots.last?.shot.rect == rect { continue }
+                    shots.append((time, .init(kind: kind, rect: rect)))
+                }
+                path = InterviewFocusPlanning.path(shots: shots, length: length)
+            }
+            if recipe.highlightTalker { notes.append("The talker is not outlined in Full Screen.") }
+            return Plan(layout: ref, slots: [Slot(subject: .vip, path: path,
+                talking: merged(segments.filter { indices.contains($0.talker) }.map { $0.start...$0.end }))], notes: notes)
+        }
         func rect(_ index: Int, area: ScreenCropArea) -> FreeCropRect? {
             guard let tile = tiles.first(where: { $0.index == index }) else { return nil }
             let bounds = area.bounds

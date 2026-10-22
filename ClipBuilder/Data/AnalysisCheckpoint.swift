@@ -30,6 +30,10 @@ nonisolated struct AnalysisCheckpoint: Codable, Sendable, Equatable {
     var runID: Int64?
     var newPeople: [DetectedNewPerson] = []
     var suggestedFilename: String?
+    /// The visual pipeline's people pass finished: the roster is in
+    /// `video_people` and `newPeople` holds what it found. Optional so
+    /// checkpoints written before the pass existed still decode.
+    var peoplePassDone: Bool?
     var transcriptDone = false
     var fightScoringDone = false
 
