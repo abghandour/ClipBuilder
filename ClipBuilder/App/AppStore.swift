@@ -23,6 +23,7 @@ import UniformTypeIdentifiers
 //   AppStore+Jobs.swift            AppJobs starters (camera path, ...)
 //   AppStore+ImageSearch.swift     image library search
 //   AppStore+ReelModels.swift      on-device reel models
+//   AppStore+AutoDriveUpload.swift source discovery queue and team source uploads
 //
 // Stored properties owned by those features live under "Feature state" below,
 // because Swift extensions cannot declare stored properties.
@@ -83,6 +84,8 @@ final class AppStore {
     var teamSyncCoordinator: TeamSyncCoordinator { teamSync.coordinator }
     let jobs = AppJobs()
     let googleDrive = GoogleDriveTransfers.shared
+    @ObservationIgnored var sourceDiscoveryTasks: [String: Task<Void, Never>] = [:]
+    @ObservationIgnored var didShowAutoDriveUploadNotice = false
     var database: Database?
 
     // Project workspace. Projects scope footage, scenes, timelines, and
@@ -1366,23 +1369,23 @@ final class AppStore {
     func scanSourceFolder() {
         guard let database else { return }
         let profile = activeProfile
-        let analyzer = analyzer
         let generation = profileGeneration
-        Task {
+        enqueueSourceDiscovery(profile: profile) {
             do {
-                let scan = try await analyzer.scanSourceFolder(profile: profile, database: database)
+                let scan = try await self.scanSourcesForAutoUpload(profile: profile, database: database)
+                guard generation == self.profileGeneration else { return }
                 if scan.discovered > 0 {
-                    appendLog(\.analysisLog, ["Discovered \(scan.discovered) new video(s)"])
+                    self.appendLog(\.analysisLog, ["Discovered \(scan.discovered) new video(s)"])
                 }
                 if scan.repaired > 0 {
-                    appendLog(\.analysisLog, ["Removed \(scan.repaired) duplicate registration(s) of files that were still copying"])
+                    self.appendLog(\.analysisLog, ["Removed \(scan.repaired) duplicate registration(s) of files that were still copying"])
                 }
-                refreshAll()
+                self.refreshAll()
                 // Files still arriving are registered once they stop changing;
                 // the folder watcher only sees the directory, not their growth.
-                if scan.settling > 0 { scheduleSettledRescan(generation: generation) }
+                if scan.settling > 0 { self.scheduleSettledRescan(generation: generation) }
             } catch {
-                presentError("Folder scan failed", error)
+                self.presentError("Folder scan failed", error)
             }
         }
     }
@@ -1403,37 +1406,48 @@ final class AppStore {
     /// catch them, but only after its debounce).
     func importVideos(_ urls: [URL]) {
         let videos = urls.filter { Analyzer.videoExtensions.contains($0.pathExtension.lowercased()) }
-        guard !videos.isEmpty else { return }
-        let folder = activeProfile.sourceFolderURL.standardizedFileURL
-        Task.detached {
-            var copied = 0
-            var alreadyThere: [String] = []
-            var failures: [String] = []
-            for url in videos {
-                do {
-                    if try Self.copyDestination(for: url, folder: folder).existed {
-                        alreadyThere.append(url.lastPathComponent)
-                    } else {
-                        copied += 1
+        guard !videos.isEmpty, let database else { return }
+        let profile = activeProfile
+        let folder = profile.sourceFolderURL.standardizedFileURL
+        let generation = profileGeneration
+        enqueueSourceDiscovery(profile: profile) {
+            let (copied, alreadyThere, failures) = await Task.detached(priority: .utility) {
+                var copied = 0
+                var alreadyThere: [String] = []
+                var failures: [String] = []
+                for url in videos {
+                    do {
+                        if try Self.copyDestination(for: url, folder: folder).existed {
+                            alreadyThere.append(url.lastPathComponent)
+                        } else {
+                            copied += 1
+                        }
+                    } catch {
+                        failures.append("\(url.lastPathComponent): \(error.userMessage)")
                     }
-                } catch {
-                    failures.append("\(url.lastPathComponent): \(error.userMessage)")
                 }
+                return (copied, alreadyThere, failures)
+            }.value
+            if copied > 0 {
+                self.appendLog(\.analysisLog, ["Added \(copied) video(s) to the Input folder"])
             }
-            await MainActor.run { [copied, alreadyThere, failures] in
-                if copied > 0 {
-                    self.appendLog(\.analysisLog, ["Added \(copied) video(s) to the Input folder"])
-                    self.scanSourceFolder()
+            do {
+                let scan = try await self.scanSourcesForAutoUpload(profile: profile, database: database)
+                if generation == self.profileGeneration {
+                    self.refreshAll()
+                    if scan.settling > 0 { self.scheduleSettledRescan(generation: generation) }
                 }
-                // Adding what is already here must say so, not do nothing.
-                if !alreadyThere.isEmpty {
-                    self.presentNotice(alreadyThere.count == 1 ? "Already in Sources" : "Already in Sources (\(alreadyThere.count))",
-                                       "\(Self.nameList(alreadyThere)) \(alreadyThere.count == 1 ? "is" : "are") already in the Input folder"
-                                       + (copied > 0 ? "; the other \(copied) \(copied == 1 ? "was" : "were") added." : ". Nothing was added."))
-                }
-                for failure in failures {
-                    self.presentError("Could not add \(failure)")
-                }
+            } catch {
+                self.presentError("Folder scan failed", error)
+            }
+            // Adding what is already here must say so, not do nothing.
+            if !alreadyThere.isEmpty {
+                self.presentNotice(alreadyThere.count == 1 ? "Already in Sources" : "Already in Sources (\(alreadyThere.count))",
+                                   "\(Self.nameList(alreadyThere)) \(alreadyThere.count == 1 ? "is" : "are") already in the Input folder"
+                                   + (copied > 0 ? "; the other \(copied) \(copied == 1 ? "was" : "were") added." : ". Nothing was added."))
+            }
+            for failure in failures {
+                self.presentError("Could not add \(failure)")
             }
         }
     }
@@ -1446,8 +1460,8 @@ final class AppStore {
         guard !inputs.isEmpty, let database else { return }
         let folder = activeProfile.sourceFolderURL.standardizedFileURL
         let profile = activeProfile
-        let analyzer = analyzer
-        Task {
+        let generation = profileGeneration
+        enqueueSourceDiscovery(profile: profile) {
             let copyResult = await Task.detached(priority: .utility) {
                 var paths: [String] = []
                 var failures: [String] = []
@@ -1462,7 +1476,7 @@ final class AppStore {
                 return (paths, failures)
             }.value
             do {
-                _ = try await analyzer.scanSourceFolder(profile: profile, database: database)
+                let scan = try await self.scanSourcesForAutoUpload(profile: profile, database: database, projectID: projectID)
                 let normalized = Set(copyResult.0.map { URL(fileURLWithPath: $0).standardizedFileURL.path })
                 let matches = try await database.fetchVideos().filter {
                     normalized.contains($0.url.standardizedFileURL.path)
@@ -1472,18 +1486,21 @@ final class AppStore {
                 let duplicates = matches.filter { inProject.contains($0.id) }
                 let additions = matches.filter { !inProject.contains($0.id) }
                 try await database.assignVideos(additions.map(\.id), to: projectID)
-                refreshProjectCatalog()
-                if activeProjectID == projectID { refreshAll() }
+                if generation == self.profileGeneration {
+                    self.refreshProjectCatalog()
+                    if self.activeProjectID == projectID { self.refreshAll() }
+                    if scan.settling > 0 { self.scheduleSettledRescan(generation: generation) }
+                }
                 if !duplicates.isEmpty {
                     let names = duplicates.map(\.filename)
-                    presentNotice(names.count == 1 ? "Already in This Project" : "Already in This Project (\(names.count))",
+                    self.presentNotice(names.count == 1 ? "Already in This Project" : "Already in This Project (\(names.count))",
                                   "\(Self.nameList(names)) \(names.count == 1 ? "is" : "are") already in the project"
                                   + (additions.isEmpty ? ". Nothing was added." : "; the other \(additions.count) \(additions.count == 1 ? "was" : "were") added."))
                 }
             } catch {
-                presentError("Could not add files to the project", error)
+                self.presentError("Could not add files to the project", error)
             }
-            for failure in copyResult.1 { presentError("Could not add \(failure)") }
+            for failure in copyResult.1 { self.presentError("Could not add \(failure)") }
         }
     }
 

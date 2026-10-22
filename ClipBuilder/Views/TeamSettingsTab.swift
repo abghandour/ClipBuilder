@@ -31,7 +31,7 @@ struct TeamSettingsTab: View {
                     Text(message).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
                 }
             }
-            if team.signedIn {
+            if team.signedIn || team.attached {
                 if !team.attached {
                     Section("Create or join a team") {
                         TextField("Team name", text: $teamName)
@@ -46,12 +46,13 @@ struct TeamSettingsTab: View {
                     if team.attached {
                         LabeledContent("Profile", value: store.activeProfile.profileName)
                         Text(team.status).foregroundStyle(.secondary)
+                        AutoDriveUploadToggle()
                         Toggle("Pause sync", isOn: $team.paused)
                             .onChange(of: team.paused) { _, value in team.setPaused(value) }
                             .disabled(team.replacingProfile)
                         Button("Sync Now") { team.syncNow() }
                             .disabled(team.paused || team.syncing || team.replacingProfile)
-                        Text("Sync is manual: nothing uploads or downloads until you press Sync Now here or the sync button in the title bar. The status shows how many local changes are waiting.")
+                        Text("Team Sync is manual: share profile changes and analysis with Sync Now here or in the title bar. New source videos upload separately to Google Drive when automatic upload is on. The status shows how many local changes are waiting.")
                             .font(.caption).foregroundStyle(.secondary)
                     } else if !team.teams.isEmpty {
                         Picker("Team", selection: $team.selectedTeamID) {
@@ -73,7 +74,7 @@ struct TeamSettingsTab: View {
                             .foregroundStyle(.secondary)
                     }
                 }
-                if team.selectedTeamID != nil {
+                if team.signedIn, team.selectedTeamID != nil {
                     Section("Members") {
                         ForEach(team.members) { member in
                             LabeledContent(member.email, value: member.role.capitalized)

@@ -53,6 +53,22 @@ nonisolated final class CountingDriveChecksum: @unchecked Sendable {
 
 @Suite("Google Drive")
 struct GoogleDriveTests {
+    @Test("Automatic source upload defaults on and persists independently per profile")
+    func autoUploadSetting() async throws {
+        let first = try TempDatabase()
+        let second = try TempDatabase()
+        #expect(try await first.database.driveSetting(AutoDriveUpload.settingKey) == nil)
+        #expect(try await first.database.autoUploadNewSourcesEnabled())
+        try await first.database.setAutoUploadNewSourcesEnabled(false)
+        #expect(try await first.database.driveSetting(AutoDriveUpload.settingKey) == "false")
+        let reopened = try Database(path: first.path)
+        #expect(try await reopened.autoUploadNewSourcesEnabled() == false)
+        #expect(try await second.database.autoUploadNewSourcesEnabled())
+        try await reopened.setAutoUploadNewSourcesEnabled(true)
+        #expect(try await first.database.driveSetting(AutoDriveUpload.settingKey) == "true")
+        #expect(try await first.database.autoUploadNewSourcesEnabled())
+    }
+
     private let profile = "Drive test"
     private func auth(_ transport: any DriveTransport, issued: Date = Date()) throws -> GoogleDriveAuth {
         let credentials = FakeDriveCredentials()

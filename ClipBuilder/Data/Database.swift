@@ -936,6 +936,14 @@ actor Database {
 
 // MARK: - Google Drive (media only; profile preferences stay in this local DB)
 extension Database {
+    func autoUploadNewSourcesEnabled() throws -> Bool {
+        AutoDriveUpload.isEnabled(setting: try driveSetting(AutoDriveUpload.settingKey))
+    }
+
+    func setAutoUploadNewSourcesEnabled(_ enabled: Bool) throws {
+        try setDriveSetting(AutoDriveUpload.settingKey, value: enabled ? "true" : "false")
+    }
+
     func driveSetting(_ key: String) throws -> String? {
         try connection.query("SELECT value FROM drive_settings WHERE key = ?", [.text(key)]).first?["value"]?.stringValue
     }

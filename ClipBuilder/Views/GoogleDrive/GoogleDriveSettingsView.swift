@@ -32,6 +32,9 @@ struct GoogleDriveSettingsView: View {
                 }
                 if let error = drive.connectionError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             }
+            Section("This profile") {
+                AutoDriveUploadToggle()
+            }
             if AssetSyncSettingsSection.isVisible(connection: drive.states[profile]) {
                 AssetSyncSettingsSection()
             }
