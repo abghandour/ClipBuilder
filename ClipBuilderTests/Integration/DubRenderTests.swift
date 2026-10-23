@@ -38,7 +38,7 @@ struct DubRenderTests {
         let original = try await renderer.render(document: document, scenes: [], profile: Fixtures.brand(),
             database: temp.database, preview: true, emit: { _ in })
         outputs.append(original.url)
-        document.dub = DubSettings(language: "en-US")
+        document.dub = DubSettings(language: "en-US", replaceOriginal: false)
         let messages = Mutex<[String]>([])
         let dubbed = try await renderer.render(document: document, scenes: [], profile: Fixtures.brand(),
             database: temp.database, preview: true, emit: { line in messages.withLock { $0.append(line) } })
@@ -74,6 +74,8 @@ struct DubRenderTests {
         let clean = try await decode(replaced.url, in: temp.directory.url)
         #expect(try await Self.amplitude(clean, frequency: 440, start: 1.2, duration: 0.6) < 0.005)
         #expect(try await Self.amplitude(clean, frequency: 1000, start: 1.2, duration: 0.6) > 0.04)
+        // Muted means the whole source track, background between lines included.
+        #expect(try await Self.amplitude(clean, frequency: 440, start: 0.3, duration: 0.3) < 0.005)
     }
 
     private func decode(_ video: URL, in directory: URL) async throws -> URL {

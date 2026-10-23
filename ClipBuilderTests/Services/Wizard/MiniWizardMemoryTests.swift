@@ -26,6 +26,19 @@ struct MiniWizardMemoryTests {
         #expect(MiniWizardMemory.field(forKey: "wizard.length", profileName: "First") == nil)
     }
 
+    @Test func keptExchangesStartEmptyAndAreRememberedPerProfileAndVideo() throws {
+        let name = "QAKept-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: name))
+        defer { defaults.removePersistentDomain(forName: name) }
+        #expect(MiniWizardMemory.qaKept(profileName: "A", videoID: 7, defaults: defaults).isEmpty)
+        MiniWizardMemory.saveQAKept([3, 1], profileName: "A", videoID: 7, defaults: defaults)
+        #expect(MiniWizardMemory.qaKept(profileName: "A", videoID: 7, defaults: defaults) == [1, 3])
+        #expect(MiniWizardMemory.qaKept(profileName: "A", videoID: 8, defaults: defaults).isEmpty)
+        #expect(MiniWizardMemory.qaKept(profileName: "B", videoID: 7, defaults: defaults).isEmpty)
+        MiniWizardMemory.saveQAKept([], profileName: "A", videoID: 7, defaults: defaults)
+        #expect(defaults.object(forKey: MiniWizardMemory.qaKeptKey(profileName: "A", videoID: 7)) == nil)
+    }
+
     @Test func rememberedVideoMustStillBeAnalyzedAndInTheCurrentProjectList() throws {
         var video = Fixtures.video()
         video.analyzedAt = "2026-10-03"

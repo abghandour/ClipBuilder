@@ -11,7 +11,26 @@ actor DubSynthesizer {
         var identifier: String
         var language: String
         var name: String
+        /// Higher is better: 3 Siri/Premium, 2 Enhanced, 1 compact, 0 Eloquence.
+        var quality: Int = 1
+        var gender: DubVoiceGender = .unknown
         var id: String { identifier }
+
+        /// Novelty voices (Bells, Boing, Zarvox…) never dub anyone.
+        static func isNovelty(_ identifier: String) -> Bool {
+            identifier.hasPrefix("com.apple.speech.synthesis.voice.")
+        }
+
+        static func rank(identifier: String, quality: AVSpeechSynthesisVoiceQuality) -> Int {
+            if identifier.contains(".siri.") || quality == .premium { return 3 }
+            if quality == .enhanced { return 2 }
+            if identifier.contains(".eloquence.") { return 0 }
+            return 1
+        }
+
+        var qualityLabel: String? {
+            SiriDubVoices.isSiri(identifier) ? "Siri" : ["Eloquence", nil, "Enhanced", "Premium"][min(3, max(0, quality))]
+        }
     }
 
     static let shared = DubSynthesizer()
@@ -20,13 +39,23 @@ actor DubSynthesizer {
     }
 
     nonisolated static func installedVoices(language: String? = nil) -> [Voice] {
-        AVSpeechSynthesisVoice.speechVoices().filter { voice in
+        let voices = AVSpeechSynthesisVoice.speechVoices().filter { voice in
             guard let language else { return true }
             let requested = language.replacingOccurrences(of: "_", with: "-").lowercased()
             let available = voice.language.lowercased()
             return available == requested || (!requested.contains("-") && available.hasPrefix(requested + "-"))
-        }.map { Voice(identifier: $0.identifier, language: $0.language, name: $0.name) }
-            .sorted { ($0.language, $0.identifier) < ($1.language, $1.identifier) }
+        }.filter { !Voice.isNovelty($0.identifier) }.map {
+            Voice(identifier: $0.identifier, language: $0.language, name: $0.name,
+                  quality: Voice.rank(identifier: $0.identifier, quality: $0.quality),
+                  gender: $0.gender == .male ? .male : $0.gender == .female ? .female : DubVoiceGender.inferred(voiceName: $0.name))
+        }
+        return ranked(voices)
+    }
+
+    /// Best voices first within a language, so round-robin assignment hands
+    /// the Siri, Premium and Enhanced voices out before the compact ones.
+    nonisolated static func ranked(_ voices: [Voice]) -> [Voice] {
+        voices.sorted { ($0.language, -$0.quality, $0.name, $0.identifier) < ($1.language, -$1.quality, $1.name, $1.identifier) }
     }
 
     nonisolated static func cacheName(language: String, voice: String, rate: Double, text: String) throws -> String {
@@ -44,6 +73,9 @@ actor DubSynthesizer {
 
     func synthesize(text: String, voice: String, rate: Double) async throws -> URL {
         try Task.checkCancellation()
+        if SiriDubVoices.isSiri(voice) {
+            return try await SiriDubSynthesizer.synthesize(text: text, voice: voice, rate: rate, directory: directory)
+        }
         guard let installed = AVSpeechSynthesisVoice(identifier: voice) else {
             throw ScriptError.invalid("The selected Mac voice is not installed: \(voice)")
         }
@@ -92,7 +124,9 @@ actor DubSynthesizer {
         return output
     }
 
-    func duration(of url: URL) throws -> Double {
+    func duration(of url: URL) throws -> Double { try Self.fileDuration(of: url) }
+
+    nonisolated static func fileDuration(of url: URL) throws -> Double {
         let file = try AVAudioFile(forReading: url)
         return Double(file.length) / file.processingFormat.sampleRate
     }

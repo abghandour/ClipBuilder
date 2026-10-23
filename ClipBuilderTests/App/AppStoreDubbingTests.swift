@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import Clip_Builder
 
@@ -45,6 +46,33 @@ struct AppStoreDubbingTests {
         #expect(store.builder.document.dub?.language == "pt-BR")
         #expect(store.builder.document.dubLines?.first?.audio == "stub.caf")
         #expect(store.builder.document.videoTrack == before.videoTrack)
+    }
+
+    @Test func updateRefitsChangedSpeakerAndVoiceLinesOnly() async throws {
+        let store = store()
+        let id = try #require(store.dubTimeline(language: "pt-BR", prepare: Self.prepare))
+        let review = try await finish(store, id: id)
+        var lines = review.prepared.lines
+        var settings = review.prepared.settings
+        // The one line moves from "unknown" to the guest; the guest gets the second voice.
+        lines[0].speakerKey = "guest"
+        settings.voices["guest"] = "second"
+        let synthesized = Mutex<[String]>([])
+        let speech = DubPreparation.Speech(
+            voices: { _ in [.init(identifier: "stub", language: "pt-BR", name: "Stub"), .init(identifier: "second", language: "pt-BR", name: "Second")] },
+            synthesize: { _, voice, _ in synthesized.withLock { $0.append(voice) }; return URL(fileURLWithPath: "/tmp/\(voice).caf") },
+            duration: { _ in 1 })
+        store.updateDubReview(review, jobID: id, lines: lines, settings: settings, speech: speech)
+        let updated = try await finish(store, id: try #require(store.jobs.items.first { $0.title == "Update dub lines" }?.id))
+        #expect(updated.prepared.lines[0].speakerKey == "guest" && updated.prepared.lines[0].voice == "second")
+        #expect(updated.prepared.lines[0].audio == "second.caf")
+        #expect(updated.prepared.settings.voices["guest"] == "second")
+        #expect(synthesized.withLock { $0 } == ["second"])
+        // Nothing changed: no synthesis, lines kept.
+        synthesized.withLock { $0 = [] }
+        store.updateDubReview(updated, jobID: id, lines: updated.prepared.lines, settings: updated.prepared.settings, speech: speech)
+        let same = try await finish(store, id: try #require(store.jobs.items.last { $0.title == "Update dub lines" }?.id))
+        #expect(same.prepared.lines == updated.prepared.lines && synthesized.withLock { $0 }.isEmpty)
     }
 
     @Test func cancelAndStaleReviewNeverChangeTheDocument() async throws {

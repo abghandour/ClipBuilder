@@ -18,13 +18,16 @@ struct DubMixerTests {
     @Test func overlayDucksOnlyLineWindowsWithPointFifteenRamps() {
         let line = DubLine(clipUID: UUID(), speakerKey: "unknown", voice: "voice", text: "Hello",
             sourceStart: 0, sourceEnd: 2, start: 1, duration: 2)
-        var settings = DubSettings(language: "en-US")
+        var settings = DubSettings(language: "en-US", replaceOriginal: false)
         let envelope = "max(0\\,min(1\\,min((t-0.850000)/0.150000\\,(3.150000-t)/0.150000)))"
         #expect(DubMixer.overlayFilter(lines: [line], settings: settings) ==
             "[0:a]volume='1-0.850000*(\(envelope))':eval=frame[orig];" +
             "[orig][1:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]")
         settings.replaceOriginal = true
-        #expect(DubMixer.overlayFilter(lines: [line], settings: settings).contains("1-1.000000*"))
+        #expect(DubMixer.overlayFilter(lines: [line], settings: settings) ==
+            "[0:a]volume='0.0':eval=frame[orig];" +
+            "[orig][1:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]")
+        #expect(DubSettings(language: "en-US").replaceOriginal)
     }
 
     @Test func renderWindowRebasesSpeechAndTrimsElapsedAudioBeforeTempo() throws {
@@ -50,7 +53,7 @@ struct DubMixerTests {
             overlays: [], settings: RenderSettings(), encoder: [], dub: DubSettings(language: "en-US"), dubLines: [line])
         let changes: [(inout RenderFinishingKey) -> Void] = [
             { $0.dub?.enabled = false }, { $0.dub?.language = "pt-BR" },
-            { $0.dub?.originalLevel = 0.3 }, { $0.dub?.replaceOriginal = true },
+            { $0.dub?.originalLevel = 0.3 }, { $0.dub?.replaceOriginal = false },
             { $0.dub?.voices["host"] = "other" }, { $0.dubLines?[0].text = "Goodbye" },
             { $0.dubLines?[0].voice = "other" }, { $0.dubLines?[0].rate = 1.2 },
             { $0.dubLines?[0].stretch = 1.1 }, { $0.dubLines?[0].start = 2 },

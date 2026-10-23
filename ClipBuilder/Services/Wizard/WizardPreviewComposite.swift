@@ -285,7 +285,10 @@ nonisolated enum WizardPreviewComposite {
         let areas = cells.map { cell in
             let rect = CGRect(x: cell.area.minX * canvas.width, y: cell.area.minY * canvas.height,
                               width: cell.area.width * canvas.width, height: cell.area.height * canvas.height)
-            let person = cell.person
+            // A planned cell whose feed maps to nobody (saturated portraits,
+            // no tile owner) still shows the scene's resolved person, the way
+            // the single-feed path does, instead of the sample name.
+            let person = cell.person ?? (cells.count == 1 || cell.isTalking ? scene.person : nil)
             let key = person?.key ?? "preview"
             names.append(.init(key: key, name: person?.tagName ?? "Alex Morgan", role: person?.descriptor ?? "Guest"))
             let source = visibleSource(cell.source, frame: scene.sourceSize, canvas: rect.size)

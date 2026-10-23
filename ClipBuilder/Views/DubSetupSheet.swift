@@ -5,11 +5,11 @@ struct DubSetupSheet: View {
     @Environment(\.dismiss) private var dismiss
     @State private var language: String?
     @State private var originalLevel = 0.15
-    @State private var replaceOriginal = false
+    @State private var replaceOriginal = true
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Dub with Mac voices").font(.title3.bold())
+            Text("Dub with \(store.dubEngine.title)").font(.title3.bold())
             DubLanguagePicker(language: $language)
             HStack {
                 Text("Original level").lineLimit(1).fixedSize()
@@ -19,7 +19,7 @@ struct DubSetupSheet: View {
                 Text(originalLevel, format: .percent.precision(.fractionLength(0)))
                     .monospacedDigit().frame(width: 44)
             }
-            Toggle("Replace original speech", isOn: $replaceOriginal)
+            Toggle("Mute original audio (speech and background)", isOn: $replaceOriginal)
             Text("Review each line before applying the dub. Playback starts only when you press Play.")
                 .font(.caption).foregroundStyle(.secondary)
             HStack {

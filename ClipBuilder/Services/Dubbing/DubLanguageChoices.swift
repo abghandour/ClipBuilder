@@ -19,10 +19,17 @@ nonisolated enum DubLanguageChoices {
         Locale.current.localizedString(forIdentifier: code) ?? code
     }
 
-    static func summary(_ code: String) -> String {
+    static func summary(_ code: String) -> String { "\(languageName(code)) dub" }
+
+    /// Dubbed reels are captioned in the dub language.
+    static func captionSummary(_ code: String) -> String { "\(languageName(code)) captions" }
+
+    static func languageName(_ code: String) -> String {
         let language = code.split(whereSeparator: { $0 == "-" || $0 == "_" }).first.map(String.init) ?? code
-        return "\(Locale.current.localizedString(forLanguageCode: language) ?? code) dub"
+        return Locale.current.localizedString(forLanguageCode: language) ?? code
     }
 
-    @concurrent static func voices() async -> [DubSynthesizer.Voice] { DubSynthesizer.installedVoices() }
+    @concurrent static func voices(engine: DubVoiceEngine? = nil) async -> [DubSynthesizer.Voice] {
+        engine == .siri ? await SiriDubVoices.readyVoices() : DubSynthesizer.installedVoices()
+    }
 }

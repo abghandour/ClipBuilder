@@ -21,6 +21,21 @@ struct WizardPreviewCompositeTests {
         #expect(WizardPreviewFraming.fallbackPerson(roster: roster, people: [unnamed]) == nil)
     }
 
+    @Test func plannedCellWithNoFeedOwnerTagsTheScenePerson() {
+        let guest = PersonRecord(id: 2, key: "guest", name: "Tanner Boser", descriptor: "Press")
+        var scene = WizardPreviewComposite.Scene(videoURL: URL(fileURLWithPath: "/tmp/preview.mp4"),
+            time: 1, faceRect: nil, person: guest, captionText: nil, words: nil)
+        let cell = WizardPreviewComposite.Cell(source: WizardPreviewFraming.full, area: WizardPreviewFraming.full)
+        scene.framing = .cells([cell])
+        let single = WizardPreviewComposite.tagGeometry(scene: scene, canvas: CGSize(width: 1000, height: 1000))
+        #expect(single.people.map(\.name) == ["Tanner Boser"] && single.people.map(\.role) == ["Press"])
+        // Two unowned cells: only the talking one borrows the scene person.
+        var talking = cell; talking.isTalking = true
+        scene.framing = .cells([cell, talking])
+        let pair = WizardPreviewComposite.tagGeometry(scene: scene, canvas: CGSize(width: 1000, height: 1000))
+        #expect(pair.people.map(\.name) == ["Alex Morgan", "Tanner Boser"])
+    }
+
     @Test func vipPreviewShowsGuestWhileHostTalks() throws {
         var video = Fixtures.video()
         video.podcastLayout = PodcastLayout.splitHorizontal.rawValue

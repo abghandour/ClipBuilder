@@ -197,7 +197,10 @@ nonisolated struct MiniWizardFlow: Sendable {
             overlays.append("Safe area: " + platforms.map(\.shortLabel).joined(separator: ", "))
         }
         if let name = settings.overlayName { overlays.append("Overlay \(name)") }
-        if settings.captions { overlays.append(settings.englishCaptions && showsCaptionLanguage ? "English captions" : "Captions") }
+        if settings.captions {
+            overlays.append(settings.dub ? DubLanguageChoices.captionSummary(settings.dubLanguage ?? DubLanguageChoices.defaultLanguage)
+                : settings.englishCaptions && showsCaptionLanguage ? "English captions" : "Captions")
+        }
         if settings.nameTags && showsNameTags { overlays.append("Name tags") }
         if settings.watermark {
             let name = settings.watermarkOverlay?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""

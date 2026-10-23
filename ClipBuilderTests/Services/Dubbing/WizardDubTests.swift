@@ -3,13 +3,15 @@ import Testing
 @testable import Clip_Builder
 
 struct WizardDubTests {
-    @Test func captionsDefaultToDubLanguageAndExplicitChoiceWins() throws {
+    @Test func captionsAlwaysFollowTheDubLanguage() throws {
         var options = WizardOptions()
         #expect(options.effectiveCaptionLanguage == nil)
-        options.dubLanguage = "pt-BR"
-        #expect(options.effectiveCaptionLanguage == "pt-BR")
         options.captionLanguage = "en"
         #expect(options.effectiveCaptionLanguage == "en")
+        options.dubLanguage = ""
+        #expect(options.effectiveCaptionLanguage == "en")
+        options.dubLanguage = "pt-BR"
+        #expect(options.effectiveCaptionLanguage == "pt-BR")
         let step = try JSONDecoder().decode(WizardStep2Options.self, from: JSONEncoder().encode(options.step2))
         #expect(step.dubLanguage == "pt-BR")
         #expect(WizardOptions.merge(step1: options.step1, step2: step).dubLanguage == "pt-BR")

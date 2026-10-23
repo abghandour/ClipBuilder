@@ -16,12 +16,12 @@ final class DubReviewPlayback {
         lineID = nil
     }
 
-    func play(_ line: DubLine, prepared: DubPreparation.Prepared) async {
+    func play(_ line: DubLine, prepared: DubPreparation.Prepared, withVideo: Bool = true) async {
         stop()
         let token = request
         error = nil
         do {
-            let item = try await DubPreview.item(for: line, prepared: prepared)
+            let item = try await DubPreview.item(for: line, prepared: prepared, includeVideo: withVideo)
             guard token == request, !Task.isCancelled else { return }
             let player = AVPlayer(playerItem: item)
             self.player = player

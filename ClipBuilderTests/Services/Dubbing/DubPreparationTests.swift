@@ -40,6 +40,28 @@ struct DubPreparationTests {
         #expect(remembered.voices["unknown"] == "two")
     }
 
+    @Test func voicesNeverCrossGenderWhenOneOfTheSpeakersGenderIsInstalled() throws {
+        typealias Voice = DubSynthesizer.Voice
+        let installed = [Voice(identifier: "siri-f", language: "pt-BR", name: "Voice 2", quality: 3, gender: .female),
+                         Voice(identifier: "felipe", language: "pt-BR", name: "Felipe", quality: 2, gender: .male),
+                         Voice(identifier: "luciana", language: "pt-BR", name: "Luciana", quality: 2, gender: .female),
+                         Voice(identifier: "eddy", language: "pt-BR", name: "Eddy", quality: 0, gender: .male)]
+        let lines = [line(speaker: "host"), line(speaker: "guest"), line(speaker: "coach"), line(speaker: "fan")]
+        let genders: [String: DubVoiceGender] = ["host": .male, "guest": .male, "coach": .male, "fan": .female]
+        // Remembered female voice for a man is replaced; men round-robin the male pool, best first.
+        let result = try DubPreparation.assigningVoices(lines: lines,
+            settings: .init(language: "pt-BR", voices: ["host": "luciana"]), installed: installed, genders: genders)
+        #expect(result.voices == ["host": "felipe", "guest": "eddy", "coach": "felipe", "fan": "siri-f"])
+        // No voice of the gender installed: any voice rather than none.
+        let onlyWomen = Array(installed.filter { $0.gender == .female })
+        #expect(try DubPreparation.assigningVoices(lines: [line(speaker: "host")], settings: .init(language: "pt-BR"),
+            installed: onlyWomen, genders: genders).voices["host"] == "siri-f")
+        #expect(DubVoiceGender.inferred(from: "Tall muscular male fighter with dark blonde hair") == .male)
+        #expect(DubVoiceGender.inferred(from: "Woman in a red jacket, short hair") == .female)
+        #expect(DubVoiceGender.inferred(from: "Official, black UFC polo shirt") == .unknown)
+        #expect(DubVoiceGender.inferred(voiceName: "Grandma") == .female && DubVoiceGender.inferred(voiceName: "Rocko") == .male)
+    }
+
     @Test func fitRemeasuresCappedSpeechInsteadOfAssumingLinearRate() async throws {
         let stub = SpeechStub(normal: 3, accelerated: 2.8)
         let result = try await DubPreparation.fit(line(), slot: 2, overlapping: false, speech: stub.speech)
@@ -120,5 +142,22 @@ extension DubPreparationTests {
         #expect(resolved.videoTrack.count == 1)
         #expect(resolved.videoTrack[0].sourceStart == 10 && resolved.videoTrack[0].sourceEnd == 14)
         #expect(resolved.videoTrack[0].startTime == 0 && resolved.videoTrack[0].duration == 4)
+    }
+
+    @Test func voicesRankSiriPremiumEnhancedCompactThenEloquenceAndDropNovelty() {
+        typealias Voice = DubSynthesizer.Voice
+        #expect(Voice.rank(identifier: "com.apple.siri.natural.Aaron", quality: .enhanced) == 3)
+        #expect(Voice.rank(identifier: "com.apple.voice.premium.pt-BR.Luciana", quality: .premium) == 3)
+        #expect(Voice.rank(identifier: "com.apple.voice.enhanced.pt-BR.Felipe", quality: .enhanced) == 2)
+        #expect(Voice.rank(identifier: "com.apple.voice.compact.pt-BR.Luciana", quality: .default) == 1)
+        #expect(Voice.rank(identifier: "com.apple.eloquence.pt-BR.Eddy", quality: .default) == 0)
+        #expect(Voice.isNovelty("com.apple.speech.synthesis.voice.Zarvox") && !Voice.isNovelty("com.apple.eloquence.pt-BR.Eddy"))
+        let ranked = DubSynthesizer.ranked([
+            Voice(identifier: "eddy", language: "pt-BR", name: "Eddy", quality: 0),
+            Voice(identifier: "luciana", language: "pt-BR", name: "Luciana", quality: 1),
+            Voice(identifier: "felipe", language: "pt-BR", name: "Felipe", quality: 2),
+            Voice(identifier: "siri", language: "pt-BR", name: "Voice 1", quality: 3)])
+        #expect(ranked.map(\.identifier) == ["siri", "felipe", "luciana", "eddy"])
+        #expect(ranked.map(\.qualityLabel) == ["Premium", "Enhanced", nil, "Eloquence"])
     }
 }

@@ -109,19 +109,24 @@ extension WizardView {
                     CaptionStylePicker(selection: captionChoice(\.captionStyleID), profile: store.activeProfile)
                 }
                 .formDependent()
-                WizardControlRow("Caption language") {
-                    Picker("Caption language", selection: $captionLanguage) {
-                        Text("Original audio language").tag("")
-                        ForEach(store.activeProfile.captionLanguages, id: \.self) { language in
-                            Text(Locale.current.localizedString(forIdentifier: language) ?? language)
-                                .tag(language)
+                if !dubLanguage.isEmpty {
+                    FormCaption("Captions follow the dub language (\(DubLanguageChoices.name(dubLanguage))).")
+                        .formDependent()
+                } else {
+                    WizardControlRow("Caption language") {
+                        Picker("Caption language", selection: $captionLanguage) {
+                            Text("Original audio language").tag("")
+                            ForEach(store.activeProfile.captionLanguages, id: \.self) { language in
+                                Text(Locale.current.localizedString(forIdentifier: language) ?? language)
+                                    .tag(language)
+                            }
                         }
                     }
-                }
-                .fieldHelp(WizardFieldHelp.captionLanguage)
-                .formDependent()
-                FieldCaption(WizardFieldHelp.captionLanguage)
+                    .fieldHelp(WizardFieldHelp.captionLanguage)
                     .formDependent()
+                    FieldCaption(WizardFieldHelp.captionLanguage)
+                        .formDependent()
+                }
             }
         }
 

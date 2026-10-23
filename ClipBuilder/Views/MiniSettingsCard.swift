@@ -116,7 +116,9 @@ struct MiniSettingsCard: View {
                 MiniRow("Caption style") {
                     CaptionStylePicker(selection: $settings.captionStyleID, profile: store.activeProfile)
                 }
-                if flow.showsCaptionLanguage {
+                if settings.dub {
+                    FormCaption("Captions follow the dub language.")
+                } else if flow.showsCaptionLanguage {
                     MiniRow("Caption language") {
                         HStack(spacing: Theme.spaceS) {
                             Picker("Caption language", selection: $settings.englishCaptions) {

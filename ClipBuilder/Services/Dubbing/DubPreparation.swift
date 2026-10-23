@@ -10,6 +10,14 @@ nonisolated enum DubPreparation {
         static let mac = Speech(voices: { DubSynthesizer.installedVoices(language: $0) },
             synthesize: { try await DubSynthesizer.shared.synthesize(text: $0, voice: $1, rate: $2) },
             duration: { try await DubSynthesizer.shared.duration(of: $0) })
+
+        /// Siri voices that are downloaded and have their shortcut. Synthesis
+        /// goes through the shared synthesizer, which routes Siri identifiers
+        /// to the shortcut and keeps one cache folder for the mixer.
+        static let siri = Speech(voices: { await SiriDubVoices.readyVoices(language: $0) },
+            synthesize: mac.synthesize, duration: mac.duration)
+
+        static func forEngine(_ engine: DubVoiceEngine?) -> Speech { engine == .siri ? siri : mac }
     }
 
     struct Prepared: Equatable, Sendable {
@@ -20,6 +28,10 @@ nonisolated enum DubPreparation {
         var slots: [UUID: Double]
         var overlaps: Set<UUID>
         var speakerNames: [String: String] = [:]
+        /// People seen in the dubbed videos, for correcting who says a line.
+        var speakerChoices: [String] = []
+        /// Speaker key → gender from the person's descriptor; voices must match it.
+        var speakerGenders: [String: DubVoiceGender] = [:]
     }
 
     static func resolvedDocument(_ document: TimelineDocument, scenes: [SceneRecord]) -> TimelineDocument {
@@ -71,6 +83,7 @@ nonisolated enum DubPreparation {
         }
         var rows: [UUID: [TranscriptRow]] = [:]
         var turns: [UUID: [SpeakerTurn]] = [:]
+        var choices: [String] = []
         for videoID in clipsByVideo.keys.sorted() {
             try Task.checkCancellation()
             let clips = clipsByVideo[videoID] ?? []
@@ -82,27 +95,42 @@ nonisolated enum DubPreparation {
                     guard let start = clip.sourceStart, let end = clip.sourceEnd, end > start else { return nil }
                     return start..<end
                 }, language: settings.language, ai: ai, database: database, onDevice: onDevice, log: { log($0) })
-            let speakers = try await database.fetchSpeakerTurns(videoID: videoID)
+            let roster = try await database.fetchVideoPeople(videoID: videoID)
+            for person in roster where !person.key.isEmpty && !choices.contains(person.key) { choices.append(person.key) }
+            let speakers = DubPlanning.namingTurns(try await database.fetchSpeakerTurns(videoID: videoID), roster: roster)
             for clip in clips { rows[clip.uid] = translated; turns[clip.uid] = speakers }
         }
+        let people = try await database.fetchPeople()
+        let genders = Dictionary(uniqueKeysWithValues: people.map { ($0.key, DubVoiceGender.inferred(from: $0.descriptor)) })
         var prepared = try await synthesize(document: document, rows: rows, turns: turns,
-                                             settings: settings, speech: speech, log: log)
-        prepared.speakerNames = Dictionary(uniqueKeysWithValues: try await database.fetchPeople().map { ($0.key, $0.name) })
+                                             settings: settings, speech: speech, genders: genders, log: log)
+        prepared.speakerNames = Dictionary(uniqueKeysWithValues: people.map { ($0.key, $0.displayName) })
+        prepared.speakerChoices = choices
+        prepared.speakerGenders = genders
         return prepared
     }
 
+    /// Best installed voices go out first (they arrive ranked), one per
+    /// speaker, round-robin within the speaker's gender: a male speaker never
+    /// gets a female voice or the reverse, even a remembered one, as long as a
+    /// voice of his or her gender is installed. Unknown genders use any voice.
     static func assigningVoices(lines: [DubLine], settings: DubSettings,
-                               installed: [DubSynthesizer.Voice]) throws -> DubSettings {
+                               installed: [DubSynthesizer.Voice],
+                               genders: [String: DubVoiceGender] = [:]) throws -> DubSettings {
         guard !installed.isEmpty else {
             throw ScriptError.invalid("Install voices in System Settings › Accessibility › Spoken Content")
         }
         var result = settings
-        var next = 0
+        var next: [DubVoiceGender: Int] = [:]
         var assigned: Set<String> = []
         for key in lines.map(\.speakerKey) where assigned.insert(key).inserted {
-            if !installed.contains(where: { $0.identifier == result.voices[key] }) {
-                result.voices[key] = installed[next % installed.count].identifier
-                next += 1
+            let gender = genders[key] ?? .unknown
+            var pool = installed.filter { gender == .unknown || $0.gender == gender }
+            if pool.isEmpty { pool = installed }
+            if !pool.contains(where: { $0.identifier == result.voices[key] }) {
+                let index = next[gender, default: 0]
+                result.voices[key] = pool[index % pool.count].identifier
+                next[gender] = index + 1
             }
         }
         return result
@@ -111,10 +139,15 @@ nonisolated enum DubPreparation {
     @concurrent
     static func synthesize(document: TimelineDocument, rows: [UUID: [TranscriptRow]],
                            turns: [UUID: [SpeakerTurn]], settings: DubSettings, speech: Speech = .mac,
+                           genders: [String: DubVoiceGender] = [:],
                            log: @escaping @Sendable (String) -> Void = { _ in }) async throws -> Prepared {
         var lines = DubPlanning.lines(document: document, rows: rows, turns: turns, settings: settings)
         guard !lines.isEmpty else { throw ScriptError.invalid("No translated speech in this timeline's audible clips.") }
-        let settings = try assigningVoices(lines: lines, settings: settings, installed: await speech.voices(settings.language))
+        let installed = await speech.voices(settings.language)
+        if settings.engine == .siri, installed.isEmpty {
+            throw ScriptError.invalid(SiriDubVoices.setupMessage(language: settings.language))
+        }
+        let settings = try assigningVoices(lines: lines, settings: settings, installed: installed, genders: genders)
         let slots = Dictionary(uniqueKeysWithValues: lines.indices.map { index in
             (lines[index].id, DubPlanning.slot(for: lines[index], next: lines[safe: index + 1]))
         })
@@ -155,7 +188,8 @@ nonisolated enum DubPreparation {
 
     @concurrent
     static func reopening(document: TimelineDocument, scenes: [SceneRecord], settings: DubSettings,
-                          lines: [DubLine], speakerNames: [String: String]) async -> Prepared {
+                          lines: [DubLine], speakerNames: [String: String],
+                          speakerChoices: [String] = []) async -> Prepared {
         let document = resolvedDocument(document, scenes: scenes)
         // Reconstruct planned spans from source times, never from synthesized durations.
         let planned = lines.sorted { $0.start < $1.start }.map { line in
@@ -171,7 +205,7 @@ nonisolated enum DubPreparation {
             planned.contains { $0.id != line.id && $0.start < line.start + line.duration && line.start < $0.start + $0.duration }
         }.map(\.id))
         return Prepared(document: document, settings: settings, lines: lines, slots: slots,
-                        overlaps: overlaps, speakerNames: speakerNames)
+                        overlaps: overlaps, speakerNames: speakerNames, speakerChoices: speakerChoices)
     }
 
     /// UIDs are session-local. A reopened document finds the audible source at the line's absolute time.

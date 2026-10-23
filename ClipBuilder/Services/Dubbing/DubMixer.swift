@@ -17,9 +17,11 @@ nonisolated enum DubMixer {
         return filters.joined(separator: ";")
     }
 
+    /// Replacing the original silences the whole source track, speech and
+    /// background noise alike; otherwise it is ducked under each line.
     static func overlayFilter(lines: [DubLine], settings: DubSettings) -> String {
-        let expression = DubPlanning.duckExpression(lines: lines,
-            level: settings.replaceOriginal ? 0 : settings.originalLevel, ramp: 0.15)
+        let expression = settings.replaceOriginal ? "0.0"
+            : DubPlanning.duckExpression(lines: lines, level: settings.originalLevel, ramp: 0.15)
         return "[0:a]volume='\(expression)':eval=frame[orig];" +
             "[orig][1:a]amix=inputs=2:duration=first:dropout_transition=0:normalize=0[aout]"
     }

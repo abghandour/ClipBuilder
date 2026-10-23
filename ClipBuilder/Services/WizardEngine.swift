@@ -46,7 +46,8 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var captionStyleID: String?
     var captionLanguage: String?
     var dubLanguage: String?
-    var effectiveCaptionLanguage: String? { captionLanguage ?? dubLanguage }
+    /// A dubbed reel is captioned in the dub's language; the caption choice only applies without a dub.
+    var effectiveCaptionLanguage: String? { dubLanguage.flatMap { $0.isEmpty ? nil : $0 } ?? captionLanguage }
     var workflow: WizardWorkflow?
     var resolvedWorkflow: WizardWorkflow { workflow ?? .automatic }
     var muteSource = false
@@ -3893,10 +3894,13 @@ actor WizardEngine {
                     speechDocument.videoTrack[index].bumper = true
                 }
             }
-            let settings = DubSettings(language: language, voices: profile.editing?.dubVoices ?? [:])
-            emit("Preparing dub…")
+            let engine = profile.editing?.footage.dubEngine.flatMap(DubVoiceEngine.init(rawValue:))
+            let settings = DubSettings(language: language, voices: profile.editing?.dubVoices ?? [:],
+                                       engine: engine == .siri ? .siri : nil)
+            emit(engine == .siri ? "Preparing dub with Siri voices…" : "Preparing dub…")
             let prepared = try await DubPreparation.prepare(document: speechDocument, scenes: Array(sceneMap.values),
-                settings: settings, database: database, ai: ai, onDevice: captionOnDevice, log: emit)
+                settings: settings, database: database, ai: ai, speech: .forEngine(settings.engine),
+                onDevice: captionOnDevice, log: emit)
             emit("Review dubbed lines before rendering")
             let reviewed = try await reviewDub(prepared, options.projectID, profile.profileName)
             try Task.checkCancellation()
@@ -3912,10 +3916,19 @@ actor WizardEngine {
         for card in retainedCards {
             try FileManager.default.copyItem(at: card.source, to: card.destination)
         }
+        // Dubbed clips caption the spoken lines, timed to the synthesized speech.
+        let dubClips = Dictionary(uniqueKeysWithValues: document.videoTrack.map { ($0.uid, $0) })
+        let dubLinesByJob: [Int: [DubLine]] = Dictionary(uniqueKeysWithValues: jobs.map { job in
+            (job.index, (document.dubLines ?? []).filter { line in
+                guard let owner = dubClips[line.clipUID] else { return false }
+                return owner.videoFile == job.scene.videoPath && !owner.muted
+            })
+        })
         let extracted = try await WizardTiming.measure("extract clips", emit: emit) {
             try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job in
                 try await self.extractPlannedClip(job.clip, index: job.index, of: clipCount,
                                                   scene: job.scene, sceneMap: sceneMap, options: options,
+                                                  dubLines: dubLinesByJob[job.index] ?? [],
                                                   captionStyle: captionStyle, captionFallbacks: captionFallbacks,
                                                   brandOverlays: brandOverlayFiles, topOverlays: clipWatermark,
                                                   podcastDocument: podcastCuts[job.index], nameTagPeople: people, tagText: tagText, profile: profile,
@@ -4068,7 +4081,7 @@ actor WizardEngine {
 
     private func extractPlannedClip(_ clip: WizardPlanClip, index: Int, of total: Int,
                                     scene: SceneRecord, sceneMap: [Int64: SceneRecord] = [:],
-                                    options: WizardOptions,
+                                    options: WizardOptions, dubLines: [DubLine] = [],
                                     captionStyle: CaptionStyle, captionFallbacks: WizardCaptionFallbackLog,
                                     brandOverlays: [URL] = [], topOverlays: [RenderEngine.ClipOverlay] = [],
                                     podcastDocument: TimelineDocument? = nil, nameTagPeople: [PersonRecord] = [], tagText: [String: String], profile: BrandProfile,
@@ -4135,8 +4148,13 @@ actor WizardEngine {
                                            videoHeight: RenderEngine.outputHeight,
                                            style: captionStyle, safeArea: options.resolvedSafeArea,
                                            safeAreaOnly: options.safeAreaOnly == true)
+            let captionSpeed = podcastDocument == nil ? clip.speed : 1
+            let dubbed = DubPlanning.captionSegments(lines: dubLines, sourceStart: clip.start, sourceEnd: clip.end,
+                                                    speed: captionSpeed)
             let sourceSegments: [TranscriptSegment]
-            do {
+            if !dubbed.isEmpty {
+                sourceSegments = dubbed
+            } else { do {
                 sourceSegments = try await captionSegments(videoID: scene.videoID, filename: scene.videoFilename,
                     start: clip.start, end: clip.end, language: options.effectiveCaptionLanguage,
                     database: database, fallbacks: captionFallbacks, emit: emit)
@@ -4145,8 +4163,7 @@ actor WizardEngine {
                 try Task.checkCancellation()
                 emit("Captions: could not read \(scene.videoFilename) (\(error)) — skipping captions")
                 sourceSegments = []
-            }
-            let captionSpeed = podcastDocument == nil ? clip.speed : 1
+            } }
             // Speaker colours are decoration: a failed read leaves the captions uncoloured.
             let turns = captionStyle.resolvedSpeakerColors ? ((try? await database.fetchSpeakerTurns(videoID: scene.videoID)) ?? []) : []
             let speakerRows = captionStyle.resolvedSpeakerColors ? ((try? await database.fetchTranscripts(videoID: scene.videoID)) ?? []) : []

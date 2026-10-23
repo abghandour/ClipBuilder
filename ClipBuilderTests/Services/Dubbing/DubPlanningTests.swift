@@ -157,4 +157,47 @@ struct DubPlanningTests {
         DubLine(clipUID: UUID(), speakerKey: "unknown", voice: "voice", text: "Olá",
                 sourceStart: 0, sourceEnd: 2, start: 1, duration: 2)
     }
+
+    @Test func unnamedClustersGoToTheVIPThenTheRosterThenNumberedSpeakers() {
+        func turn(_ start: Double, _ end: Double, cluster: Int, key: String? = nil) -> SpeakerTurn {
+            SpeakerTurn(videoID: 7, start: start, end: end, cluster: cluster, confidence: 1, personKey: key)
+        }
+        func person(_ key: String, vip: Bool = false) -> VideoPersonRecord {
+            VideoPersonRecord(videoID: 7, personID: Int64(key.count), key: key, name: "", descriptor: "", portraitAt: 0, vip: vip)
+        }
+        // Cluster 1 talks longest and belongs to the VIP; cluster 0 to the interviewer.
+        let turns = [turn(0, 2, cluster: 0), turn(2, 10, cluster: 1), turn(10, 11, cluster: 0), turn(11, 12, cluster: 2)]
+        let named = DubPlanning.namingTurns(turns, roster: [person("host"), person("guest", vip: true)])
+        #expect(named.map(\.personKey) == ["host", "guest", "host", "speaker-3"])
+        // Keyed turns are kept and their person is not handed to a cluster.
+        let keyed = DubPlanning.namingTurns([turn(0, 5, cluster: 0, key: "guest"), turn(5, 6, cluster: 1)],
+                                            roster: [person("host"), person("guest", vip: true)])
+        #expect(keyed.map(\.personKey) == ["guest", "host"])
+        #expect(DubPlanning.namingTurns([], roster: [person("host")]).isEmpty)
+        #expect(DubPlanning.speakerLabel("speaker-3") == "Speaker 3")
+        #expect(DubPlanning.speakerLabel("unknown") == "Unknown speaker")
+        // Lines then name the speaker from the turn under the row's midpoint.
+        let clip = Fixtures.timelineClip(sourceStart: 0, duration: 12)
+        let lines = DubPlanning.lines(document: Fixtures.timelineDocument(clips: [clip]),
+            rows: [clip.uid: [row(start: 3, end: 5, text: "olá")]], turns: [clip.uid: named],
+            settings: DubSettings(language: "pt-BR"))
+        #expect(lines.map(\.speakerKey) == ["guest"])
+    }
+
+    @Test func dubbedCaptionsSpanTheSpokenDurationAtClipSpeed() {
+        func line(_ sourceStart: Double, duration: Double, text: String) -> DubLine {
+            DubLine(clipUID: UUID(), speakerKey: "host", voice: "v", text: text,
+                    sourceStart: sourceStart, sourceEnd: sourceStart + 2, start: 0, duration: duration)
+        }
+        // A 1.5 s spoken line at 2x source speed covers 3 source seconds; lines
+        // outside the clip's range and silent lines are left out.
+        let segments = DubPlanning.captionSegments(
+            lines: [line(14, duration: 1, text: "dois"), line(10, duration: 1.5, text: "um"),
+                    line(30, duration: 1, text: "fora"), line(12, duration: 0, text: "mudo")],
+            sourceStart: 10, sourceEnd: 20, speed: 2)
+        #expect(segments.map(\.text) == ["um", "dois"])
+        #expect(segments.map(\.start) == [10, 14] && segments.map(\.end) == [13, 16])
+        #expect(segments.allSatisfy { $0.words == nil })
+        #expect(DubPlanning.captionSegments(lines: [line(10, duration: 1, text: "x")], sourceStart: 0, sourceEnd: 20, speed: 0).isEmpty)
+    }
 }

@@ -1,6 +1,6 @@
 # Dubbing: a spoken translation track for a rendered clip
 
-Date: October 22, 2026. Status: phases 0–5 implemented (Codex) and tested (Claude); phase 6 live English↔Portuguese check pending.
+Date: October 22, 2026. Status: phases 0–5 implemented (Codex) and tested (Claude); phase 6 live English↔Portuguese check pending; phase 7 (Siri voices through Shortcuts) implemented and tested October 22, 2026.
 
 ## Goal
 
@@ -211,3 +211,35 @@ its language choice live in AI Wizard Express, on the Audio tab next to Music.
 No re-analysis. Videos without a translation in the dub language get one
 when the dub job runs (installed translation or model), stored as transcript
 rows like today's automatic translations.
+
+## Phase 7: Siri voices (added October 22, 2026)
+
+macOS never lists Siri voices to a third-party process: `AVSpeechSynthesisVoice.speechVoices()`
+returns none inside the app (the `swift` interpreter does list them because it runs inside
+Apple's compiler, a false positive), and `say -v <siri id>` silently falls back to the default
+voice. The Shortcuts app is Apple-signed and its "Make Spoken Audio from Text" action offers the
+Siri voices, so the app speaks each line through a shortcut.
+
+- `DubVoiceEngine` (`.mac` / `.siri`) is a profile default (`FootageDefaults.dubEngine`, key
+  `dub_engine`) chosen in the Voices picker that `DubLanguagePicker` shows in the Builder Dub
+  sheet, Express Audio tab and full wizard. `DubSettings.engine` records it per dub.
+- `SiriDubVoices` finds downloaded voices by scanning the Siri text-to-speech asset catalog
+  (`com.apple.siri.tts.voice.<lang>.<name>.natural.premium` under /System/Library/AssetsV2),
+  maps them to `com.apple.siri.natural.<Name>`, and treats a voice as ready when the shortcut
+  "Clip Builder Dub <Name>" is in `shortcuts list`. `DubPreparation.Speech.forEngine(.siri)`
+  lists only ready voices; the Siri engine with no ready voice fails with a setup message.
+- `SiriDubSynthesizer` runs `/usr/bin/shortcuts run "Clip Builder Dub <Name>" --output-path`
+  with the text on stdin (the shortcut's only parameter is Shortcut Input; dictionary input,
+  `--input-path`, and variable voice/rate parameters all produced nothing), then ffmpeg converts
+  the AAC to the 48 kHz float CAF in the shared dub cache, applying the fit rate with `atempo`.
+  `DubSynthesizer.synthesize` routes Siri identifiers there, so the renderer's cache restore and
+  the review sheet need no changes. About one second per line.
+- Setup on a new Mac: `SiriDubSetupSheet` (opened automatically when Siri is chosen with no
+  ready voice, or with Manage…) checks ffmpeg (installs through the existing tools job), the
+  voice download (opens System Settings › Accessibility › Spoken Content with the path to the
+  per-language Siri download), and each voice's shortcut. "Add shortcut" opens a bundled signed
+  `.shortcut` when the release ships one (`scripts/sign_siri_shortcuts.sh`, which needs a Mac
+  signed into iCloud because Shortcuts refuses unsigned imports), otherwise opens Shortcuts on a
+  new shortcut and lists the five manual steps. The sheet re-checks every three seconds.
+- Tests: `SiriDubVoicesTests` (asset parsing, readiness, shortcut definition, ffmpeg arguments,
+  setup failure) plus two live tests that run only when a ready Siri voice exists.

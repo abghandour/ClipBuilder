@@ -45,6 +45,7 @@ struct MiniFootageCard: View {
                     set: { kept in
                         guard store.miniRun?.batchID == run.batchID else { return }
                         store.miniRun?.qa?.kept = kept
+                        MiniWizardMemory.saveQAKept(kept, profileName: store.activeProfile.profileName, videoID: run.video.id)
                     }), preferredTranslationLanguage: store.activeProfile.captionLanguages.first) { scene, start, end in
                         store.setSceneEditRange(scene, start: start, end: end)
                     }

@@ -75,6 +75,51 @@ nonisolated enum DubPlanning {
         return words[lower..<upper].joined(separator: " ")
     }
 
+    /// Analyses before the people pass leave speaker turns as voice clusters
+    /// with no person key. Give each cluster a roster person, the longest
+    /// talking cluster to the VIP (interviewees answer at length), the rest in
+    /// talk order, so lines carry a name and their own voice. Clusters left
+    /// over get a "speaker-N" key so distinct voices never share one dub voice.
+    static func namingTurns(_ turns: [SpeakerTurn], roster: [VideoPersonRecord]) -> [SpeakerTurn] {
+        let unnamed = turns.filter { $0.personKey == nil }
+        guard !unnamed.isEmpty else { return turns }
+        var talk: [Int: Double] = [:]
+        for turn in unnamed { talk[turn.cluster, default: 0] += max(0, turn.end - turn.start) }
+        let clusters = talk.keys.sorted { (talk[$0] ?? 0, $1) > (talk[$1] ?? 0, $0) }
+        let taken = Set(turns.compactMap(\.personKey))
+        let people = roster.filter { !$0.key.isEmpty && !taken.contains($0.key) }
+            .enumerated().sorted { ($0.element.isVIP ? 0 : 1, $0.offset) < ($1.element.isVIP ? 0 : 1, $1.offset) }
+            .map(\.element.key)
+        var keys: [Int: String] = [:]
+        for (index, cluster) in clusters.enumerated() {
+            keys[cluster] = index < people.count ? people[index] : "speaker-\(cluster + 1)"
+        }
+        return turns.map { turn in
+            var named = turn
+            if named.personKey == nil { named.personKey = keys[turn.cluster] }
+            return named
+        }
+    }
+
+    /// Captions for a dubbed clip follow the spoken dub, not the source
+    /// transcript's timing: each line's caption spans exactly its audible
+    /// duration (in source seconds at the clip's speed), so the word reveal
+    /// keeps pace with the voice. Lines are keyed by the clip's source range.
+    static func captionSegments(lines: [DubLine], sourceStart: Double, sourceEnd: Double,
+                                speed: Double) -> [TranscriptSegment] {
+        guard speed.isFinite, speed > 0 else { return [] }
+        return lines.filter { $0.sourceStart >= sourceStart - 0.01 && $0.sourceStart < sourceEnd && $0.duration > 0 }
+            .sorted { $0.sourceStart < $1.sourceStart }
+            .map { TranscriptSegment(start: $0.sourceStart, end: $0.sourceStart + $0.duration * speed, text: $0.text, words: nil) }
+    }
+
+    /// What the review sheet calls a speaker key with no roster name.
+    static func speakerLabel(_ key: String) -> String {
+        if key == "unknown" { return "Unknown speaker" }
+        if key.hasPrefix("speaker-"), let number = Int(key.dropFirst("speaker-".count)) { return "Speaker \(number)" }
+        return key
+    }
+
     static func slot(for line: DubLine, next: DubLine?) -> Double {
         let span = max(0, line.duration)
         guard let next else { return span } // No known trailing silence.
