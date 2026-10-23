@@ -212,10 +212,16 @@ extension WizardView {
             FormGroupHeader("Camera focus")
             WizardCameraFocusPicker(selection: cameraFocusBinding, allowsOriginal: lookCapabilities.offersOriginalFraming)
             if cameraFocusBinding.wrappedValue == CropRecipe.Kind.interview.rawValue {
-                WizardControlRow("Pull back") {
-                    InterviewZoomSlider(zoom: $interviewZoom)
+                WizardControlRow("Zoom in/out for focus") {
+                    InterviewZoomMovesToggle(isOn: $interviewZoomMoves)
                 }
-                FormCaption(InterviewZoomSlider.caption)
+                FormCaption(InterviewZoomMovesToggle.caption)
+                if !interviewZoomMoves {
+                    WizardControlRow("Pull back") {
+                        InterviewZoomSlider(zoom: $interviewZoom)
+                    }
+                    FormCaption(InterviewZoomSlider.caption)
+                }
             }
         }
         if lookFormPlan.step2Controls.contains(.framingCamera) {
@@ -431,6 +437,17 @@ extension WizardView {
                 }
                 .formDependent()
             }
+            WizardControlRow("Position") {
+                HStack(spacing: Theme.spaceS) {
+                    Text(CustomPosition.isCustom(fixedOverlayPosition) ? "Custom (dragged)" : "As designed")
+                        .lineLimit(1).fixedSize()
+                    if CustomPosition.isCustom(fixedOverlayPosition) {
+                        Button("Reset") { fixedOverlayPosition = "" }
+                            .controlSize(.small).lineLimit(1).fixedSize()
+                    }
+                }
+            }
+            .formDependent()
             WizardControlRow("Starts at") {
                 HStack(spacing: Theme.spaceXS) {
                     TextField("Start", value: $fixedOverlayStart, format: .number.precision(.fractionLength(0...1)))

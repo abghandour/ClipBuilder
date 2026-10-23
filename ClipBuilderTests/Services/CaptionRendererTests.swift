@@ -259,4 +259,23 @@ extension CaptionRendererTests {
             #expect(band.maxY <= safe.rect.maxY * 1920 + 1)
         }
     }
+
+    @Test func draggedPositionCentresTheCaptionAndStaysInsideTheFrameAndSafeArea() throws {
+        let caption = CaptionRenderer.RenderedCaption(pngURL: URL(fileURLWithPath: "/unused"), width: 500, height: 100)
+        let plain = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: CaptionStyle(), safeArea: nil)
+        let middle = plain.position(for: caption, positionOverride: CustomPosition(x: 0.5, y: 0.5).string)
+        #expect(middle.x == 290 && middle.y == 910)
+        let corner = plain.position(for: caption, positionOverride: CustomPosition(x: 1, y: 1).string)
+        #expect(corner.x == 580 && corner.y == 1820, "never past the frame edge")
+        // The Builder's clip path accepts the same string.
+        #expect(plain.position(for: caption, clipPosition: CustomPosition(x: 0.5, y: 0.5).string) == (290, 910))
+        // Safe area only keeps a dragged caption clear of the platform chrome.
+        let safe = try #require(PlatformSafeArea.resolve(platforms: SocialPlatform.allCases, aspectRatio: 9.0 / 16))
+        let guarded = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: CaptionStyle(), safeArea: safe, safeAreaOnly: true)
+        let low = guarded.position(for: caption, positionOverride: CustomPosition(x: 0.5, y: 1).string)
+        #expect(Double(low.y + caption.height) <= safe.rect.maxY * 1920 + 1)
+        let free = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: CaptionStyle(), safeArea: safe, safeAreaOnly: false)
+        #expect(free.position(for: caption, positionOverride: CustomPosition(x: 0.5, y: 1).string).y == 1820,
+                "without safe area only the user's spot is honoured exactly")
+    }
 }

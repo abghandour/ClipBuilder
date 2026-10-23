@@ -28,6 +28,8 @@ nonisolated struct WizardOptions: Codable, Sendable {
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case captionPosition, captionStyleID, nameTagsOnly, workflow, critiqueTargetScore, critiqueMaxVersions, musicTrack, overlayStyle, overlayAnimation, overlayPlacement
         case highlightFraming, interviewZoom, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
+        case fixedOverlayPosition
+        case interviewZoomMoves
         case fixedOverlayTemplate, fixedOverlayStart, fixedOverlayDuration, fixedOverlayTexts, introBumperPath, outroBumperPath, watermarkOverlayTemplate, watermarkOpacity, transitionChoice, lookPreset, lookIntensity
     }
 
@@ -75,6 +77,9 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var overlayStyle: String?
     var overlayAnimation: String?
     var overlayPlacement: String?
+    /// Where the fixed overlay design was dragged in the preview
+    /// (`custom:x,y`, its bounding-box centre); nil keeps the design's own placement.
+    var fixedOverlayPosition: String?
     var aiInstructions = ""
     /// Inject each in-play video's saved fight research (crawled fan
     /// reactions, run from the Analyze page) into planning and captions.
@@ -110,6 +115,8 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var highlightFraming: CropRecipe.Kind? = nil
     /// Interview focus pull-back, 0...1; nil keeps the tight default.
     var interviewZoom: Double? = nil
+    /// Interview focus "Zoom in/out for focus"; nil or false pans toward the interviewer.
+    var interviewZoomMoves: Bool? = nil
     var useBRoll = true
     var brollInstructions = ""
     var podcastFraming: PodcastFramingMode = .followSpeaker

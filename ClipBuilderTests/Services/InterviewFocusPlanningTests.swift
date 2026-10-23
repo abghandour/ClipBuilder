@@ -55,24 +55,46 @@ struct InterviewFocusPlanningTests {
     }
 
     @Test(arguments: [0.05, 0.85])
-    func distantFacesSaturateAndKeepVIPWhole(vipX: Double) {
-        let vip = CGRect(x: vipX, y: 0.2, width: 0.08, height: 0.12)
-        let other = CGRect(x: 0.9 - vipX, y: 0.2, width: 0.08, height: 0.12)
-        let pair = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [other],
-            sourceAspect: sourceAspect, canvasAspect: canvasAspect)
-        #expect(pair.twoShot.hFrac == 1)
-        #expect(pair.note == "Two-shot cannot hold both faces; the interviewer is partly in frame")
+    func distantFacesFollowPullBackAndKeepVIPWhole(vipX: Double) {
+        let vip = CGRect(x: vipX, y: 0.2, width: 0.06, height: 0.12)
+        let other = CGRect(x: 0.9 - vipX, y: 0.2, width: 0.06, height: 0.12)
+        let bounds = CGRect(x: 0, y: 0, width: 1, height: 1)
         let room = vip.insetBy(dx: -vip.width * InterviewFocusPlanning.vipMarginX, dy: -vip.height * InterviewFocusPlanning.vipMarginY)
-            .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
+            .intersection(bounds)
         let padded = room.insetBy(dx: -room.width * FaceGuard.margin, dy: -room.height * FaceGuard.margin)
-            .intersection(CGRect(x: 0, y: 0, width: 1, height: 1))
-        #expect(rectangle(pair.twoShot).insetBy(dx: -0.0001, dy: -0.0001).contains(padded))
-        #expect(rectangle(pair.twoShot).minX >= 0 && rectangle(pair.twoShot).maxX <= 1.0001)
-        if vipX < 0.5 {
-            #expect(abs(pair.twoShot.xFrac - padded.minX) < 0.0001)
-        } else {
-            #expect(abs(rectangle(pair.twoShot).maxX - padded.maxX) < 0.0001)
+            .intersection(bounds)
+        for zoom in [0.0, 0.5, 1.0] {
+            let pair = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [other],
+                sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: zoom)
+            let two = rectangle(pair.twoShot)
+            let close = CenterStageService.Tuning.conversation.minCropHeightFraction
+            #expect(abs(two.height - (close + (1 - close) * zoom)) < 0.0001)
+            #expect(pair.twoShot.hFrac == pair.tight.hFrac)
+            #expect(pair.note == "Two-shot cannot hold both faces; the interviewer is partly in frame")
+            #expect(two.insetBy(dx: -0.0001, dy: -0.0001).contains(padded))
+            #expect(bounds.insetBy(dx: -0.0001, dy: -0.0001).contains(two))
+            if vipX < 0.5 {
+                #expect(abs(two.minX - padded.minX) < 0.0001)
+                #expect(two.midX > rectangle(pair.tight).midX)
+            } else {
+                #expect(abs(two.maxX - padded.maxX) < 0.0001)
+                #expect(two.midX < rectangle(pair.tight).midX)
+            }
         }
+    }
+
+    @Test func fullyPulledBackAnchoredShotCanCoincideWithTightShot() {
+        let pair = InterviewFocusPlanning.rects(
+            vipFace: CGRect(x: 0, y: 0.2, width: 0.04, height: 0.1),
+            otherFaces: [CGRect(x: 0.88, y: 0.2, width: 0.04, height: 0.1)],
+            sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: 1)
+        #expect(pair.note != nil)
+        #expect(pair.tight == pair.twoShot)
+        #expect(InterviewFocusPlanning.inDeadZone(tight: pair.tight, twoShot: pair.twoShot))
+        let path = InterviewFocusPlanning.path(moves: [(0, .tight), (4, .twoShot), (8, .tight)],
+            tight: pair.tight, twoShot: pair.twoShot, length: 12)
+        #expect(path.map(\.t) == [0, 12])
+        #expect(path.allSatisfy { $0.x == pair.twoShot.xFrac && $0.h == 1 })
     }
 
     @Test func twoShotKeepsHalfAFaceOfRoomAroundTheVIP() {
@@ -178,5 +200,40 @@ struct InterviewFocusPlanningTests {
                 #expect(abs(value * 10000 - (value * 10000).rounded()) < 1e-8)
             }
         }
+    }
+
+    @Test(arguments: [0.0, 0.5, 1.0])
+    func zoomMovesIgnorePullBackAndOpenAroundTheVIPWhenPeopleCannotShareAFrame(zoom: Double) {
+        let vip = CGRect(x: 0.55, y: 0.2, width: 0.06, height: 0.12)
+        let other = CGRect(x: 0.2, y: 0.2, width: 0.06, height: 0.12)
+        let panning = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [other],
+            sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: zoom)
+        let zooming = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [other],
+            sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: zoom, zoomMoves: true)
+        let close = CenterStageService.Tuning.conversation.minCropHeightFraction
+        let tight = rectangle(zooming.tight), wide = rectangle(zooming.twoShot)
+        #expect(abs(tight.height - close) < 0.0001, "Pull back is ignored: the tight shot stays at the conversation height")
+        #expect(abs(wide.height - 1) < 0.0001, "the wide shot opens to the full height")
+        #expect(abs(wide.midX - tight.midX) < 0.03, "and keeps the VIP's centre instead of leaning toward the interviewer")
+        #expect(wide.insetBy(dx: -0.0001, dy: -0.0001).contains(vip))
+        #expect(zooming.note?.contains("zooming out") == true)
+        #expect(!InterviewFocusPlanning.inDeadZone(tight: zooming.tight, twoShot: zooming.twoShot))
+        #expect(rectangle(panning.twoShot).midX < rectangle(panning.tight).midX, "panning leans toward the interviewer on the left")
+    }
+
+    @Test func zoomMovesKeepEveryoneOnScreenWhenTheyFit() {
+        let vip = CGRect(x: 0.55, y: 0.2, width: 0.06, height: 0.12)
+        let other = CGRect(x: 0.43, y: 0.2, width: 0.06, height: 0.12)
+        let zooming = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [other],
+            sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: 1, zoomMoves: true)
+        let wide = rectangle(zooming.twoShot)
+        #expect(zooming.note == nil)
+        #expect(wide.insetBy(dx: -0.0001, dy: -0.0001).contains(vip) && wide.insetBy(dx: -0.0001, dy: -0.0001).contains(other),
+                "both faces are in the zoomed-out shot")
+        #expect(wide.height < 1, "and it opens only as far as needed")
+        #expect(wide.height > rectangle(zooming.tight).height)
+        let panning = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [other],
+            sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: 0)
+        #expect(zooming.twoShot == panning.twoShot, "a two-shot that fits is the same shot either way")
     }
 }

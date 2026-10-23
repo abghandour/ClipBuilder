@@ -416,4 +416,63 @@ extension MiniWizardSettingsTests {
         #expect(effective.dub && effective.dubLanguage == "en-US")
         #expect(!effective.music && !effective.muteSourceAudio)
     }
+
+    @Test func draggedOverlayPositionMapsOnlyWithAnOverlayAndRoundTripsThroughMemory() throws {
+        var settings = MiniWizardSettings()
+        settings.overlay = true
+        settings.overlayTemplate = "Lower Third"
+        settings.overlayPosition = CustomPosition(x: 0.3, y: 0.7).string
+        let profile = Fixtures.brand()
+        #expect(settings.previewOptions(profile: profile).fixedOverlayPosition == "custom:0.3000,0.7000")
+        settings.overlayPosition = "somewhere"
+        #expect(settings.previewOptions(profile: profile).fixedOverlayPosition == nil, "only custom strings travel")
+        settings.overlayPosition = CustomPosition(x: 0.3, y: 0.7).string
+        settings.overlay = false
+        #expect(settings.previewOptions(profile: profile).fixedOverlayPosition == nil)
+        let suite = "MiniWizardSettingsTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        settings.remember(profileName: profile.profileName, defaults: defaults)
+        #expect(MiniWizardSettings.remembered(profile: profile, defaults: defaults).overlayPosition == settings.overlayPosition)
+        let encoded = try JSONEncoder().encode(settings)
+        #expect(try JSONDecoder().decode(MiniWizardSettings.self, from: encoded).overlayPosition == settings.overlayPosition)
+    }
+
+    @Test func defaultsFollowTheProfileCanvasQualityAndDubLanguage() {
+        var profile = Fixtures.brand()
+        profile.defaultRenderSettings.quality = .compact
+        profile.defaultRenderSettings.preset = .landscape1080
+        let plain = MiniWizardSettings.defaults(profile: profile)
+        #expect(plain.quality == .compact && plain.preset == .landscape1080)
+        #expect(!plain.captions && !plain.nameTags && plain.captionPosition == nil && plain.overlayPosition == nil)
+        #expect(!plain.dub && plain.dubLanguage == nil)
+        // Custom render settings fall back to the shipped choices.
+        profile.defaultRenderSettings.quality = .custom
+        profile.defaultRenderSettings.preset = .custom
+        let fallback = MiniWizardSettings.defaults(profile: profile)
+        #expect(fallback.quality == .balanced && fallback.preset == .portrait1080)
+        // Reset equals what a profile with no memory would start with.
+        let suite = "MiniWizardSettingsTests.defaults.\(UUID().uuidString)"
+        if let defaults = UserDefaults(suiteName: suite) {
+            defer { defaults.removePersistentDomain(forName: suite) }
+            #expect(MiniWizardSettings.remembered(profile: profile, defaults: defaults) == fallback)
+        }
+    }
+
+    @Test func zoomMovesMapsToTheOptionsAndRoundTripsThroughMemoryAndPresets() throws {
+        var settings = MiniWizardSettings()
+        settings.cameraFocus = CropRecipe.Kind.interview.rawValue
+        settings.interviewZoomMoves = true
+        let profile = Fixtures.brand()
+        #expect(settings.previewOptions(profile: profile).interviewZoomMoves == true)
+        #expect(MiniWizardSettings().previewOptions(profile: profile).interviewZoomMoves == false)
+        let suite = "MiniWizardSettingsTests.zoomMoves.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        settings.remember(profileName: profile.profileName, defaults: defaults)
+        #expect(MiniWizardSettings.remembered(profile: profile, defaults: defaults).interviewZoomMoves)
+        let fields = WizardPresetBridge.wizardFields(from: settings)
+        #expect(fields["interviewZoomMoves"]?.bool == true)
+        #expect(WizardPresetBridge.miniSettings(from: fields).interviewZoomMoves)
+    }
 }

@@ -21,6 +21,7 @@ enum PodcastRecipeTimeline {
             guard kind == .vip || !turns.isEmpty else { throw CropRecipePlanner.Failure(description: "no speaker turns") }
             var recipe = CropRecipe(kind: kind)
             recipe.interviewZoom = options.interviewZoom ?? 0
+            recipe.interviewZoomMoves = options.interviewZoomMoves ?? false
             plan = try CropRecipePlanner.plan(recipe, video: video, range: range,
                 turns: turns, roster: roster, layouts: layouts, canvasAspect: settings.aspectRatio)
         } catch {

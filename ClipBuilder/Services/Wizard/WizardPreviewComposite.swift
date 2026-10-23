@@ -72,14 +72,27 @@ nonisolated enum WizardPreviewComposite {
         }
     }
 
+    /// Where the draggable elements landed, in canvas pixels from the top
+    /// left, so the preview can offer them as handles.
+    struct Layout: Sendable, Equatable {
+        var caption: CGRect?
+        var tags: [CGRect] = []
+        var overlay: CGRect?
+    }
+
     static func render(_ input: Input) async throws -> CGImage {
         let base = try await prepareBase(input)
         return try render(input, baseFrame: base.image)
     }
 
     static func render(_ input: Input, baseFrame: CGImage) throws -> CGImage {
+        try renderWithLayout(input, baseFrame: baseFrame).image
+    }
+
+    static func renderWithLayout(_ input: Input, baseFrame: CGImage) throws -> (image: CGImage, layout: Layout) {
         try Task.checkCancellation()
-        return try RenderContext.$settings.withValue(input.options.renderSettings) {
+        var layout = Layout()
+        let image = try RenderContext.$settings.withValue(input.options.renderSettings) {
             let settings = input.options.renderSettings
             let canvas = CGRect(x: 0, y: 0, width: settings.width, height: settings.height)
             let context = try makeContext(settings)
@@ -126,6 +139,10 @@ nonisolated enum WizardPreviewComposite {
             }
             if let block = WizardFixedOverlay.block(options: options, templates: input.templates, totalDuration: duration) {
                 try drawBlock(block, at: previewTime)
+                if let box = WizardFixedOverlay.bounds(of: block.composition, canvasAspect: settings.aspectRatio) {
+                    layout.overlay = CGRect(x: box.minX * canvas.width, y: box.minY * canvas.height,
+                                            width: box.width * canvas.width, height: box.height * canvas.height)
+                }
             }
             let style = input.profile.captionStyle(id: options.captionStyleID)
             if options.addCaptions {
@@ -150,6 +167,7 @@ nonisolated enum WizardPreviewComposite {
                         let caption = try renderer.render(text: raster.text, activeIndex: raster.activeIndex,
                             emphasis: raster.emphasis, textColor: raster.textColor, frame: raster.frame, to: scratch)
                         let origin = renderer.position(for: caption, positionOverride: position)
+                        layout.caption = CGRect(x: origin.x, y: origin.y, width: caption.width, height: caption.height)
                         try draw(caption.pngURL, in: CGRect(x: origin.x, y: settings.height - origin.y - caption.height,
                                                            width: caption.width, height: caption.height))
                     }
@@ -163,6 +181,7 @@ nonisolated enum WizardPreviewComposite {
                     settings: WizardNameTags.settings(options: options, captionStyle: style), style: tagStyle,
                     imageAspects: imageAspects)
                 for tag in tags {
+                    layout.tags.append(tag.rect)
                     try draw(textRenderer.render(NameTagPlanner.overlay(tag, canvas: canvas.size, style: tagStyle), to: scratch))
                 }
             }
@@ -170,6 +189,7 @@ nonisolated enum WizardPreviewComposite {
             guard let image = context.makeImage() else { throw PreviewError.contextCreationFailed }
             return image
         }
+        return (image, layout)
     }
 
     struct BaseFrame: Sendable {

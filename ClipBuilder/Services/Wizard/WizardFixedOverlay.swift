@@ -1,3 +1,4 @@
+import CoreGraphics
 import Foundation
 
 /// The Express "Overlay" setting: one saved overlay template laid over the
@@ -23,10 +24,53 @@ nonisolated enum WizardFixedOverlay {
         var block = OverlayBlockItem()
         block.name = template.name
         block.composition = replacingDynamicTexts(in: template.composition, with: options.fixedOverlayTexts ?? [])
+        if let custom = CustomPosition(options.fixedOverlayPosition) {
+            block.composition = repositioned(block.composition, center: custom,
+                                             canvasAspect: options.renderSettings.aspectRatio)
+        }
         block.exactPlacement = true
         block.startTime = (start * 100).rounded() / 100
         block.duration = (duration * 100).rounded() / 100
         return block
+    }
+
+    /// The design's bounding box as canvas fractions: texts from their
+    /// centre and size fractions, images from their width (assumed square,
+    /// their height depends on the file). nil for an empty design.
+    static func bounds(of composition: OverlayComposition, canvasAspect: Double) -> CGRect? {
+        var union = CGRect.null
+        for text in composition.texts {
+            let w = text.wFrac ?? 0.6, h = text.hFrac ?? 0.1
+            union = union.union(CGRect(x: (text.xFrac ?? 0.5) - w / 2, y: (text.yFrac ?? 0.2) - h / 2, width: w, height: h))
+        }
+        for image in composition.images {
+            let w = image.wFrac, h = image.wFrac * max(0.01, canvasAspect)
+            union = union.union(CGRect(x: image.xFrac - w / 2, y: image.yFrac - h / 2, width: w, height: h))
+        }
+        return union.isNull ? nil : union
+    }
+
+    /// The design moved as one piece so its bounding box is centred on
+    /// `center`, kept inside the frame.
+    static func repositioned(_ composition: OverlayComposition, center: CustomPosition, canvasAspect: Double) -> OverlayComposition {
+        guard let box = bounds(of: composition, canvasAspect: canvasAspect) else { return composition }
+        let origin = center.origin(size: box.size, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let dx = origin.x - box.minX, dy = origin.y - box.minY
+        guard abs(dx) > 0.00001 || abs(dy) > 0.00001 else { return composition }
+        var result = composition
+        result.texts = composition.texts.map { text in
+            var item = text
+            item.xFrac = (text.xFrac ?? 0.5) + dx
+            item.yFrac = (text.yFrac ?? 0.2) + dy
+            return item
+        }
+        result.images = composition.images.map { image in
+            var item = image
+            item.xFrac += dx
+            item.yFrac += dy
+            return item
+        }
+        return result
     }
 
     /// How much of the design shows through as a watermark by default.

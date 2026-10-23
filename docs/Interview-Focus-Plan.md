@@ -204,3 +204,48 @@ portrait boxes saturated at 1 (phase 0) need the People detection stage run
 again to get usable face boxes; until then Interview focus centres on the
 tile face centre from the layout pass, which exists for Tanner Boser but not
 for every single-camera interview.
+
+## Pull back on the anchored two-shot — October 23, 2026
+
+When both faces cannot fit in the canvas (people far apart in a 9:16
+column), the "two-shot" is anchored on the VIP with the interviewer partly
+in frame. It used to take the full source height regardless of Pull back,
+so a clip where the interviewer talks never responded to the slider (seen
+on "Tanner Boser Interview", clip 0:21–0:25: identical preview at 0 % and
+100 %). `InterviewFocusPlanning.rects` now sizes that anchored shot with
+the tight shot's zoom-following height (conversation height at 0 %, full
+height at 100 %), keeps the VIP's roomy face inside, and leans toward the
+interviewer. A two-shot that does hold both faces keeps its rule (never
+below the tight height). Codex implemented; Claude reviewed, rebuilt and
+re-pointed two tests whose fixtures assumed the old full-height anchor
+(`InterviewFocusRecipeTests.closeFacesRemainStaticAndImpossibleTwoShotReportsWhy`,
+`WizardPreviewCompositeTests.interviewPreviewFollowsTheScrubbedMomentAlongTheCameraPath`).
+Tests: `InterviewFocusPlanningTests.distantFacesFollowPullBackAndKeepVIPWhole`,
+`fullyPulledBackAnchoredShotCanCoincideWithTightShot`,
+`WizardPreviewCompositeTests.interviewPullBackChangesAnchoredPreviewWhileInterviewerTalks`.
+
+## Zoom in/out for focus — October 23, 2026
+
+New toggle under Pull back (Express Picture tab and the full wizard's Camera
+focus group): `CropRecipe.interviewZoomMoves`, `WizardOptions.interviewZoomMoves`
+(Optional), `MiniWizardSettings.interviewZoomMoves` (memory field, preset
+field `interviewZoomMoves`, defaults key `wizard.interviewZoomMoves` for the
+full wizard, run-settings key). When on, `InterviewFocusPlanning.rects` returns
+a wide shot centred where the tight shot is, opened to the full source height
+and kept around the VIP's face, instead of the two-shot that leans toward the
+interviewer. The moves between the two therefore zoom in place: in while the
+VIP talks, out while the interviewer asks. Pull back still sets the tight
+shot's height; at 100 % both shots coincide and the camera stays still. The
+preview builds its recipe from the same options, so it shows the same shot.
+Tests: `InterviewFocusPlanningTests.zoomMovesKeepTheWideShotCentredOnTheVIP`,
+`WizardPreviewCompositeTests.interviewZoomMovesKeepThePreviewOnTheVIPWhileTheInterviewerTalks`,
+`MiniWizardSettingsTests.zoomMovesMapsToTheOptionsAndRoundTripsThroughMemoryAndPresets`.
+
+Update, October 23, 2026 (same day): with the toggle on, Pull back is hidden
+in both wizards and ignored by the planner (the tight shot is the
+conversation height). The zoomed-out shot holds everyone when both faces fit a
+frame (the ordinary fitting two-shot); only when they cannot share a frame does
+it open to the full height around the VIP, with the note "Both people do not
+fit one frame; zooming out around the VIP". Tests:
+`InterviewFocusPlanningTests.zoomMovesIgnorePullBackAndOpenAroundTheVIPWhenPeopleCannotShareAFrame`,
+`zoomMovesKeepEveryoneOnScreenWhenTheyFit`.

@@ -14,6 +14,7 @@ nonisolated enum WizardPresetBridge {
         fields["renderSettings"] = JSONSetting.dictionaryValue(render)
         let focus = settings.cameraFocus.trimmingCharacters(in: .whitespacesAndNewlines)
         fields["interviewZoom"] = .number(settings.interviewZoom)
+        fields["interviewZoomMoves"] = .bool(settings.interviewZoomMoves)
         if focus == WizardCameraFocus.original {
             fields["podcastFraming"] = .string(PodcastFramingMode.original.rawValue)
             fields["highlightFraming"] = .null
@@ -50,6 +51,7 @@ nonisolated enum WizardPresetBridge {
         fields["fixedOverlayStart"] = .number(settings.overlayStart)
         fields["fixedOverlayDuration"] = settings.overlayDuration.map { .number($0) } ?? .null
         fields["fixedOverlayTextsJoined"] = settings.overlayTexts.isEmpty ? .null : .string(WizardExpressExtras.joinedTexts(settings.overlayTexts))
+        fields["fixedOverlayPosition"] = settings.overlayPosition.flatMap { CustomPosition.isCustom($0) ? .string($0) : nil } ?? .null
         fields["transitionChoice"] = .string(settings.transition)
         fields["lookPreset"] = settings.lookName.map(JSONSetting.string) ?? .null
         fields["outputMode"] = .string(settings.outputMode.rawValue)
@@ -73,6 +75,7 @@ nonisolated enum WizardPresetBridge {
             settings.cameraFocus = framing
         }
         if let zoom = fields["interviewZoom"]?.number { settings.interviewZoom = min(1, max(0, zoom)) }
+        if let moves = fields["interviewZoomMoves"]?.bool { settings.interviewZoomMoves = moves }
         if let value = fields["dubLanguage"] {
             settings.dubLanguage = value.string.flatMap { $0.isEmpty ? nil : $0 }
             settings.dub = value.string?.isEmpty == false
@@ -104,6 +107,7 @@ nonisolated enum WizardPresetBridge {
         if let start = fields["fixedOverlayStart"]?.number { settings.overlayStart = max(0, start) }
         if let value = fields["fixedOverlayDuration"] { settings.overlayDuration = value.number.map { max(0, $0) } }
         if let value = fields["fixedOverlayTextsJoined"] { settings.overlayTexts = WizardExpressExtras.splitTexts(value.string) }
+        if let value = fields["fixedOverlayPosition"] { settings.overlayPosition = value.string.flatMap { CustomPosition.isCustom($0) ? $0 : nil } }
         if let transition = fields["transitionChoice"]?.string, !transition.isEmpty { settings.transition = transition }
         if let value = fields["lookPreset"] { settings.look = value.string ?? "" }
         if let mode = fields["outputMode"]?.string.flatMap(MiniWizardFlow.OutputMode.init(rawValue:)) { settings.outputMode = mode }

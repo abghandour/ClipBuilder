@@ -70,6 +70,7 @@ struct WizardView: View {
     @State var overlayTemplates: [String] = []
     @AppStorage("wizard.highlightFraming") private var highlightFramingRaw = ""
     @AppStorage("wizard.interviewZoom") var interviewZoom = 0.0
+    @AppStorage("wizard.interviewZoomMoves") var interviewZoomMoves = false
     @AppStorage("wizard.useBRoll") var useBRoll = true
     @AppStorage("wizard.brollInstructions") var brollInstructions = ""
     @AppStorage("wizard.podcastFraming") private var podcastFramingRaw = PodcastFramingMode.followSpeaker.rawValue
@@ -95,6 +96,7 @@ struct WizardView: View {
     @AppStorage(WizardExpressExtras.overlayStartKey) var fixedOverlayStart = 0.0
     @AppStorage(WizardExpressExtras.overlayDurationKey) var fixedOverlayDuration = 0.0
     @AppStorage(WizardExpressExtras.overlayTextsKey) var fixedOverlayTexts = ""
+    @AppStorage(WizardExpressExtras.overlayPositionKey) var fixedOverlayPosition = ""
     @AppStorage(WizardExpressExtras.watermarkOverlayKey) var watermarkOverlay = ""
     @AppStorage(WizardExpressExtras.watermarkOpacityKey) var watermarkOpacity = 0.0
     @AppStorage(WizardExpressExtras.introBumperKey) var introBumperLibraryPath = ""
@@ -1366,6 +1368,7 @@ struct WizardView: View {
         options.formatPreset = formatPreset
         options.highlightFraming = CropRecipe.Kind(rawValue: highlightFramingRaw)
         options.interviewZoom = highlightFramingRaw == CropRecipe.Kind.interview.rawValue ? interviewZoom : nil
+        options.interviewZoomMoves = highlightFramingRaw == CropRecipe.Kind.interview.rawValue ? interviewZoomMoves : nil
         options.useBRoll = useBRoll
         options.brollInstructions = brollInstructions
         options.podcastFraming = PodcastFramingMode(rawValue: podcastFramingRaw) ?? .followSpeaker

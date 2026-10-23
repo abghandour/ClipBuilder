@@ -21,9 +21,12 @@ nonisolated extension BrandProfile {
 }
 
 nonisolated extension WizardOptions {
-    /// Unknown or old values retain the profile's placement and layout behavior.
+    /// Unknown or old values retain the profile's placement and layout
+    /// behavior; a dragged `custom:x,y` position passes through.
     var captionPositionOverride: String? {
-        guard let captionPosition, ["bottom", "middle", "top"].contains(captionPosition) else { return nil }
+        guard let captionPosition,
+              ["bottom", "middle", "top"].contains(captionPosition) || CustomPosition.isCustom(captionPosition)
+        else { return nil }
         return captionPosition
     }
 }

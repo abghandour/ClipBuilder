@@ -25,6 +25,8 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     var highlightsCurrentLine = true
     var onSpanPreview: ((ClosedRange<Double>) -> Void)? = nil
     var onSpanClear: (() -> Void)? = nil
+    /// Shown after the Follow / Translation controls (Express puts its Add button here).
+    var accessory: AnyView? = nil
 
     @State private var followsPlayback = true
     @AppStorage("transcriptQA.showTranslation") private var showTranslation = false
@@ -57,10 +59,16 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                         .lineLimit(1).fixedSize()
                     Spacer(minLength: 0)
                     transcriptControls
+                    if let accessory { accessory }
                 }
+                // Narrow column: the accessory keeps the title row, the toggles get their own.
                 VStack(alignment: .leading, spacing: Theme.spaceS) {
-                    Text("Transcript").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        .lineLimit(1).fixedSize()
+                    HStack(spacing: Theme.spaceS) {
+                        Text("Transcript").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            .lineLimit(1).fixedSize()
+                        Spacer(minLength: 0)
+                        if let accessory { accessory }
+                    }
                     ScrollView(.horizontal) { transcriptControls }
                         .scrollIndicators(.hidden)
                         .frame(height: 24)

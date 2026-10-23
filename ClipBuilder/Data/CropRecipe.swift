@@ -126,6 +126,9 @@ nonisolated struct CropRecipe: Sendable, Hashable, Identifiable {
     var rotationSeconds = 5.0
     /// Interview focus pull-back, 0 (tight on the VIP) to 1 (full source height).
     var interviewZoom = 0.0
+    /// Interview focus "Zoom in/out for focus": the wide shot stays centred on
+    /// the VIP (a zoom in place) instead of panning toward the interviewer.
+    var interviewZoomMoves = false
     /// Still cells (a fixed feed or person) get the tracking camera inside
     /// their feed instead of a fixed crop of it.
     var tracking = true
@@ -440,7 +443,8 @@ nonisolated enum CropRecipePlanner {
             let otherFaces = tiles.filter { !indices.contains($0.index) }.map(face)
             let rectangles = Dictionary(uniqueKeysWithValues: vipTiles.map { tile in
                 (tile.index, InterviewFocusPlanning.rects(vipFace: face(tile), otherFaces: otherFaces,
-                    sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: recipe.interviewZoom))
+                    sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: recipe.interviewZoom,
+                    zoomMoves: recipe.interviewZoomMoves))
             })
             for tile in vipTiles {
                 if let note = rectangles[tile.index]?.note, !notes.contains(note) { notes.append(note) }

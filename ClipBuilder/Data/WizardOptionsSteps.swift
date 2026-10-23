@@ -63,6 +63,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var allowedTransitions: [String]?
     var highlightFraming: CropRecipe.Kind?
     var interviewZoom: Double?
+    var interviewZoomMoves: Bool?
     var podcastFraming: PodcastFramingMode?
     var framingCamera: String?
     var useBRoll: Bool?
@@ -78,6 +79,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var fixedOverlayStart: Double?
     var fixedOverlayDuration: Double?
     var fixedOverlayTexts: [String]?
+    var fixedOverlayPosition: String?
     var introBumperPath: String?
     var outroBumperPath: String?
     var watermarkOverlayTemplate: String?
@@ -118,6 +120,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         case allowedTransitions
         case highlightFraming
         case interviewZoom
+        case interviewZoomMoves
         case podcastFraming
         case framingCamera
         case useBRoll
@@ -133,6 +136,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         case fixedOverlayStart
         case fixedOverlayDuration
         case fixedOverlayTexts
+        case fixedOverlayPosition
         case introBumperPath
         case outroBumperPath
         case watermarkOverlayTemplate
@@ -209,6 +213,7 @@ nonisolated extension WizardOptions {
         result.allowedTransitions = allowedTransitions
         result.highlightFraming = highlightFraming
         result.interviewZoom = interviewZoom
+        result.interviewZoomMoves = interviewZoomMoves
         result.podcastFraming = podcastFraming
         result.framingCamera = framingCamera
         result.useBRoll = useBRoll
@@ -224,6 +229,7 @@ nonisolated extension WizardOptions {
         result.fixedOverlayStart = fixedOverlayStart
         result.fixedOverlayDuration = fixedOverlayDuration
         result.fixedOverlayTexts = fixedOverlayTexts
+        result.fixedOverlayPosition = fixedOverlayPosition
         result.introBumperPath = introBumperPath
         result.outroBumperPath = outroBumperPath
         result.watermarkOverlayTemplate = watermarkOverlayTemplate
@@ -296,6 +302,7 @@ nonisolated extension WizardOptions {
         result.allowedTransitions = step2.allowedTransitions
         result.highlightFraming = step2.highlightFraming
         result.interviewZoom = step2.interviewZoom ?? base.interviewZoom
+        result.interviewZoomMoves = step2.interviewZoomMoves ?? base.interviewZoomMoves
         result.podcastFraming = step2.podcastFraming ?? base.podcastFraming
         result.framingCamera = step2.framingCamera ?? base.framingCamera
         result.useBRoll = step2.useBRoll ?? base.useBRoll
@@ -311,6 +318,7 @@ nonisolated extension WizardOptions {
         result.fixedOverlayStart = step2.fixedOverlayStart
         result.fixedOverlayDuration = step2.fixedOverlayDuration
         result.fixedOverlayTexts = step2.fixedOverlayTexts
+        result.fixedOverlayPosition = step2.fixedOverlayPosition
         result.introBumperPath = step2.introBumperPath
         result.outroBumperPath = step2.outroBumperPath
         result.watermarkOverlayTemplate = step2.watermarkOverlayTemplate

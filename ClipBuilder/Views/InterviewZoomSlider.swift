@@ -20,3 +20,18 @@ struct InterviewZoomSlider: View {
 
     static let caption = "0% stays tight on the VIP's face; 100% opens to the full source height so both people show head to knees."
 }
+
+/// Interview focus "Zoom in/out for focus": the camera zooms in and out on
+/// the VIP in place instead of panning toward the interviewer.
+struct InterviewZoomMovesToggle: View {
+    @Binding var isOn: Bool
+
+    var body: some View {
+        Toggle("Zoom in/out for focus", isOn: $isOn)
+            .toggleStyle(.switch)
+            .labelsHidden()
+            .accessibilityLabel("Zoom in/out for focus")
+    }
+
+    static let caption = "On: tight on the VIP while they talk, zoomed out to show everyone while the interviewer asks (around the VIP when they cannot all fit). Off: the camera pans toward the interviewer, and Pull back sets how tight the shot is."
+}

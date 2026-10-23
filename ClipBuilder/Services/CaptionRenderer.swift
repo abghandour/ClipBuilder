@@ -422,6 +422,11 @@ nonisolated struct CaptionRenderer {
 
     /// Overlay pixel position for a rendered caption box — captions.py math.
     func position(for caption: RenderedCaption, positionOverride: String? = nil) -> (x: Int, y: Int) {
+        // A position the user dragged to in the preview: centred on the point,
+        // kept inside the frame, and inside the safe area when that is on.
+        if let custom = CustomPosition(positionOverride) {
+            return customOrigin(custom, caption: caption, respectSafeArea: safeAreaOnly)
+        }
         if safeAreaOnly {
             let position = positionOverride.flatMap { $0 == "auto" ? nil : $0 } ?? style.position
             return self.position(for: caption, clipPosition: position)
@@ -446,6 +451,9 @@ nonisolated struct CaptionRenderer {
     /// timeline's safe area is on. The Wizard's explicit choices use
     /// `position(for:positionOverride:)` and the frame edge instead.
     func position(for caption: RenderedCaption, clipPosition: String) -> (x: Int, y: Int) {
+        if let custom = CustomPosition(clipPosition) {
+            return customOrigin(custom, caption: caption, respectSafeArea: true)
+        }
         let margin = max(40, videoHeight / 18)
         let x = (videoWidth - caption.width) / 2
         let y: Int
@@ -464,5 +472,17 @@ nonisolated struct CaptionRenderer {
             height: Double(caption.height + inset * 2) / Double(videoHeight))
         return (Int((origin.x * Double(videoWidth)).rounded()),
                 Int((origin.y * Double(videoHeight)).rounded()) + inset)
+    }
+
+    private func customOrigin(_ custom: CustomPosition, caption: RenderedCaption, respectSafeArea: Bool) -> (x: Int, y: Int) {
+        let frame = CGRect(x: 0, y: 0, width: videoWidth, height: videoHeight)
+        var origin = custom.origin(size: CGSize(width: caption.width, height: caption.height), in: frame)
+        if respectSafeArea, let safeArea {
+            let clamped = safeArea.clampedOrigin(
+                x: Double(origin.x) / Double(videoWidth), y: Double(origin.y) / Double(videoHeight),
+                width: Double(caption.width) / Double(videoWidth), height: Double(caption.height) / Double(videoHeight))
+            origin = CGPoint(x: clamped.x * Double(videoWidth), y: clamped.y * Double(videoHeight))
+        }
+        return (Int(origin.x.rounded()), Int(origin.y.rounded()))
     }
 }

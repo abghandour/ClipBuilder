@@ -59,6 +59,54 @@ struct WizardPreviewCompositeTests {
         #expect(!CameraFocusChooser.allowedLayouts(feeds: 2).contains(.vip))
     }
 
+    /// "Zoom in/out for focus" keeps the preview centred on the VIP during
+    /// the interviewer's question when both cannot share a frame, instead of
+    /// leaning toward the interviewer.
+    @Test func interviewZoomMovesKeepThePreviewOnTheVIPWhileTheInterviewerTalks() throws {
+        var video = Fixtures.video()
+        video.podcastLayout = PodcastLayout.singleCamera.rawValue
+        video.duration = 40
+        // Far apart: no 9:16 column holds both faces.
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, faceX: 0.24, faceY: 0.28),
+                     PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, faceX: 0.59, faceY: 0.28)]
+        video.podcastTilesJSON = String(decoding: try JSONEncoder().encode(tiles), as: UTF8.self)
+        let vip = VideoPersonRecord(videoID: video.id, personID: 1, key: "vip", name: "VIP",
+            descriptor: "", portraitAt: 5, portraitBox: .init(x: 0.55, y: 0.2, w: 0.08, h: 0.16), vip: true)
+        let host = VideoPersonRecord(videoID: video.id, personID: 2, key: "host", name: "Host",
+            descriptor: "", portraitAt: 5, portraitBox: .init(x: 0.2, y: 0.2, w: 0.08, h: 0.16), vip: false)
+        let turns = [SpeakerTurn(videoID: video.id, start: 0, end: 10, cluster: 1, confidence: 1, personKey: "host", tile: 0),
+                     SpeakerTurn(videoID: video.id, start: 10, end: 40, cluster: 0, confidence: 1, personKey: "vip", tile: 1)]
+        var scene = Fixtures.scene()
+        scene.startTime = 0
+        scene.endTime = 40
+        var options = WizardOptions()
+        options.highlightFraming = .interview
+        options.interviewZoom = 0
+        func source(zoomMoves: Bool?, at time: Double) -> CGRect? {
+            options.interviewZoomMoves = zoomMoves
+            let result = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
+                turns: turns, roster: [vip, host], people: [], layouts: ScreenCropStore.builtIn, time: time)
+            guard case .cells(let cells) = result.framing, cells.count == 1 else {
+                Issue.record("Expected one cell: \(result.warning ?? "")"); return nil
+            }
+            return cells[0].source
+        }
+        guard let panning = source(zoomMoves: nil, at: 2), let zooming = source(zoomMoves: true, at: 2),
+              let tight = source(zoomMoves: true, at: 30) else { return }
+        #expect(abs(zooming.height - 1) < 0.001, "the question is shown pulled out to the full height")
+        #expect(abs(zooming.midX - tight.midX) < 0.03, "centred where the tight shot is")
+        // Panning keeps the tight height (Pull back 0) and never sits further
+        // right than the zoomed-out shot; zooming opens to the full height.
+        #expect(panning.height < zooming.height - 0.2)
+        #expect(panning.midX <= zooming.midX + 0.0001, "panning leans toward the host on the left, never away")
+        #expect(panning != zooming)
+        let profile = Fixtures.brand()
+        options.interviewZoomMoves = nil
+        let before = PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: [])
+        options.interviewZoomMoves = true
+        #expect(PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: []) != before)
+    }
+
     @Test func interviewPullBackChangesPreviewFramingAndKey() {
         var video = Fixtures.video()
         video.podcastLayout = PodcastLayout.singleCamera.rawValue
@@ -91,6 +139,128 @@ struct WizardPreviewCompositeTests {
         let before = PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: [])
         options.interviewZoom = 1
         #expect(PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: []) != before)
+    }
+
+    /// The render samples faces in the clip before planning Interview focus;
+    /// the preview must plan from the same refined faces or its crop and
+    /// name tags land elsewhere than the output's.
+    @Test func interviewPreviewPlansFromTheRefinedRosterLikeTheRender() async {
+        var video = Fixtures.video()
+        video.podcastLayout = PodcastLayout.singleCamera.rawValue
+        // Portraits measured elsewhere in the recording: saturated boxes map to nothing.
+        let vip = VideoPersonRecord(videoID: video.id, personID: 1, key: "vip", name: "VIP",
+            descriptor: "", portraitAt: 500, portraitBox: .init(x: 1, y: 1, w: 1, h: 1), vip: true)
+        let host = VideoPersonRecord(videoID: video.id, personID: 2, key: "host", name: "Host",
+            descriptor: "", portraitAt: 500, portraitBox: .init(x: 1, y: 1, w: 1, h: 1), vip: false)
+        let turn = SpeakerTurn(videoID: video.id, start: 0, end: 10, cluster: 0, confidence: 1, personKey: "vip", tile: 0)
+        var scene = Fixtures.scene()
+        scene.startTime = 0
+        scene.endTime = 10
+        var options = WizardOptions()
+        options.highlightFraming = .interview
+        options.interviewZoom = 1
+        let refinedVIP = CGRect(x: 0.56, y: 0.17, width: 0.06, height: 0.11)
+        let refinedHost = CGRect(x: 0.34, y: 0.25, width: 0.07, height: 0.13)
+        let refiner: WizardPreviewFraming.RosterRefiner = { _, roster, range, _ in
+            #expect(range == 0...10)
+            return InterviewFaceSampling.applying(faces: ["vip": refinedVIP, "host": refinedHost], at: 0.1, to: roster)
+        }
+        let plain = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
+            turns: [turn], roster: [vip, host], people: [], layouts: ScreenCropStore.builtIn)
+        let refined = await WizardPreviewFraming.resolveCached(options: options, record: scene, video: video, face: nil,
+            turns: [turn], roster: [vip, host], people: [], layouts: ScreenCropStore.builtIn, refine: refiner)
+        guard case .cells(let before) = plain.framing, case .cells(let after) = refined.framing else {
+            Issue.record("Expected interview cells"); return
+        }
+        #expect(before.count == 1 && after.count == 1)
+        // The crop follows the sampled VIP face, and the cell carries that face for the tag planner.
+        #expect(before[0].source != after[0].source)
+        #expect(after[0].face == refinedVIP)
+        #expect(before[0].face.map { $0.minX >= 1 } ?? true)
+        #expect(WizardPreviewFraming.usesRefinedRoster(options: options))
+        options.highlightFraming = .talker
+        #expect(!WizardPreviewFraming.usesRefinedRoster(options: options))
+    }
+
+    /// The scrubber's moment picks the keyframe inside the plan; the plan
+    /// itself still covers the whole kept range, like the render's.
+    @Test func interviewPreviewFollowsTheScrubbedMomentAlongTheCameraPath() throws {
+        var video = Fixtures.video()
+        video.podcastLayout = PodcastLayout.singleCamera.rawValue
+        video.duration = 60
+        // Two speech feeds on one camera, the host on the left, the VIP on the
+        // right: close enough that a 9:16 two-shot holds both faces (a full
+        // height column is 0.316 of a 16:9 source), far enough apart that the
+        // two-shot is not the tight shot (outside the dead zone).
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, faceX: 0.46, faceY: 0.28),
+                     PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, faceX: 0.59, faceY: 0.28)]
+        video.podcastTilesJSON = String(decoding: try JSONEncoder().encode(tiles), as: UTF8.self)
+        let vip = VideoPersonRecord(videoID: video.id, personID: 1, key: "vip", name: "VIP",
+            descriptor: "", portraitAt: 5, portraitBox: .init(x: 0.55, y: 0.2, w: 0.08, h: 0.16), vip: true)
+        let host = VideoPersonRecord(videoID: video.id, personID: 2, key: "host", name: "Host",
+            descriptor: "", portraitAt: 5, portraitBox: .init(x: 0.42, y: 0.2, w: 0.08, h: 0.16), vip: false)
+        // The host asks for the first ten seconds, then the VIP answers.
+        let turns = [SpeakerTurn(videoID: video.id, start: 0, end: 10, cluster: 1, confidence: 1, personKey: "host", tile: 0),
+                     SpeakerTurn(videoID: video.id, start: 10, end: 40, cluster: 0, confidence: 1, personKey: "vip", tile: 1)]
+        var scene = Fixtures.scene()
+        scene.startTime = 0
+        scene.endTime = 40
+        var options = WizardOptions()
+        options.highlightFraming = .interview
+        func source(at time: Double?) -> CGRect? {
+            let result = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
+                turns: turns, roster: [vip, host], people: [], layouts: ScreenCropStore.builtIn, time: time)
+            guard case .cells(let cells) = result.framing, cells.count == 1 else {
+                Issue.record("Expected one cell, got \(result.framing) \(result.warning ?? "")"); return nil
+            }
+            return cells[0].source
+        }
+        guard let opening = source(at: 0), let middle = source(at: nil), let answer = source(at: 30) else { return }
+        var recipe = CropRecipe(kind: .interview)
+        recipe.interviewZoom = 0
+        let plan = try? CropRecipePlanner.plan(recipe, video: video, range: 0...40, turns: turns, roster: [vip, host],
+            layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16)
+        let detail = "tiles=\(plan?.tiles ?? []) path=\(plan?.slots.first?.path ?? []) notes=\(plan?.notes ?? [])"
+        #expect(middle == answer, "the default moment is the middle of the range")
+        #expect(opening != answer, "the opening two-shot differs from the tight answer shot \(detail)")
+        #expect(opening.minX < answer.minX, "the two-shot reaches toward the host on the left")
+    }
+
+    @Test func interviewPullBackChangesAnchoredPreviewWhileInterviewerTalks() throws {
+        var video = Fixtures.video()
+        video.podcastLayout = PodcastLayout.singleCamera.rawValue
+        video.duration = 40
+        // Far-apart feeds cannot share a portrait crop, even at full height.
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, faceX: 0.12, faceY: 0.28),
+                     PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, faceX: 0.88, faceY: 0.28)]
+        video.podcastTilesJSON = String(decoding: try JSONEncoder().encode(tiles), as: UTF8.self)
+        let vip = VideoPersonRecord(videoID: video.id, personID: 1, key: "vip", name: "VIP",
+            descriptor: "", portraitAt: 5, portraitBox: .init(x: 0.85, y: 0.2, w: 0.06, h: 0.16), vip: true)
+        let host = VideoPersonRecord(videoID: video.id, personID: 2, key: "host", name: "Host",
+            descriptor: "", portraitAt: 5, portraitBox: .init(x: 0.09, y: 0.2, w: 0.06, h: 0.16), vip: false)
+        let turns = [SpeakerTurn(videoID: video.id, start: 0, end: 10, cluster: 1, confidence: 1, personKey: "host", tile: 0),
+                     SpeakerTurn(videoID: video.id, start: 10, end: 40, cluster: 0, confidence: 1, personKey: "vip", tile: 1)]
+        var scene = Fixtures.scene()
+        scene.startTime = 0
+        scene.endTime = 40
+        var options = WizardOptions()
+        options.highlightFraming = .interview
+        func source(zoom: Double) -> CGRect? {
+            options.interviewZoom = zoom
+            // Explicitly show the interviewer turn, not the VIP answer at the midpoint.
+            let result = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
+                turns: turns, roster: [vip, host], people: [], layouts: ScreenCropStore.builtIn, time: 5)
+            #expect(result.warning == nil, "\(result.warning ?? "")")
+            guard case .cells(let cells) = result.framing, cells.count == 1 else {
+                Issue.record("Expected one interview cell"); return nil
+            }
+            return cells[0].source
+        }
+        guard let close = source(zoom: 0), let wide = source(zoom: 1) else { return }
+        #expect(abs(close.height - CenterStageService.Tuning.conversation.minCropHeightFraction) < 0.001)
+        #expect(wide.height > close.height)
+        #expect(abs(wide.height - 1) < 0.001)
+        #expect(wide.minX < close.minX, "Pull-back reveals more of the interviewer on the left")
     }
 
     @Test func safeAreaControlsInvalidatePreviewKey() {
@@ -134,6 +304,39 @@ struct WizardPreviewCompositeTests {
         #expect(captioned.width == 640 && captioned.height == 360)
         #expect(try changedPixels(plain, captioned, in: CGRect(x: 0, y: 180, width: 640, height: 180)) > 100)
         #expect(try changedPixels(plain, captioned, in: CGRect(x: 0, y: 0, width: 640, height: 120)) == 0)
+    }
+
+    @Test func layoutReportsWhereTheDraggableElementsLanded() async throws {
+        var input = try input()
+        input.options.addCaptions = true
+        input.options.captionPosition = CustomPosition(x: 0.5, y: 0.25).string
+        input.options.nameTags = true
+        input.options.nameTagPosition = CustomPosition(x: 0.5, y: 0.75).string
+        input.scene.person = PersonRecord(id: 1, key: "ann", name: "Ann Lee", descriptor: "Host")
+        var text = TextOverlayItem()
+        text.text = "Subscribe"
+        text.unbounded = true
+        text.xFrac = 0.5
+        text.yFrac = 0.1
+        text.wFrac = 0.5
+        text.hFrac = 0.1
+        input.templates = [OverlayTemplate(name: "Banner", composition: OverlayComposition(texts: [text]))]
+        input.options.fixedOverlayTemplate = "Banner"
+        input.options.fixedOverlayPosition = CustomPosition(x: 0.5, y: 0.6).string
+        let base = try await WizardPreviewComposite.prepareBase(input)
+        let rendered = try WizardPreviewComposite.renderWithLayout(input, baseFrame: base.image)
+        let caption = try #require(rendered.layout.caption)
+        #expect(abs(caption.midX - 320) <= 2 && abs(caption.midY - 90) <= 2, "caption centred on the dragged point")
+        let tag = try #require(rendered.layout.tags.first)
+        #expect(abs(tag.midX - 320) <= 2, "tag centred on the dragged x")
+        #expect(tag.midY > 180 && tag.maxY <= 360, "tag in the lower half, kept inside the canvas")
+        let overlay = try #require(rendered.layout.overlay)
+        #expect(abs(overlay.midX - 320) <= 1 && abs(overlay.midY - 216) <= 1, "overlay design moved to its point")
+        // Without those features the layout is empty.
+        var plain = try self.input()
+        plain.options.addCaptions = false
+        let empty = try WizardPreviewComposite.renderWithLayout(plain, baseFrame: base.image)
+        #expect(empty.layout == WizardPreviewComposite.Layout())
     }
 
     @Test func topTrailingNameTagUsesThatCorner() async throws {

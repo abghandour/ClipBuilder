@@ -14,9 +14,11 @@ nonisolated enum WizardPreviewFraming {
         return .cover(face: face)
     }
 
+    /// `time` is the moment shown; nil means the middle of the record's range.
     static func speaker(video: VideoRecord, record: SceneRecord, turns: [SpeakerTurn],
-                        roster: [VideoPersonRecord], people: [PersonRecord]) -> (person: PersonRecord?, face: CGRect?)? {
-        let time = (record.startTime + record.endTime) / 2
+                        roster: [VideoPersonRecord], people: [PersonRecord],
+                        time moment: Double? = nil) -> (person: PersonRecord?, face: CGRect?)? {
+        let time = moment ?? (record.startTime + record.endTime) / 2
         let tiles = CropRecipePlanner.tiles(video: video, roster: roster)
         let spans = CropRecipePlanner.segments(turns: turns, tiles: tiles,
             range: record.startTime...record.endTime, hold: 1.5)
@@ -49,11 +51,14 @@ nonisolated enum WizardPreviewFraming {
         return named.first { rosterKeys.contains($0.key) } ?? named.first
     }
 
+    /// `time` is the moment shown, on the source clock; nil means the middle
+    /// of the record's range. The plan always covers the whole range, as the
+    /// render's does, and the moment picks the keyframe inside it.
     static func resolve(options: WizardOptions, record: SceneRecord, video: VideoRecord?,
                         face: CGRect?, turns: [SpeakerTurn], roster: [VideoPersonRecord],
-                        people: [PersonRecord], layouts: [ScreenCropLayout])
+                        people: [PersonRecord], layouts: [ScreenCropLayout], time moment: Double? = nil)
         -> (framing: WizardPreviewComposite.Framing, warning: String?) {
-        let time = (record.startTime + record.endTime) / 2
+        let time = min(record.endTime, max(record.startTime, moment ?? (record.startTime + record.endTime) / 2))
         let fallback = talker(original: options.podcastFraming == .original,
             path: record.centerStagePath, wide: record.wide, time: time - record.startTime, face: face)
         guard options.podcastFraming != .original else { return (fallback, nil) }
@@ -71,6 +76,7 @@ nonisolated enum WizardPreviewFraming {
             }
             var recipe = CropRecipe(kind: kind)
             recipe.interviewZoom = options.interviewZoom ?? 0
+        recipe.interviewZoomMoves = options.interviewZoomMoves ?? false
             let plan = try CropRecipePlanner.plan(recipe, video: video,
                 range: record.startTime...record.endTime, turns: turns, roster: roster,
                 layouts: layouts, canvasAspect: options.renderSettings.aspectRatio)
@@ -87,23 +93,45 @@ nonisolated enum WizardPreviewFraming {
     static func recipe(options: WizardOptions) -> CropRecipe {
         var recipe = CropRecipe(kind: options.highlightFraming ?? .talker)
         recipe.interviewZoom = options.interviewZoom ?? 0
+        recipe.interviewZoomMoves = options.interviewZoomMoves ?? false
         return recipe
     }
 
+    /// Refines a roster's portraits from faces seen in the scene, the way the
+    /// render does before it plans Interview focus.
+    typealias RosterRefiner = @Sendable (VideoRecord, [VideoPersonRecord], ClosedRange<Double>, [SpeakerTurn]) async -> [VideoPersonRecord]
+
+    /// Interview focus is the one camera focus whose render plans from faces
+    /// sampled in the clip (`InterviewFaceSampling.refinedRoster`) instead of
+    /// the roster's stored portraits. A preview planned from the stored
+    /// portraits lands its crop and name tags elsewhere, so it refines too.
+    static func usesRefinedRoster(options: WizardOptions) -> Bool {
+        options.podcastFraming != .original && options.highlightFraming == .interview
+    }
+
     /// Called from the preview's background task. Cache misses keep the cheap
-    /// still framing; preview never launches another tracking decode.
+    /// still framing; preview never launches another tracking decode. The
+    /// Interview focus face samples (a few frame decodes per scene) are kept
+    /// in `InterviewPreviewRosterCache` so revisiting a scene is free.
     static func resolveCached(options: WizardOptions, record: SceneRecord, video: VideoRecord?,
                               face: CGRect?, turns: [SpeakerTurn], roster: [VideoPersonRecord],
                               people: [PersonRecord], layouts: [ScreenCropLayout],
-                              cache: FeedPathCache = .shared) async
+                              cache: FeedPathCache = .shared,
+                              refine: RosterRefiner = InterviewPreviewRosterCache.shared.refined,
+                              time moment: Double? = nil) async
         -> (framing: WizardPreviewComposite.Framing, warning: String?) {
+        var roster = roster
+        if usesRefinedRoster(options: options), let video {
+            roster = await refine(video, roster, record.startTime...record.endTime, turns)
+            if Task.isCancelled { return (.cover(face: face), nil) }
+        }
         let fallback = resolve(options: options, record: record, video: video, face: face,
-            turns: turns, roster: roster, people: people, layouts: layouts)
+            turns: turns, roster: roster, people: people, layouts: layouts, time: moment)
         guard case .cells(var cells) = fallback.framing, let video,
               let plan = try? CropRecipePlanner.plan(recipe(options: options),
                 video: video, range: record.startTime...record.endTime, turns: turns, roster: roster,
                 layouts: layouts, canvasAspect: options.renderSettings.aspectRatio) else { return fallback }
-        let time = (record.startTime + record.endTime) / 2
+        let time = min(record.endTime, max(record.startTime, moment ?? (record.startTime + record.endTime) / 2))
         for index in cells.indices where plan.slots.indices.contains(index) {
             let slot = plan.slots[index]
             let span = slot.trackingSpans?.first { $0.start <= time - record.startTime && time - record.startTime < $0.end }
@@ -163,5 +191,46 @@ nonisolated enum WizardPreviewFraming {
             return WizardPreviewComposite.Cell(source: source, area: area, person: person, face: face,
                                                isTalking: slot.talking.contains { $0.contains(time) })
         }
+    }
+}
+
+/// Face-refined rosters for Interview focus previews, keyed by the recording,
+/// the scene's source range and the roster the refinement started from.
+actor InterviewPreviewRosterCache {
+    static let shared = InterviewPreviewRosterCache()
+
+    private struct Key: Hashable {
+        var path: String
+        var start: Double
+        var end: Double
+        var roster: [VideoPersonRecord]
+    }
+
+    private var entries: [Key: [VideoPersonRecord]] = [:]
+    private var inFlight: [Key: Task<[VideoPersonRecord], Never>] = [:]
+    private let limit = 64
+
+    /// The render's refinement for `range`; one decode pass per scene, shared
+    /// by concurrent callers.
+    func refined(video: VideoRecord, roster: [VideoPersonRecord], range: ClosedRange<Double>,
+                 turns: [SpeakerTurn]) async -> [VideoPersonRecord] {
+        let key = Key(path: video.url.path, start: range.lowerBound, end: range.upperBound, roster: roster)
+        if let hit = entries[key] { return hit }
+        let task: Task<[VideoPersonRecord], Never>
+        if let running = inFlight[key] {
+            task = running
+        } else {
+            task = Task.detached(priority: .userInitiated) {
+                await InterviewFaceSampling.refinedRoster(video: video, roster: roster, range: range, turns: turns, log: { _ in })
+            }
+            inFlight[key] = task
+        }
+        let result = await task.value
+        if inFlight[key] == task {
+            inFlight[key] = nil
+            if entries.count >= limit { entries.removeAll() }
+            entries[key] = result
+        }
+        return result
     }
 }

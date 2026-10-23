@@ -23,8 +23,13 @@ nonisolated enum InterviewFocusPlanning {
     /// `zoom` is the user's pull-back: 0 keeps the conversation crop height on
     /// the tight shot, 1 opens both shots to the full source height (a 9:16
     /// column of a 16:9 source shows both people head to knees).
+    /// `zoomMoves` ("Zoom in/out for focus") ignores `zoom`: the tight shot is
+    /// the conversation height on the VIP, and the wide shot holds everyone
+    /// when they fit, else opens to the full height centred on the VIP, so
+    /// the camera zooms in and out instead of panning toward the interviewer.
     static func rects(vipFace: CGRect, otherFaces: [CGRect], sourceAspect: Double,
-                      canvasAspect: Double, zoom: Double = 0) -> (tight: FreeCropRect, twoShot: FreeCropRect, note: String?) {
+                      canvasAspect: Double, zoom: Double = 0, zoomMoves: Bool = false)
+        -> (tight: FreeCropRect, twoShot: FreeCropRect, note: String?) {
         let sourceAspect = max(0.001, sourceAspect)
         let aspect = max(0.001, canvasAspect)
         let bounds = CGRect(x: 0, y: 0, width: sourceAspect, height: 1)
@@ -40,7 +45,7 @@ nonisolated enum InterviewFocusPlanning {
         let vip = scaled(vipFace)
         let others = otherFaces.map(scaled).filter { !$0.isNull && !$0.isEmpty }
         let maxHeight = min(1, sourceAspect / aspect)
-        let zoom = min(1, max(0, zoom.isFinite ? zoom : 0))
+        let zoom = zoomMoves ? 0 : min(1, max(0, zoom.isFinite ? zoom : 0))
         let closeHeight = min(maxHeight, CenterStageService.Tuning.conversation.minCropHeightFraction)
         let height = closeHeight + (maxHeight - closeHeight) * zoom
         let width = height * aspect
@@ -49,6 +54,7 @@ nonisolated enum InterviewFocusPlanning {
                           width: width, height: height)
         let tight = FaceGuard.contain(seed, faces: [vip], bounds: bounds)
         guard !others.isEmpty else { return (normalised(tight), normalised(tight), nil) }
+
         // The VIP comes first even while the interviewer talks: the two-shot
         // is planned around a VIP face with generous room, so a cut that
         // cannot hold everyone clips the interviewer, never the VIP.
@@ -61,17 +67,29 @@ nonisolated enum InterviewFocusPlanning {
         // overlap even when the two-shot has to shift toward the interviewer.
         let neededHeight = max(tight.height, padded.height, padded.width / aspect,
                                (padded.maxY - union.minY) / (1 - FaceGuard.headroom))
-        let twoHeight = min(maxHeight, neededHeight)
+        let bothFit = neededHeight <= maxHeight + 1e-9
+        let twoHeight = bothFit ? min(maxHeight, neededHeight) : height
         let twoWidth = twoHeight * aspect
         let preferred = CGRect(x: min(sourceAspect - twoWidth, max(0, padded.midX - twoWidth / 2)),
                                y: min(1 - twoHeight, max(0, union.minY - twoHeight * FaceGuard.headroom)),
                                width: twoWidth, height: twoHeight)
-        if neededHeight <= maxHeight + 1e-9 {
+        if bothFit {
+            // Everyone fits: the wide shot holds them all (for zoom moves too).
             let two = FaceGuard.contain(preferred, faces: faces, bounds: bounds)
             return (normalised(tight), normalised(two), nil)
         }
-        // Both faces cannot fit. Go as far toward the interviewer as possible
-        // while keeping the VIP's whole face and margin inside the frame.
+        if zoomMoves {
+            // They cannot all fit: open to the full height around the tight
+            // shot's centre so the move is a zoom, not a pan toward the interviewer.
+            let wideWidth = maxHeight * aspect
+            let wideSeed = CGRect(x: min(sourceAspect - wideWidth, max(0, tight.midX - wideWidth / 2)),
+                                  y: min(1 - maxHeight, max(0, vip.minY - maxHeight * FaceGuard.headroom)),
+                                  width: wideWidth, height: maxHeight)
+            let wide = FaceGuard.contain(wideSeed, faces: [vip], bounds: bounds)
+            return (normalised(tight), normalised(wide), "Both people do not fit one frame; zooming out around the VIP")
+        }
+        // Both faces cannot fit. Follow pull-back and go as far toward the
+        // interviewer as possible while keeping the VIP's roomy face inside.
         let towardRight = others.reduce(0) { $0 + $1.midX } / Double(others.count) >= roomy.midX
         let paddedVIP = roomy.insetBy(dx: -roomy.width * FaceGuard.margin, dy: -roomy.height * FaceGuard.margin)
             .intersection(bounds)

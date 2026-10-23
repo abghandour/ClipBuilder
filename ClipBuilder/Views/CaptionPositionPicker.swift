@@ -9,6 +9,10 @@ struct CaptionPositionPicker: View {
             ForEach(["bottom", "middle", "top"], id: \.self) { position in
                 Text(position.capitalized).lineLimit(1).fixedSize().tag(Optional(position))
             }
+            // Set by dragging the caption in the preview; any other choice clears it.
+            if let custom = selection, CustomPosition.isCustom(custom) {
+                Text("Custom (dragged)").lineLimit(1).fixedSize().tag(Optional(custom))
+            }
         }
     }
 }

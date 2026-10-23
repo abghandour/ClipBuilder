@@ -35,8 +35,7 @@ struct MiniTranscriptPickView: View {
         let draftItem = RangeReviewItem(id: .init(ownerID: Self.draftOwnerID), title: "New pick",
             titleHelp: "Press a word in the transcript and drag to select a passage, adjust it, then press Add.",
             keepLabel: "New pick",
-            captions: [empty ? .init(text: "Press a word and drag to select")
-                             : .init(text: RangeReviewItem.rangeCaption(draft), monospaced: true)],
+            captions: empty ? [] : [.init(text: RangeReviewItem.rangeCaption(draft), monospaced: true)],
             video: run.video, range: draft, originalRange: draft, limits: limits, trimPolicy: .pick,
             isAvailable: run.video.isPresent, isDraft: true)
         let pickItems = picks.enumerated().map { index, pick in
@@ -63,13 +62,12 @@ struct MiniTranscriptPickView: View {
                         onDelete: { item in store.deleteMiniTranscriptPick(item.id.ownerID) },
                         onDeleteAll: { store.deleteAllMiniTranscriptPicks() },
                         spanSelection: true, playAll: true,
-                        onSave: save) { item in
-            if item.isDraft {
-                draftFooter(item)
-            } else if let pick = picks.first(where: { $0.id == item.id.ownerID }) {
-                pickFooter(pick)
-            }
-        }
+                        transcriptAccessory: { item in
+                            // Add lives beside Follow / Translation once a passage is marked.
+                            guard item.isDraft, item.range.upperBound > item.range.lowerBound else { return nil }
+                            return AnyView(addButton(item))
+                        },
+                        onSave: save) { _ in EmptyView() }
         .onChange(of: run.batchID) { _, _ in draftRange = nil; lastAddedEnd = nil }
     }
 
@@ -81,31 +79,17 @@ struct MiniTranscriptPickView: View {
         }
     }
 
-    private func draftFooter(_ item: RangeReviewItem) -> some View {
-        let empty = item.range.upperBound <= item.range.lowerBound
-        return HStack(spacing: Theme.spaceS) {
-            Button {
-                store.addMiniTranscriptPick(range: item.range)
-                lastAddedEnd = item.range.upperBound
-                draftRange = nil
-            } label: {
-                Text("Add").lineLimit(1).fixedSize()
-            }
-            .buttonStyle(.borderedProminent)
-            .disabled(empty || store.isWizardRunning || !item.isAvailable)
-            .help("Add the selected passage to the picks")
-            FormCaption(empty ? "Select a passage first." : "Adds the selected words as a pick and clears the selection.")
-                .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private func pickFooter(_ pick: TranscriptPick) -> some View {
-        Button(role: .destructive) {
-            store.deleteMiniTranscriptPick(pick.id)
+    private func addButton(_ item: RangeReviewItem) -> some View {
+        Button {
+            store.addMiniTranscriptPick(range: item.range)
+            lastAddedEnd = item.range.upperBound
+            draftRange = nil
         } label: {
-            Text("Delete").lineLimit(1).fixedSize()
+            Text("Add").lineLimit(1).fixedSize()
         }
-        .disabled(store.isWizardRunning)
-        .help("Remove this pick")
+        .buttonStyle(.borderedProminent)
+        .controlSize(.small)
+        .disabled(store.isWizardRunning || !item.isAvailable)
+        .help("Add the selected passage to the picks")
     }
 }

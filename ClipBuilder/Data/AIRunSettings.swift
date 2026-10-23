@@ -138,13 +138,13 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
                 "strikeStats", "strikeUnits", "strikeSpeedCallouts", "strikeGrapplingCard", "strikeRoundCard",
                 "useMusic", "musicFolder", "useFightResearch",
                 "workflow", "musicTrack", "overlayStyle", "overlayAnimation", "overlayPlacement",
-                "targetDurationSeconds", "framingCamera", "podcastFraming", "highlightFraming", "interviewZoom", "useBRoll", "screenCropLayouts",
+                "targetDurationSeconds", "framingCamera", "podcastFraming", "highlightFraming", "interviewZoom", "interviewZoomMoves", "useBRoll", "screenCropLayouts",
                 "allowedTransitions", "formatPreset", "critiqueLoop", "critiqueTargetScore", "critiqueMaxVersions", "includeWatermark",
                 "includeHeadline",
                 "includeOutro",
                 "includeIntroBumper", "includeOutroBumper", "includeMiddleBumper", "lookPreset", "transitionChoice",
                 "lookIntensity", "fixedOverlayEnabled", "fixedOverlayTemplate", "fixedOverlayStart", "fixedOverlayDuration",
-                "fixedOverlayTextsJoined", "watermarkOverlayTemplate", "watermarkOpacity",
+                "fixedOverlayTextsJoined", "fixedOverlayPosition", "watermarkOverlayTemplate", "watermarkOpacity",
                 "introBumperLibraryPath", "outroBumperLibraryPath", "outputMode",
             ]
         }

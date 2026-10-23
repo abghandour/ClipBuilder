@@ -32,6 +32,8 @@ struct RangeReviewView<Footer: View>: View {
     var playAll = false
     /// Replaces the transcript words column (Fight metrics shows its action grid there).
     var leadingPanel: AnyView? = nil
+    /// A control for the transcript column's header, per selected item (Express's Add button).
+    var transcriptAccessory: ((RangeReviewItem) -> AnyView?)? = nil
     /// Shown in the trim column while a draft has no range yet.
     var emptyDraftHint = "Press a word in the transcript and drag to select a passage."
     /// Replaces the trim hint under the filmstrip (no transcript words to click in Fight metrics).
@@ -40,6 +42,16 @@ struct RangeReviewView<Footer: View>: View {
     @ViewBuilder var footer: (RangeReviewItem) -> Footer
 
     @State private var selectedID: RangeReviewItem.ID?
+    /// The user clicked the selected row to clear it; nothing is auto-selected until they pick again.
+    @State private var userCleared = false
+    /// A span dragged while nothing was selected: applied once the draft item is selected.
+    @State private var pendingDraft: (start: Double, end: Double)?
+    @State private var draggingID: RangeReviewItem.ID?
+    @State private var dragTranslation: CGFloat = 0
+    /// Slot between reorderable blocks where the dragged row would land (0 = first).
+    @State private var dropSlot: Int?
+    @State private var rowFrames: [RangeReviewItem.ID: CGRect] = [:]
+    private static var listSpace: String { "rangeReview.list" }
     @State private var playback = PodcastHighlightTrimPlayback()
     @State private var loadedURL: URL?
     @State private var draft: (start: Double, end: Double)?
@@ -60,6 +72,8 @@ struct RangeReviewView<Footer: View>: View {
         return parent.children.first { $0.id == selectedID } ?? parent.children.first ?? parent
     }
     private var video: VideoRecord? { selected?.video }
+    /// The recording whose transcript shows even while nothing is selected.
+    private var contextVideo: VideoRecord? { video ?? items.first?.video }
     private var range: ClosedRange<Double>? { selected?.range }
     private var limits: ClosedRange<Double> { selected?.limits ?? 0...0 }
     private var policy: RangeReviewItem.TrimPolicy { selected?.trimPolicy ?? .qa }
@@ -80,10 +94,10 @@ struct RangeReviewView<Footer: View>: View {
         range.upperBound > range.lowerBound ? range : range.lowerBound...(range.lowerBound + 1)
     }
     private var visibleTranscript: TranscriptQATrim.Transcript {
-        transcriptVideoID == video?.id ? transcript : TranscriptQATrim.Transcript()
+        transcriptVideoID == contextVideo?.id ? transcript : TranscriptQATrim.Transcript()
     }
     private var transcriptInput: TranscriptQATrim.Input {
-        TranscriptQATrim.Input(rows: rows, labels: labels, videoID: video?.id ?? -1)
+        TranscriptQATrim.Input(rows: rows, labels: labels, videoID: contextVideo?.id ?? -1)
     }
     private var visibleItems: [RangeReviewItem] {
         items.flatMap { item in [item] + (item.id.ownerID == selectedID?.ownerID ? item.children : []) }
@@ -97,14 +111,24 @@ struct RangeReviewView<Footer: View>: View {
                                   - 2 * TranscriptQAColumns.dividerWidth)
             HStack(spacing: 0) {
                 if transcriptLeading {
-                    if let selected, let video {
+                    // The word panel is one view whether or not something is
+                    // selected, so a drag that starts with nothing selected
+                    // keeps its gesture state while it selects the draft.
+                    if let context = selected ?? items.first {
                         Group {
-                            if let leadingPanel { leadingPanel } else { wordPanel(selected: selected, video: video) }
+                            if let leadingPanel { leadingPanel }
+                            else { wordPanel(selected: context, video: context.video, inactive: selected == nil) }
                         }
                         .frame(width: widths.transcript).clipped()
                         columnDivider(.transcript, width: widths.transcript, otherWidth: widths.list,
                                       available: geometry.size.width)
-                        trimSurface(item: selected).padding(Theme.spaceS).frame(width: playerWidth).clipped()
+                        if let selected {
+                            trimSurface(item: selected).padding(Theme.spaceS).frame(width: playerWidth).clipped()
+                        } else {
+                            ContentUnavailableView(emptyTitle, systemImage: "text.bubble",
+                                                   description: Text(emptyMessage))
+                                .frame(width: playerWidth, alignment: .center).frame(maxHeight: .infinity)
+                        }
                     } else {
                         ContentUnavailableView(emptyTitle, systemImage: "text.bubble",
                                                description: Text(emptyMessage))
@@ -155,6 +179,10 @@ struct RangeReviewView<Footer: View>: View {
         .onChange(of: selectedID) { _, _ in
             selection?.wrappedValue = selectedID?.ownerID
             selectItem()
+            if let pendingDraft {
+                draft = pendingDraft
+                self.pendingDraft = nil
+            }
             if playingAll {
                 if advancingPlayAll, playback.player != nil, let range, range.upperBound > range.lowerBound {
                     playback.play()
@@ -218,29 +246,45 @@ struct RangeReviewView<Footer: View>: View {
         TranscriptQAColumns.widths(available: available, list: list, transcript: transcript)
     }
 
-    private func wordPanel(selected: RangeReviewItem, video: VideoRecord) -> some View {
-        TranscriptQAWordPanel(transcript: visibleTranscript, videoID: video.id,
+    /// `inactive` shows the words with nothing marked while no item is
+    /// selected; a word click selects `selected` (the first item, the draft in
+    /// pick lists) and a drag selects it and marks the span in one move.
+    private func wordPanel(selected: RangeReviewItem, video: VideoRecord, inactive: Bool = false) -> some View {
+        let emptyRange = selected.range.lowerBound...selected.range.lowerBound
+        let contextCanTrim = inactive ? selected.isAvailable : canTrim
+        func activate() {
+            selectedID = selected.id
+            userCleared = false
+        }
+        return TranscriptQAWordPanel(transcript: visibleTranscript, videoID: video.id,
                               translationLanguages: transcriptVideoID == video.id ? translationLanguages : [],
                               translationsByLanguage: transcriptVideoID == video.id ? translationsByLanguage : [:],
                               preferredTranslationLanguage: preferredTranslationLanguage,
                               sectionID: selected.id,
-                              range: editRange,
+                              range: inactive ? emptyRange : editRange,
                               otherRanges: items.flatMap { $0.children.isEmpty ? [$0] : $0.children }
-                                  .filter { $0.id != selected.id && $0.video.id == video.id }.map(\.range),
-                              playback: playback, canTrim: canTrim,
-                              onSelect: selectWord, onPreview: previewWord,
-                              onCommit: { commitDraft(snap: false) }, onCancel: { draft = nil },
+                                  .filter { (inactive || $0.id != selected.id) && $0.video.id == video.id }.map(\.range),
+                              playback: playback, canTrim: contextCanTrim,
+                              onSelect: inactive ? { _ in activate() } : selectWord,
+                              onPreview: inactive ? { _, _ in activate() } : previewWord,
+                              onCommit: { if !inactive { commitDraft(snap: false) } }, onCancel: { draft = nil },
                               spanSelection: spanSelection && selected.isDraft,
                               highlightsCurrentLine: !spanSelection,
                               onSpanPreview: { span in
-                                  guard isEnabled, canTrim else { return }
-                                  draft = (span.lowerBound, span.upperBound)
+                                  guard isEnabled, contextCanTrim else { return }
+                                  if inactive {
+                                      pendingDraft = (span.lowerBound, span.upperBound)
+                                      activate()
+                                  } else {
+                                      draft = (span.lowerBound, span.upperBound)
+                                  }
                               },
                               onSpanClear: {
                                   guard isEnabled, canTrim, let range else { draft = nil; return }
                                   draft = nil
                                   commit(range.lowerBound...range.lowerBound)
-                              })
+                              },
+                              accessory: inactive ? nil : transcriptAccessory?(selected))
     }
 
     private func columnDivider(_ column: TranscriptQAColumns.Column, width: CGFloat,
@@ -294,21 +338,45 @@ struct RangeReviewView<Footer: View>: View {
                 Divider()
             }
             // Selection is explicit so the sibling checkbox never selects a row.
-            List {
-                ForEach(visibleItems) { item in
-                    itemRow(item)
-                        .listRowInsets(EdgeInsets())
-                        .listRowBackground(item.id == selectedID ? Color.accentColor.opacity(0.16) : Color.clear)
-                        .moveDisabled(item.isDraft || item.id.cutIndex != nil)
-                        .contextMenu {
-                            if let onDelete, !item.isDraft, item.id.cutIndex == nil {
-                                Button("Delete", role: .destructive) { onDelete(item) }
+            // Rows live in a plain stack so a row can be dragged to a new place
+            // with a marker showing where it lands.
+            ScrollView {
+                VStack(alignment: .leading, spacing: 0) {
+                    ForEach(visibleItems) { item in
+                        itemRow(item)
+                            .background(item.id == selectedID ? Color.accentColor.opacity(0.16) : Color.clear,
+                                        in: RoundedRectangle(cornerRadius: 6))
+                            .padding(.horizontal, Theme.spaceXS)
+                            .background(GeometryReader { geometry in
+                                Color.clear.preference(key: RowFramePreference.self,
+                                                       value: [item.id: geometry.frame(in: .named(Self.listSpace))])
+                            })
+                            .offset(y: isDragging(item) ? dragTranslation : 0)
+                            .opacity(isDragging(item) ? 0.75 : 1)
+                            .zIndex(isDragging(item) ? 1 : 0)
+                            .contextMenu {
+                                if let onDelete, !item.isDraft, item.id.cutIndex == nil {
+                                    Button("Delete", role: .destructive) { onDelete(item) }
+                                }
                             }
-                        }
+                    }
                 }
-                .onMove(perform: onMove == nil ? nil : moveItems)
+                .padding(.vertical, Theme.spaceXS)
+                .coordinateSpace(name: Self.listSpace)
+                .onPreferenceChange(RowFramePreference.self) { rowFrames = $0 }
+                .overlay(alignment: .topLeading) {
+                    if draggingID != nil, let y = dropMarkerY {
+                        Capsule().fill(Color.accentColor)
+                            .frame(height: 3)
+                            .padding(.horizontal, Theme.spaceS)
+                            .offset(y: y - 1.5)
+                            .allowsHitTesting(false)
+                            .accessibilityHidden(true)
+                    }
+                }
             }
-            .listStyle(.sidebar)
+            .focusable()
+            .focusEffectDisabled()
             .onMoveCommand { direction in
                 guard isEnabled, !visibleItems.isEmpty else { return }
                 let index = visibleItems.firstIndex { $0.id == selectedID } ?? 0
@@ -378,43 +446,90 @@ struct RangeReviewView<Footer: View>: View {
     }
 
     /// Up/down buttons beside each row when the adapter supports reordering.
-    private func moveButtons(_ item: RangeReviewItem) -> some View {
-        let owners = visibleItems.filter { !$0.isDraft && $0.id.cutIndex == nil }
-        let index = owners.firstIndex { $0.id == item.id } ?? 0
-        return HStack(spacing: 0) {
-            Button("Move up", systemImage: "chevron.up") { moveOwner(item, by: -1) }
-                .disabled(index == 0)
-                .help("Move up")
-            Button("Move down", systemImage: "chevron.down") { moveOwner(item, by: 1) }
-                .disabled(index >= owners.count - 1)
-                .help("Move down")
+    private func deleteButton(_ item: RangeReviewItem, onDelete: @escaping (RangeReviewItem) -> Void) -> some View {
+        Button("Delete", systemImage: "trash") { onDelete(item) }
+            .labelStyle(.iconOnly)
+            .buttonStyle(.borderless)
+            .controlSize(.small)
+            .fixedSize()
+            .disabled(!isEnabled)
+            .help("Remove this item")
+    }
+
+    private struct RowFramePreference: PreferenceKey {
+        static var defaultValue: [RangeReviewItem.ID: CGRect] { [:] }
+        static func reduce(value: inout [RangeReviewItem.ID: CGRect], nextValue: () -> [RangeReviewItem.ID: CGRect]) {
+            value.merge(nextValue()) { $1 }
         }
-        .labelStyle(.iconOnly)
-        .buttonStyle(.borderless)
-        .controlSize(.small)
-        .fixedSize()
     }
 
-    private func moveOwner(_ item: RangeReviewItem, by offset: Int) {
-        guard isEnabled, let onMove else { return }
-        var ids = visibleItems.filter { !$0.isDraft && $0.id.cutIndex == nil }.map { $0.id.ownerID }
-        guard let index = ids.firstIndex(of: item.id.ownerID), ids.indices.contains(index + offset) else { return }
-        ids.swapAt(index, index + offset)
-        onMove(ids)
+    private func isDragging(_ item: RangeReviewItem) -> Bool {
+        guard let draggingID else { return false }
+        return item.id == draggingID || (item.id.ownerID == draggingID.ownerID && item.id.cutIndex != nil)
     }
 
-    /// Top-level owners in their new order; drafts and child cuts stay where they are.
-    private func moveItems(from source: IndexSet, to destination: Int) {
-        guard isEnabled, let onMove else { return }
-        var visible = visibleItems
-        visible.move(fromOffsets: source, toOffset: destination)
-        onMove(visible.filter { !$0.isDraft && $0.id.cutIndex == nil }.map { $0.id.ownerID })
+    private func canReorder(_ item: RangeReviewItem) -> Bool {
+        onMove != nil && !item.isDraft && item.id.cutIndex == nil
+    }
+
+    /// Reorderable owners with the frame of their row plus their child cuts, in list order.
+    private var reorderBlocks: [(owner: RangeReviewItem, frame: CGRect)] {
+        visibleItems.filter(canReorder).compactMap { owner in
+            guard var frame = rowFrames[owner.id] else { return nil }
+            for child in owner.children { if let f = rowFrames[child.id] { frame = frame.union(f) } }
+            return (owner, frame)
+        }
+    }
+
+    /// Boundaries between blocks, top of the first to bottom of the last.
+    private var dropBoundaries: [CGFloat] {
+        let blocks = reorderBlocks
+        guard let last = blocks.last else { return [] }
+        return blocks.map(\.frame.minY) + [last.frame.maxY]
+    }
+
+    private var dropMarkerY: CGFloat? {
+        guard let dropSlot else { return nil }
+        let boundaries = dropBoundaries
+        return boundaries.indices.contains(dropSlot) ? boundaries[dropSlot] : nil
+    }
+
+    private func reorderGesture(_ item: RangeReviewItem) -> some Gesture {
+        DragGesture(minimumDistance: 6, coordinateSpace: .named(Self.listSpace))
+            .onChanged { value in
+                guard isEnabled else { return }
+                draggingID = item.id
+                dragTranslation = value.translation.height
+                let boundaries = dropBoundaries
+                guard !boundaries.isEmpty else { return }
+                dropSlot = boundaries.indices.min { abs(boundaries[$0] - value.location.y) < abs(boundaries[$1] - value.location.y) }
+            }
+            .onEnded { _ in
+                defer { draggingID = nil; dragTranslation = 0; dropSlot = nil }
+                guard isEnabled, let onMove, let slot = dropSlot else { return }
+                var ids = reorderBlocks.map { $0.owner.id.ownerID }
+                guard let from = ids.firstIndex(of: item.id.ownerID) else { return }
+                var to = slot
+                ids.remove(at: from)
+                if to > from { to -= 1 }
+                ids.insert(item.id.ownerID, at: min(ids.count, max(0, to)))
+                if ids != reorderBlocks.map({ $0.owner.id.ownerID }) { onMove(ids) }
+            }
     }
 
     private func itemRow(_ item: RangeReviewItem) -> some View {
         let isChild = item.id.cutIndex != nil
         return ZStack(alignment: .topLeading) {
-            Button { selectedID = item.id } label: {
+            // Clicking the selected row clears the selection.
+            Button {
+                if selectedID == item.id {
+                    selectedID = nil
+                    userCleared = true
+                } else {
+                    selectedID = item.id
+                    userCleared = false
+                }
+            } label: {
                 VStack(alignment: .leading, spacing: 4) {
                     Text(item.title)
                         .font(.callout.weight(.medium)).italic(item.isDraft)
@@ -432,7 +547,7 @@ struct RangeReviewView<Footer: View>: View {
                     }
                 }
                 .padding(.leading, isChild ? 42 : kept != nil ? 26 : 0)
-                .padding(.trailing, onMove != nil && !item.isDraft && !isChild ? 44 : 0)
+                .padding(.trailing, onDelete != nil && !item.isDraft && !isChild ? 30 : 0)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, Theme.spaceS)
                 .padding(.horizontal, Theme.spaceS)
@@ -440,8 +555,10 @@ struct RangeReviewView<Footer: View>: View {
             }
             .buttonStyle(.plain)
             .accessibilityAddTraits(item.id == selectedID ? .isSelected : [])
-            if onMove != nil, !item.isDraft, !isChild {
-                moveButtons(item)
+            .highPriorityGesture(reorderGesture(item), including: canReorder(item) ? .all : .subviews)
+            .help(canReorder(item) ? "Drag up or down to reorder" : "")
+            if let onDelete, !item.isDraft, !isChild {
+                deleteButton(item, onDelete: onDelete)
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .padding(.vertical, Theme.spaceS)
                     .padding(.trailing, Theme.spaceXS)
@@ -582,6 +699,8 @@ struct RangeReviewView<Footer: View>: View {
     }
 
     private func reconcileSelection() {
+        // A cleared selection stays cleared until the user picks a row or the owner asks for one.
+        if selectedID == nil, userCleared, selection?.wrappedValue == nil { return }
         let ownerID = selection?.wrappedValue ?? selectedID?.ownerID
         let parent = items.first { $0.id.ownerID == ownerID } ?? items.first
         if let parent, selectedID == parent.id || parent.children.contains(where: { $0.id == selectedID }) { return }

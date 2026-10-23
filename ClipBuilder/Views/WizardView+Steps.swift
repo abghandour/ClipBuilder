@@ -72,7 +72,14 @@ extension WizardView {
         HSplitView {
             configurationCards.frame(minWidth: 480, maxWidth: .infinity)
             WizardPreviewColumn(scenes: previewScenes, options: presentationOptions(),
-                profile: store.activeProfile, thumbnails: store.thumbnails)
+                profile: store.activeProfile, thumbnails: store.thumbnails,
+                onMove: { element, position in
+                    switch element {
+                    case .caption: captionChoice(\.captionPosition).wrappedValue = position.string
+                    case .nameTag: nameTagPosition = position.string
+                    case .overlay: fixedOverlayPosition = position.string
+                    }
+                })
                 .id("\(store.profileGeneration):\(store.activeProjectID ?? 0)")
                 .rememberedPaneWidth("pane.wizard.preview", min: 240, initial: 320, max: 480)
         }

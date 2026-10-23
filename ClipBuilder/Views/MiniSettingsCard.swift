@@ -79,10 +79,16 @@ struct MiniSettingsCard: View {
                     : "Chosen by the highlights model when the candidates were found.")
                 : WizardCameraFocus.summary(settings.cameraFocus))
             if settings.cameraFocus == CropRecipe.Kind.interview.rawValue {
-                MiniRow("Pull back") {
-                    InterviewZoomSlider(zoom: $settings.interviewZoom)
+                MiniRow("Zoom in/out for focus") {
+                    InterviewZoomMovesToggle(isOn: $settings.interviewZoomMoves)
                 }
-                FormCaption(InterviewZoomSlider.caption)
+                FormCaption(InterviewZoomMovesToggle.caption)
+                if !settings.interviewZoomMoves {
+                    MiniRow("Pull back") {
+                        InterviewZoomSlider(zoom: $settings.interviewZoom)
+                    }
+                    FormCaption(InterviewZoomSlider.caption)
+                }
             }
         }
         MiniRow("Look") {
@@ -241,6 +247,17 @@ struct MiniSettingsCard: View {
                     .pickerStyle(.menu)
                 }
                 overlayTextRows(in: templates)
+                MiniRow("Position") {
+                    HStack(spacing: Theme.spaceS) {
+                        Text(CustomPosition.isCustom(settings.overlayPosition) ? "Custom (dragged)" : "As designed")
+                            .lineLimit(1).fixedSize()
+                        if CustomPosition.isCustom(settings.overlayPosition) {
+                            Button("Reset") { settings.overlayPosition = nil }
+                                .controlSize(.small).lineLimit(1).fixedSize()
+                        }
+                    }
+                }
+                FormCaption("Drag the overlay in the preview to move the whole design.")
                 MiniRow("Starts at") {
                     HStack(spacing: Theme.spaceXS) {
                         TextField("Start", value: $settings.overlayStart, format: .number.precision(.fractionLength(0...1)))

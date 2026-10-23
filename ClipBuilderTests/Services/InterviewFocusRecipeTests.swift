@@ -169,7 +169,14 @@ struct InterviewFocusRecipeTests {
         let distant = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video(),
             turns: turns(), roster: roster, layouts: [], canvasAspect: 9.0 / 16)
         #expect(distant.notes == ["Two-shot cannot hold both faces; the interviewer is partly in frame"])
-        #expect(distant.slots[0].path?.contains { $0.h == 1 } == true)
+        // The anchored shot follows Pull back: the tight height at 0, full height at 1.
+        let close = CenterStageService.Tuning.conversation.minCropHeightFraction
+        #expect(distant.slots[0].path?.allSatisfy { abs($0.h - close) < 0.001 } == true)
+        var pulledBack = CropRecipe(kind: .interview)
+        pulledBack.interviewZoom = 1
+        let wide = try CropRecipePlanner.plan(pulledBack, video: video(),
+            turns: turns(), roster: roster, layouts: [], canvasAspect: 9.0 / 16)
+        #expect(wide.slots[0].path?.allSatisfy { $0.h == 1 } == true)
     }
 
     @MainActor @Test func builderAndPodcastTimelineInstallCameraPath() throws {

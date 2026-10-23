@@ -526,4 +526,30 @@ extension NameTagPlannerTests {
         crowded.captionBand = CGRect(x: 0, y: safe.minY, width: 1080, height: safe.height)
         #expect(NameTagPlanner.plan(areas: [area], people: people, settings: crowded).isEmpty)
     }
+
+    @Test func draggedPositionCentresTagsOnThePointAndStillStacksConcurrentOnes() throws {
+        let area = NameTagPlanner.Area(rect: frame, spans: [
+            .init(start: 0, end: 5, personKey: "ann", faceBox: CGRect(x: 200, y: 400, width: 120, height: 160)),
+            .init(start: 0, end: 5, personKey: "bob", faceBox: CGRect(x: 760, y: 400, width: 120, height: 160))])
+        let custom = CustomPosition(x: 0.5, y: 0.5)
+        let tags = NameTagPlanner.plan(areas: [area], people: people, settings: .init(position: custom.string))
+        let a = try #require(tags.first { $0.personKey == "ann" })
+        let b = try #require(tags.first { $0.personKey == "bob" })
+        #expect(abs(a.rect.midX - 540) <= 1 && abs(a.rect.midY - 960) <= 1, "the first tag sits on the point")
+        #expect(!a.rect.intersects(b.rect), "the second stacks away instead of covering it")
+        #expect(abs(b.rect.midX - 540) <= 1)
+        // A caption band under the point does not move a dragged tag; a per-person corner still wins.
+        var band = NameTagPlanner.Settings(position: custom.string)
+        band.captionBand = CGRect(x: 0, y: 900, width: 1080, height: 200)
+        let overBand = NameTagPlanner.plan(areas: [area], people: [people[0]], settings: band)
+        #expect(abs((overBand.first?.rect.midY ?? 0) - 960) <= 1)
+        var own = people
+        own[1].position = "bottomLeading"
+        let split = NameTagPlanner.plan(areas: [area], people: own, settings: .init(position: custom.string))
+        #expect(split.first { $0.personKey == "bob" }?.corner == .bottomLeading)
+        // Dragged to a corner the tag stays inside the area's inset.
+        let edge = NameTagPlanner.plan(areas: [area], people: [people[0]], settings: .init(position: CustomPosition(x: 1, y: 1).string))
+        let rect = try #require(edge.first?.rect)
+        #expect(rect.maxX <= frame.maxX && rect.maxY <= frame.maxY)
+    }
 }

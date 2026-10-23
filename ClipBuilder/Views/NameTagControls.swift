@@ -34,10 +34,16 @@ struct NameTagControls: View {
                 Text("Top right").lineLimit(1).fixedSize().tag("topTrailing" as String?)
                 Text("Bottom left").lineLimit(1).fixedSize().tag("bottomLeading" as String?)
                 Text("Bottom right").lineLimit(1).fixedSize().tag("bottomTrailing" as String?)
+                // Set by dragging a tag in the preview; any other choice clears it.
+                if let custom = position, CustomPosition.isCustom(custom) {
+                    Text("Custom (dragged)").lineLimit(1).fixedSize().tag(Optional(custom))
+                }
             }
             .pickerStyle(.menu)
         }
-        FormCaption("Auto keeps clear of the platform buttons. Safe area only also keeps chosen corners clear.")
+        FormCaption(CustomPosition.isCustom(position)
+            ? "Placed where you dragged it in the preview. A person's own Tag position still wins."
+            : "Auto keeps clear of the platform buttons. Safe area only also keeps chosen corners clear. Drag a tag in the preview to place it by hand.")
             .onAppear {
                 if position == "auto" { position = nil }
             }

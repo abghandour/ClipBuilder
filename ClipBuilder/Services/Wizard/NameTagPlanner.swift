@@ -49,6 +49,9 @@ nonisolated enum NameTagPlanner {
                      style: TagStyle = TagStyle(), imageAspects: [UUID: CGFloat] = [:]) -> [NameTag] {
         let names = Dictionary(people.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
         let explicitCorner = Corner(rawValue: settings.position ?? "")
+        // Dragged in the preview: every tag without its own corner is centred
+        // on this canvas point (inside its area), never moved for the caption.
+        let customAnchor = CustomPosition(settings.position)
         let frame = CGRect(origin: .zero, size: settings.canvas)
         let renderer = TextOverlayRenderer(videoWidth: Int(settings.canvas.width),
                                            videoHeight: Int(settings.canvas.height), safeArea: nil)
@@ -100,12 +103,28 @@ nonisolated enum NameTagPlanner {
                     return (face.midX >= area.rect.midX) == trailing ? 0 : 1
                 }
                 let personCorner = Corner(rawValue: person.position ?? "")
+                let gap = settings.canvas.height * 0.01
+                if personCorner == nil, let customAnchor {
+                    let origin = customAnchor.origin(size: CGSize(width: width, height: height), in: allowed)
+                    let anchored = CGRect(origin: origin, size: CGSize(width: width, height: height))
+                    let corner: Corner = anchored.midY < area.rect.midY
+                        ? (anchored.midX < area.rect.midX ? .topLeading : .topTrailing)
+                        : (anchored.midX < area.rect.midX ? .bottomLeading : .bottomTrailing)
+                    let bounds = settings.safeOnly ? (settings.safeRect?.intersection(frame) ?? frame) : frame
+                    let placed = clearingConcurrent(anchored, corner: corner, others: concurrent, bounds: bounds, gap: gap) ?? anchored
+                    let tag = NameTag(personKey: key, lines: layout.lines, areaRect: area.rect, rect: placed,
+                                      corner: corner, fontSize: layout.fontSize, start: span.start, end: span.end)
+                    if let index = tags.lastIndex(where: { $0.personKey == key && $0.lines == tag.lines
+                            && $0.rect == tag.rect && abs($0.end - tag.start) < 0.00001 }) {
+                        tags[index].end = tag.end
+                    } else { tags.append(tag) }
+                    continue
+                }
                 let corner = personCorner ?? explicitCorner ?? Corner.allCases.enumerated().min {
                     (overlap(rect($0.element)), sidePenalty($0.element), $0.offset)
                         < (overlap(rect($1.element)), sidePenalty($1.element), $1.offset)
                 }!.element
                 let safe = (explicitCorner == nil || settings.safeOnly) ? settings.safeRect : nil
-                let gap = settings.canvas.height * 0.01
                 guard let cleared = clearingCaption(rect(corner), corner: corner, area: area.rect,
                     allowed: allowed, frame: frame, safe: safe,
                     band: settings.captionBand, safeOnly: settings.safeOnly, gap: gap) else { continue }

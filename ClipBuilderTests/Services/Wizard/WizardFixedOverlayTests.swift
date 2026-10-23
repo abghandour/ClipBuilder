@@ -120,4 +120,42 @@ struct WizardFixedOverlayTests {
         options.fixedOverlayDuration = 4
         #expect(WizardFixedOverlay.summary(options: options) == "overlay Lower Third from 2.5 s for 4 s")
     }
+
+    @Test func draggedPositionMovesTheWholeDesignToThePoint() throws {
+        var text = TextOverlayItem()
+        text.text = "Subscribe"
+        text.xFrac = 0.5
+        text.yFrac = 0.2
+        text.wFrac = 0.6
+        text.hFrac = 0.1
+        var image = ImageOverlayItem()
+        image.xFrac = 0.5
+        image.yFrac = 0.35
+        image.wFrac = 0.2
+        let composition = OverlayComposition(texts: [text], images: [image])
+        let box = try #require(WizardFixedOverlay.bounds(of: composition, canvasAspect: 9.0 / 16))
+        #expect(abs(box.minX - 0.2) < 0.0001 && abs(box.width - 0.6) < 0.0001)
+        #expect(abs(box.minY - 0.15) < 0.0001, "the text's top edge")
+        let imageHeight = 0.2 * 9.0 / 16
+        #expect(abs(box.maxY - (0.35 + imageHeight / 2)) < 0.0001, "the image's bottom edge, assumed square")
+        let moved = WizardFixedOverlay.repositioned(composition, center: CustomPosition(x: 0.5, y: 0.8), canvasAspect: 9.0 / 16)
+        let after = try #require(WizardFixedOverlay.bounds(of: moved, canvasAspect: 9.0 / 16))
+        #expect(abs(after.midX - 0.5) < 0.0001 && abs(after.midY - 0.8) < 0.0001)
+        let shift = after.minY - box.minY
+        #expect(abs((moved.texts[0].yFrac ?? 0) - (0.2 + shift)) < 0.0001)
+        #expect(abs(moved.images[0].yFrac - (0.35 + shift)) < 0.0001, "text and image keep their arrangement")
+        // Dragged past the edge the design stops at the frame.
+        let edge = WizardFixedOverlay.repositioned(composition, center: CustomPosition(x: 1, y: 1), canvasAspect: 9.0 / 16)
+        let clamped = try #require(WizardFixedOverlay.bounds(of: edge, canvasAspect: 9.0 / 16))
+        #expect(abs(clamped.maxX - 1) < 0.0001 && abs(clamped.maxY - 1) < 0.0001)
+        // The block applies it only when the option is a custom position.
+        var options = WizardOptions()
+        options.fixedOverlayTemplate = "Moved"
+        let templates = [OverlayTemplate(name: "Moved", composition: composition)]
+        let asDesigned = try #require(WizardFixedOverlay.block(options: options, templates: templates, totalDuration: 10))
+        #expect(asDesigned.composition.texts[0].yFrac == 0.2)
+        options.fixedOverlayPosition = CustomPosition(x: 0.5, y: 0.8).string
+        let dragged = try #require(WizardFixedOverlay.block(options: options, templates: templates, totalDuration: 10))
+        #expect((dragged.composition.texts[0].yFrac ?? 0) > 0.6)
+    }
 }

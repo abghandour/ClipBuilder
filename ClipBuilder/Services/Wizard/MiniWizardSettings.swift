@@ -7,6 +7,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var cameraFocus = ""
     /// Interview focus pull-back, 0 (tight) to 1 (full height).
     var interviewZoom = 0.0
+    /// Interview focus moves by zooming in place instead of panning toward the interviewer.
+    var interviewZoomMoves = false
     var captions = false
     var englishCaptions = false
     var captionPosition: String?
@@ -37,6 +39,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var overlayDuration: Double?
     /// Overrides for the template's AI-replaceable texts, in template order.
     var overlayTexts: [String] = []
+    /// Where the design was dragged in the preview (`custom:x,y`); nil = as designed.
+    var overlayPosition: String?
     /// Effect at every cut: "random" or an effect name (TransitionEffect).
     var transition: String = WizardPlanRules.randomTransitionChoice
     /// A look from the Looks library (an EffectCatalog preset id such as
@@ -56,12 +60,12 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     init() {}
 
     enum CodingKeys: String, CodingKey {
-        case quality, preset, cameraFocus, interviewZoom, captions, englishCaptions, captionPosition, captionStyleID
+        case quality, preset, cameraFocus, interviewZoom, interviewZoomMoves, captions, englishCaptions, captionPosition, captionStyleID
         case introVideo, outroVideo, introBumper, outroBumper
         case safeAreaOnly, safeAreaPlatforms
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case watermark, watermarkOverlay, watermarkOpacity
-        case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, outputMode, transition, look
+        case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, overlayPosition, outputMode, transition, look
         case muteSourceAudio, music, musicTrack, dub, dubLanguage
     }
 
@@ -74,6 +78,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         preset = try c.decodeIfPresent(RenderPreset.self, forKey: .preset) ?? base.preset
         cameraFocus = try c.decodeIfPresent(String.self, forKey: .cameraFocus) ?? base.cameraFocus
         interviewZoom = min(1, max(0, try c.decodeIfPresent(Double.self, forKey: .interviewZoom) ?? base.interviewZoom))
+        interviewZoomMoves = try c.decodeIfPresent(Bool.self, forKey: .interviewZoomMoves) ?? base.interviewZoomMoves
         captions = try c.decodeIfPresent(Bool.self, forKey: .captions) ?? base.captions
         englishCaptions = try c.decodeIfPresent(Bool.self, forKey: .englishCaptions) ?? base.englishCaptions
         captionPosition = try c.decodeIfPresent(String.self, forKey: .captionPosition)
@@ -97,6 +102,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         overlayStart = try c.decodeIfPresent(Double.self, forKey: .overlayStart) ?? base.overlayStart
         overlayDuration = try c.decodeIfPresent(Double.self, forKey: .overlayDuration)
         overlayTexts = try c.decodeIfPresent([String].self, forKey: .overlayTexts) ?? base.overlayTexts
+        overlayPosition = try c.decodeIfPresent(String.self, forKey: .overlayPosition)
         outputMode = try c.decodeIfPresent(MiniWizardFlow.OutputMode.self, forKey: .outputMode) ?? base.outputMode
         transition = try c.decodeIfPresent(String.self, forKey: .transition) ?? base.transition
         look = try c.decodeIfPresent(String.self, forKey: .look) ?? base.look
@@ -124,6 +130,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.renderSettings = render
         result.highlightFraming = CropRecipe.Kind(rawValue: cameraFocus)
         result.interviewZoom = interviewZoom
+        result.interviewZoomMoves = interviewZoomMoves
         result.podcastFraming = cameraFocus == WizardCameraFocus.original ? .original : .followSpeaker
         result.addCaptions = captions
         result.captionPosition = captionPosition
@@ -163,6 +170,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.fixedOverlayStart = result.fixedOverlayTemplate == nil ? nil : max(0, overlayStart)
         result.fixedOverlayDuration = result.fixedOverlayTemplate == nil ? nil : overlayDuration.map { max(0, $0) }
         result.fixedOverlayTexts = result.fixedOverlayTemplate == nil || overlayTexts.isEmpty ? nil : overlayTexts
+        result.fixedOverlayPosition = result.fixedOverlayTemplate == nil ? nil : overlayPosition.flatMap { CustomPosition.isCustom($0) ? $0 : nil }
         return result
     }
 
@@ -206,6 +214,20 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         return result
     }
 
+    /// Express's starting point for a profile: every choice at its default,
+    /// the canvas and quality from the profile, the dub language from the
+    /// profile's footage defaults. What Reset restores.
+    static func defaults(profile: BrandProfile) -> Self {
+        var result = Self()
+        result.quality = profile.defaultRenderSettings.quality
+        result.preset = profile.defaultRenderSettings.preset
+        if result.quality == .custom { result.quality = .balanced }
+        if result.preset == .custom { result.preset = .portrait1080 }
+        result.dubLanguage = profile.editing?.footage.dubLanguage
+        result.dub = result.dubLanguage != nil
+        return result
+    }
+
     static func remembered(profile: BrandProfile, defaults: UserDefaults = .standard) -> Self {
         func key(_ field: MiniWizardMemory.Field) -> String { MiniWizardMemory.key(for: field, profileName: profile.profileName) }
         var result = Self()
@@ -226,6 +248,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.interviewZoom = min(1, max(0, defaults.double(forKey: key(.interviewZoom))))
         result.overlayTemplate = defaults.string(forKey: key(.overlayTemplate))
         result.overlayTexts = defaults.stringArray(forKey: key(.overlayTexts)) ?? []
+        result.overlayPosition = defaults.string(forKey: key(.overlayPosition))
         result.watermarkOverlay = defaults.string(forKey: key(.watermarkOverlay))
         if defaults.object(forKey: key(.watermarkOpacity)) != nil {
             result.watermarkOpacity = min(1, max(0, defaults.double(forKey: key(.watermarkOpacity))))
@@ -268,6 +291,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         defaults.set(interviewZoom, forKey: key(.interviewZoom))
         defaults.set(overlayTemplate, forKey: key(.overlayTemplate))
         defaults.set(overlayTexts, forKey: key(.overlayTexts))
+        defaults.set(overlayPosition, forKey: key(.overlayPosition))
         defaults.set(watermarkOverlay, forKey: key(.watermarkOverlay))
         defaults.set(watermarkOpacity, forKey: key(.watermarkOpacity))
         defaults.set(introBumper, forKey: key(.introBumper))
@@ -285,6 +309,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     private static var booleanFields: [(MiniWizardMemory.Field, WritableKeyPath<Self, Bool>)] {
         [(.captions, \.captions), (.englishCaptions, \.englishCaptions), (.introVideo, \.introVideo),
          (.outroVideo, \.outroVideo), (.nameTags, \.nameTags), (.watermark, \.watermark), (.overlay, \.overlay),
-         (.safeAreaOnly, \.safeAreaOnly), (.muteSourceAudio, \.muteSourceAudio), (.music, \.music), (.dub, \.dub)]
+         (.safeAreaOnly, \.safeAreaOnly), (.muteSourceAudio, \.muteSourceAudio), (.music, \.music), (.dub, \.dub),
+         (.interviewZoomMoves, \.interviewZoomMoves)]
     }
 }

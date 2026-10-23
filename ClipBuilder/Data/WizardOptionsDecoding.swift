@@ -69,6 +69,7 @@ nonisolated extension WizardOptions {
         framingCamera = try values.decodeIfPresent(String.self, forKey: .framingCamera) ?? framingCamera
         highlightFraming = try values.decodeIfPresent(String.self, forKey: .highlightFraming).flatMap(CropRecipe.Kind.init(rawValue:))
         interviewZoom = try values.decodeIfPresent(Double.self, forKey: .interviewZoom).map { min(1, max(0, $0)) }
+        interviewZoomMoves = try values.decodeIfPresent(Bool.self, forKey: .interviewZoomMoves)
         useBRoll = try values.decodeIfPresent(Bool.self, forKey: .useBRoll) ?? useBRoll
         brollInstructions = try values.decodeIfPresent(String.self, forKey: .brollInstructions) ?? brollInstructions
         highlightMaxCount = try values.decodeIfPresent(Int.self, forKey: .highlightMaxCount)
@@ -97,6 +98,7 @@ nonisolated extension WizardOptions {
         fixedOverlayStart = try values.decodeIfPresent(Double.self, forKey: .fixedOverlayStart)
         fixedOverlayDuration = try values.decodeIfPresent(Double.self, forKey: .fixedOverlayDuration)
         fixedOverlayTexts = try values.decodeIfPresent([String].self, forKey: .fixedOverlayTexts)
+        fixedOverlayPosition = try values.decodeIfPresent(String.self, forKey: .fixedOverlayPosition)
         introBumperPath = try values.decodeIfPresent(String.self, forKey: .introBumperPath)
         outroBumperPath = try values.decodeIfPresent(String.self, forKey: .outroBumperPath)
         watermarkOverlayTemplate = try values.decodeIfPresent(String.self, forKey: .watermarkOverlayTemplate)

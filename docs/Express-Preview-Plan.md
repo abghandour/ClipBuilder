@@ -1,6 +1,6 @@
 # Express preview: one scene with the current settings
 
-Date: October 20, 2026. Status: phases 1–3 and 5 implemented, Debug build passes, reviewed; live verification pending.
+Date: October 20, 2026. Status: phases 1–3, 5 and 6 implemented, Debug build passes, reviewed; live verification pending.
 
 ## Goal
 
@@ -278,3 +278,29 @@ cells.
   removed. Full source typechecking is blocked by sandbox-denied macro plugins.
   These limited checks do not establish a successful project/test-target build.
   No tests, Release build, or live UI checks were run.
+
+## Phase 6: scrub the kept footage (added October 23, 2026 after live feedback)
+
+The scene stepper walked every analysis scene of the video (21 on an
+11-minute interview) at each scene's midpoint, which has nothing to do with
+what the user kept, and it could never show the opening frame the player's
+poster shows. Express now previews the kept footage with a scrubber.
+
+- `Services/Wizard/WizardPreviewClips.swift`: `WizardPreviewClip` (scene +
+  exact source range, in output order) and `WizardPreviewClips.kept(run:scenes:)`.
+  Kept takes win once picks have become selections; before that the kept Q&A
+  exchanges, transcript picks or fight picks stand in with the same ranges
+  the selections will get (a pick with no scene borrows the scene it overlaps
+  most). `clock(_:)` formats the readout.
+- `WizardPreviewModel.loadScene` takes `range:` (the kept stretch the render
+  plans over; framing and speaker lookups use it) and `time:` (the moment
+  shown; default the middle). `PreviewKey` carries the explicit time.
+- `WizardPreviewColumn` takes `clips:`. With clips it shows a "Clip n of N"
+  stepper and, under the image, a Slider over the clip with an
+  "elapsed / duration" readout in output time. Scrubbing debounces 120 ms
+  before loading; the content key rounds the time to 1/20 s. Without clips
+  (the full AI Wizard, or Express before anything is kept) the scene stepper
+  behaves as before.
+- Express (`MiniWizardView`) passes `WizardPreviewClips.kept(run:scenes:)`
+  for the current run.
+- Tests: `WizardPreviewClipsTests`.

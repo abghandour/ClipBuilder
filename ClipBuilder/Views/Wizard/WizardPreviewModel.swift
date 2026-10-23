@@ -25,7 +25,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
     var lookIntensity: Double?
 
     init(options: WizardOptions, scene: SceneRecord, profile: BrandProfile,
-         contentRevision: Int, overlayTexts: [String]) {
+         contentRevision: Int, overlayTexts: [String], time: Double? = nil) {
         var visual = MiniWizardSettings()
         visual.preset = options.renderSettings.preset
         visual.captions = options.addCaptions
@@ -47,9 +47,11 @@ nonisolated struct PreviewKey: Hashable, Sendable {
         visual.overlayStart = options.fixedOverlayStart ?? 0
         visual.overlayDuration = options.fixedOverlayDuration
         visual.overlayTexts = overlayTexts
+        visual.overlayPosition = options.fixedOverlayPosition
         visual.cameraFocus = options.podcastFraming == .original ? WizardCameraFocus.original
             : options.highlightFraming?.rawValue ?? ""
         visual.interviewZoom = options.interviewZoom ?? 0
+        visual.interviewZoomMoves = options.interviewZoomMoves ?? false
         look = options.lookPreset ?? "none"
         lookIntensity = options.lookIntensity
         captionLanguage = options.captionLanguage
@@ -59,7 +61,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
         safeArea = options.renderSettings.platformSafeArea
         sceneID = scene.id
         videoPath = scene.videoPath
-        time = (scene.startTime + scene.endTime) / 2
+        self.time = time ?? (scene.startTime + scene.endTime) / 2
         profileName = profile.profileName
         captions = profile.captions
         captionStyles = profile.captionStyles
@@ -76,6 +78,8 @@ nonisolated struct PreviewKey: Hashable, Sendable {
 
 @Observable @MainActor final class WizardPreviewModel {
     private(set) var image: CGImage?
+    /// Where the caption, tags and overlay landed in `image`, in canvas pixels.
+    private(set) var layout: WizardPreviewComposite.Layout?
     private(set) var isRendering = false
     private(set) var error: String?
     var sceneIndex = 0
@@ -84,6 +88,8 @@ nonisolated struct PreviewKey: Hashable, Sendable {
     private(set) var templates: [OverlayTemplate] = []
     private(set) var contentRevision = 0
     private(set) var loadedSceneID: Int64?
+    /// The source time the loaded still was taken at.
+    private(set) var loadedTime: Double?
     private(set) var isLoadingScene = false
     private(set) var renderCount = 0
 
@@ -91,7 +97,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
     @ObservationIgnored private var requestID = UUID()
     @ObservationIgnored private var sceneRequestID = UUID()
     @ObservationIgnored private var currentKey: PreviewKey?
-    @ObservationIgnored private var cache: [(key: PreviewKey, image: CGImage)] = []
+    @ObservationIgnored private var cache: [(key: PreviewKey, image: CGImage, layout: WizardPreviewComposite.Layout)] = []
     @ObservationIgnored private var baseFrame: (key: FrameKey, data: Data)?
     @ObservationIgnored private var gradedFrames: [(key: GradeKey, image: CGImage)] = []
     private let thumbnails: ThumbnailService
@@ -135,18 +141,29 @@ nonisolated struct PreviewKey: Hashable, Sendable {
     }
 
     /// Database reads and template loading run on the worker, then publish a value snapshot.
+    /// `range` is the source stretch the render will plan over (kept footage
+    /// can be trimmed inside its scene); `time` is the moment to show, by
+    /// default the middle of that range. Both default to the scene's own.
     func loadScene(_ record: SceneRecord?, database: Database?, people: [PersonRecord],
-                   language: String?, tagStyleID: String?, profile: BrandProfile, options: WizardOptions) async {
+                   language: String?, tagStyleID: String?, profile: BrandProfile, options: WizardOptions,
+                   range: ClosedRange<Double>? = nil, time moment: Double? = nil) async {
         let id = UUID()
         sceneRequestID = id
         loadedSceneID = nil
+        loadedTime = nil
         scene = nil
         error = nil
-        guard let record else { isLoadingScene = false; return }
+        guard let original = record else { isLoadingScene = false; return }
         isLoadingScene = true
         defer { if sceneRequestID == id { isLoadingScene = false } }
+        // Framing and speaker lookups plan over the kept range, as the render does.
+        var record = original
+        if let range, range.upperBound > range.lowerBound {
+            record.startTime = range.lowerBound
+            record.endTime = range.upperBound
+        }
         let worker = Task.detached(priority: .userInitiated) {
-            let time = (record.startTime + record.endTime) / 2
+            let time = min(record.endTime, max(record.startTime, moment ?? (record.startTime + record.endTime) / 2))
             var person = people.first { !$0.hidden && !$0.name.isEmpty && record.tags.contains($0.tag) }
             var face: CGRect?
             var segment: TranscriptSegment?
@@ -163,7 +180,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
                 let transcription = try? await database.activeTranscription(videoID: record.videoID).key
                 turns = (try? await database.fetchSpeakerTurns(videoID: record.videoID, transcriptionKey: transcription)) ?? []
                 if let video, let talker = WizardPreviewFraming.speaker(video: video, record: record,
-                    turns: turns, roster: roster, people: people) {
+                    turns: turns, roster: roster, people: people, time: time) {
                     person = talker.person ?? person
                     face = talker.face
                 }
@@ -186,11 +203,11 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             try Task.checkCancellation()
             var scene = WizardPreviewComposite.Scene(videoURL: record.videoURL, time: time,
                 faceRect: face, person: person, captionText: segment?.text, words: segment?.words)
-            scene.cameraPath = record.centerStagePath
+            scene.cameraPath = original.centerStagePath
             scene.contentIsWide = record.wide
             if let video, video.width > 0, video.height > 0 { scene.sourceSize = CGSize(width: video.width, height: video.height) }
             let framing = await WizardPreviewFraming.resolveCached(options: options, record: record, video: video,
-                face: face, turns: turns, roster: roster, people: taggedPeople, layouts: ScreenCropStore.all())
+                face: face, turns: turns, roster: roster, people: taggedPeople, layouts: ScreenCropStore.all(), time: time)
             scene.framing = framing.framing
             scene.framingWarning = framing.warning
             let templates = OverlayTemplateStore.list()
@@ -221,7 +238,8 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             guard sceneRequestID == id else { return }
             scene = result.0
             templates = result.1
-            loadedSceneID = record.id
+            loadedSceneID = original.id
+            loadedTime = result.0.time
             contentRevision = result.2
         } catch is CancellationError {
             // A newer scene request owns the column now.
@@ -241,6 +259,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             let hit = cache.remove(at: index)
             cache.append(hit)
             image = hit.image
+            layout = hit.layout
             isRendering = false
             return
         }
@@ -277,10 +296,10 @@ nonisolated struct PreviewKey: Hashable, Sendable {
                 let base: WizardPreviewComposite.BaseFrame
                 if let cachedGrade { base = .init(image: cachedGrade) }
                 else { base = try await WizardPreviewComposite.prepareBase(input) }
-                let image = try WizardPreviewComposite.render(input, baseFrame: base.image)
+                let rendered = try WizardPreviewComposite.renderWithLayout(input, baseFrame: base.image)
                 try Task.checkCancellation()
-                await self?.finish(image: image, key: key, frameKey: frameKey, frameData: input.frameData,
-                                   gradeKey: gradeKey, base: base, requestID: id)
+                await self?.finish(image: rendered.image, layout: rendered.layout, key: key, frameKey: frameKey,
+                                   frameData: input.frameData, gradeKey: gradeKey, base: base, requestID: id)
             } catch is CancellationError {
                 // Cancellation must not clear the next request's busy state.
             } catch {
@@ -297,14 +316,15 @@ nonisolated struct PreviewKey: Hashable, Sendable {
         isRendering = false
     }
 
-    private func finish(image: CGImage, key: PreviewKey, frameKey: FrameKey, frameData: Data,
-                        gradeKey: GradeKey, base: WizardPreviewComposite.BaseFrame, requestID: UUID) {
+    private func finish(image: CGImage, layout: WizardPreviewComposite.Layout, key: PreviewKey, frameKey: FrameKey,
+                        frameData: Data, gradeKey: GradeKey, base: WizardPreviewComposite.BaseFrame, requestID: UUID) {
         guard self.requestID == requestID else { return }
         self.image = image
+        self.layout = layout
         baseFrame = (frameKey, frameData)
         error = base.error
         if base.error == nil {
-            cache.append((key, image))
+            cache.append((key, image, layout))
             gradedFrames.removeAll { $0.key == gradeKey }
             gradedFrames.append((gradeKey, base.image))
             if gradedFrames.count > 4 { gradedFrames.removeFirst(gradedFrames.count - 4) }

@@ -97,12 +97,20 @@ struct MiniWizardView: View {
             settingsColumn.frame(minWidth: 480, maxWidth: .infinity)
             if let video = selectedVideo {
                 WizardPreviewColumn(scenes: store.scenes.filter { $0.videoID == video.id },
+                    clips: currentRun.map { WizardPreviewClips.kept(run: $0, scenes: store.scenes) } ?? [],
                     options: miniSettings.effective(for: flow,
                         introAvailable: store.bumpers.contains { $0.placements.contains(.intro) },
                         outroAvailable: store.bumpers.contains { $0.placements.contains(.outro) })
                         .previewOptions(profile: store.activeProfile),
                     profile: store.activeProfile, thumbnails: store.thumbnails,
-                    footer: generateFooter)
+                    footer: generateFooter,
+                    onMove: { element, position in
+                        switch element {
+                        case .caption: miniSettings.captionPosition = position.string
+                        case .nameTag: miniSettings.nameTagPosition = position.string
+                        case .overlay: miniSettings.overlayPosition = position.string
+                        }
+                    })
                     .id("\(store.profileGeneration):\(store.activeProjectID ?? 0):\(video.id)")
                     .rememberedPaneWidth("pane.express.preview", min: 240, initial: 320, max: 480)
             }
@@ -487,6 +495,15 @@ struct MiniWizardView: View {
                 Label("Load…", systemImage: "tray.and.arrow.up").lineLimit(1).fixedSize()
             }
             .help("Load, rename or delete saved settings")
+            Button {
+                // Back to the profile's starting point; the preview follows the settings.
+                miniSettings = MiniWizardSettings.defaults(profile: store.activeProfile)
+                MiniWizardPresetStore.rememberLoaded(nil, profileName: profileName)
+                loadedPreset = nil
+            } label: {
+                Label("Reset", systemImage: "arrow.counterclockwise").lineLimit(1).fixedSize()
+            }
+            .help("Restore every setting to its default")
         }
         .controlSize(.small)
         .disabled(store.isWizardRunning)
