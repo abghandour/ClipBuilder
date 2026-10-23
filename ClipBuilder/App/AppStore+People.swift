@@ -92,7 +92,9 @@ extension AppStore {
         await refreshAllNow()
     }
 
-    func renamePerson(_ person: PersonRecord, to name: String) {
+    /// `research` false saves a name that is still being typed without
+    /// starting the first-name research; the final commit passes true.
+    func renamePerson(_ person: PersonRecord, to name: String, research: Bool = true) {
         guard let database else { return }
         let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
         let generation = profileGeneration
@@ -102,7 +104,7 @@ extension AppStore {
                 let updated = try await database.fetchPeople()
                 guard generation == profileGeneration, self.database === database else { return }
                 people = updated
-                if person.isUnnamed, !trimmed.isEmpty, let named = updated.first(where: { $0.id == person.id }) {
+                if research, person.isUnnamed, !trimmed.isEmpty, let named = updated.first(where: { $0.id == person.id }) {
                     researchPeople([named], reason: "named")
                 }
             } catch {
