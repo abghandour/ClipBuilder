@@ -20,11 +20,17 @@ wait routinely takes 5–10 minutes.
 
 ## Before running — preconditions the script enforces or assumes
 
-0. **Tests and the Release build happen here, and only here.** The script
-   runs `scripts/test.sh` first and aborts on any failure before bumping,
-   building or publishing; there is no commit-time or push-time test gate.
-   Do not run `scripts/test.sh`, `xcodebuild … test`, or a Release build
-   after ordinary changes — a `build-for-testing` compile check is fine.
+0. **Tests and the Release build happen here, and only here.** In a
+   terminal the script asks "Run the unit tests before releasing? [Y/n]";
+   Enter runs `scripts/test.sh` and aborts on any failure before bumping,
+   building or publishing, `n` skips straight to the bump. Without a
+   terminal (the way Claude runs it in the background) the tests run unless
+   `--skip-tests` (or `RELEASE_SKIP_TESTS=1`) is passed; `--tests` forces
+   them without asking. When the user asks to release without tests, pass
+   `--skip-tests`; otherwise run with tests. There is no commit-time or
+   push-time test gate. Do not run `scripts/test.sh`, `xcodebuild … test`,
+   or a Release build after ordinary changes — a `build-for-testing`
+   compile check is fine.
 1. **Clean working tree** (the script refuses otherwise). Commit pending work
    first as its own feature commit(s) — never fold feature changes into the
    release commit. If there are uncommitted changes you didn't author this

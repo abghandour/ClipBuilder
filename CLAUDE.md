@@ -13,8 +13,9 @@ slices, verify with the compiler.
 - Compile check after a change: `build-for-testing` in Debug into `build-debug`.
   That is enough. Do not run a Release build or the test suite per change.
 - Tests run in exactly one place: `scripts/release.sh` calls `scripts/test.sh`
-  and aborts the release if anything fails. Only run `scripts/test.sh <Suite>`
-  directly when the user asks. Tests use Swift Testing (`@Test`, `#expect`).
+  and aborts the release if anything fails. The script asks whether to run
+  them (interactive) or takes `--tests` / `--skip-tests` (background). Only
+  run `scripts/test.sh <Suite>` directly when the user asks. Tests use Swift Testing (`@Test`, `#expect`).
 - Release: `.claude/skills/release`. Never run it with untracked files in the
   tree; it treats them as dirty.
 - Before pushing, check formatting on changed files. There is no SwiftLint or

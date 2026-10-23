@@ -10,10 +10,28 @@
 #   4. Commits the bump, tags v<version>, pushes, and creates the GitHub
 #      release with the pkg attached.
 #
+# Usage: scripts/release.sh [--tests | --skip-tests]
+#   In a terminal the script asks whether to run the unit tests first.
+#   Without a terminal (CI, a background run) the tests run unless
+#   --skip-tests or RELEASE_SKIP_TESTS=1 says otherwise; --tests forces them
+#   and skips the question.
+#
 # Environment (defaults match this machine's setup):
 #   DEVELOPER_DIR    Xcode to build with
 #   NOTARY_PROFILE   notarytool keychain profile
+#   RELEASE_SKIP_TESTS  1 skips the unit tests (same as --skip-tests)
 set -euo pipefail
+
+RUN_TESTS=""   # "" = ask when interactive, else run
+for arg in "$@"; do
+    case "$arg" in
+        --tests) RUN_TESTS=1 ;;
+        --skip-tests) RUN_TESTS=0 ;;
+        -h|--help) sed -n '2,20p' "$0"; exit 0 ;;
+        *) echo "error: unknown option $arg (use --tests or --skip-tests)" >&2; exit 2 ;;
+    esac
+done
+[[ -z $RUN_TESTS && "${RELEASE_SKIP_TESTS:-0}" == 1 ]] && RUN_TESTS=0
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PBXPROJ="$REPO_ROOT/Clip Builder.xcodeproj/project.pbxproj"
@@ -36,8 +54,25 @@ done
 
 # The only place the unit tests run: a failing suite aborts the release
 # before any version bump, build or publish. There is no commit-time gate.
-step "Running unit tests"
-"$REPO_ROOT/scripts/test.sh" || { echo "error: unit tests failed — release aborted (nothing was bumped, built or published)" >&2; exit 1; }
+# The user may choose to skip them for this release.
+if [[ -z $RUN_TESTS ]]; then
+    if [[ -t 0 && -t 1 ]]; then
+        printf 'Run the unit tests before releasing? [Y/n] '
+        read -r answer
+        case "$answer" in
+            [nN]|[nN][oO]) RUN_TESTS=0 ;;
+            *) RUN_TESTS=1 ;;
+        esac
+    else
+        RUN_TESTS=1
+    fi
+fi
+if [[ $RUN_TESTS == 1 ]]; then
+    step "Running unit tests"
+    "$REPO_ROOT/scripts/test.sh" || { echo "error: unit tests failed — release aborted (nothing was bumped, built or published)" >&2; exit 1; }
+else
+    step "Skipping unit tests (chosen for this release)"
+fi
 
 # ------------------------------------------------------------- version bump
 CURRENT=$(sed -n 's/.*MARKETING_VERSION = \([0-9.]*\);.*/\1/p' "$PBXPROJ" | head -1)
