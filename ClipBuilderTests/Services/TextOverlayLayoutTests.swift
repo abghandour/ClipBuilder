@@ -265,4 +265,21 @@ struct TextOverlayLayoutTests {
         let wideBounds = try opaqueBounds(try renderer.render(wide, to: directory))
         #expect(cappedBounds.width < wideBounds.width * 0.8, "\(cappedBounds) vs \(wideBounds)")
     }
+
+    /// The Overlays editor saves on `onChange(of: composition)`, so a field the
+    /// equality ignores is never saved and the next reload reverts it.
+    @Test func wordsPerLineTakesPartInEquality() {
+        var item = TextOverlayItem()
+        item.text = "Subject"
+        var changed = item
+        changed.wordsPerLine = 4
+        #expect(item != changed, "a Words per line change is a change")
+        var explicitDefault = item
+        explicitDefault.wordsPerLine = TextOverlayItem.defaultWordsPerLine
+        #expect(item == explicitDefault, "nil and the default render the same")
+        var widthOnly = item
+        widthOnly.wordsPerLine = 0
+        #expect(item != widthOnly)
+        #expect(OverlayComposition(texts: [item]) != OverlayComposition(texts: [changed]))
+    }
 }

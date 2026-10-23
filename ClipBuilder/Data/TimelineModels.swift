@@ -1397,6 +1397,8 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
             && lhs.opacity == rhs.opacity && lhs.boxRadius == rhs.boxRadius
             && lhs.unbounded == rhs.unbounded && lhs.alignment == rhs.alignment
             && lhs.keepsPlacement == rhs.keepsPlacement
+            // Resolved so nil and the default compare equal, as they render.
+            && lhs.resolvedWordsPerLine == rhs.resolvedWordsPerLine
     }
 
     var id: UUID { uid }
