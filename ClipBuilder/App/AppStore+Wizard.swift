@@ -552,7 +552,9 @@ extension AppStore {
             var roster = review.roster
             if candidate.framing == .interview {
                 roster = await InterviewFaceSampling.refinedRoster(video: review.video, roster: roster,
-                    range: candidate.sourceStart...candidate.sourceEnd, turns: review.turns, log: logSink(\.analysisLog))
+                    range: candidate.sourceStart...candidate.sourceEnd, turns: review.turns,
+                    punchIn: InterviewPunchIn(rawValue: review.options.interviewPunchIn ?? "") ?? .vip,
+                    cuts: review.options.interviewCuts ?? false, log: logSink(\.analysisLog))
             }
             let document = PodcastHighlightTimeline.build(candidate: candidate, video: review.video, scenes: review.scenes,
                 turns: review.turns, roster: roster, segments: review.segments, layouts: ScreenCropStore.all(),
@@ -643,7 +645,9 @@ extension AppStore {
                         var roster = request.roster
                         if candidate.framing == .interview {
                             roster = await InterviewFaceSampling.refinedRoster(video: request.video, roster: roster,
-                                range: candidate.sourceStart...candidate.sourceEnd, turns: request.turns, log: logSink(\.analysisLog))
+                                range: candidate.sourceStart...candidate.sourceEnd, turns: request.turns,
+                                punchIn: InterviewPunchIn(rawValue: request.options.interviewPunchIn ?? "") ?? .vip,
+                                cuts: request.options.interviewCuts ?? false, log: logSink(\.analysisLog))
                         }
                         let document = PodcastHighlightTimeline.build(candidate: candidate, video: request.video, scenes: request.scenes,
                             turns: request.turns, roster: roster, segments: request.segments, layouts: ScreenCropStore.all(),

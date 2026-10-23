@@ -720,13 +720,23 @@ extension AppStore {
             do {
                 let turns = try await database.fetchSpeakerTurns(videoID: video.id)
                 var roster = try await database.fetchVideoPeople(videoID: video.id)
+                var recipe = CropRecipe(kind: kind, highlightTalker: highlightTalker)
+                // Interview focus follows the wizard's Pull back and Zoom in/out choices,
+                // so a Builder compose frames like the wizard would.
+                let defaults = UserDefaults.standard
+                if defaults.object(forKey: "wizard.interviewZoom") != nil {
+                    recipe.interviewZoom = min(1, max(0, defaults.double(forKey: "wizard.interviewZoom")))
+                }
+                recipe.interviewZoomMoves = defaults.bool(forKey: "wizard.interviewZoomMoves")
+                recipe.interviewCuts = defaults.bool(forKey: "wizard.interviewCuts")
+                recipe.interviewPunchIn = InterviewPunchIn(rawValue: defaults.string(forKey: "wizard.interviewPunchIn") ?? "") ?? .vip
                 if kind == .interview {
                     // Faces at the shot starts, so the shots centre on where
                     // the people sit in this clip rather than at the portrait.
                     roster = await InterviewFaceSampling.refinedRoster(video: video, roster: roster,
-                        range: range ?? 0...video.duration, turns: turns, log: logSink(\.analysisLog))
+                        range: range ?? 0...video.duration, turns: turns,
+                        punchIn: recipe.interviewPunchIn, cuts: recipe.interviewCuts, log: logSink(\.analysisLog))
                 }
-                let recipe = CropRecipe(kind: kind, highlightTalker: highlightTalker)
                 let plan = try CropRecipePlanner.plan(recipe, video: video, range: range, turns: turns, roster: roster,
                                                       layouts: ScreenCropStore.all(),
                                                       canvasAspect: builder.document.renderSettings.aspectRatio)

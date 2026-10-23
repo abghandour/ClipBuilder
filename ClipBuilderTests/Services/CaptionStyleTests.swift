@@ -1,4 +1,5 @@
 import Foundation
+import CoreText
 import Testing
 @testable import Clip_Builder
 
@@ -107,8 +108,48 @@ struct CaptionStyleTests {
     @Test func presetsAreIndependentCopies() {
         let first = CaptionPresets.styles
         let second = CaptionPresets.styles
-        #expect(first.count == 6)
+        #expect(first.count == 7)
         #expect(first.map(\.style) == second.map(\.style))
         #expect(Set(first.map(\.id)).isDisjoint(with: second.map(\.id)))
+    }
+}
+
+extension CaptionStyleTests {
+    @Test func fontOnlyEmphasisKeepsNormalSizeAndRoundTrips() throws {
+        var style = CaptionStyle()
+        style.emphasis = "font"
+        style.emphasisFont = "Georgia"
+        style.emphasisDecor = CaptionWordDecor(italic: true)
+        #expect(style.resolvedEmphasis == "font")
+        #expect(style.resolvedEmphasisFont == "Georgia")
+        #expect(style.resolvedSize(for: .emphasis) == style.resolvedSize(for: .text))
+        #expect(style.resolvedDecor(for: .emphasis).resolvedItalic)
+        #expect(try JSONDecoder().decode(CaptionStyle.self, from: JSONEncoder().encode(style)) == style)
+    }
+
+    @Test func interviewSerifPresetMatchesTheReferenceStyle() throws {
+        let style = try #require(CaptionPresets.styles.first { $0.name == "Interview Serif" }).style
+        #expect(style.resolvedWeight == "bold" && style.resolvedWordsPerPage == 3)
+        #expect(style.resolvedReveal == "word" && style.resolvedHighlight == "color")
+        #expect(style.resolvedHighlightColor == "#e5322d" && style.resolvedEmphasis == "font")
+        #expect(style.resolvedEmphasisFont == "Georgia" && style.resolvedDecor(for: .emphasis).resolvedItalic)
+        #expect(!style.resolvedDecor(for: .text).resolvedItalic)
+        #expect(style.position == "middle" && style.resolvedShadow && !style.bgOn && style.resolvedStrokeWidth == 0)
+        #expect(style.resolvedSize(for: .emphasis) == style.resolvedSize(for: .text))
+        #expect(try JSONDecoder().decode(CaptionStyle.self, from: JSONEncoder().encode(style)) == style)
+    }
+}
+
+
+extension CaptionStyleTests {
+    @Test func interviewSerifResolvesToAStockItalicFace() throws {
+        let style = try #require(CaptionPresets.styles.first { $0.name == "Interview Serif" }).style
+        let family = CTFontCreateWithName(style.resolvedEmphasisFont as CFString, 49, nil)
+        #expect(CTFontCopyFamilyName(family) as String == "Georgia")
+        let bold = try #require(CTFontCreateCopyWithSymbolicTraits(family, 49, nil, .traitBold, .traitBold))
+        let italic = try #require(CTFontCreateCopyWithSymbolicTraits(bold, 49, nil, .traitItalic, .traitItalic))
+        #expect(CTFontCopyFamilyName(italic) as String == "Georgia")
+        #expect(CTFontGetSymbolicTraits(italic).contains(.traitItalic))
+        #expect(CTFontGetSymbolicTraits(italic).contains(.traitBold))
     }
 }

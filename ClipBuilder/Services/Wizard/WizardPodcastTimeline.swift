@@ -26,7 +26,8 @@ nonisolated enum WizardPodcastTimeline {
                 let clips = plan.clips.filter { sceneMap[$0.sceneID]?.videoID == id && $0.end > $0.start }
                 guard let start = clips.map(\.start).min(), let end = clips.map(\.end).max() else { continue }
                 rosters[id] = await InterviewFaceSampling.refinedRoster(video: video, roster: roster, range: start...end,
-                                                                        turns: turns[id] ?? [], log: log)
+                    turns: turns[id] ?? [], punchIn: InterviewPunchIn(rawValue: options.interviewPunchIn ?? "") ?? .vip,
+                    cuts: options.interviewCuts ?? false, log: log)
             }
         }
         let people = options.usesNameTags ? try await database.fetchPeople() : []

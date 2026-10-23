@@ -12,18 +12,20 @@ nonisolated enum InterviewFaceSampling {
     /// Source times to look at: the range start and every planned move,
     /// thinned evenly to `maximumSamples`.
     static func sampleTimes(video: VideoRecord, range: ClosedRange<Double>, turns: [SpeakerTurn],
-                            roster: [VideoPersonRecord], limit: Int = maximumSamples) -> [Double] {
+                            roster: [VideoPersonRecord], limit: Int = maximumSamples,
+                            punchIn: InterviewPunchIn = .vip, cuts: Bool = false) -> [Double] {
         guard range.upperBound > range.lowerBound else { return [] }
         var tiles = feedTiles(video: video, roster: roster, turns: turns)
         if tiles.isEmpty { tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 1, h: 1)] }
         let vipTiles = VIPRecipePlanning.tiles(tiles, roster: roster).map(\.index)
         let hold = max(CropRecipe(kind: .interview).minimumHold, VIPRotation.minimumHold)
-        let segments = CropRecipePlanner.segments(turns: turns, tiles: tiles, range: range, hold: hold)
-        let moves = InterviewFocusPlanning.moves(segments: segments, vipTiles: vipTiles, range: range, hold: hold)
+        let segments = CropRecipePlanner.segments(turns: turns, tiles: tiles, range: range, hold: hold,
+            fillOpening: punchIn == .vip)
+        let moves = InterviewFocusPlanning.moves(segments: segments, vipTiles: vipTiles, range: range, hold: hold, punchIn: punchIn)
         // The first shot settles a moment after the range starts; a move's
         // shot is in place once its ramp has finished.
         var times = [min(range.upperBound, range.lowerBound + 0.1)]
-            + moves.dropFirst().map { min(range.upperBound, $0.time + InterviewFocusPlanning.moveSeconds) }
+            + moves.dropFirst().map { min(range.upperBound, $0.time + (cuts ? 0 : InterviewFocusPlanning.moveSeconds)) }
         times = Array(Set(times)).sorted()
         return thinned(times, limit: limit)
     }
@@ -67,7 +69,8 @@ nonisolated enum InterviewFaceSampling {
 
     /// Sample the shot starts of `range` and return the refined roster.
     static func refinedRoster(video: VideoRecord, roster: [VideoPersonRecord], range: ClosedRange<Double>,
-                              turns: [SpeakerTurn], log: @escaping @Sendable (String) -> Void) async -> [VideoPersonRecord] {
+                              turns: [SpeakerTurn], punchIn: InterviewPunchIn = .vip, cuts: Bool = false,
+                              log: @escaping @Sendable (String) -> Void) async -> [VideoPersonRecord] {
         guard video.isPresent, roster.count >= 2 else { return roster }
         let tiles = feedTiles(video: video, roster: roster, turns: turns)
         let feeds = tiles.filter { $0.personKey != nil }
@@ -75,7 +78,7 @@ nonisolated enum InterviewFaceSampling {
             log("Interview focus: no feed is linked to a person; keeping the roster portraits")
             return roster
         }
-        let times = sampleTimes(video: video, range: range, turns: turns, roster: roster)
+        let times = sampleTimes(video: video, range: range, turns: turns, roster: roster, punchIn: punchIn, cuts: cuts)
         guard let first = times.first else { return roster }
         var faces: [String: CGRect] = [:]
         for tile in feeds {

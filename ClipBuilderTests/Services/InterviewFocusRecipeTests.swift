@@ -163,15 +163,21 @@ struct InterviewFocusRecipeTests {
         roster[1].portraitBox = .init(x: 0.38, y: 0.2, w: 0.04, h: 0.1)
         let still = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video(),
             turns: turns(), roster: roster, layouts: [], canvasAspect: 9.0 / 16)
-        #expect(still.slots[0].path?.map(\.t) == [0, 40])
+        // Close faces used to share one static frame at the conversation height;
+        // with a face-tight 0 % the camera now moves between the VIP and the two-shot.
+        #expect(still.slots[0].path?.first?.t == 0 && still.slots[0].path?.last?.t == 40)
+        #expect(still.notes.isEmpty)
         #expect(still.slots[0].region == nil)
         roster[1].portraitBox = .init(x: 0.85, y: 0.2, w: 0.04, h: 0.1)
         let distant = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video(),
             turns: turns(), roster: roster, layouts: [], canvasAspect: 9.0 / 16)
-        #expect(distant.notes == ["Two-shot cannot hold both faces; the interviewer is partly in frame"])
-        // The anchored shot follows Pull back: the tight height at 0, full height at 1.
-        let close = CenterStageService.Tuning.conversation.minCropHeightFraction
-        #expect(distant.slots[0].path?.allSatisfy { abs($0.h - close) < 0.001 } == true)
+        #expect(distant.notes.count == 1 && distant.notes[0].hasPrefix("Two-shot cannot hold both faces"))
+        // The anchored shot follows Pull back: the face-tight height at 0, full height at 1.
+        let source = Double(video().width) / Double(video().height)
+        let close = InterviewFocusPlanning.tightHeight(
+            vipFace: CGRect(x: 0.85 * source, y: 0.2, width: 0.04 * source, height: 0.1), canvasAspect: 9.0 / 16, maxHeight: 1)
+        #expect(distant.slots[0].path?.contains { abs($0.h - close) < 0.001 } == true, "the tight shot is face-tight")
+        #expect(distant.slots[0].path?.allSatisfy { $0.h < 1 } == true, "nothing opens to the full height at 0 %")
         var pulledBack = CropRecipe(kind: .interview)
         pulledBack.interviewZoom = 1
         let wide = try CropRecipePlanner.plan(pulledBack, video: video(),
@@ -214,5 +220,44 @@ struct InterviewFocusRecipeTests {
         #expect(path.map(\.t) == [0, 5, 5.8, 12, 12.8, 20])
         #expect(clip.sourceStart == 10 && clip.sourceEnd == 30 && clip.duration == 20)
         #expect(CenterStageService.pathMatchesCanvas(path, sourceSize: CGSize(width: 1920, height: 1080)))
+    }
+}
+
+extension InterviewFocusRecipeTests {
+    @MainActor @Test func interviewerCutsReachTheRecipeAndPodcastTimeline() throws {
+        var recipe = CropRecipe(kind: .interview)
+        recipe.interviewPunchIn = .interviewer
+        recipe.interviewCuts = true
+        let plan = try CropRecipePlanner.plan(recipe, video: video(), range: 10...30,
+            turns: turns(), roster: roster(), layouts: [], canvasAspect: 9.0 / 16)
+        let path = try #require(plan.slots.first?.path)
+        #expect(path.map(\.t) == [0, 4.99, 5, 11.99, 12, 20])
+        #expect(abs(path[2].x + path[2].w / 2 - 0.54) < 0.001)
+        #expect(path[2].h < path[0].h && path[4].x == path[0].x)
+        #expect(CameraKeyframes.isCut(path, at: 2) && CameraKeyframes.isCut(path, at: 4))
+        var options = WizardOptions()
+        options.interviewPunchIn = "interviewer"
+        options.interviewCuts = true
+        let document = PodcastRecipeTimeline.build(kind: .interview, video: video(), range: 10...30,
+            sourceScene: nil, turns: turns(), roster: roster(), layouts: [], settings: RenderSettings(),
+            options: options, tagText: [:])
+        #expect(document.videoTrack.first?.cameraPath == path)
+    }
+
+    @Test func rotatedVIPsAlsoUseCutPaths() throws {
+        var people = roster()
+        people.append(VideoPersonRecord(videoID: 1, personID: 3, key: "guest2", name: "Guest 2", descriptor: "", portraitAt: 0,
+            portraitBox: .init(x: 0.75, y: 0.2, w: 0.04, h: 0.1), vip: true))
+        var recipe = CropRecipe(kind: .interview)
+        recipe.interviewPunchIn = .interviewer
+        recipe.interviewCuts = true
+        let plan = try CropRecipePlanner.plan(recipe, video: video(), range: 0...30,
+            turns: turns(), roster: people, layouts: [], canvasAspect: 9.0 / 16)
+        let path = try #require(plan.slots.first?.path)
+        let changes = path.indices.dropFirst().filter { !CameraKeyframes.sameRect(path[$0 - 1], path[$0]) }
+        #expect(!changes.isEmpty)
+        #expect(changes.allSatisfy { CameraKeyframes.isCut(path, at: $0) })
+        let question = try #require(CenterStageService.interpolated(path, at: 20))
+        #expect(abs(question.x + question.w / 2 - 0.54) < 0.001)
     }
 }

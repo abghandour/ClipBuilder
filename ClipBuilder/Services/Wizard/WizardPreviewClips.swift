@@ -19,8 +19,16 @@ nonisolated enum WizardPreviewClips {
     /// performs); before that the kept Q&A exchanges, transcript picks or
     /// fight picks stand in, with the same ranges the selections will get.
     static func kept(run: MiniWizardRun, scenes: [SceneRecord]) -> [WizardPreviewClip] {
+        // Only this recording's scenes: a pick without a scene must never
+        // borrow a longer overlapping scene from another video.
+        let scenes = scenes.filter { $0.videoID == run.video.id }
         let byID = Dictionary(scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var result: [WizardPreviewClip] = []
+        // Q&A, Transcript and Fight picks are the live footage the user edits;
+        // their saved takes lag until Settings records them again, so the
+        // picks come first and the takes only stand in when there are none.
+        let picked = pickClips(run: run, scenes: scenes, byID: byID)
+        if !picked.isEmpty { return picked }
         let takes = run.candidates.filter { $0.kept && !$0.take.plan.clips.isEmpty }
         if !takes.isEmpty {
             for candidate in takes {
@@ -34,10 +42,15 @@ nonisolated enum WizardPreviewClips {
             }
             return result
         }
+        return result
+    }
+
+    private static func pickClips(run: MiniWizardRun, scenes: [SceneRecord], byID: [Int64: SceneRecord]) -> [WizardPreviewClip] {
+        var result: [WizardPreviewClip] = []
         switch run.footageKind {
         case .qa:
             guard let qa = run.qa else { return [] }
-            for section in qa.sections where qa.kept.contains(section.id) {
+            for section in qa.sections where qa.kept.contains(section.id) && section.scene.videoID == run.video.id {
                 let range = section.range
                 guard range.upperBound > range.lowerBound else { continue }
                 result.append(.init(id: "qa-\(section.id)", title: section.question,

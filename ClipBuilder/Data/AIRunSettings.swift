@@ -138,7 +138,7 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
                 "strikeStats", "strikeUnits", "strikeSpeedCallouts", "strikeGrapplingCard", "strikeRoundCard",
                 "useMusic", "musicFolder", "useFightResearch",
                 "workflow", "musicTrack", "overlayStyle", "overlayAnimation", "overlayPlacement",
-                "targetDurationSeconds", "framingCamera", "podcastFraming", "highlightFraming", "interviewZoom", "interviewZoomMoves", "useBRoll", "screenCropLayouts",
+                "targetDurationSeconds", "framingCamera", "podcastFraming", "highlightFraming", "interviewZoom", "interviewZoomMoves", "interviewCuts", "interviewPunchIn", "useBRoll", "screenCropLayouts",
                 "allowedTransitions", "formatPreset", "critiqueLoop", "critiqueTargetScore", "critiqueMaxVersions", "includeWatermark",
                 "includeHeadline",
                 "includeOutro",

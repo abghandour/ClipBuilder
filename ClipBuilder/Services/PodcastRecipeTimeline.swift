@@ -22,6 +22,8 @@ enum PodcastRecipeTimeline {
             var recipe = CropRecipe(kind: kind)
             recipe.interviewZoom = options.interviewZoom ?? 0
             recipe.interviewZoomMoves = options.interviewZoomMoves ?? false
+            recipe.interviewCuts = options.interviewCuts ?? false
+            recipe.interviewPunchIn = InterviewPunchIn(rawValue: options.interviewPunchIn ?? "") ?? .vip
             plan = try CropRecipePlanner.plan(recipe, video: video, range: range,
                 turns: turns, roster: roster, layouts: layouts, canvasAspect: settings.aspectRatio)
         } catch {

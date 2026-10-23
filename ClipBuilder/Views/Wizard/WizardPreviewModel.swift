@@ -52,9 +52,11 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             : options.highlightFraming?.rawValue ?? ""
         visual.interviewZoom = options.interviewZoom ?? 0
         visual.interviewZoomMoves = options.interviewZoomMoves ?? false
+        visual.interviewCuts = options.interviewCuts ?? false
+        visual.interviewPunchIn = (InterviewPunchIn(rawValue: options.interviewPunchIn ?? "") ?? .vip).rawValue
         look = options.lookPreset ?? "none"
         lookIntensity = options.lookIntensity
-        captionLanguage = options.captionLanguage
+        captionLanguage = options.effectiveCaptionLanguage
         self.visual = visual
         width = options.renderSettings.width
         height = options.renderSettings.height
@@ -99,6 +101,18 @@ nonisolated struct PreviewKey: Hashable, Sendable {
     @ObservationIgnored private var currentKey: PreviewKey?
     @ObservationIgnored private var cache: [(key: PreviewKey, image: CGImage, layout: WizardPreviewComposite.Layout)] = []
     @ObservationIgnored private var baseFrame: (key: FrameKey, data: Data)?
+    /// The recording-wide reads of `loadScene` (transcript, roster, turns, tag
+    /// text), kept across scrubs and framing changes of the same recording.
+    @ObservationIgnored private var snapshot: RecordingSnapshot?
+
+    private struct RecordingSnapshot: Sendable {
+        var key: String
+        var segments: [TranscriptSegment]
+        var roster: [VideoPersonRecord]
+        var video: VideoRecord?
+        var turns: [SpeakerTurn]
+        var tagText: [String: String]
+    }
     @ObservationIgnored private var gradedFrames: [(key: GradeKey, image: CGImage)] = []
     private let thumbnails: ThumbnailService
 
@@ -146,7 +160,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
     /// default the middle of that range. Both default to the scene's own.
     func loadScene(_ record: SceneRecord?, database: Database?, people: [PersonRecord],
                    language: String?, tagStyleID: String?, profile: BrandProfile, options: WizardOptions,
-                   range: ClosedRange<Double>? = nil, time moment: Double? = nil) async {
+                   range: ClosedRange<Double>? = nil, time moment: Double? = nil, snapshotKey: String? = nil) async {
         let id = UUID()
         sceneRequestID = id
         loadedSceneID = nil
@@ -162,6 +176,28 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             record.startTime = range.lowerBound
             record.endTime = range.upperBound
         }
+        // Recording-wide reads happen once per snapshot key; a scrub or a
+        // framing change reuses them.
+        var loaded: RecordingSnapshot?
+        if let database {
+            let key = snapshotKey ?? "\(record.videoID)|\(language ?? "")|\(tagStyleID ?? "")"
+            if let snapshot, snapshot.key == key {
+                loaded = snapshot
+            } else {
+                let segments = (try? await database.transcriptSegments(videoID: record.videoID,
+                    start: 0, end: max(record.videoDuration, record.endTime), language: language)) ?? []
+                let roster = (try? await database.fetchVideoPeople(videoID: record.videoID)) ?? []
+                let video = try? await database.video(id: record.videoID)
+                let transcription = try? await database.activeTranscription(videoID: record.videoID).key
+                let turns = (try? await database.fetchSpeakerTurns(videoID: record.videoID, transcriptionKey: transcription)) ?? []
+                let tagText = (try? await database.tagText(field: profile.tagStyle(id: tagStyleID).description.field)) ?? [:]
+                guard sceneRequestID == id else { return }
+                let fresh = RecordingSnapshot(key: key, segments: segments, roster: roster, video: video, turns: turns, tagText: tagText)
+                snapshot = fresh
+                loaded = fresh
+            }
+        }
+        let snapshotForWorker = loaded
         let worker = Task.detached(priority: .userInitiated) {
             let time = min(record.endTime, max(record.startTime, moment ?? (record.startTime + record.endTime) / 2))
             var person = people.first { !$0.hidden && !$0.name.isEmpty && record.tags.contains($0.tag) }
@@ -171,14 +207,12 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             var roster: [VideoPersonRecord] = []
             var turns: [SpeakerTurn] = []
             var taggedPeople = people
-            if let database {
-                let segments = (try? await database.transcriptSegments(videoID: record.videoID,
-                    start: 0, end: max(record.videoDuration, record.endTime), language: language)) ?? []
+            if let snapshotForWorker {
+                let segments = snapshotForWorker.segments
                 segment = segments.first { $0.start <= time && time < $0.end } ?? segments.first
-                roster = (try? await database.fetchVideoPeople(videoID: record.videoID)) ?? []
-                video = try? await database.video(id: record.videoID)
-                let transcription = try? await database.activeTranscription(videoID: record.videoID).key
-                turns = (try? await database.fetchSpeakerTurns(videoID: record.videoID, transcriptionKey: transcription)) ?? []
+                roster = snapshotForWorker.roster
+                video = snapshotForWorker.video
+                turns = snapshotForWorker.turns
                 if let video, let talker = WizardPreviewFraming.speaker(video: video, record: record,
                     turns: turns, roster: roster, people: people, time: time) {
                     person = talker.person ?? person
@@ -189,7 +223,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
                    let box = entry.portraitBox {
                     face = CGRect(x: box.x, y: box.y, width: box.w, height: box.h)
                 }
-                let text = (try? await database.tagText(field: profile.tagStyle(id: tagStyleID).description.field)) ?? [:]
+                let text = snapshotForWorker.tagText
                 taggedPeople = people.map { value in
                     var value = value
                     value.descriptor = text[value.key] ?? ""
@@ -207,7 +241,8 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             scene.contentIsWide = record.wide
             if let video, video.width > 0, video.height > 0 { scene.sourceSize = CGSize(width: video.width, height: video.height) }
             let framing = await WizardPreviewFraming.resolveCached(options: options, record: record, video: video,
-                face: face, turns: turns, roster: roster, people: taggedPeople, layouts: ScreenCropStore.all(), time: time)
+                face: face, turns: turns, roster: roster, people: taggedPeople, layouts: ScreenCropStore.all(), time: time,
+                sceneStart: original.startTime)
             scene.framing = framing.framing
             scene.framingWarning = framing.warning
             let templates = OverlayTemplateStore.list()

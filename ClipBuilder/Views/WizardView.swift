@@ -71,6 +71,8 @@ struct WizardView: View {
     @AppStorage("wizard.highlightFraming") private var highlightFramingRaw = ""
     @AppStorage("wizard.interviewZoom") var interviewZoom = 0.0
     @AppStorage("wizard.interviewZoomMoves") var interviewZoomMoves = false
+    @AppStorage("wizard.interviewCuts") var interviewCuts = false
+    @AppStorage("wizard.interviewPunchIn") var interviewPunchIn = InterviewPunchIn.vip.rawValue
     @AppStorage("wizard.useBRoll") var useBRoll = true
     @AppStorage("wizard.brollInstructions") var brollInstructions = ""
     @AppStorage("wizard.podcastFraming") private var podcastFramingRaw = PodcastFramingMode.followSpeaker.rawValue
@@ -1369,6 +1371,8 @@ struct WizardView: View {
         options.highlightFraming = CropRecipe.Kind(rawValue: highlightFramingRaw)
         options.interviewZoom = highlightFramingRaw == CropRecipe.Kind.interview.rawValue ? interviewZoom : nil
         options.interviewZoomMoves = highlightFramingRaw == CropRecipe.Kind.interview.rawValue ? interviewZoomMoves : nil
+        options.interviewCuts = highlightFramingRaw == CropRecipe.Kind.interview.rawValue ? interviewCuts : nil
+        options.interviewPunchIn = highlightFramingRaw == CropRecipe.Kind.interview.rawValue ? interviewPunchIn : nil
         options.useBRoll = useBRoll
         options.brollInstructions = brollInstructions
         options.podcastFraming = PodcastFramingMode(rawValue: podcastFramingRaw) ?? .followSpeaker

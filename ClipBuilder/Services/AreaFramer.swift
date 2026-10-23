@@ -200,8 +200,8 @@ nonisolated enum AreaFramer {
             for index in path.indices.dropLast() {
                 let a = path[index], b = path[index + 1]
                 guard value(b) != value(a) else { continue }
-                if b.t == a.t {
-                    terms.append("(\(number(value(b) - value(a))))*gte(\(clock),\(number(a.t)))")
+                if b.t == a.t || CameraKeyframes.isCut(path, at: index + 1) {
+                    terms.append("(\(number(value(b) - value(a))))*gte(\(clock),\(number(b.t)))")
                     continue
                 }
                 terms.append("(\(number(value(b) - value(a))))*clip((\(clock)-\(number(a.t)))/\(number(b.t - a.t)),0,1)")

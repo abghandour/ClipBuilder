@@ -1488,7 +1488,7 @@ actor MultitrackRenderer {
     }
 
     /// Bump when CenterStageService/AreaFramer output or tracking semantics change.
-    nonisolated static let framingVersion = "multitrack-framing-v6"
+    nonisolated static let framingVersion = "multitrack-framing-v7"
 
     nonisolated static func prepassKey(_ clip: ResolvedClip, area: ScreenCropArea?,
                                       tuning: String, settings: RenderSettings = RenderContext.settings,

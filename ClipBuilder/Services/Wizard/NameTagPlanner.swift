@@ -105,7 +105,9 @@ nonisolated enum NameTagPlanner {
                 let personCorner = Corner(rawValue: person.position ?? "")
                 let gap = settings.canvas.height * 0.01
                 if personCorner == nil, let customAnchor {
-                    let origin = customAnchor.origin(size: CGSize(width: width, height: height), in: allowed)
+                    // The anchor is a canvas point; the tag is kept inside this area's allowed rect.
+                    let center = CGPoint(x: customAnchor.x * settings.canvas.width, y: customAnchor.y * settings.canvas.height)
+                    let origin = CustomPosition.origin(center: center, size: CGSize(width: width, height: height), in: allowed)
                     let anchored = CGRect(origin: origin, size: CGSize(width: width, height: height))
                     let corner: Corner = anchored.midY < area.rect.midY
                         ? (anchored.midX < area.rect.midX ? .topLeading : .topTrailing)

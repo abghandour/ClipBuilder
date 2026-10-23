@@ -66,3 +66,17 @@ struct InterviewFaceSamplingTests {
         #expect(one == [roster()[0]])
     }
 }
+
+extension InterviewFaceSamplingTests {
+    @Test(arguments: InterviewPunchIn.allCases)
+    func samplesFollowTheChosenShotsAndCutTiming(punchIn: InterviewPunchIn) {
+        #expect(InterviewFaceSampling.sampleTimes(video: video(), range: 10...30, turns: turns(), roster: roster(),
+            punchIn: punchIn, cuts: true) == [10.1, 15, 22])
+        #expect(InterviewFaceSampling.sampleTimes(video: video(), range: 10...30, turns: turns(), roster: roster(),
+            punchIn: punchIn) == [10.1, 15.8, 22.8])
+        let later = [SpeakerTurn(videoID: 1, start: 5, end: 20, cluster: 1, confidence: 1, personKey: "host", tile: 1)]
+        let expected = punchIn == .vip ? [0.1] : [0.1, 5]
+        #expect(InterviewFaceSampling.sampleTimes(video: video(), range: 0...20, turns: later, roster: roster(),
+            punchIn: punchIn, cuts: true) == expected)
+    }
+}

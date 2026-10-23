@@ -70,6 +70,8 @@ nonisolated extension WizardOptions {
         highlightFraming = try values.decodeIfPresent(String.self, forKey: .highlightFraming).flatMap(CropRecipe.Kind.init(rawValue:))
         interviewZoom = try values.decodeIfPresent(Double.self, forKey: .interviewZoom).map { min(1, max(0, $0)) }
         interviewZoomMoves = try values.decodeIfPresent(Bool.self, forKey: .interviewZoomMoves)
+        interviewCuts = try values.decodeIfPresent(Bool.self, forKey: .interviewCuts)
+        interviewPunchIn = try values.decodeIfPresent(String.self, forKey: .interviewPunchIn)
         useBRoll = try values.decodeIfPresent(Bool.self, forKey: .useBRoll) ?? useBRoll
         brollInstructions = try values.decodeIfPresent(String.self, forKey: .brollInstructions) ?? brollInstructions
         highlightMaxCount = try values.decodeIfPresent(Int.self, forKey: .highlightMaxCount)

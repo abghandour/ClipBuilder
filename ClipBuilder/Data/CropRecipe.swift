@@ -129,6 +129,8 @@ nonisolated struct CropRecipe: Sendable, Hashable, Identifiable {
     /// Interview focus "Zoom in/out for focus": the wide shot stays centred on
     /// the VIP (a zoom in place) instead of panning toward the interviewer.
     var interviewZoomMoves = false
+    var interviewCuts = false
+    var interviewPunchIn: InterviewPunchIn = .vip
     /// Still cells (a fixed feed or person) get the tracking camera inside
     /// their feed instead of a fixed crop of it.
     var tracking = true
@@ -275,9 +277,10 @@ nonisolated enum CropRecipePlanner {
     /// Stretches with a stable talker over `range` of the recording (source
     /// seconds): the tile only changes after `hold` seconds, silence keeps
     /// the last talker, and the range starts on whoever is speaking at its
-    /// start (or the first speaker after it).
+    /// start (or the first speaker after it). Interview punch-ins can preserve
+    /// an unknown opening with `fillOpening: false` instead of anticipating speech.
     static func segments(turns: [SpeakerTurn], tiles: [PodcastTile], range: ClosedRange<Double>,
-                         hold: Double) -> [Segment] {
+                         hold: Double, fillOpening: Bool = true) -> [Segment] {
         let placed = turns.sorted { $0.start < $1.start }
             .filter { $0.end > range.lowerBound && $0.start < range.upperBound }
             .compactMap { turn -> (start: Double, end: Double, tile: Int)? in
@@ -290,7 +293,7 @@ nonisolated enum CropRecipePlanner {
         guard let first = placed.first else { return [] }
         let start = range.lowerBound, end = range.upperBound
         var order = tiles.map(\.index).filter { $0 != first.tile }
-        var segments = [Segment(start: start, end: end, talker: first.tile, recent: order)]
+        var segments = [Segment(start: fillOpening ? start : first.start, end: end, talker: first.tile, recent: order)]
         var heldSince = start
         for turn in placed.dropFirst() {
             let current = segments[segments.count - 1]
@@ -414,7 +417,8 @@ nonisolated enum CropRecipePlanner {
         }
         let hold = recipe.kind == .vip || recipe.kind == .vipBRoll || recipe.kind == .interview
             ? max(recipe.minimumHold, VIPRotation.minimumHold) : recipe.minimumHold
-        var segments = segments(turns: turns, tiles: tiles, range: span, hold: hold)
+        var segments = segments(turns: turns, tiles: tiles, range: span, hold: hold,
+            fillOpening: recipe.kind != .interview || recipe.interviewPunchIn == .vip)
         if recipe.kind == .vip, tiles.count == 1, segments.isEmpty {
             segments = [.init(start: span.lowerBound, end: span.upperBound, talker: tiles[0].index, recent: [])]
         }
@@ -449,12 +453,15 @@ nonisolated enum CropRecipePlanner {
             for tile in vipTiles {
                 if let note = rectangles[tile.index]?.note, !notes.contains(note) { notes.append(note) }
             }
-            let moves = InterviewFocusPlanning.moves(segments: segments, vipTiles: indices, range: span, hold: hold)
+            let moves = InterviewFocusPlanning.moves(segments: segments, vipTiles: indices, range: span, hold: hold,
+                punchIn: recipe.interviewPunchIn)
             let rotation = VIPRecipePlanning.events(segments: segments, tiles: tiles, roster: roster,
                 turns: turns, start: span.lowerBound, end: span.upperBound)
             var path: [CameraPathKeyframe]
             if vipTiles.count == 1, let pair = rectangles[vipTiles[0].index] {
-                path = InterviewFocusPlanning.path(moves: moves, tight: pair.tight, twoShot: pair.twoShot, length: length)
+                path = InterviewFocusPlanning.path(moves: moves, tight: pair.tight, twoShot: pair.twoShot,
+                    interviewerTight: pair.interviewerTight, length: length,
+                    moveSeconds: recipe.interviewCuts ? 0 : InterviewFocusPlanning.moveSeconds)
             } else {
                 // Merge shot-kind changes with the existing VIP rotation, sharing
                 // one hold clock so their combined moves cannot twitch.
@@ -466,12 +473,13 @@ nonisolated enum CropRecipePlanner {
                     guard let tile = rotation.last(where: { $0.time <= time })?.tile,
                           let pair = rectangles[tile] else { continue }
                     let kind = moves.last(where: { $0.time <= time })?.kind ?? .tight
-                    let still = InterviewFocusPlanning.inDeadZone(tight: pair.tight, twoShot: pair.twoShot)
-                    let rect = still || kind == .twoShot ? pair.twoShot : pair.tight
+                    let rect = InterviewFocusPlanning.rect(for: kind, tight: pair.tight,
+                        twoShot: pair.twoShot, interviewerTight: pair.interviewerTight)
                     if shots.last?.shot.rect == rect { continue }
                     shots.append((time, .init(kind: kind, rect: rect)))
                 }
-                path = InterviewFocusPlanning.path(shots: shots, length: length)
+                path = InterviewFocusPlanning.path(shots: shots, length: length,
+                    moveSeconds: recipe.interviewCuts ? 0 : InterviewFocusPlanning.moveSeconds)
             }
             if recipe.highlightTalker { notes.append("The talker is not outlined in Full Screen.") }
             return Plan(layout: ref, slots: [Slot(subject: .vip, path: path,

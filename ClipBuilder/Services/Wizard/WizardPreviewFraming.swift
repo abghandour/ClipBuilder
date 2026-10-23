@@ -54,13 +54,16 @@ nonisolated enum WizardPreviewFraming {
     /// `time` is the moment shown, on the source clock; nil means the middle
     /// of the record's range. The plan always covers the whole range, as the
     /// render's does, and the moment picks the keyframe inside it.
+    /// `sceneStart` is the scene's own start when `record` carries a kept
+    /// range instead: the saved Center Stage path counts from the scene.
     static func resolve(options: WizardOptions, record: SceneRecord, video: VideoRecord?,
                         face: CGRect?, turns: [SpeakerTurn], roster: [VideoPersonRecord],
-                        people: [PersonRecord], layouts: [ScreenCropLayout], time moment: Double? = nil)
+                        people: [PersonRecord], layouts: [ScreenCropLayout], time moment: Double? = nil,
+                        sceneStart: Double? = nil)
         -> (framing: WizardPreviewComposite.Framing, warning: String?) {
         let time = min(record.endTime, max(record.startTime, moment ?? (record.startTime + record.endTime) / 2))
         let fallback = talker(original: options.podcastFraming == .original,
-            path: record.centerStagePath, wide: record.wide, time: time - record.startTime, face: face)
+            path: record.centerStagePath, wide: record.wide, time: time - (sceneStart ?? record.startTime), face: face)
         guard options.podcastFraming != .original else { return (fallback, nil) }
         // Talker (and "Let AI choose", which picks a recipe per take) on a
         // tiled recording shows the talker's feed full screen, as the
@@ -76,7 +79,9 @@ nonisolated enum WizardPreviewFraming {
             }
             var recipe = CropRecipe(kind: kind)
             recipe.interviewZoom = options.interviewZoom ?? 0
-        recipe.interviewZoomMoves = options.interviewZoomMoves ?? false
+            recipe.interviewZoomMoves = options.interviewZoomMoves ?? false
+            recipe.interviewCuts = options.interviewCuts ?? false
+            recipe.interviewPunchIn = InterviewPunchIn(rawValue: options.interviewPunchIn ?? "") ?? .vip
             let plan = try CropRecipePlanner.plan(recipe, video: video,
                 range: record.startTime...record.endTime, turns: turns, roster: roster,
                 layouts: layouts, canvasAspect: options.renderSettings.aspectRatio)
@@ -94,12 +99,14 @@ nonisolated enum WizardPreviewFraming {
         var recipe = CropRecipe(kind: options.highlightFraming ?? .talker)
         recipe.interviewZoom = options.interviewZoom ?? 0
         recipe.interviewZoomMoves = options.interviewZoomMoves ?? false
+        recipe.interviewCuts = options.interviewCuts ?? false
+        recipe.interviewPunchIn = InterviewPunchIn(rawValue: options.interviewPunchIn ?? "") ?? .vip
         return recipe
     }
 
     /// Refines a roster's portraits from faces seen in the scene, the way the
     /// render does before it plans Interview focus.
-    typealias RosterRefiner = @Sendable (VideoRecord, [VideoPersonRecord], ClosedRange<Double>, [SpeakerTurn]) async -> [VideoPersonRecord]
+    typealias RosterRefiner = @Sendable (VideoRecord, [VideoPersonRecord], ClosedRange<Double>, [SpeakerTurn], InterviewPunchIn, Bool) async -> [VideoPersonRecord]
 
     /// Interview focus is the one camera focus whose render plans from faces
     /// sampled in the clip (`InterviewFaceSampling.refinedRoster`) instead of
@@ -118,15 +125,16 @@ nonisolated enum WizardPreviewFraming {
                               people: [PersonRecord], layouts: [ScreenCropLayout],
                               cache: FeedPathCache = .shared,
                               refine: RosterRefiner = InterviewPreviewRosterCache.shared.refined,
-                              time moment: Double? = nil) async
+                              time moment: Double? = nil, sceneStart: Double? = nil) async
         -> (framing: WizardPreviewComposite.Framing, warning: String?) {
         var roster = roster
         if usesRefinedRoster(options: options), let video {
-            roster = await refine(video, roster, record.startTime...record.endTime, turns)
+            roster = await refine(video, roster, record.startTime...record.endTime, turns,
+                InterviewPunchIn(rawValue: options.interviewPunchIn ?? "") ?? .vip, options.interviewCuts ?? false)
             if Task.isCancelled { return (.cover(face: face), nil) }
         }
         let fallback = resolve(options: options, record: record, video: video, face: face,
-            turns: turns, roster: roster, people: people, layouts: layouts, time: moment)
+            turns: turns, roster: roster, people: people, layouts: layouts, time: moment, sceneStart: sceneStart)
         guard case .cells(var cells) = fallback.framing, let video,
               let plan = try? CropRecipePlanner.plan(recipe(options: options),
                 video: video, range: record.startTime...record.endTime, turns: turns, roster: roster,
@@ -168,8 +176,10 @@ nonisolated enum WizardPreviewFraming {
                 let box = areas[index].bounds
                 area = CGRect(x: box.x, y: box.y, width: box.w, height: box.h)
             } else { return nil }
-            // Recipe paths are hard cuts, with a hold key just before each cut.
-            let keyframe = slot.path?.last { $0.t <= time - rangeStart } ?? slot.path?.first
+            // The export interpolates the path, so a moment inside a camera
+            // move shows the crop part-way; hard cuts stay cuts because the
+            // planner puts a hold key just before each one.
+            let keyframe = slot.path.flatMap { CenterStageService.interpolated($0, at: time - rangeStart) }
             let region = keyframe.map { CGRect(x: $0.x, y: $0.y, width: $0.w, height: $0.h) }
                 ?? (slot.window ?? slot.region).map { CGRect(x: $0.xFrac, y: $0.yFrac, width: $0.wFrac, height: $0.hFrac) }
                 ?? full
@@ -204,6 +214,10 @@ actor InterviewPreviewRosterCache {
         var start: Double
         var end: Double
         var roster: [VideoPersonRecord]
+        /// Speaker turns decide which feed each person is sampled on.
+        var turns: [SpeakerTurn]
+        var punchIn: InterviewPunchIn
+        var cuts: Bool
     }
 
     private var entries: [Key: [VideoPersonRecord]] = [:]
@@ -213,15 +227,17 @@ actor InterviewPreviewRosterCache {
     /// The render's refinement for `range`; one decode pass per scene, shared
     /// by concurrent callers.
     func refined(video: VideoRecord, roster: [VideoPersonRecord], range: ClosedRange<Double>,
-                 turns: [SpeakerTurn]) async -> [VideoPersonRecord] {
-        let key = Key(path: video.url.path, start: range.lowerBound, end: range.upperBound, roster: roster)
+                 turns: [SpeakerTurn], punchIn: InterviewPunchIn, cuts: Bool) async -> [VideoPersonRecord] {
+        let key = Key(path: video.url.path, start: range.lowerBound, end: range.upperBound, roster: roster, turns: turns,
+                      punchIn: punchIn, cuts: cuts)
         if let hit = entries[key] { return hit }
         let task: Task<[VideoPersonRecord], Never>
         if let running = inFlight[key] {
             task = running
         } else {
             task = Task.detached(priority: .userInitiated) {
-                await InterviewFaceSampling.refinedRoster(video: video, roster: roster, range: range, turns: turns, log: { _ in })
+                await InterviewFaceSampling.refinedRoster(video: video, roster: roster, range: range, turns: turns,
+                    punchIn: punchIn, cuts: cuts, log: { _ in })
             }
             inFlight[key] = task
         }

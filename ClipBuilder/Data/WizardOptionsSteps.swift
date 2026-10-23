@@ -64,6 +64,8 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var highlightFraming: CropRecipe.Kind?
     var interviewZoom: Double?
     var interviewZoomMoves: Bool?
+    var interviewCuts: Bool?
+    var interviewPunchIn: String?
     var podcastFraming: PodcastFramingMode?
     var framingCamera: String?
     var useBRoll: Bool?
@@ -121,6 +123,8 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         case highlightFraming
         case interviewZoom
         case interviewZoomMoves
+        case interviewCuts
+        case interviewPunchIn
         case podcastFraming
         case framingCamera
         case useBRoll
@@ -214,6 +218,8 @@ nonisolated extension WizardOptions {
         result.highlightFraming = highlightFraming
         result.interviewZoom = interviewZoom
         result.interviewZoomMoves = interviewZoomMoves
+        result.interviewCuts = interviewCuts
+        result.interviewPunchIn = interviewPunchIn
         result.podcastFraming = podcastFraming
         result.framingCamera = framingCamera
         result.useBRoll = useBRoll
@@ -303,6 +309,8 @@ nonisolated extension WizardOptions {
         result.highlightFraming = step2.highlightFraming
         result.interviewZoom = step2.interviewZoom ?? base.interviewZoom
         result.interviewZoomMoves = step2.interviewZoomMoves ?? base.interviewZoomMoves
+        result.interviewCuts = step2.interviewCuts ?? base.interviewCuts
+        result.interviewPunchIn = step2.interviewPunchIn ?? base.interviewPunchIn
         result.podcastFraming = step2.podcastFraming ?? base.podcastFraming
         result.framingCamera = step2.framingCamera ?? base.framingCamera
         result.useBRoll = step2.useBRoll ?? base.useBRoll

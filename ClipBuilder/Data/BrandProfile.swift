@@ -389,7 +389,7 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
     var resolvedWordsPerPage: Int? { wordsPerPage.map { min(8, max(1, $0)) } }
     var resolvedHighlight: String { ["color", "box", "scale"].contains(highlight ?? "") ? highlight! : "none" }
     var resolvedHighlightColor: String { highlightColor ?? "#ffd60a" }
-    var resolvedEmphasis: String { ["color", "scale", "both"].contains(emphasis ?? "") ? emphasis! : "none" }
+    var resolvedEmphasis: String { ["color", "scale", "both", "font"].contains(emphasis ?? "") ? emphasis! : "none" }
     var resolvedEmphasisColor: String { emphasisColor ?? resolvedHighlightColor }
     var resolvedUppercase: Bool { uppercase ?? false }
     var resolvedWeight: String { ["bold", "black"].contains(weight ?? "") ? weight! : "regular" }

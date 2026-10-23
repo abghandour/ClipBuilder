@@ -12,6 +12,13 @@ struct InterviewFocusPlanningTests {
         .init(start: start, end: end, talker: talker, recent: [])
     }
 
+    /// The planner's tightest height for a normalised face (what 0 % gives).
+    private func tightHeight(for face: CGRect) -> Double {
+        InterviewFocusPlanning.tightHeight(
+            vipFace: CGRect(x: face.minX * sourceAspect, y: face.minY, width: face.width * sourceAspect, height: face.height),
+            canvasAspect: canvasAspect, maxHeight: min(1, sourceAspect / canvasAspect))
+    }
+
     private func rectangle(_ crop: FreeCropRect) -> CGRect {
         CGRect(x: crop.xFrac, y: crop.yFrac, width: crop.wFrac, height: crop.hFrac)
     }
@@ -19,7 +26,8 @@ struct InterviewFocusPlanningTests {
     @Test func nearbyFacesFitBelowFullHeightWithMarginAndHeadroom() {
         let pair = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [host],
             sourceAspect: sourceAspect, canvasAspect: canvasAspect)
-        #expect(pair.tight.hFrac == CenterStageService.Tuning.conversation.minCropHeightFraction)
+        #expect(abs(pair.tight.hFrac - tightHeight(for: vip)) < 0.0001, "0 % fills the frame with the face")
+        #expect(pair.tight.hFrac < CenterStageService.Tuning.conversation.minCropHeightFraction)
         #expect(pair.twoShot.hFrac < 1 && pair.twoShot.hFrac > pair.tight.hFrac)
         #expect(pair.note == nil)
         for face in [vip, host] {
@@ -37,7 +45,7 @@ struct InterviewFocusPlanningTests {
             sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: 0.5)
         let wide = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [host],
             sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: 1)
-        let close = CenterStageService.Tuning.conversation.minCropHeightFraction
+        let close = tightHeight(for: vip)
         #expect(abs(half.tight.hFrac - (close + (1 - close) / 2)) < 0.001)
         #expect(wide.tight.hFrac == 1 && wide.twoShot.hFrac == 1)
         #expect(half.twoShot.hFrac >= half.tight.hFrac && half.twoShot.hFrac >= tight.twoShot.hFrac)
@@ -63,22 +71,27 @@ struct InterviewFocusPlanningTests {
             .intersection(bounds)
         let padded = room.insetBy(dx: -room.width * FaceGuard.margin, dy: -room.height * FaceGuard.margin)
             .intersection(bounds)
+        var previousHeight = 0.0
         for zoom in [0.0, 0.5, 1.0] {
             let pair = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [other],
                 sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: zoom)
-            let two = rectangle(pair.twoShot)
-            let close = CenterStageService.Tuning.conversation.minCropHeightFraction
-            #expect(abs(two.height - (close + (1 - close) * zoom)) < 0.0001)
-            #expect(pair.twoShot.hFrac == pair.tight.hFrac)
-            #expect(pair.note == "Two-shot cannot hold both faces; the interviewer is partly in frame")
+            let two = rectangle(pair.twoShot), tight = rectangle(pair.tight)
+            // The anchored shot follows Pull back but never gets smaller than the VIP's roomy face.
+            #expect(two.height >= tight.height - 0.0001 && two.height >= previousHeight - 0.0001)
+            if zoom == 1 { #expect(abs(two.height - 1) < 0.0001) }
+            previousHeight = two.height
+            #expect(pair.note?.hasPrefix("Two-shot cannot hold both faces") == true)
             #expect(two.insetBy(dx: -0.0001, dy: -0.0001).contains(padded))
             #expect(bounds.insetBy(dx: -0.0001, dy: -0.0001).contains(two))
+            // It leans toward the interviewer as far as the frame allows; a frame no
+            // wider than the padded face cannot lean but never leans away.
+            let canLean = two.width > padded.width + 0.001
             if vipX < 0.5 {
                 #expect(abs(two.minX - padded.minX) < 0.0001)
-                #expect(two.midX > rectangle(pair.tight).midX)
+                #expect(canLean ? two.midX > tight.midX : two.midX >= tight.midX - 0.0001)
             } else {
                 #expect(abs(two.maxX - padded.maxX) < 0.0001)
-                #expect(two.midX < rectangle(pair.tight).midX)
+                #expect(canLean ? two.midX < tight.midX : two.midX <= tight.midX + 0.0001)
             }
         }
     }
@@ -218,7 +231,8 @@ struct InterviewFocusPlanningTests {
         #expect(wide.insetBy(dx: -0.0001, dy: -0.0001).contains(vip))
         #expect(zooming.note?.contains("zooming out") == true)
         #expect(!InterviewFocusPlanning.inDeadZone(tight: zooming.tight, twoShot: zooming.twoShot))
-        #expect(rectangle(panning.twoShot).midX < rectangle(panning.tight).midX, "panning leans toward the interviewer on the left")
+        #expect(rectangle(panning.twoShot).midX <= rectangle(panning.tight).midX + 0.0001, "panning never leans away from the interviewer")
+        if zoom > 0 { #expect(rectangle(panning.twoShot).midX < rectangle(panning.tight).midX, "and leans toward them once the frame has room") }
     }
 
     @Test func zoomMovesKeepEveryoneOnScreenWhenTheyFit() {
@@ -235,5 +249,148 @@ struct InterviewFocusPlanningTests {
         let panning = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [other],
             sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: 0)
         #expect(zooming.twoShot == panning.twoShot, "a two-shot that fits is the same shot either way")
+    }
+
+    @Test func zeroPullBackIsTheFaceWithItsGuardMarginsNeverSmallerThanTheFloor() {
+        // A 9:16 column is 0.5625 source-height units wide; the face's width
+        // plus margins decides the height when it is the tighter constraint.
+        let face = CGRect(x: 0.5 * sourceAspect, y: 0.2, width: 0.06 * sourceAspect, height: 0.12)
+        let height = InterviewFocusPlanning.tightHeight(vipFace: face, canvasAspect: canvasAspect, maxHeight: 1)
+        let byHeight = 0.12 * (1 + 2 * FaceGuard.margin) / (1 - FaceGuard.headroom)
+        let byWidth = face.width * (1 + 2 * FaceGuard.margin) / canvasAspect
+        #expect(abs(height - max(byHeight, byWidth)) < 0.0001)
+        #expect(height < CenterStageService.Tuning.conversation.minCropHeightFraction)
+        // The shot at 0 % holds the face with headroom, and is far tighter than the conversation crop.
+        let pair = InterviewFocusPlanning.rects(vipFace: CGRect(x: 0.5, y: 0.2, width: 0.06, height: 0.12), otherFaces: [],
+            sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: 0)
+        #expect(abs(pair.tight.hFrac - height) < 0.0001)
+        #expect(rectangle(pair.tight).contains(CGRect(x: 0.5, y: 0.2, width: 0.06, height: 0.12)))
+        // A placeholder box (a layout face centre) is not a measured face: the
+        // close shot keeps the conversation height instead of zooming into it.
+        let speck = InterviewFocusPlanning.tightHeight(vipFace: CGRect(x: 0.9, y: 0.3, width: 0.02, height: 0.02),
+                                                       canvasAspect: canvasAspect, maxHeight: 1)
+        #expect(speck == CenterStageService.Tuning.conversation.minCropHeightFraction)
+        // A small but measured face still stops at the floor.
+        let small = InterviewFocusPlanning.tightHeight(vipFace: CGRect(x: 0.9, y: 0.3, width: 0.03, height: 0.06),
+                                                       canvasAspect: canvasAspect, maxHeight: 1)
+        #expect(small >= InterviewFocusPlanning.minimumHeight)
+        // A face larger than the frame allows is capped at the full height.
+        #expect(InterviewFocusPlanning.tightHeight(vipFace: CGRect(x: 0, y: 0, width: 1.5, height: 0.9),
+                                                    canvasAspect: canvasAspect, maxHeight: 1) == 1)
+    }
+
+    @Test func twoShotHoldsBothHeadsEdgeToEdgeWhenTheRoomyFrameDoesNotFit() {
+        // The real Tanner Boser interview faces: too far apart for the VIP's
+        // extra room, close enough for both heads in one full-height column.
+        let vip = CGRect(x: 0.5567, y: 0.1652, width: 0.0628, height: 0.1116)
+        let host = CGRect(x: 0.3389, y: 0.2494, width: 0.0746, height: 0.1327)
+        for zoom in [0.0, 1.0] {
+            let pair = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [host],
+                sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: zoom)
+            let two = rectangle(pair.twoShot)
+            #expect(pair.note == "Two-shot holds both people edge to edge")
+            #expect(two.insetBy(dx: -0.0001, dy: -0.0001).contains(vip) && two.insetBy(dx: -0.0001, dy: -0.0001).contains(host),
+                    "both heads are in the frame")
+            #expect(two.height > 0.9, "a standing two-shot needs almost the full height")
+            #expect(abs(two.midX - (vip.midX + host.midX) / 2) < 0.08, "centred between the two people")
+        }
+        // Zoom moves keep everyone on screen the same way.
+        let zooming = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [host],
+            sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoomMoves: true)
+        #expect(rectangle(zooming.twoShot).insetBy(dx: -0.0001, dy: -0.0001).contains(host))
+    }
+}
+
+extension InterviewFocusPlanningTests {
+    @Test(arguments: InterviewPunchIn.allCases)
+    func punchInSelectsTheRequestedSpeaker(punchIn: InterviewPunchIn) {
+        let moves = InterviewFocusPlanning.moves(segments: [segment(10, 15, 0), segment(15, 22, 1), segment(22, 30, 0)],
+            vipTiles: [0], range: 10...30, punchIn: punchIn)
+        let expected: [InterviewFocusPlanning.Shot.Kind]
+        switch punchIn {
+        case .vip: expected = [.tight, .twoShot, .tight]
+        case .interviewer: expected = [.twoShot, .interviewerTight, .twoShot]
+        case .talker: expected = [.tight, .interviewerTight, .tight]
+        }
+        #expect(moves.map(\.kind) == expected)
+        #expect(moves.map(\.time) == [10, 15, 22])
+        let short = InterviewFocusPlanning.moves(segments: [segment(0, 5, 0), segment(5, 5.9, 1), segment(5.9, 20, 0)],
+            vipTiles: [0], range: 0...20, punchIn: punchIn)
+        #expect(short.count == 1)
+        let held = InterviewFocusPlanning.moves(segments: [segment(0, 2, 0), segment(2, 7, 1), segment(7, 20, 0)],
+            vipTiles: [0], range: 0...20, punchIn: punchIn)
+        #expect(held.map(\.time) == [0, 4, 8])
+        let tail = InterviewFocusPlanning.moves(segments: [segment(0, 19, 0), segment(19, 20, 1)],
+            vipTiles: [0], range: 0...20, punchIn: punchIn)
+        #expect(tail.count == 1)
+    }
+
+    @Test func whoeverTalksStartsWideUntilSpeechIsKnown() {
+        let moves = InterviewFocusPlanning.moves(segments: [segment(5, 12, 1), segment(12, 20, 0)],
+            vipTiles: [0], range: 0...20, punchIn: .talker)
+        #expect(moves.map(\.time) == [0, 5, 12])
+        #expect(moves.map(\.kind) == [.twoShot, .interviewerTight, .tight])
+        #expect(InterviewFocusPlanning.moves(segments: [], vipTiles: [0], range: 0...20, punchIn: .talker).first?.kind == .twoShot)
+    }
+
+    @Test(arguments: [0.0, 0.5, 1.0])
+    func interviewerTightUsesTheOtherFaceAndPullBack(zoom: Double) throws {
+        let pair = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [host],
+            sourceAspect: sourceAspect, canvasAspect: canvasAspect, zoom: zoom)
+        let close = try #require(pair.interviewerTight)
+        #expect(abs(rectangle(close).midX - host.midX) < 0.001)
+        #expect(rectangle(close).insetBy(dx: -0.0001, dy: -0.0001).contains(host))
+        #expect(abs(close.hFrac - (tightHeight(for: host) + (1 - tightHeight(for: host)) * zoom)) < 0.001)
+        let alone = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [],
+            sourceAspect: sourceAspect, canvasAspect: canvasAspect)
+        #expect(alone.interviewerTight == nil)
+        let fallback = InterviewFocusPlanning.path(moves: [(0, .interviewerTight)],
+            tight: alone.tight, twoShot: alone.twoShot, length: 10)
+        #expect(fallback.allSatisfy { $0.x == alone.twoShot.xFrac })
+    }
+
+    @Test func cutsHoldUntilTheBoundaryAndNeverRamp() throws {
+        let pair = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [host],
+            sourceAspect: sourceAspect, canvasAspect: canvasAspect)
+        let close = try #require(pair.interviewerTight)
+        let path = InterviewFocusPlanning.path(moves: [(10, .twoShot), (15, .interviewerTight), (22, .tight)],
+            tight: pair.tight, twoShot: pair.twoShot, interviewerTight: close, length: 20, moveSeconds: 0)
+        #expect(path.map(\.t) == [0, 5 - CameraKeyframes.cutGap, 5, 12 - CameraKeyframes.cutGap, 12, 20])
+        #expect(CameraKeyframes.isCut(path, at: 2) && CameraKeyframes.isCut(path, at: 4))
+        for time in [0.0, 4.0, 4.995] {
+            #expect(CenterStageService.interpolated(path, at: time)?.x == pair.twoShot.xFrac)
+        }
+        #expect(CenterStageService.interpolated(path, at: 5)?.x == close.xFrac)
+        #expect(CenterStageService.interpolated(path, at: 11.995)?.x == close.xFrac)
+        #expect(CenterStageService.interpolated(path, at: 12)?.x == pair.tight.xFrac)
+        let slice = CenterStageService.slice(path, from: 5, duration: 10)
+        #expect(slice.first?.x == close.xFrac)
+        #expect(CenterStageService.interpolated(slice, at: 6.995)?.x == close.xFrac)
+        #expect(CenterStageService.interpolated(slice, at: 7)?.x == pair.tight.xFrac)
+        let trimmedInGap = CenterStageService.slice(path, from: 4.995, duration: 1)
+        #expect(CenterStageService.interpolated(trimmedInGap, at: 0.002)?.x == pair.twoShot.xFrac)
+        #expect(CenterStageService.interpolated(trimmedInGap, at: 0.006)?.x == close.xFrac)
+        let trimmedToCut = CenterStageService.slice(path, from: 4.995, duration: 5 - 4.995)
+        #expect(CenterStageService.interpolated(trimmedToCut, at: 0.002)?.x == pair.twoShot.xFrac)
+        #expect(trimmedToCut.last?.x == close.xFrac)
+        let area = ScreenCropArea(name: "Full Screen", points: [
+            .init(x: 0, y: 0), .init(x: 1, y: 0), .init(x: 1, y: 1), .init(x: 0, y: 1)])
+        let filter = AreaFramer.pathFilter(keyframes: path, source: CGSize(width: 1920, height: 1080), area: area)
+        #expect(filter.contains("gte(t,5.000000000)") && filter.contains("gte(T\\\\,5.000000000)"))
+        #expect(!filter.contains("clip(("), "hard cuts use steps, never interpolation ramps")
+    }
+
+    @Test func deadZoneIsCheckedForEachShotPair() {
+        let tight = FreeCropRect(xFrac: 0.3, yFrac: 0.1, wFrac: 0.2, hFrac: 0.6)
+        let two = FreeCropRect(xFrac: 0.29, yFrac: 0.1, wFrac: 0.21, hFrac: 0.62)
+        let host = FreeCropRect(xFrac: 0.65, yFrac: 0.1, wFrac: 0.2, hFrac: 0.6)
+        let path = InterviewFocusPlanning.path(moves: [(0, .tight), (5, .interviewerTight), (10, .twoShot)],
+            tight: tight, twoShot: two, interviewerTight: host, length: 15)
+        #expect(path.map(\.t) == [0, 5, 5.8, 10, 10.8, 15])
+        #expect(path[0].x == two.xFrac && path[2].x == host.xFrac && path[4].x == two.xFrac)
+        let nearHost = FreeCropRect(xFrac: 0.31, yFrac: 0.1, wFrac: 0.2, hFrac: 0.6)
+        let direct = InterviewFocusPlanning.path(shots: [(0, .init(kind: .tight, rect: tight)),
+            (5, .init(kind: .interviewerTight, rect: nearHost))], length: 10)
+        #expect(direct.map(\.t) == [0, 10])
     }
 }

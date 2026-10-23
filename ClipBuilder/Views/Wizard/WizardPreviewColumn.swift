@@ -70,20 +70,35 @@ struct WizardPreviewColumn: View {
         var cameraFocus: String
         var interviewZoom: Double
         var interviewZoomMoves: Bool
+        var interviewCuts: Bool
+        var interviewPunchIn: String
         var canvasAspect: Double
         var clipID: String?
+        /// The kept range the framing is planned over (a trim changes it, not the id).
+        var rangeStart: Double?
+        var rangeEnd: Double?
         /// Scrubber moment, rounded so a slider's sub-frame jitter does not reload.
         var time: Double?
+    }
+
+    /// What the recording-wide part of a scene load depends on; the model
+    /// keeps that part across scrubs while this stays the same.
+    private var snapshotKey: String {
+        "\(previewRecord?.videoID ?? -1)|\(options.effectiveCaptionLanguage ?? "")|\(store.transcriptCountsVersion)|"
+            + "\(store.personTagFieldsVersion)|\(store.profileGeneration)|\(options.nameTagStyleID ?? "")|\(reloadID)"
     }
 
     private var contentKey: ContentKey {
         ContentKey(scene: previewRecord, generation: store.profileGeneration,
             transcriptVersion: store.transcriptCountsVersion, people: store.people,
-            tagFieldsVersion: store.personTagFieldsVersion, language: options.captionLanguage, tagStyle: profile.tagStyle(id: options.nameTagStyleID), reloadID: reloadID,
+            tagFieldsVersion: store.personTagFieldsVersion, language: options.effectiveCaptionLanguage, tagStyle: profile.tagStyle(id: options.nameTagStyleID), reloadID: reloadID,
             cameraFocus: options.podcastFraming == .original ? WizardCameraFocus.original : options.highlightFraming?.rawValue ?? "",
             interviewZoom: options.interviewZoom ?? 0, interviewZoomMoves: options.interviewZoomMoves ?? false,
+            interviewCuts: options.interviewCuts ?? false,
+            interviewPunchIn: (InterviewPunchIn(rawValue: options.interviewPunchIn ?? "") ?? .vip).rawValue,
             canvasAspect: options.renderSettings.aspectRatio,
-            clipID: currentClip?.id, time: previewTime.map { ($0 * 20).rounded() / 20 })
+            clipID: currentClip?.id, rangeStart: currentClip?.start, rangeEnd: currentClip?.end,
+            time: previewTime.map { ($0 * 20).rounded() / 20 })
     }
 
     private func key(overlayTexts: [String]) -> PreviewKey? {
@@ -159,8 +174,8 @@ struct WizardPreviewColumn: View {
                 if Task.isCancelled { return }
             }
             await model.loadScene(previewRecord, database: store.database, people: store.people,
-                                  language: options.captionLanguage, tagStyleID: options.nameTagStyleID, profile: profile, options: options,
-                                  range: currentClip?.range, time: previewTime)
+                                  language: options.effectiveCaptionLanguage, tagStyleID: options.nameTagStyleID, profile: profile, options: options,
+                                  range: currentClip?.range, time: previewTime, snapshotKey: snapshotKey)
             if !Task.isCancelled { refresh() }
         }
         // The cache key includes the text snapshot used by the next render.

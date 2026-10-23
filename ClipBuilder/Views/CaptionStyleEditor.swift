@@ -145,6 +145,7 @@ struct CaptionStyleEditor: View {
                     Text("Colour").tag("color")
                     Text("Scale").tag("scale")
                     Text("Colour and scale").tag("both")
+                    Text("Font only").tag("font")
                 }.help("Emphasise up to two keywords per page, chosen on this Mac.")
                 ColorPicker("Emphasis colour", selection: overlayColorBinding(setting(\.emphasisColor, default: style.resolvedHighlightColor)), supportsOpacity: false)
                     .help("Keyword colour; follows Highlight colour until changed.")

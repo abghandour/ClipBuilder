@@ -476,3 +476,54 @@ extension MiniWizardSettingsTests {
         #expect(WizardPresetBridge.miniSettings(from: fields).interviewZoomMoves)
     }
 }
+
+extension MiniWizardSettingsTests {
+    @Test(arguments: InterviewPunchIn.allCases)
+    func interviewChoicesRoundTripThroughEverySettingsBridge(punchIn: InterviewPunchIn) throws {
+        let profile = Fixtures.brand()
+        var settings = MiniWizardSettings()
+        settings.cameraFocus = CropRecipe.Kind.interview.rawValue
+        settings.interviewCuts = true
+        settings.interviewPunchIn = punchIn.rawValue
+        let encoded = try JSONEncoder().encode(settings)
+        #expect(try JSONDecoder().decode(MiniWizardSettings.self, from: encoded) == settings)
+        let options = settings.previewOptions(profile: profile)
+        #expect(options.interviewCuts == true && options.interviewPunchIn == punchIn.rawValue)
+        let decoded = try JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(options))
+        #expect(decoded.interviewCuts == true && decoded.interviewPunchIn == punchIn.rawValue)
+        let step = try JSONDecoder().decode(WizardStep2Options.self, from: JSONEncoder().encode(options.step2))
+        let merged = WizardOptions.merge(step1: options.step1, step2: step, base: WizardOptions())
+        #expect(merged.interviewCuts == true && merged.interviewPunchIn == punchIn.rawValue)
+        let fields = WizardPresetBridge.wizardFields(from: settings)
+        #expect(fields["interviewCuts"]?.bool == true && fields["interviewPunchIn"]?.string == punchIn.rawValue)
+        let restored = WizardPresetBridge.miniSettings(from: fields)
+        #expect(restored.interviewCuts == true && restored.interviewPunchIn == punchIn.rawValue)
+        let suite = "MiniWizardSettingsTests.punchIn.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        settings.remember(profileName: profile.profileName, defaults: defaults)
+        let remembered = MiniWizardSettings.remembered(profile: profile, defaults: defaults)
+        #expect(remembered.interviewCuts == true && remembered.interviewPunchIn == punchIn.rawValue)
+        let other = MiniWizardSettings.remembered(profile: BrandProfile(name: "Other"), defaults: defaults)
+        #expect(!other.resolvedInterviewCuts && other.resolvedInterviewPunchIn == "vip")
+        settings.interviewCuts = false
+        let smooth = WizardPresetBridge.miniSettings(from: WizardPresetBridge.wizardFields(from: settings), base: restored)
+        #expect(smooth.interviewCuts == false)
+    }
+
+    @Test func oldSettingsKeepSmoothVIPDefaults() throws {
+        let mini = try JSONDecoder().decode(MiniWizardSettings.self, from: Data("{}".utf8))
+        #expect(!mini.resolvedInterviewCuts && mini.resolvedInterviewPunchIn == "vip")
+        let preset = WizardPresetBridge.miniSettings(from: WizardPresetBridge.wizardFields(from: mini))
+        #expect(preset == mini)
+        let options = try JSONDecoder().decode(WizardOptions.self, from: Data("{}".utf8))
+        #expect(options.interviewCuts == nil && options.interviewPunchIn == nil)
+        let step = try JSONDecoder().decode(WizardStep2Options.self, from: Data("{}".utf8))
+        #expect(step.interviewCuts == nil && step.interviewPunchIn == nil)
+        var unknown = mini
+        unknown.interviewPunchIn = "future-choice"
+        #expect(unknown.previewOptions(profile: Fixtures.brand()).interviewPunchIn == "vip")
+        #expect(CropRecipe(kind: .interview).interviewCuts == false)
+        #expect(CropRecipe(kind: .interview).interviewPunchIn == .vip)
+    }
+}

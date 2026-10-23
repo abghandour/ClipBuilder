@@ -15,6 +15,8 @@ nonisolated enum WizardPresetBridge {
         let focus = settings.cameraFocus.trimmingCharacters(in: .whitespacesAndNewlines)
         fields["interviewZoom"] = .number(settings.interviewZoom)
         fields["interviewZoomMoves"] = .bool(settings.interviewZoomMoves)
+        fields["interviewCuts"] = .bool(settings.resolvedInterviewCuts)
+        fields["interviewPunchIn"] = settings.interviewPunchIn.map(JSONSetting.string) ?? .null
         if focus == WizardCameraFocus.original {
             fields["podcastFraming"] = .string(PodcastFramingMode.original.rawValue)
             fields["highlightFraming"] = .null
@@ -76,6 +78,8 @@ nonisolated enum WizardPresetBridge {
         }
         if let zoom = fields["interviewZoom"]?.number { settings.interviewZoom = min(1, max(0, zoom)) }
         if let moves = fields["interviewZoomMoves"]?.bool { settings.interviewZoomMoves = moves }
+        if let cuts = fields["interviewCuts"]?.bool { settings.interviewCuts = cuts }
+        if let value = fields["interviewPunchIn"] { settings.interviewPunchIn = value.string }
         if let value = fields["dubLanguage"] {
             settings.dubLanguage = value.string.flatMap { $0.isEmpty ? nil : $0 }
             settings.dub = value.string?.isEmpty == false

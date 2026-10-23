@@ -79,6 +79,14 @@ struct MiniSettingsCard: View {
                     : "Chosen by the highlights model when the candidates were found.")
                 : WizardCameraFocus.summary(settings.cameraFocus))
             if settings.cameraFocus == CropRecipe.Kind.interview.rawValue {
+                MiniRow("Shot changes") {
+                    InterviewShotChangesPicker(cuts: $settings.resolvedInterviewCuts)
+                }
+                FormCaption(InterviewShotChangesPicker.caption)
+                MiniRow("Punch in on") {
+                    InterviewPunchInPicker(selection: $settings.resolvedInterviewPunchIn)
+                }
+                FormCaption(InterviewPunchInPicker.caption)
                 MiniRow("Zoom in/out for focus") {
                     InterviewZoomMovesToggle(isOn: $settings.interviewZoomMoves)
                 }

@@ -30,6 +30,8 @@ nonisolated struct WizardOptions: Codable, Sendable {
         case highlightFraming, interviewZoom, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
         case fixedOverlayPosition
         case interviewZoomMoves
+        case interviewCuts
+        case interviewPunchIn
         case fixedOverlayTemplate, fixedOverlayStart, fixedOverlayDuration, fixedOverlayTexts, introBumperPath, outroBumperPath, watermarkOverlayTemplate, watermarkOpacity, transitionChoice, lookPreset, lookIntensity
     }
 
@@ -117,6 +119,8 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var interviewZoom: Double? = nil
     /// Interview focus "Zoom in/out for focus"; nil or false pans toward the interviewer.
     var interviewZoomMoves: Bool? = nil
+    var interviewCuts: Bool? = nil
+    var interviewPunchIn: String? = nil
     var useBRoll = true
     var brollInstructions = ""
     var podcastFraming: PodcastFramingMode = .followSpeaker

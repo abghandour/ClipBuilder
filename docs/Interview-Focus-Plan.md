@@ -249,3 +249,30 @@ it open to the full height around the VIP, with the note "Both people do not
 fit one frame; zooming out around the VIP". Tests:
 `InterviewFocusPlanningTests.zoomMovesIgnorePullBackAndOpenAroundTheVIPWhenPeopleCannotShareAFrame`,
 `zoomMovesKeepEveryoneOnScreenWhenTheyFit`.
+
+Update, October 23, 2026 (Pull back range): 0 % is now the tightest face-safe
+shot (`InterviewFocusPlanning.tightHeight`: the VIP's face plus FaceGuard
+margins and headroom, whichever of height or width binds; floor
+`minimumHeight` 0.12; a placeholder face box under `measuredFaceHeight` 0.05,
+i.e. a layout face centre, keeps the conversation height). 100 % stays the
+full source height, the most a 9:16 canvas can show of a 16:9 source. The
+anchored two-shot (people cannot share a frame) is never smaller than the
+VIP's roomy face, so at 0 % it shows the whole head with room while the
+interviewer asks and leans toward them only when the frame has spare width.
+Close faces no longer sit in the dead zone at 0 %, so the camera moves
+between the tight VIP shot and the two-shot. Zoom in/out for focus keeps the
+conversation height for its close shot.
+
+Update, October 23, 2026 (edge-to-edge two-shot): the user showed a frame from
+another app: a full-height 9:16 column centred between the two people with
+shoulders cut at the edges. The planner refused that framing on the Tanner
+Boser footage because the two-shot demanded the VIP's extra room (half a face
+each side) plus margins, which pushed the needed width past the column, and
+then anchored on the VIP. `InterviewFocusPlanning.rects` now has a second
+tier before anchoring: when both heads fit with only FaceGuard's margins, the
+two-shot holds everyone edge to edge, centred between the faces, at the height
+that fits (full height for a standing interview); note "Two-shot holds both
+people edge to edge". The roomy frame is still preferred when it fits, and the
+VIP anchor remains the last resort. Zoom in/out for focus uses the same tier.
+Test: `InterviewFocusPlanningTests.twoShotHoldsBothHeadsEdgeToEdgeWhenTheRoomyFrameDoesNotFit`
+(the real face boxes from that recording).

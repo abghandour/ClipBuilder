@@ -46,6 +46,8 @@ struct RangeReviewView<Footer: View>: View {
     @State private var userCleared = false
     /// A span dragged while nothing was selected: applied once the draft item is selected.
     @State private var pendingDraft: (start: Double, end: Double)?
+    /// A commit that arrived in the same event as the activating span (a single word click).
+    @State private var pendingCommit = false
     @State private var draggingID: RangeReviewItem.ID?
     @State private var dragTranslation: CGFloat = 0
     /// Slot between reorderable blocks where the dragged row would land (0 = first).
@@ -182,6 +184,10 @@ struct RangeReviewView<Footer: View>: View {
             if let pendingDraft {
                 draft = pendingDraft
                 self.pendingDraft = nil
+                if pendingCommit {
+                    pendingCommit = false
+                    commitDraft(snap: false)
+                }
             }
             if playingAll {
                 if advancingPlayAll, playback.player != nil, let range, range.upperBound > range.lowerBound {
@@ -267,7 +273,8 @@ struct RangeReviewView<Footer: View>: View {
                               playback: playback, canTrim: contextCanTrim,
                               onSelect: inactive ? { _ in activate() } : selectWord,
                               onPreview: inactive ? { _, _ in activate() } : previewWord,
-                              onCommit: { if !inactive { commitDraft(snap: false) } }, onCancel: { draft = nil },
+                              onCommit: { if inactive { pendingCommit = pendingDraft != nil } else { commitDraft(snap: false) } },
+                              onCancel: { draft = nil },
                               spanSelection: spanSelection && selected.isDraft,
                               highlightsCurrentLine: !spanSelection,
                               onSpanPreview: { span in

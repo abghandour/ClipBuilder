@@ -34,6 +34,10 @@ nonisolated enum WizardFieldHelp {
     // Plan
     static let recipe = FieldHelp(
         "The reel's format: what it opens on, roughly how long it runs, and what text it carries.")
+    static let interviewShotChanges = FieldHelp(
+        "Smooth moves glide between shots; Cuts switch instantly at the same speaker changes.")
+    static let interviewPunchIn = FieldHelp(
+        "Choose who gets a close shot while speaking. VIP or Interviewer uses the two-shot for the other person; Whoever talks follows either speaker.")
     static let podcastFraming = FieldHelp(
         "How the reel frames the speakers.")
     static let length = FieldHelp(

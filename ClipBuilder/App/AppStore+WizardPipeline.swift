@@ -432,6 +432,9 @@ extension AppStore {
             ? nil : min(1, max(0, defaults.double(forKey: "wizard.interviewZoom")))
         step2.interviewZoomMoves = defaults.object(forKey: "wizard.interviewZoomMoves") == nil
             ? nil : defaults.bool(forKey: "wizard.interviewZoomMoves")
+        step2.interviewCuts = defaults.object(forKey: "wizard.interviewCuts") == nil
+            ? nil : defaults.bool(forKey: "wizard.interviewCuts")
+        step2.interviewPunchIn = defaults.string(forKey: "wizard.interviewPunchIn")
         step2.podcastFraming = PodcastFramingMode(rawValue: defaults.string(forKey: "wizard.podcastFraming") ?? "") ?? .followSpeaker
         step2.framingCamera = defaults.string(forKey: "wizard.framingCamera") ?? WizardDefaults.fallbackFramingCamera
         let layoutMode = WizardLayoutMode(rawValue: defaults.string(forKey: WizardDefaults.layoutModeKey) ?? "")

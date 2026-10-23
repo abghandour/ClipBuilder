@@ -212,6 +212,14 @@ extension WizardView {
             FormGroupHeader("Camera focus")
             WizardCameraFocusPicker(selection: cameraFocusBinding, allowsOriginal: lookCapabilities.offersOriginalFraming)
             if cameraFocusBinding.wrappedValue == CropRecipe.Kind.interview.rawValue {
+                WizardControlRow("Shot changes") {
+                    InterviewShotChangesPicker(cuts: $interviewCuts)
+                }
+                FormCaption(InterviewShotChangesPicker.caption)
+                WizardControlRow("Punch in on") {
+                    InterviewPunchInPicker(selection: $interviewPunchIn)
+                }
+                FormCaption(InterviewPunchInPicker.caption)
                 WizardControlRow("Zoom in/out for focus") {
                     InterviewZoomMovesToggle(isOn: $interviewZoomMoves)
                 }

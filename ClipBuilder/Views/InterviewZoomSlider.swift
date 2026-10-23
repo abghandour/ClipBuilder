@@ -18,7 +18,7 @@ struct InterviewZoomSlider: View {
         }
     }
 
-    static let caption = "0% stays tight on the VIP's face; 100% opens to the full source height so both people show head to knees."
+    static let caption = "0% fills a close shot with the chosen person's face; 100% opens to the full source height so both people show head to knees."
 }
 
 /// Interview focus "Zoom in/out for focus": the camera zooms in and out on
@@ -33,5 +33,43 @@ struct InterviewZoomMovesToggle: View {
             .accessibilityLabel("Zoom in/out for focus")
     }
 
-    static let caption = "On: tight on the VIP while they talk, zoomed out to show everyone while the interviewer asks (around the VIP when they cannot all fit). Off: the camera pans toward the interviewer, and Pull back sets how tight the shot is."
+    static let caption = "On: close shots use conversation framing; the two-shot zooms out to show everyone, around the VIP when they cannot all fit. Off: Pull back sets how tight the shots are, and the two-shot leans toward the interviewer."
+}
+
+/// Shared Interview focus controls for Express and the full wizard.
+struct InterviewShotChangesPicker: View {
+    @Binding var cuts: Bool
+
+    var body: some View {
+        Picker("Shot changes", selection: $cuts) {
+            Text("Smooth moves").tag(false)
+            Text("Cuts").tag(true)
+        }
+        .pickerStyle(.segmented)
+        .labelsHidden()
+        .lineLimit(1).fixedSize()
+        .help(Self.caption)
+        .accessibilityLabel("Shot changes")
+    }
+
+    static let caption = WizardFieldHelp.interviewShotChanges.tooltip
+}
+
+struct InterviewPunchInPicker: View {
+    @Binding var selection: String
+
+    var body: some View {
+        Picker("Punch in on", selection: $selection) {
+            ForEach(InterviewPunchIn.allCases, id: \.rawValue) { choice in
+                Text(choice.label).tag(choice.rawValue)
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .lineLimit(1).fixedSize()
+        .help(Self.caption)
+        .accessibilityLabel("Punch in on")
+    }
+
+    static let caption = WizardFieldHelp.interviewPunchIn.tooltip
 }

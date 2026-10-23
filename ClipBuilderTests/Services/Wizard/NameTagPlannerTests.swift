@@ -552,4 +552,15 @@ extension NameTagPlannerTests {
         let rect = try #require(edge.first?.rect)
         #expect(rect.maxX <= frame.maxX && rect.maxY <= frame.maxY)
     }
+
+    @Test func draggedPositionIsACanvasPointEvenInsideASplitArea() throws {
+        // Right half of the canvas; the anchor is three quarters across the canvas, mid-height.
+        let area = NameTagPlanner.Area(rect: CGRect(x: 540, y: 0, width: 540, height: 1920), spans: [
+            .init(start: 0, end: 5, personKey: "ann", faceBox: CGRect(x: 700, y: 300, width: 120, height: 160))])
+        let tags = NameTagPlanner.plan(areas: [area], people: [people[0]],
+                                       settings: .init(position: CustomPosition(x: 0.75, y: 0.5).string))
+        let rect = try #require(tags.first?.rect)
+        #expect(abs(rect.midX - 810) <= 1 && abs(rect.midY - 960) <= 1, "canvas point, not a fraction of the area")
+        #expect(rect.minX >= 540, "and still inside its area")
+    }
 }

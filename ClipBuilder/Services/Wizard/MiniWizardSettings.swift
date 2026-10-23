@@ -9,6 +9,9 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var interviewZoom = 0.0
     /// Interview focus moves by zooming in place instead of panning toward the interviewer.
     var interviewZoomMoves = false
+    var interviewCuts: Bool? = false
+    var interviewPunchIn: String?
+
     var captions = false
     var englishCaptions = false
     var captionPosition: String?
@@ -57,10 +60,20 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var dubLanguage: String?
     var outputMode: MiniWizardFlow.OutputMode = .separateVideos
 
+    var resolvedInterviewCuts: Bool {
+        get { interviewCuts ?? false }
+        set { interviewCuts = newValue }
+    }
+
+    var resolvedInterviewPunchIn: String {
+        get { InterviewPunchIn(rawValue: interviewPunchIn ?? "")?.rawValue ?? InterviewPunchIn.vip.rawValue }
+        set { interviewPunchIn = newValue }
+    }
+
     init() {}
 
     enum CodingKeys: String, CodingKey {
-        case quality, preset, cameraFocus, interviewZoom, interviewZoomMoves, captions, englishCaptions, captionPosition, captionStyleID
+        case quality, preset, cameraFocus, interviewZoom, interviewZoomMoves, interviewCuts, interviewPunchIn, captions, englishCaptions, captionPosition, captionStyleID
         case introVideo, outroVideo, introBumper, outroBumper
         case safeAreaOnly, safeAreaPlatforms
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
@@ -79,6 +92,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         cameraFocus = try c.decodeIfPresent(String.self, forKey: .cameraFocus) ?? base.cameraFocus
         interviewZoom = min(1, max(0, try c.decodeIfPresent(Double.self, forKey: .interviewZoom) ?? base.interviewZoom))
         interviewZoomMoves = try c.decodeIfPresent(Bool.self, forKey: .interviewZoomMoves) ?? base.interviewZoomMoves
+        interviewCuts = try c.decodeIfPresent(Bool.self, forKey: .interviewCuts) ?? base.interviewCuts
+        interviewPunchIn = try c.decodeIfPresent(String.self, forKey: .interviewPunchIn)
         captions = try c.decodeIfPresent(Bool.self, forKey: .captions) ?? base.captions
         englishCaptions = try c.decodeIfPresent(Bool.self, forKey: .englishCaptions) ?? base.englishCaptions
         captionPosition = try c.decodeIfPresent(String.self, forKey: .captionPosition)
@@ -131,6 +146,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.highlightFraming = CropRecipe.Kind(rawValue: cameraFocus)
         result.interviewZoom = interviewZoom
         result.interviewZoomMoves = interviewZoomMoves
+        result.interviewCuts = resolvedInterviewCuts
+        result.interviewPunchIn = resolvedInterviewPunchIn
         result.podcastFraming = cameraFocus == WizardCameraFocus.original ? .original : .followSpeaker
         result.addCaptions = captions
         result.captionPosition = captionPosition
@@ -244,6 +261,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.nameTagStyleID = defaults.string(forKey: key(.nameTagStyleID))
         result.nameTagPosition = defaults.string(forKey: key(.nameTagPosition))
         result.safeAreaPlatforms = defaults.stringArray(forKey: key(.safeAreaPlatforms))
+        result.interviewPunchIn = defaults.string(forKey: key(.interviewPunchIn))
         result.cameraFocus = defaults.string(forKey: key(.cameraFocus)) ?? ""
         result.interviewZoom = min(1, max(0, defaults.double(forKey: key(.interviewZoom))))
         result.overlayTemplate = defaults.string(forKey: key(.overlayTemplate))
@@ -287,6 +305,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         defaults.set(nameTagStyleID, forKey: key(.nameTagStyleID))
         defaults.set(nameTagPosition, forKey: key(.nameTagPosition))
         defaults.set(safeAreaPlatforms, forKey: key(.safeAreaPlatforms))
+        defaults.set(interviewPunchIn, forKey: key(.interviewPunchIn))
         defaults.set(cameraFocus, forKey: key(.cameraFocus))
         defaults.set(interviewZoom, forKey: key(.interviewZoom))
         defaults.set(overlayTemplate, forKey: key(.overlayTemplate))
@@ -310,6 +329,6 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         [(.captions, \.captions), (.englishCaptions, \.englishCaptions), (.introVideo, \.introVideo),
          (.outroVideo, \.outroVideo), (.nameTags, \.nameTags), (.watermark, \.watermark), (.overlay, \.overlay),
          (.safeAreaOnly, \.safeAreaOnly), (.muteSourceAudio, \.muteSourceAudio), (.music, \.music), (.dub, \.dub),
-         (.interviewZoomMoves, \.interviewZoomMoves)]
+         (.interviewZoomMoves, \.interviewZoomMoves), (.interviewCuts, \.resolvedInterviewCuts)]
     }
 }

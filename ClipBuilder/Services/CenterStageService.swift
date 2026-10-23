@@ -500,7 +500,8 @@ actor CenterStageService {
             // slicing at the boundary cannot turn the jump into a ramp.
             guard t < to.t else { continue }
             let span = to.t - from.t
-            let fraction = span > 0 ? (t - from.t) / span : 1
+            // Recipe hold keys mark a jump at `to.t`, never a short ramp.
+            let fraction = CameraKeyframes.isCut(keyframes, at: index) ? 0 : (span > 0 ? (t - from.t) / span : 1)
             return CameraPathKeyframe(t: t,
                                       x: from.x + (to.x - from.x) * fraction,
                                       y: from.y + (to.y - from.y) * fraction,
@@ -520,12 +521,20 @@ actor CenterStageService {
         start.t = 0
         end.t = duration
         var result = [start]
-        for keyframe in keyframes where keyframe.t > from && keyframe.t < from + duration {
+        for (index, keyframe) in keyframes.enumerated() where keyframe.t > from && keyframe.t <= from + duration {
             var shifted = keyframe
             shifted.t = keyframe.t - from
+            if CameraKeyframes.isCut(keyframes, at: index), shifted.t < CameraKeyframes.cutGap {
+                // Trimming inside the hold gap must not shorten it into a ramp.
+                // An equal-time hold preserves the cut when there is no room
+                // for the usual full-gap key before the boundary.
+                var hold = result[result.count - 1]
+                hold.t = shifted.t
+                result.append(hold)
+            }
             result.append(shifted)
         }
-        result.append(end)
+        if result[result.count - 1].t < duration { result.append(end) }
         return result
     }
 

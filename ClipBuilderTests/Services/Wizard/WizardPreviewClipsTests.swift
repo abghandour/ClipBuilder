@@ -83,4 +83,26 @@ struct WizardPreviewClipsTests {
         #expect(middle != early)
         #expect(early.time == 2)
     }
+
+    @Test func picksNeverBorrowAnotherVideosSceneAndWinOverSavedTakes() {
+        var other = Fixtures.scene(id: 9, start: 50, end: 200)
+        other.videoID = 2
+        let own = Fixtures.scene(id: 1, start: 55, end: 70)
+        let pick = TranscriptPick(id: 7, videoID: 1, position: 0, start: 60, end: 80, originalStart: 60, originalEnd: 80, sceneID: nil)
+        // A stale saved take from before the pick was trimmed.
+        let selection = WizardSelectionRecord(id: 10, projectID: 1, name: "Old take", recipe: "custom", step1Options: WizardStep1Options())
+        let take = WizardSelectionTake(id: 10, selectionID: 10, ordinal: 1,
+                                       plan: Fixtures.plan(clips: [Fixtures.planClip(sceneID: 1, start: 60, end: 90)]), sceneIDs: [1])
+        let run = MiniWizardRun(projectID: 1, video: Fixtures.video(), footageKind: .transcript, length: .automatic,
+            batchID: "t", candidates: [MiniWizardCandidate(selection: selection, take: take)], options: WizardOptions(),
+            transcript: MiniWizardTranscript(rows: [], labels: [:], picks: [pick]))
+        let clips = WizardPreviewClips.kept(run: run, scenes: [other, own])
+        #expect(clips.map(\.scene.id) == [1], "the other video's longer overlapping scene is ignored")
+        #expect(clips.first?.range == 60...80, "the current pick, not the stale take")
+        // With no picks the saved take still serves.
+        let emptyRun = MiniWizardRun(projectID: 1, video: Fixtures.video(), footageKind: .transcript, length: .automatic,
+            batchID: "t", candidates: [MiniWizardCandidate(selection: selection, take: take)], options: WizardOptions(),
+            transcript: MiniWizardTranscript(rows: [], labels: [:], picks: []))
+        #expect(WizardPreviewClips.kept(run: emptyRun, scenes: [other, own]).first?.range == 60...90)
+    }
 }

@@ -279,3 +279,89 @@ extension CaptionRendererTests {
                 "without safe area only the user's spot is honoured exactly")
     }
 }
+
+extension CaptionRendererTests {
+    @Test func fontOnlyEmphasisUsesItsFontAndDecorWithTheTextColorAtNormalScale() async throws {
+        try await Task.detached {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            var style = CaptionStyle()
+            style.color = "#33aa77"
+            style.strokeWidth = 0
+            style.emphasis = "font"
+            style.emphasisColor = "#ff0000" // Must not colour a font-only emphasis word.
+            style.emphasisFont = "Georgia"
+            style.emphasisDecor = CaptionWordDecor(italic: true)
+            let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
+            let plain = try renderer.render(text: "Quiet strength", to: folder)
+            let emphasis = try renderer.render(text: "Quiet strength", emphasis: [1], to: folder)
+            let pixels = try Self.pixels(emphasis)
+            #expect(plain.width == emphasis.width && plain.height == emphasis.height)
+            #expect(try Self.pixels(plain) != pixels, "the emphasis font changes the glyphs")
+            let opaque = stride(from: 0, to: pixels.count, by: 4).filter { pixels[$0 + 3] > 250 }
+            #expect(!opaque.isEmpty)
+            // The text colour as the renderer's colour pipeline writes it (generic
+            // RGB into the PNG, read back as device RGB), taken from the plain render.
+            let plainPixels = try Self.pixels(plain)
+            let sample = try #require(stride(from: 0, to: plainPixels.count, by: 4).first { plainPixels[$0 + 3] > 250 })
+            let expected: [Int] = [Int(plainPixels[sample]), Int(plainPixels[sample + 1]), Int(plainPixels[sample + 2])]
+            func matches(_ offset: Int, in bytes: [UInt8], _ colour: [Int]) -> Bool {
+                let r = abs(Int(bytes[offset]) - colour[0])
+                let g = abs(Int(bytes[offset + 1]) - colour[1])
+                let b = abs(Int(bytes[offset + 2]) - colour[2])
+                return r < 4 && g < 4 && b < 4
+            }
+            let allTextColour: Bool = opaque.allSatisfy { matches($0, in: pixels, expected) }
+            #expect(allTextColour, "a font-only emphasis word keeps the text colour")
+            // Colour emphasis at the text colour is the same unscaled font/decor.
+            style.emphasis = "color"
+            style.emphasisColor = style.color
+            let reference = try CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
+                .render(text: "Quiet strength", emphasis: [1], to: folder)
+            #expect(reference.width == emphasis.width && reference.height == emphasis.height)
+            #expect(try Self.pixels(reference) == pixels)
+            style.emphasis = "font"
+            style.emphasisDecor?.italic = false
+            let roman = try CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
+                .render(text: "Quiet strength", emphasis: [1], to: folder)
+            #expect(try Self.pixels(roman) != pixels, "font-only emphasis honors its italic decoration")
+            style.emphasisDecor?.italic = true
+            style.emphasisFont = "sans"
+            let sans = try CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
+                .render(text: "Quiet strength", emphasis: [1], to: folder)
+            #expect(try Self.pixels(sans) != pixels, "the family comes from emphasisFont")
+        }.value
+    }
+
+    @Test func interviewSerifPresetRendersSerifEmphasisAndRedSpokenWords() async throws {
+        try await Task.detached {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            let style = try #require(CaptionPresets.styles.first { $0.name == "Interview Serif" }).style
+            let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
+            let plain = try renderer.render(text: "Quiet strength wins", to: folder)
+            let emphasized = try renderer.render(text: "Quiet strength wins", emphasis: [1], to: folder)
+            let spoken = try renderer.render(text: "Quiet strength wins", activeIndex: 0, emphasis: [1], to: folder)
+            #expect(plain.width == emphasized.width && plain.height == emphasized.height)
+            #expect(spoken.width == emphasized.width && spoken.height == emphasized.height)
+            #expect(try Self.pixels(plain) != Self.pixels(emphasized))
+            let pixels = try Self.pixels(spoken)
+            // The preset's red as the renderer writes it, from an all-red reference render.
+            let reference = try Self.pixels(renderer.render(text: "Quiet strength wins", textColor: style.resolvedHighlightColor, to: folder))
+            let sample = try #require(stride(from: 0, to: reference.count, by: 4).first { reference[$0 + 3] > 250 })
+            let red: [Int] = [Int(reference[sample]), Int(reference[sample + 1]), Int(reference[sample + 2])]
+            #expect(red[0] > red[1] + 60 && red[0] > red[2] + 60, "the preset's highlight is red")
+            func isRed(_ offset: Int) -> Bool {
+                guard pixels[offset + 3] > 250 else { return false }
+                let r = abs(Int(pixels[offset]) - red[0])
+                let g = abs(Int(pixels[offset + 1]) - red[1])
+                let b = abs(Int(pixels[offset + 2]) - red[2])
+                return r < 4 && g < 4 && b < 4
+            }
+            let hasRed: Bool = stride(from: 0, to: pixels.count, by: 4).contains { isRed($0) }
+            #expect(hasRed, "the spoken word is drawn in the highlight red")
+        }.value
+    }
+}
