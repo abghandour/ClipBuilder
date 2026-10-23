@@ -46,6 +46,13 @@ nonisolated enum TranscriptSpeakers {
     /// overlaps the line most, else its feed or voice cluster; nil when no
     /// turn covers the line. `people` names a person the user attributed a
     /// line to who is not in this video's roster.
+    /// Turns with roster names filled in for unnamed clusters, computed once
+    /// per transcript so each row's label is a lookup (`automaticLabel` still
+    /// names a stray unnamed turn on its own).
+    static func named(_ turns: [SpeakerTurn], roster: [VideoPersonRecord]) -> [SpeakerTurn] {
+        DubPlanning.namingTurns(turns, roster: roster)
+    }
+
     static func label(for row: TranscriptRow, turns: [SpeakerTurn], roster: [VideoPersonRecord],
                       people: [PersonRecord] = []) -> String? {
         switch row.speaker {
@@ -69,9 +76,22 @@ nonisolated enum TranscriptSpeakers {
             guard overlap > 0, overlap > (best?.overlap ?? 0) else { continue }
             best = (turn, overlap)
         }
-        guard let turn = best?.turn else { return nil }
+        guard var turn = best?.turn else { return nil }
+        if turn.personKey == nil {
+            // Turns from a transcription that ran before the people pass carry
+            // only a voice cluster and a feed. Name them from the roster the
+            // way dubbing does: the longest-talking cluster is the VIP, the
+            // rest take the remaining people in talking order.
+            let named = DubPlanning.namingTurns(turns, roster: roster)
+            if let match = named.first(where: { $0.cluster == turn.cluster && $0.start == turn.start && $0.end == turn.end }) {
+                turn = match
+            }
+        }
         if let key = turn.personKey, let person = roster.first(where: { $0.key == key }) { return person.displayName }
-        if let key = turn.personKey { return key }
+        if let key = turn.personKey {
+            // Leftover clusters with nobody left on the roster read "Speaker N".
+            return key.hasPrefix("speaker-") ? DubPlanning.speakerLabel(key) : key
+        }
         if let tile = turn.tile { return "Feed \(tile + 1)" }
         return "Speaker \(turn.cluster + 1)"
     }
@@ -114,6 +134,7 @@ nonisolated enum TranscriptSpeakers {
                        people: [PersonRecord] = []) -> [Int64: String] {
         var result: [Int64: String] = [:]
         var previous: String?
+        let turns = named(turns, roster: roster)
         for row in rows.sorted(by: { $0.startTime < $1.startTime }) {
             let label = label(for: row, turns: turns, roster: roster, people: people)
             if let label, label != previous { result[row.id] = label }

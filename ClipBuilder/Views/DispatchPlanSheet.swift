@@ -1579,7 +1579,12 @@ private struct VideoNotesPanel: View {
 /// display rect, so they survive any player size.
 /// Round avatar for a roster entry, cropped from the portrait box the
 /// people pass picked for them. Falls back to initials.
+/// A person as this video's roster lists them. The picture is the one the
+/// People screen shows (the hand-picked avatar first), so the same person
+/// looks the same everywhere; only a roster entry with no People record
+/// falls back to the portrait the people pass cropped from this video.
 struct VideoPersonAvatar: View {
+    @Environment(AppStore.self) private var store
     let record: VideoPersonRecord
     let videoURL: URL
     var size: CGFloat = 44
@@ -1593,6 +1598,28 @@ struct VideoPersonAvatar: View {
     }
 
     var body: some View {
+        Group {
+            if let person = store.people.first(where: { $0.id == record.personID }) {
+                PersonFaceAvatar(person: person, size: size)
+            } else {
+                rosterPortrait
+            }
+        }
+        .overlay(alignment: .topTrailing) {
+            if record.isVIP {
+                // Hangs partly outside the circle, like a badge.
+                Image(systemName: "star.fill")
+                    .font(.system(size: max(9, size * 0.24)))
+                    .foregroundStyle(.yellow)
+                    .padding(2)
+                    .background(.background, in: Circle())
+                    .offset(x: size * 0.1, y: -size * 0.1)
+                    .accessibilityLabel("VIP")
+            }
+        }
+    }
+
+    private var rosterPortrait: some View {
         ZStack {
             if let image {
                 Color.clear
@@ -1611,18 +1638,6 @@ struct VideoPersonAvatar: View {
         }
         .frame(width: size, height: size)
         .clipShape(Circle())
-        .overlay(alignment: .topTrailing) {
-            if record.isVIP {
-                // Hangs partly outside the circle, like a badge.
-                Image(systemName: "star.fill")
-                    .font(.system(size: max(9, size * 0.24)))
-                    .foregroundStyle(.yellow)
-                    .padding(2)
-                    .background(.background, in: Circle())
-                    .offset(x: size * 0.1, y: -size * 0.1)
-                    .accessibilityLabel("VIP")
-            }
-        }
         .task(id: record.personID) {
             guard loadedID != record.personID else { return }
             loadedID = record.personID

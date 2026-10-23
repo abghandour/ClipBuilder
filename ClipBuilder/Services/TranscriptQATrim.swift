@@ -26,11 +26,20 @@ nonisolated enum TranscriptQATrim {
                 if $0.startTime != $1.startTime { return $0.startTime < $1.startTime }
                 return $0.id < $1.id
             }
+            // Consecutive rows of the same speaker read as one block, broken
+            // only where the other person talks. Rows nobody is known to
+            // speak stay their own lines.
             for row in rows {
                 let tokens = TranscriptQATrim.words(for: row, startingAt: words.count)
                 guard !tokens.isEmpty else { continue }
-                lines.append(Line(id: lines.count, start: row.startTime, end: row.endTime,
-                                  speaker: input.labels[row.id], words: tokens))
+                let label = input.labels[row.id]
+                if let index = lines.indices.last, let label, label == lines[index].speaker {
+                    lines[index].end = max(lines[index].end, row.endTime)
+                    lines[index].words.append(contentsOf: tokens)
+                } else {
+                    lines.append(Line(id: lines.count, start: row.startTime, end: row.endTime,
+                                      speaker: label, words: tokens))
+                }
                 words.append(contentsOf: tokens)
             }
         }

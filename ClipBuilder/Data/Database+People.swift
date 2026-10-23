@@ -43,18 +43,27 @@ extension Database {
     /// The people pass's portrait of a person: the frame and box its most
     /// recent roster entry was cropped from. The face avatars use it before
     /// guessing from a scene, where a grid of people gives the wrong face.
+    /// The person's most recent roster portrait with a real face box. A
+    /// portrait that covers the whole frame (an analysis before face snapping,
+    /// saturated at 1) is used only when no video has a better one: cropping
+    /// a face out of it would pick whoever is largest in the frame.
     func rosterPortrait(personID: Int64) throws -> (videoPath: String, time: Double, box: VideoPersonRecord.PortraitBox)? {
-        guard let row = try connection.query("""
+        let rows = try connection.query("""
             SELECT v.path, vp.portrait_at, vp.portrait_json FROM video_people vp
             JOIN videos v ON v.id = vp.video_id
             WHERE vp.person_id = ? AND vp.portrait_json IS NOT NULL
-            ORDER BY vp.video_id DESC LIMIT 1
-            """, [.integer(personID)]).first,
-            let path = row["path"]?.stringValue, FileManager.default.fileExists(atPath: path),
-            let data = row["portrait_json"]?.stringValue?.data(using: .utf8),
-            let box = try? JSONDecoder().decode(VideoPersonRecord.PortraitBox.self, from: data)
-        else { return nil }
-        return (path, row["portrait_at"]?.doubleValue ?? 0, box)
+            ORDER BY vp.video_id DESC
+            """, [.integer(personID)])
+        var fallback: (videoPath: String, time: Double, box: VideoPersonRecord.PortraitBox)?
+        for row in rows {
+            guard let path = row["path"]?.stringValue, FileManager.default.fileExists(atPath: path),
+                  let data = row["portrait_json"]?.stringValue?.data(using: .utf8),
+                  let box = try? JSONDecoder().decode(VideoPersonRecord.PortraitBox.self, from: data) else { continue }
+            let portrait = (path, row["portrait_at"]?.doubleValue ?? 0, box)
+            if box.w < 0.9 || box.h < 0.9 { return portrait }
+            if fallback == nil { fallback = portrait }
+        }
+        return fallback
     }
 
     func fetchPeople() throws -> [PersonRecord] {

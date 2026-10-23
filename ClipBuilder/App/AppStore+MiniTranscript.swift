@@ -27,8 +27,9 @@ extension AppStore {
                 let speakers = await speakerTurns(videoID: video.id)
                 try Task.checkCancellation()
                 guard generation == profileGeneration, activeProjectID == projectID else { return }
+                let namedTurns = TranscriptSpeakers.named(speakers.turns, roster: speakers.roster)
                 let labels = rows.reduce(into: [Int64: String]()) { labels, row in
-                    labels[row.id] = TranscriptSpeakers.label(for: row, turns: speakers.turns,
+                    labels[row.id] = TranscriptSpeakers.label(for: row, turns: namedTurns,
                                                              roster: speakers.roster, people: people)
                 }
                 miniRun = MiniWizardRun(projectID: projectID, video: video, footageKind: .transcript,

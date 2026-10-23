@@ -135,9 +135,10 @@ struct MiniHighlightReviewView: View {
                 let people = store.people
                 let labelTask = Task.detached { () throws -> [Int64: String] in
                     var result: [Int64: String] = [:]
+                    let namedTurns = TranscriptSpeakers.named(speakers.turns, roster: speakers.roster)
                     for row in videoRows {
                         try Task.checkCancellation()
-                        result[row.id] = TranscriptSpeakers.label(for: row, turns: speakers.turns,
+                        result[row.id] = TranscriptSpeakers.label(for: row, turns: namedTurns,
                                                                  roster: speakers.roster, people: people)
                     }
                     return result

@@ -12,8 +12,7 @@ struct PersonDetailPopover: View {
     let person: PersonRecord
     /// The video the avatar was clicked in, for the "In this video" section.
     var video: VideoRecord?
-    /// This video's roster entry for the person: its portrait is the face
-    /// the clicked avatar showed, so the popover shows the same one.
+    /// This video's roster entry for the person (the "In this video" section).
     var rosterEntry: VideoPersonRecord?
     /// Moves the presenting screen's player to a moment of `video`.
     var onSeek: ((Double) -> Void)?
@@ -81,14 +80,9 @@ struct PersonDetailPopover: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 14) {
-            Group {
-                if let rosterEntry = currentRosterEntry ?? rosterEntry, let video, rosterEntry.portraitBox != nil {
-                    VideoPersonAvatar(record: rosterEntry, videoURL: video.url, size: 112)
-                } else {
-                    PersonFaceAvatar(person: person, size: 112)
-                }
-            }
-            .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
+            // The People screen's picture, so the person looks the same everywhere.
+            PersonFaceAvatar(person: person, size: 112)
+                .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
             VStack(alignment: .leading, spacing: 4) {
                 Text(person.displayName)
                     .font(.title3.weight(.semibold))

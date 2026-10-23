@@ -34,6 +34,28 @@ struct TranscriptQATrimTests {
         TranscriptQATrim.Transcript(.init(rows: rows, labels: [:], videoID: 1)).lines
     }
 
+    @Test func consecutiveRowsOfTheSameSpeakerFormOneBlockBrokenByTheOtherSpeaker() {
+        var rows = [row(0, 2, "Hello there"), row(2, 5, "how are you"), row(5, 8, "I am fine"),
+                    row(8, 9, "good"), row(9, 11, "no speaker here")]
+        for index in rows.indices { rows[index].id = Int64(index + 1) }
+        let labels: [Int64: String] = [1: "Marcello", 2: "Marcello", 3: "Tanner", 4: "Marcello"]
+        let transcript = TranscriptQATrim.Transcript(.init(rows: rows, labels: labels, videoID: 1))
+        #expect(transcript.lines.map(\.speaker) == ["Marcello", "Tanner", "Marcello", nil])
+        #expect(transcript.lines.map(\.start) == [0, 5, 8, 9])
+        #expect(transcript.lines.map(\.end) == [5, 8, 9, 11])
+        #expect(transcript.lines[0].words.map(\.text) == ["Hello", "there", "how", "are", "you"])
+        #expect(transcript.words.map(\.id) == Array(0..<transcript.words.count), "word ids stay contiguous across the merge")
+        #expect(transcript.lineID(at: 3.5) == 0 && transcript.lineID(at: 6) == 1)
+        // Rows without a known speaker never merge, even with each other.
+        let unlabelled = TranscriptQATrim.Transcript(.init(rows: rows, labels: [:], videoID: 1))
+        #expect(unlabelled.lines.count == rows.count)
+        // Translations of merged rows join the block in time order.
+        let translations = [translation(0, 2, "Olá", id: 101), translation(2, 5, "como vai", id: 102),
+                            translation(5, 8, "estou bem", id: 103)]
+        let text = TranscriptQATrim.translations(for: transcript.lines, rows: rows + translations, language: "en")
+        #expect(text[0] == "Olá como vai" && text[1] == "estou bem")
+    }
+
     @Test func transcriptIgnoresTranslationsWithoutChangingLinesWordsOrPlayback() throws {
         let timed = [TranscriptWord(word: "Olá", start: 0.2, end: 0.8),
                      TranscriptWord(word: "mundo", start: 1.2, end: 1.8)]

@@ -1288,8 +1288,10 @@ struct TranscriptSheet: View {
         turns = loadedTurns
         roster = loadedRoster
         let people = store.people
+        // Labels read the roster-named turns; the correction logic below keeps the raw map.
+        let namedTurns = TranscriptSpeakers.named(turns, roster: roster)
         speakerLabels = rows.reduce(into: [:]) { labels, row in
-            labels[row.id] = TranscriptSpeakers.label(for: row, turns: turns, roster: roster, people: people)
+            labels[row.id] = TranscriptSpeakers.label(for: row, turns: namedTurns, roster: roster, people: people)
         }
         unlearnedCorrections = TranscriptSpeakers.unlearnedCorrections(rows: rows, turns: turns)
         changedByMap = TranscriptSpeakers.changedLabels(rows: rows, before: store.previousSpeakerMaps[video.id] ?? [],

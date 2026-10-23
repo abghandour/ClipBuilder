@@ -66,11 +66,28 @@ struct TranscriptSpeakersTests {
         let roster = [VideoPersonRecord(videoID: 1, personID: 1, key: "ann", name: "Ann Lee", descriptor: "", portraitAt: 0, portraitBox: nil)]
         let rows = [row(1, 0, 2), row(2, 2, 4.5), row(3, 4.5, 8), row(4, 8, 11), row(5, 20, 22)]
         #expect(TranscriptSpeakers.label(for: rows[0], turns: [ann, feed, voice], roster: roster) == "Ann Lee")
-        #expect(TranscriptSpeakers.label(for: rows[2], turns: [ann, feed, voice], roster: roster) == "Feed 3")
+        // Unnamed clusters with nobody left on the roster read "Speaker N", never "Feed N".
+        #expect(TranscriptSpeakers.label(for: rows[2], turns: [ann, feed, voice], roster: roster) == "Speaker 2")
         #expect(TranscriptSpeakers.label(for: rows[3], turns: [ann, feed, voice], roster: roster) == "Speaker 4")
         #expect(TranscriptSpeakers.label(for: rows[4], turns: [ann, feed, voice], roster: roster) == nil)
         let labels = TranscriptSpeakers.labels(for: rows, turns: [ann, feed, voice], roster: roster)
-        #expect(labels == [1: "Ann Lee", 3: "Feed 3", 4: "Speaker 4"])
+        #expect(labels == [1: "Ann Lee", 3: "Speaker 2", 4: "Speaker 4"])
+    }
+
+    @Test("turns without a person take roster names: the longest-talking cluster is the VIP, the rest follow in talking order")
+    func unnamedClustersReadAsRosterPeople() {
+        var host = SpeakerTurn(videoID: 1, start: 0, end: 4, cluster: 0, confidence: 1); host.tile = 0
+        var guest = SpeakerTurn(videoID: 1, start: 4, end: 30, cluster: 1, confidence: 1); guest.tile = 1
+        var host2 = SpeakerTurn(videoID: 1, start: 30, end: 33, cluster: 0, confidence: 1); host2.tile = 0
+        let roster = [
+            VideoPersonRecord(videoID: 1, personID: 1, key: "marcello", name: "Marcello Spinelli", descriptor: "", portraitAt: 0, portraitBox: nil, vip: false),
+            VideoPersonRecord(videoID: 1, personID: 2, key: "tanner", name: "Tanner Boser", descriptor: "", portraitAt: 0, portraitBox: nil, vip: true),
+        ]
+        let rows = [row(1, 0, 3), row(2, 5, 10), row(3, 30, 32)]
+        let turns = [host, guest, host2]
+        #expect(TranscriptSpeakers.label(for: rows[0], turns: turns, roster: roster) == "Marcello Spinelli")
+        #expect(TranscriptSpeakers.label(for: rows[1], turns: turns, roster: roster) == "Tanner Boser")
+        #expect(TranscriptSpeakers.label(for: rows[2], turns: turns, roster: roster) == "Marcello Spinelli")
     }
 
     @Test("the user's attribution beats the turns: a roster person, someone else in the library, or Unknown")

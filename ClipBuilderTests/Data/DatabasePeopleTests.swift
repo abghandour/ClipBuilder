@@ -170,4 +170,30 @@ struct DatabasePeopleTests {
             """, [.integer(videoID)]).map { $0.mapValues { $0.stringValue ?? "NULL" } }
         return result
     }
+
+    @Test("The avatar portrait skips a whole-frame box when another video has a real one")
+    func rosterPortraitPrefersARealFaceBox() async throws {
+        let temp = try TempDatabase()
+        let fixture = try await Fixtures.personCorrection(in: temp)
+        let raw = try SQLiteConnection(path: temp.path.path)
+        // The portrait lookup requires the file on disk.
+        for row in try raw.query("SELECT path FROM videos", []) {
+            if let path = row["path"]?.stringValue, !FileManager.default.fileExists(atPath: path) {
+                FileManager.default.createFile(atPath: path, contents: Data())
+            }
+        }
+        let newest = max(fixture.video.id, fixture.otherVideo.id)
+        let oldest = min(fixture.video.id, fixture.otherVideo.id)
+        // The newest video's portrait saturated at the whole frame (analysed before face snapping).
+        try raw.execute("UPDATE video_people SET portrait_json = ? WHERE video_id = ? AND person_id = ?",
+                        [.text(#"{"x":1,"y":1,"w":1,"h":1}"#), .integer(newest), .integer(fixture.from.id)])
+        let portrait = try #require(try await temp.database.rosterPortrait(personID: fixture.from.id))
+        #expect(portrait.box.w == 0.3 && portrait.box.h == 0.4, "the older real portrait wins over the newest whole-frame one")
+        #expect(portrait.time == 2)
+        // With only whole-frame portraits the newest still serves as a fallback.
+        try raw.execute("UPDATE video_people SET portrait_json = ? WHERE video_id = ? AND person_id = ?",
+                        [.text(#"{"x":1,"y":1,"w":1,"h":1}"#), .integer(oldest), .integer(fixture.from.id)])
+        let fallback = try #require(try await temp.database.rosterPortrait(personID: fixture.from.id))
+        #expect(fallback.box.w == 1 && fallback.box.h == 1)
+    }
 }
