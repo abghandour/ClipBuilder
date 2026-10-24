@@ -220,6 +220,31 @@ nonisolated enum TranscriptQATrim {
         word.mid >= range.lowerBound && (word.mid < range.upperBound || (word.start == word.end && word.mid == range.upperBound))
     }
 
+    /// The first word on each wrapped line of each saved pick, so every line
+    /// of a pick can carry the pick's bar. A word belongs to the tightest pick
+    /// containing it; lines are the measured frames grouped by their top edge.
+    /// Words without a frame (not laid out yet) are skipped.
+    static func lineStartWords(words: [Word], ranges: [ClosedRange<Double>], frames: [Int: CGRect]) -> Set<Int> {
+        var owners: [Int: [Word]] = [:]
+        for word in words {
+            let owner = ranges.indices.filter { contains(word, in: ranges[$0]) }
+                .min { (ranges[$0].upperBound - ranges[$0].lowerBound) < (ranges[$1].upperBound - ranges[$1].lowerBound) }
+            if let owner { owners[owner, default: []].append(word) }
+        }
+        var result = Set<Int>()
+        for group in owners.values {
+            var lines: [Int: (id: Int, minX: CGFloat)] = [:]
+            for word in group {
+                guard let frame = frames[word.id] else { continue }
+                let line = Int((frame.minY * 2).rounded())
+                if let best = lines[line], best.minX <= frame.minX { continue }
+                lines[line] = (word.id, frame.minX)
+            }
+            result.formUnion(lines.values.map(\.id))
+        }
+        return result
+    }
+
     /// Frames and pointer must be in the same coordinate space. Empty space
     /// does not move a cut; overlapping frames resolve deterministically by ID.
     static func word(at point: CGPoint, frames: [Int: CGRect]) -> Int? {

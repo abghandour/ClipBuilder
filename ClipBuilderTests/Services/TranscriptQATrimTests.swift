@@ -264,6 +264,19 @@ struct TranscriptQATrimTests {
         #expect(TranscriptQATrim.word(at: CGPoint(x: 10, y: 10), frames: overlap) == 2)
     }
 
+    @Test func lineStartWordsMarkEveryWrappedLineOfTheTightestPick() {
+        // Pick A covers words 1-5 over two lines; pick B (tighter) owns words 3-4 on the second line.
+        let words = (1...6).map { TranscriptQATrim.Word(id: $0, text: "w", start: Double($0), end: Double($0) + 1) }
+        let frames: [Int: CGRect] = [
+            1: CGRect(x: 0, y: 0, width: 30, height: 18), 2: CGRect(x: 34, y: 0, width: 30, height: 18),
+            3: CGRect(x: 0, y: 22, width: 30, height: 18), 4: CGRect(x: 34, y: 22, width: 30, height: 18),
+            5: CGRect(x: 68, y: 22, width: 30, height: 18), 6: CGRect(x: 0, y: 44, width: 30, height: 18)]
+        let starts = TranscriptQATrim.lineStartWords(words: words, ranges: [1...6, 3...5], frames: frames)
+        // A: line 1 starts at word 1, line 2 (only word 5 left to A) at word 5. B: word 3. Word 6 is outside.
+        #expect(starts == [1, 5, 3])
+        #expect(TranscriptQATrim.lineStartWords(words: words, ranges: [1...6], frames: [:]).isEmpty)
+    }
+
     @Test func filmstripReleaseSnapsOnlyMovedEndsAndHonoursLimits() {
         let words = [word(8, 9), word(12, 13), word(19, 20), word(25, 26)]
         #expect(TranscriptQATrim.releasing(11.5...20, from: 10...20, words: words, limits: 9...24) == 12...20)

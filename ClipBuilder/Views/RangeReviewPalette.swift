@@ -1,18 +1,21 @@
 import AppKit
 import SwiftUI
 
-/// Muted pastel colours that tie each saved pick in the list to its words in
-/// the transcript: the list row carries a thick bar of the colour, the
-/// pick's first word the same bar, and its words a toned-down block of it.
+/// Distinct colours that tie each saved pick in the list to its words in
+/// the transcript: the list row carries a thick bar of the colour and every
+/// wrapped line of the pick's words starts with the same bar. The words
+/// themselves sit on one subtle block shared by all saved picks.
 enum RangeReviewPalette {
-    /// Soft hues in list order, cycling past the end.
+    /// Clearly separated hues in list order, cycling past the end: orange,
+    /// green, violet, yellow, blue, pink. Saturated enough to tell apart at
+    /// a 4 pt bar on a dark or light window.
     private static let hues: [NSColor] = [
-        NSColor(calibratedRed: 0.95, green: 0.72, blue: 0.56, alpha: 1), // apricot
-        NSColor(calibratedRed: 0.62, green: 0.84, blue: 0.70, alpha: 1), // mint
-        NSColor(calibratedRed: 0.76, green: 0.72, blue: 0.93, alpha: 1), // lavender
-        NSColor(calibratedRed: 0.94, green: 0.80, blue: 0.52, alpha: 1), // sand
-        NSColor(calibratedRed: 0.62, green: 0.82, blue: 0.90, alpha: 1), // sky
-        NSColor(calibratedRed: 0.93, green: 0.70, blue: 0.78, alpha: 1), // rose
+        NSColor(calibratedRed: 0.98, green: 0.56, blue: 0.22, alpha: 1), // orange
+        NSColor(calibratedRed: 0.33, green: 0.78, blue: 0.42, alpha: 1), // green
+        NSColor(calibratedRed: 0.63, green: 0.50, blue: 0.96, alpha: 1), // violet
+        NSColor(calibratedRed: 0.96, green: 0.80, blue: 0.18, alpha: 1), // yellow
+        NSColor(calibratedRed: 0.28, green: 0.64, blue: 0.96, alpha: 1), // blue
+        NSColor(calibratedRed: 0.95, green: 0.42, blue: 0.66, alpha: 1), // pink
     ]
 
     /// The bar colour for the pick at `index`.
@@ -20,15 +23,16 @@ enum RangeReviewPalette {
         Color(nsColor: hues[((index % hues.count) + hues.count) % hues.count])
     }
 
-    /// The word block colour: the hue toned down into the window background,
-    /// opaque so adjoining word rectangles join without seams.
-    static func block(_ index: Int) -> Color {
-        let hue = hues[((index % hues.count) + hues.count) % hues.count]
-        return Color(nsColor: hue.blended(withFraction: 0.58, of: .windowBackgroundColor) ?? hue)
-    }
+    /// The block behind every saved pick's words: a faint lift off the window
+    /// background, the same for all picks, opaque so adjoining word
+    /// rectangles join without seams.
+    static let savedBlock = Color(nsColor:
+        NSColor.labelColor.blended(withFraction: 0.9, of: .windowBackgroundColor) ?? .windowBackgroundColor)
 
-    /// Width of the bar on the list row and on the pick's first word.
+    /// Width of the bar on the list row and at the start of each line of the pick.
     static let barWidth: CGFloat = 4
+    /// Gap between a line's bar and its first word.
+    static let barGap: CGFloat = 5
 }
 
 /// A saved pick's range with the palette index its list row shows.

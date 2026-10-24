@@ -35,8 +35,8 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     @State private var dragging: TranscriptQATrim.Edge?
     /// The word the span drag started on.
     @State private var spanAnchor: Int?
-    /// The first word of each saved pick, found once per transcript and pick set.
-    @State private var firstWordIDs: [RangeReviewMarkedRange: Int] = [:]
+    /// The first word on each wrapped line of each saved pick, from the measured frames.
+    @State private var lineStartWordIDs: Set<Int> = []
     @State private var spanMoved = false
     @State private var pointer: CGPoint?
     @State private var dragFrame: CGRect?
@@ -53,17 +53,9 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     }
     private var showsTranslation: Bool { showTranslation && translationLanguage != nil }
 
-    private struct FirstWordKey: Equatable {
-        var words: [TranscriptQATrim.Word]
-        var ranges: [RangeReviewMarkedRange]
-    }
-
-    private func refreshFirstWords() {
-        var result: [RangeReviewMarkedRange: Int] = [:]
-        for marked in otherRanges {
-            result[marked] = transcript.words.first { TranscriptQATrim.contains($0, in: marked.range) }?.id
-        }
-        firstWordIDs = result
+    private func refreshLineStarts() {
+        lineStartWordIDs = TranscriptQATrim.lineStartWords(words: transcript.words,
+            ranges: otherRanges.map(\.range), frames: frames)
     }
 
     var body: some View {
@@ -101,8 +93,8 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
             }
         }
         .onChange(of: sectionID) { _, _ in cancelDrag() }
-        .onAppear { refreshFirstWords() }
-        .onChange(of: FirstWordKey(words: transcript.words, ranges: otherRanges)) { _, _ in refreshFirstWords() }
+        .onChange(of: frames) { _, _ in refreshLineStarts() }
+        .onChange(of: otherRanges) { _, _ in refreshLineStarts() }
         .onChange(of: isEnabled) { _, enabled in if !enabled { cancelDrag() } }
         .onChange(of: transcript) { _, _ in cancelDrag(); frames = [:] }
         .onChange(of: showsTranslation) { _, _ in cancelDrag(); frames = [:] }
@@ -260,7 +252,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
         // Nested picks: the tightest range owns the word.
         let other = otherRanges.filter { TranscriptQATrim.contains(word, in: $0.range) }
             .min { ($0.range.upperBound - $0.range.lowerBound) < ($1.range.upperBound - $1.range.lowerBound) }
-        let startsOther = other.map { firstWordIDs[$0] == word.id } ?? false
+        let startsOther = other != nil && lineStartWordIDs.contains(word.id)
         // The spoken word is marked only while playing; a parked playhead would
         // otherwise sit yellow inside the selection being made.
         let spoken = playback.isPlaying && playback.time >= word.start && playback.time < word.end
@@ -269,6 +261,8 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                 .font(.callout).fontWeight(spoken ? .bold : .regular)
                 .foregroundStyle(spoken ? Color.black : inside || other != nil ? Color.primary : Color.secondary)
                 .padding(.horizontal, 2)
+                // Room for the line's bar and a gap before the first word.
+                .padding(.leading, startsOther ? RangeReviewPalette.barWidth + RangeReviewPalette.barGap : 0)
                 .background {
                     if spoken {
                         RoundedRectangle(cornerRadius: 3).fill(Color.yellow)
@@ -281,9 +275,9 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                             .padding(.horizontal, -TranscriptQAWordCursor.wordSpacing / 2 - 0.5)
                             .padding(.vertical, -TranscriptQAWordCursor.rowSpacing / 2 - 0.5)
                     } else if let other {
-                        // Saved picks read as the same kind of block in their
-                        // own pastel; the first word carries the row's bar.
-                        Rectangle().fill(RangeReviewPalette.block(other.paletteIndex))
+                        // Saved picks share one subtle block; each wrapped line
+                        // starts with the bar in the pick's list colour.
+                        Rectangle().fill(RangeReviewPalette.savedBlock)
                             .overlay(alignment: .leading) {
                                 if startsOther {
                                     Rectangle().fill(RangeReviewPalette.bar(other.paletteIndex))
