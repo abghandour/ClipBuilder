@@ -251,3 +251,40 @@ struct SpeakerTrackerTests {
         #expect(SpeakerTracker.track(input, videoID: 1).enrollment == nil)
     }
 }
+
+extension SpeakerTrackerTests {
+    /// One camera, two people: the half-frame tiles' mouth motion flips
+    /// almost at random while the voices are certain and swap at 5 s. The
+    /// voices should set the turns, with each voice's weakly preferred tile.
+    @Test("certain voices outweigh noisy mouths when the picture taught nothing")
+    func voicesLeadWhenMouthsAreNoise() {
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1), PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1)]
+        let bins = 40
+        var motion = [[Double]](repeating: [Double](repeating: 0.2, count: bins), count: 2)
+        // Mouths: while voice A speaks tile 1 is the lively one in three bins
+        // of five and tile 0 in the other two; while voice B speaks the other
+        // way round. Each voice leans to its own tile, but only weakly, and
+        // two bins in five point at the wrong person (as a two-shot with
+        // both faces near the seam gives).
+        for b in 0..<bins {
+            let own = b < 20 ? 1 : 0
+            let lively = b % 5 < 3 ? own : 1 - own
+            motion[lively][b] = 3
+        }
+        func window(_ start: Double, _ value: Double) -> SpeakerFeatures.Window {
+            SpeakerFeatures.Window(start: start, end: start + 1, vector: [value, value * 0.5, -value])
+        }
+        var windows: [SpeakerFeatures.Window] = []
+        for i in 0..<5 { windows.append(window(Double(i), 1.0 + Double(i % 3) * 0.05)) }
+        for i in 5..<10 { windows.append(window(Double(i), -1.0 - Double(i % 3) * 0.05)) }
+        let activity = VisualSpeechActivity.Activity(binSeconds: 0.25, motion: motion)
+        let outcome = SpeakerTracker.track(.init(audioWindows: windows, activity: activity, speech: [0...10],
+                                                 tiles: tiles, duration: 10), videoID: 1)
+        #expect(outcome.enrollment == nil, "no border, no corrections: nothing taught")
+        #expect(outcome.clusterCount == 2, "clusters=\(outcome.clusterCount) slots=\(outcome.clusterSlots) affinity=\(outcome.affinity) voices@2=\(outcome.bins[2].voices) voices@30=\(outcome.bins[30].voices) mouths@2=\(outcome.bins[2].mouths) path=\(outcome.path)")
+        #expect(outcome.turns.count == 2, "\(outcome.turns.map { ($0.start, $0.end, $0.tile, $0.cluster) }) clusters=\(outcome.clusterCount) slots=\(outcome.clusterSlots) affinity=\(outcome.affinity) voices@2=\(outcome.bins[2].voices) voices@30=\(outcome.bins[30].voices) mouths@2=\(outcome.bins[2].mouths) path=\(outcome.path)")
+        #expect(abs((outcome.turns.first?.end ?? 0) - 5) <= 0.5, "the handover follows the voices, not the mouths")
+        #expect(outcome.turns.first?.cluster != outcome.turns.last?.cluster)
+        #expect(outcome.turns.first?.tile != outcome.turns.last?.tile, "each voice keeps the tile it leans to")
+    }
+}

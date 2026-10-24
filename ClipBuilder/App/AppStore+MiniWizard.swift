@@ -191,7 +191,8 @@ extension AppStore {
                 // ticks on this video come back across launches.
                 let remembered = MiniWizardMemory.qaKept(profileName: activeProfile.profileName, videoID: video.id)
                 let qa = MiniWizardQA(sections: sections, rows: rows, labels: labels,
-                                      turns: speakers.turns, kept: remembered.intersection(Set(sections.map(\.id))))
+                                      turns: speakers.turns, kept: remembered.intersection(Set(sections.map(\.id))),
+                                      speakerSpans: TranscriptSpeakers.spans(turns: namedTurns, roster: speakers.roster))
                 miniRun = MiniWizardRun(projectID: projectID, video: video, footageKind: .qa,
                     length: .automatic, batchID: UUID().uuidString, candidates: [], options: options, qa: qa)
                 appendLog(\.wizardLog, ["Express: \(sections.count) Q&A exchanges ready to review."])

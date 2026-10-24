@@ -7,6 +7,8 @@ struct RangeReviewView<Footer: View>: View {
     let items: [RangeReviewItem]
     let rows: [TranscriptRow]
     let labels: [Int64: String]
+    /// Named speaker turns; rows crossing a speaker change split into one line per speaker.
+    var speakerSpans: [TranscriptQATrim.SpeakerSpan] = []
     var kept: Binding<Set<Int64>>? = nil
     var preferredTranslationLanguage: String? = nil
     var selection: Binding<Int64?>? = nil
@@ -32,8 +34,11 @@ struct RangeReviewView<Footer: View>: View {
     var playAll = false
     /// Replaces the transcript words column (Fight metrics shows its action grid there).
     var leadingPanel: AnyView? = nil
-    /// A control for the transcript column's header, per selected item (Express's Add button).
+    /// A control for the transcript column's header, per selected item.
     var transcriptAccessory: ((RangeReviewItem) -> AnyView?)? = nil
+    /// A control shown under the picture while a span is marked (Express's
+    /// Add button); a Clear button that drops the span sits beside it.
+    var trimAccessory: ((RangeReviewItem) -> AnyView?)? = nil
     /// Shown in the trim column while a draft has no range yet.
     var emptyDraftHint = "Press a word in the transcript and drag to select a passage."
     /// Replaces the trim hint under the filmstrip (no transcript words to click in Fight metrics).
@@ -57,6 +62,9 @@ struct RangeReviewView<Footer: View>: View {
     @State private var playback = PodcastHighlightTrimPlayback()
     @State private var loadedURL: URL?
     @State private var draft: (start: Double, end: Double)?
+    /// The anchor being dragged in the transcript; the player and filmstrip
+    /// hold the saved range until it is released, then jump to this edge.
+    @State private var anchorDrag: TranscriptQATrim.Edge?
     @State private var window = ProposedCutTrim.Window(start: 0, span: 30)
     @State private var transcript = TranscriptQATrim.Transcript()
     @State private var transcriptVideoID: Int64?
@@ -99,8 +107,24 @@ struct RangeReviewView<Footer: View>: View {
         transcriptVideoID == contextVideo?.id ? transcript : TranscriptQATrim.Transcript()
     }
     private var transcriptInput: TranscriptQATrim.Input {
-        TranscriptQATrim.Input(rows: rows, labels: labels, videoID: contextVideo?.id ?? -1)
+        TranscriptQATrim.Input(rows: rows, labels: labels, videoID: contextVideo?.id ?? -1, speakerSpans: speakerSpans)
     }
+    /// Position of a saved item among the saved items, for its palette colour.
+    private func paletteIndex(_ item: RangeReviewItem) -> Int? {
+        guard !item.isDraft else { return nil }
+        return items.filter { !$0.isDraft }.firstIndex { $0.id.ownerID == item.id.ownerID }
+    }
+
+    /// Saved picks of `video` as marked ranges, in the colour of their rows.
+    private func markedRanges(excluding selectedID: RangeReviewItem.ID?, video: VideoRecord) -> [RangeReviewMarkedRange] {
+        items.flatMap { owner in
+            (owner.children.isEmpty ? [owner] : owner.children).compactMap { item -> RangeReviewMarkedRange? in
+                guard item.id != selectedID, item.video.id == video.id, let index = paletteIndex(owner) else { return nil }
+                return RangeReviewMarkedRange(range: item.range, paletteIndex: index)
+            }
+        }
+    }
+
     private var visibleItems: [RangeReviewItem] {
         items.flatMap { item in [item] + (item.id.ownerID == selectedID?.ownerID ? item.children : []) }
     }
@@ -125,7 +149,8 @@ struct RangeReviewView<Footer: View>: View {
                         columnDivider(.transcript, width: widths.transcript, otherWidth: widths.list,
                                       available: geometry.size.width)
                         if let selected {
-                            trimSurface(item: selected).padding(Theme.spaceS).frame(width: playerWidth).clipped()
+                            trimSurface(item: selected).padding(Theme.spaceS)
+                            .frame(width: playerWidth).frame(maxHeight: .infinity, alignment: .top).clipped()
                         } else {
                             ContentUnavailableView(emptyTitle, systemImage: "text.bubble",
                                                    description: Text(emptyMessage))
@@ -144,7 +169,8 @@ struct RangeReviewView<Footer: View>: View {
                     columnDivider(.list, width: widths.list, otherWidth: widths.transcript,
                                   available: geometry.size.width)
                     if let selected, let video {
-                        trimSurface(item: selected).padding(Theme.spaceS).frame(width: playerWidth).clipped()
+                        trimSurface(item: selected).padding(Theme.spaceS)
+                            .frame(width: playerWidth).frame(maxHeight: .infinity, alignment: .top).clipped()
                         columnDivider(.transcript, width: widths.transcript, otherWidth: widths.list,
                                       available: geometry.size.width)
                         wordPanel(selected: selected, video: video).frame(width: widths.transcript).clipped()
@@ -268,15 +294,13 @@ struct RangeReviewView<Footer: View>: View {
                               preferredTranslationLanguage: preferredTranslationLanguage,
                               sectionID: selected.id,
                               range: inactive ? emptyRange : editRange,
-                              otherRanges: items.flatMap { $0.children.isEmpty ? [$0] : $0.children }
-                                  .filter { (inactive || $0.id != selected.id) && $0.video.id == video.id }.map(\.range),
+                              otherRanges: markedRanges(excluding: inactive ? nil : selected.id, video: video),
                               playback: playback, canTrim: contextCanTrim,
                               onSelect: inactive ? { _ in activate() } : selectWord,
                               onPreview: inactive ? { _, _ in activate() } : previewWord,
                               onCommit: { if inactive { pendingCommit = pendingDraft != nil } else { commitDraft(snap: false) } },
-                              onCancel: { draft = nil },
+                              onCancel: { draft = nil; anchorDrag = nil },
                               spanSelection: spanSelection && selected.isDraft,
-                              highlightsCurrentLine: !spanSelection,
                               onSpanPreview: { span in
                                   guard isEnabled, contextCanTrim else { return }
                                   if inactive {
@@ -553,7 +577,7 @@ struct RangeReviewView<Footer: View>: View {
                         .lineLimit(caption.lineLimit).help(caption.text)
                     }
                 }
-                .padding(.leading, isChild ? 42 : kept != nil ? 26 : 0)
+                .padding(.leading, (isChild ? 42 : kept != nil ? 26 : 0) + (item.isDraft ? 0 : RangeReviewPalette.barWidth + Theme.spaceXS))
                 .padding(.trailing, onDelete != nil && !item.isDraft && !isChild ? 30 : 0)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, Theme.spaceS)
@@ -561,6 +585,15 @@ struct RangeReviewView<Footer: View>: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .overlay(alignment: .leading) {
+                // The same bar the pick's first word carries in the transcript.
+                if let index = paletteIndex(item) {
+                    Rectangle().fill(RangeReviewPalette.bar(index))
+                        .frame(width: RangeReviewPalette.barWidth)
+                        .padding(.vertical, Theme.spaceXS)
+                        .allowsHitTesting(false)
+                }
+            }
             .accessibilityAddTraits(item.id == selectedID ? .isSelected : [])
             .highPriorityGesture(reorderGesture(item), including: canReorder(item) ? .all : .subviews)
             .help(canReorder(item) ? "Drag up or down to reorder" : "")
@@ -594,8 +627,12 @@ struct RangeReviewView<Footer: View>: View {
 
     private func trimSurface(item: RangeReviewItem) -> some View {
         VStack(alignment: .leading, spacing: Theme.spaceS) {
+            // The picture keeps the footage's shape instead of filling the
+            // column's height, so no letterbox bars; the column may end up
+            // shorter than its neighbours.
             PlayerView(player: playback.player, controlsStyle: .none)
-                .frame(minWidth: 0, maxWidth: .infinity, minHeight: 0, maxHeight: .infinity)
+                .aspectRatio(Self.pictureAspect(item.video), contentMode: .fit)
+                .frame(maxWidth: .infinity)
                 .background(.black, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
                 .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
                 .overlay {
@@ -606,6 +643,22 @@ struct RangeReviewView<Footer: View>: View {
                             .multilineTextAlignment(.center).padding(Theme.spaceS)
                     }
                 }
+            if spanSelection, item.isDraft, !isEmptyRange, let selected, selected.id == item.id {
+                HStack(spacing: Theme.spaceS) {
+                    if let accessory = trimAccessory?(selected) { accessory }
+                    Button {
+                        guard isEnabled, canTrim, let range else { draft = nil; return }
+                        draft = nil
+                        commit(range.lowerBound...range.lowerBound)
+                    } label: {
+                        Text("Clear").lineLimit(1).fixedSize()
+                    }
+                    .controlSize(.small)
+                    .disabled(!canTrim)
+                    .help("Clear the marked passage")
+                    Spacer(minLength: 0)
+                }
+            }
             if isEmptyRange {
                 FormCaption(emptyDraftHint)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
@@ -635,6 +688,11 @@ struct RangeReviewView<Footer: View>: View {
         }
     }
 
+    /// Width over height of the footage; 16:9 until the video's dimensions are known.
+    static func pictureAspect(_ video: VideoRecord) -> CGFloat {
+        video.width > 0 && video.height > 0 ? CGFloat(video.width) / CGFloat(video.height) : 16 / 9
+    }
+
     private static var spanHint: String {
         "Drag the handles or the transcript anchors to adjust · click the selection to clear it · I / O set the start / end at the playhead"
     }
@@ -658,10 +716,10 @@ struct RangeReviewView<Footer: View>: View {
 
     private var rangeLabel: some View {
         ViewThatFits(in: .horizontal) {
-            Text(rangeCaption(editRange)).lineLimit(1).fixedSize()
+            Text(rangeCaption(shownRange)).lineLimit(1).fixedSize()
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(editRange.lowerBound.timecode)–\(editRange.upperBound.timecode)")
-                Text("\(editRange.upperBound - editRange.lowerBound, format: .number.precision(.fractionLength(1)))s")
+                Text("\(shownRange.lowerBound.timecode)–\(shownRange.upperBound.timecode)")
+                Text("\(shownRange.upperBound - shownRange.lowerBound, format: .number.precision(.fractionLength(1)))s")
             }
             .lineLimit(1).fixedSize()
         }
@@ -679,11 +737,11 @@ struct RangeReviewView<Footer: View>: View {
 
     private func filmstrip(video: VideoRecord) -> some View {
         VideoTrimSlider(url: video.url, duration: window.span,
-                        start: Binding(get: { editRange.lowerBound }, set: {
+                        start: Binding(get: { shownRange.lowerBound }, set: {
                             guard isEnabled, canTrim else { return }
                             draft = (start: $0, end: draft?.end ?? editRange.upperBound)
                         }),
-                        end: Binding(get: { editRange.upperBound }, set: {
+                        end: Binding(get: { shownRange.upperBound }, set: {
                             guard isEnabled, canTrim else { return }
                             draft = (start: draft?.start ?? editRange.lowerBound, end: $0)
                         }),
@@ -738,16 +796,29 @@ struct RangeReviewView<Footer: View>: View {
     }
 
     private func commitDraft(snap: Bool) {
+        let edge = anchorDrag
+        anchorDrag = nil
         guard draft != nil, let range else { return }
         let updated = snap ? policy.releasing(editRange, from: range, words: visibleTranscript.words, limits: limits) : editRange
         commit(updated)
+        if let edge {
+            playback.scrub(to: edge == .start ? updated.lowerBound : max(updated.lowerBound, updated.upperBound - 0.5))
+        }
     }
 
     private func previewWord(_ edge: TranscriptQATrim.Edge, _ word: TranscriptQATrim.Word) {
         guard isEnabled, canTrim else { return }
         let updated = moving(edge, to: word)
         draft = (updated.lowerBound, updated.upperBound)
-        playback.scrub(to: edge == .start ? updated.lowerBound : updated.upperBound)
+        // The words mark the new span at once; the picture waits for the release.
+        anchorDrag = edge
+    }
+
+    /// The range the trim column shows: the saved one while a transcript
+    /// anchor is in flight, otherwise the draft.
+    private var shownRange: ClosedRange<Double> {
+        guard anchorDrag != nil, let range else { return editRange }
+        return policy.clamp(range, limits: limits)
     }
 
     private func moving(_ edge: TranscriptQATrim.Edge, to word: TranscriptQATrim.Word) -> ClosedRange<Double> {

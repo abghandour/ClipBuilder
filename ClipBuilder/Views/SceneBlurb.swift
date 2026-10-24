@@ -68,6 +68,22 @@ nonisolated enum TranscriptSpeakers {
         return key
     }
 
+    /// Every turn as a named span, for splitting rows where the speaker
+    /// changes mid-row. `turns` should already be named (`named(_:roster:)`).
+    static func spans(turns: [SpeakerTurn], roster: [VideoPersonRecord]) -> [TranscriptQATrim.SpeakerSpan] {
+        turns.filter { $0.end > $0.start }.map {
+            TranscriptQATrim.SpeakerSpan(start: $0.start, end: $0.end, label: turnLabel($0, roster: roster))
+        }
+    }
+
+    /// The name a named turn shows: the roster person, a leftover "Speaker N", a feed or a cluster.
+    static func turnLabel(_ turn: SpeakerTurn, roster: [VideoPersonRecord]) -> String {
+        if let key = turn.personKey, let person = roster.first(where: { $0.key == key }) { return person.displayName }
+        if let key = turn.personKey { return key.hasPrefix("speaker-") ? DubPlanning.speakerLabel(key) : key }
+        if let tile = turn.tile { return "Feed \(tile + 1)" }
+        return "Speaker \(turn.cluster + 1)"
+    }
+
     /// What the speaker turns say, ignoring the user's attribution.
     static func automaticLabel(for row: TranscriptRow, turns: [SpeakerTurn], roster: [VideoPersonRecord]) -> String? {
         var best: (turn: SpeakerTurn, overlap: Double)?
@@ -87,13 +103,8 @@ nonisolated enum TranscriptSpeakers {
                 turn = match
             }
         }
-        if let key = turn.personKey, let person = roster.first(where: { $0.key == key }) { return person.displayName }
-        if let key = turn.personKey {
-            // Leftover clusters with nobody left on the roster read "Speaker N".
-            return key.hasPrefix("speaker-") ? DubPlanning.speakerLabel(key) : key
-        }
-        if let tile = turn.tile { return "Feed \(tile + 1)" }
-        return "Speaker \(turn.cluster + 1)"
+        // Leftover clusters with nobody left on the roster read "Speaker N".
+        return turnLabel(turn, roster: roster)
     }
 
     /// Lines the user attributed to a person that the speaker map does not

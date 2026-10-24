@@ -6,40 +6,82 @@ struct MiniFootageCard: View {
     let run: MiniWizardRun
     let pageHeight: CGFloat
     @State private var showTranscript = false
+    /// The review area's height once the user has dragged its bottom edge;
+    /// 0 means fit the page. Shared by Q&A, Transcript, Fight and Highlights.
+    @AppStorage("mini.footageHeight") private var storedHeight = 0.0
+    @State private var resizeStart: CGFloat?
+
+    static let minimumHeight: CGFloat = 320
+
+    private var automaticHeight: CGFloat { max(560, pageHeight - 220) }
+    private var reviewHeight: CGFloat {
+        storedHeight > 0 ? max(Self.minimumHeight, CGFloat(storedHeight)) : automaticHeight
+    }
 
     var body: some View {
         FormCaption(run.summary)
         if run.footageKind == .qa {
             qaReview
         } else if run.footageKind == .transcript {
-            MiniTranscriptPickView(run: run)
-                .id(run.batchID)
-                .frame(maxWidth: .infinity)
-                .frame(height: max(560, pageHeight - 220))
-                .padding(.horizontal, -Theme.spaceS)
-                .disabled(store.isWizardRunning)
+            resizable(MiniTranscriptPickView(run: run))
         } else if run.footageKind == .fightMetrics {
-            MiniFightPickView(run: run)
-                .id(run.batchID)
-                .frame(maxWidth: .infinity)
-                .frame(height: max(560, pageHeight - 220))
-                .padding(.horizontal, -Theme.spaceS)
-                .disabled(store.isWizardRunning)
+            resizable(MiniFightPickView(run: run))
         } else {
-            MiniHighlightReviewView(run: run)
+            resizable(MiniHighlightReviewView(run: run))
+        }
+    }
+
+    /// The review at the remembered height with a grab bar under it; dragging
+    /// the bar shows more or less of the transcript and the list.
+    private func resizable<Content: View>(_ content: Content) -> some View {
+        VStack(spacing: 0) {
+            content
                 .id(run.batchID)
                 .frame(maxWidth: .infinity)
-                .frame(height: max(560, pageHeight - 220))
-                .padding(.horizontal, -Theme.spaceS)
+                .frame(height: reviewHeight)
                 .disabled(store.isWizardRunning)
+            resizeHandle
         }
+        // Keep 644 pt for the columns even in a 700 pt detail pane:
+        // 700 - 2 * spaceXL - 2 * spaceL + 2 * spaceS.
+        .padding(.horizontal, -Theme.spaceS)
+    }
+
+    private var resizeHandle: some View {
+        Capsule().fill(.quaternary)
+            .frame(width: 48, height: 5)
+            .frame(maxWidth: .infinity)
+            .frame(height: 14)
+            .contentShape(Rectangle())
+            .onHover { hovering in
+                if hovering { NSCursor.resizeUpDown.push() } else { NSCursor.pop() }
+            }
+            .gesture(DragGesture(minimumDistance: 1)
+                .onChanged { value in
+                    if resizeStart == nil { resizeStart = reviewHeight }
+                    storedHeight = Double(max(Self.minimumHeight, (resizeStart ?? reviewHeight) + value.translation.height))
+                }
+                .onEnded { _ in resizeStart = nil })
+            .onTapGesture(count: 2) { storedHeight = 0 }
+            .help("Drag to show more or less footage. Double-click to fit the page.")
+            .accessibilityElement()
+            .accessibilityLabel("Footage area height")
+            .accessibilityValue("\(Int(reviewHeight)) points")
+            .accessibilityAdjustableAction { direction in
+                switch direction {
+                case .increment: storedHeight = Double(reviewHeight + 40)
+                case .decrement: storedHeight = Double(max(Self.minimumHeight, reviewHeight - 40))
+                @unknown default: break
+                }
+            }
     }
 
     @ViewBuilder
     private var qaReview: some View {
         if let qa = run.qa, !qa.sections.isEmpty {
             // The view sizes its own columns to the card; no sideways scrolling.
-            TranscriptQAView(video: run.video, sections: qa.sections, rows: qa.rows, labels: qa.labels,
+            let review = TranscriptQAView(video: run.video, sections: qa.sections, rows: qa.rows, labels: qa.labels,
+                speakerSpans: qa.speakerSpans,
                 kept: Binding(
                     get: { store.miniRun?.batchID == run.batchID ? store.miniRun?.qa?.kept ?? [] : [] },
                     set: { kept in
@@ -49,13 +91,7 @@ struct MiniFootageCard: View {
                     }), preferredTranslationLanguage: store.activeProfile.captionLanguages.first) { scene, start, end in
                         store.setSceneEditRange(scene, start: start, end: end)
                     }
-                .id(run.batchID)
-                .frame(maxWidth: .infinity)
-                .frame(height: max(560, pageHeight - 220))
-                // Keep 644 pt for the columns even in a 700 pt detail pane:
-                // 700 - 2 * spaceXL - 2 * spaceL + 2 * spaceS.
-                .padding(.horizontal, -Theme.spaceS)
-                .disabled(store.isWizardRunning)
+            resizable(review)
         } else {
             FormCaption("No Q&A found in this video")
             Button { showTranscript = true } label: {

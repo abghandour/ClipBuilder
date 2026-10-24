@@ -516,7 +516,9 @@ actor MultitrackRenderer {
 
         let captionRenderer = CaptionRenderer(videoWidth: Self.width, videoHeight: Self.height,
                                               style: profile.captions)
-        let captionCache = CaptionPNGCache(renderer: captionRenderer, directory: scratch)
+        let captionRenderers = CaptionRendererSet(base: captionRenderer,
+            speakerStyles: profile.speakerCaptionStyles(runStyleID: nil))
+        let captionCache = CaptionPNGCache(renderers: captionRenderers, directory: scratch)
         let segmentCount = fullSegments.count
 
         // Text and image overlays — pre-rendered to full-frame PNGs and
@@ -610,7 +612,7 @@ actor MultitrackRenderer {
             try await self.renderSegment(segment, index: index, of: segmentCount,
                                          scratch: scratch, database: database,
                                          captionLanguage: profile.captionLanguages.first,
-                                         captionRenderer: captionRenderer,
+                                         captionRenderers: captionRenderers,
                                          captionCache: captionCache, captionStyle: profile.captions,
                                          fontFingerprints: fontFingerprints,
                                          overlays: overlayPlan.bySegment[index] ?? [],
@@ -1533,7 +1535,7 @@ actor MultitrackRenderer {
     private func renderSegment(_ segment: Segment, index: Int, of total: Int,
                                scratch: URL, database: Database,
                                captionLanguage: String?,
-                               captionRenderer: CaptionRenderer,
+                               captionRenderers: CaptionRendererSet,
                                captionCache: CaptionPNGCache,
                                captionStyle: CaptionStyle, fontFingerprints: [String]?,
                                overlays: [TimedOverlayPNG],
@@ -1548,6 +1550,7 @@ actor MultitrackRenderer {
             let gapPath = scratch.appendingPathComponent(String(format: "gap%03d.mp4", index))
             let input = RenderSegmentKey(start: segment.start, duration: segment.duration, clips: [],
                 captions: [], overlays: [], masks: [:], fontFingerprints: [], captionStyle: CaptionStyle(),
+                speakerCaptionStyles: [:],
                 settings: RenderContext.settings, encoder: FFmpeg.encodeArgs)
             let key = try RenderSegmentCache.key(input)
             if await segmentCache.restore(key: key, to: gapPath) {
@@ -1580,16 +1583,18 @@ actor MultitrackRenderer {
                 segmentComplete = false
                 continue
             }
-            // Speaker colours are decoration: a failed read leaves the captions uncoloured.
-            let turns = captionStyle.resolvedSpeakerColors ? ((try? await database.fetchSpeakerTurns(videoID: videoID)) ?? []) : []
-            let speakerRows = captionStyle.resolvedSpeakerColors ? ((try? await database.fetchTranscripts(videoID: videoID)) ?? []) : []
+            // Missing speaker evidence falls back to the run style.
+            let needsSpeakers = captionStyle.resolvedSpeakerColors || captionRenderers.usesSpeakers
+            let evidence = needsSpeakers
+                ? await CaptionSpeakerEvidence.load(database: database, videoID: videoID)
+                : CaptionSpeakerEvidence()
             try Task.checkCancellation()
-            captionPages += CaptionOverlayPlan.pages(segments: rows, renderer: captionRenderer,
+            captionPages += CaptionOverlayPlan.pages(segments: rows, renderers: captionRenderers,
                 sourceStart: sourceStart, speed: clip.speed, duration: segment.duration,
                 position: captionPosition, language: captionLanguage ?? "",
-                speakerTurns: turns, speakerRows: speakerRows, streamID: clip.originKey)
+                speakerTurns: evidence.turns, speakerRows: evidence.rows, streamID: clip.originKey)
         }
-        let captionPlan = try CaptionOverlayPlan.plan(pages: captionPages, style: captionStyle)
+        let captionPlan = try CaptionOverlayPlan.plan(pages: captionPages, style: captionStyle, styles: captionRenderers.styles)
         if captionPlan.usedRevealFallback { emit("Captions: input limit reached; simplified word reveal or motion for this segment") }
         if captionPlan.usedPageFallback { emit("Captions: over 400 inputs; using static page overlays for this segment") }
         for overlay in captionPlan.overlays {
@@ -1598,7 +1603,8 @@ actor MultitrackRenderer {
                 segmentComplete = false
                 continue
             }
-            let (x, y) = captionRenderer.position(for: rendered, clipPosition: overlay.position)
+            let (x, y) = captionCache.renderer(styleID: overlay.raster.styleID)
+                .position(for: rendered, clipPosition: overlay.position)
             captions.append(CaptionOverlay(png: rendered.pngURL, x: x, y: y,
                 start: overlay.start, end: overlay.end, text: overlay.raster.text))
         }
@@ -1656,6 +1662,7 @@ actor MultitrackRenderer {
             duration: localBumper ? segment.duration.rounded(toPlaces: 6) : segment.duration, clips: keyClips,
             captions: keyCaptions, overlays: keyOverlays, masks: maskKeys,
             fontFingerprints: fontFingerprints ?? [], captionStyle: captionStyle,
+            speakerCaptionStyles: captionRenderers.styles,
             settings: RenderContext.settings, encoder: FFmpeg.encodeArgs + FFmpeg.intermediateCacheIdentity,
             burnIns: keyBurnIns.isEmpty ? nil : keyBurnIns,
             burnInDuration: keyBurnIns.contains { $0.animation != nil } ? burnInDuration : nil,

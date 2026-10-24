@@ -6,6 +6,7 @@ struct MiniHighlightReviewView: View {
     let run: MiniWizardRun
     @State private var rows: [TranscriptRow] = []
     @State private var labels: [Int64: String] = [:]
+    @State private var speakerSpans: [TranscriptQATrim.SpeakerSpan] = []
     @State private var transcriptError: String?
 
     private var items: [RangeReviewItem] {
@@ -36,7 +37,7 @@ struct MiniHighlightReviewView: View {
     }
 
     var body: some View {
-        RangeReviewView(items: items, rows: rows, labels: labels, kept: kept,
+        RangeReviewView(items: items, rows: rows, labels: labels, speakerSpans: speakerSpans, kept: kept,
                         preferredTranslationLanguage: store.activeProfile.captionLanguages.first,
                         selection: selection, emptyTitle: "Select a candidate",
                         emptyMessage: "Choose a candidate to watch it and adjust its cuts.",
@@ -123,10 +124,12 @@ struct MiniHighlightReviewView: View {
         let ids = videoIDs
         rows = []
         labels = [:]
+        speakerSpans = []
         transcriptError = nil
         do {
             var loadedRows: [TranscriptRow] = []
             var loadedLabels: [Int64: String] = [:]
+            var loadedSpans: [TranscriptQATrim.SpeakerSpan] = []
             for id in ids {
                 let videoRows = try await database.fetchTranscripts(videoID: id)
                 let speakers = await store.speakerTurns(videoID: id)
@@ -152,9 +155,12 @@ struct MiniHighlightReviewView: View {
                 guard generation == store.profileGeneration, store.miniRun?.batchID == run.batchID else { return }
                 loadedRows.append(contentsOf: videoRows)
                 loadedLabels.merge(videoLabels, uniquingKeysWith: { first, _ in first })
+                loadedSpans += TranscriptSpeakers.spans(turns: TranscriptSpeakers.named(speakers.turns, roster: speakers.roster),
+                                                        roster: speakers.roster)
             }
             rows = loadedRows
             labels = loadedLabels
+            speakerSpans = loadedSpans
         } catch is CancellationError {
             return
         } catch {

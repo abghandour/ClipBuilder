@@ -7,4 +7,5 @@ nonisolated struct MiniWizardQA: Sendable {
     var labels: [Int64: String]
     var turns: [SpeakerTurn]
     var kept: Set<Int64>
+    var speakerSpans: [TranscriptQATrim.SpeakerSpan] = []
 }

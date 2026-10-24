@@ -3,6 +3,73 @@ import Testing
 @testable import Clip_Builder
 
 struct CaptionOverlayPlanTests {
+    @Test func eachSpeakerUsesTheirOwnPagingAndDecorations() throws {
+        var base = CaptionStyle()
+        base.wordsPerPage = 4
+        var ana = base
+        ana.wordsPerPage = 1
+        ana.uppercase = true
+        ana.emphasis = "font"
+        ana.speakerColors = true
+        var bob = base
+        bob.wordsPerPage = 2
+        let renderers = CaptionRendererSet(
+            base: CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: base, safeArea: nil),
+            speakerStyles: ["ana": ana, "bob": bob])
+        let turns: [SpeakerTurn] = [
+            .init(videoID: 1, start: 0, end: 4, cluster: 0, confidence: 1, personKey: "ana"),
+            .init(videoID: 1, start: 4, end: 8, cluster: 1, confidence: 1, personKey: "bob")]
+        let pages = CaptionOverlayPlan.pages(segments: [
+            .init(start: 0, end: 4, text: "win 10 in 20"),
+            .init(start: 4, end: 8, text: "win 10 in 20")], renderers: renderers,
+            sourceStart: 0, speed: 1, duration: 8, position: "auto", language: "en", speakerTurns: turns)
+        #expect(pages.map { $0.caption.text } == ["win", "10", "in", "20", "win 10", "in 20"])
+        #expect(pages.map(\.styleID) == ["ana", "ana", "ana", "ana", "bob", "bob"])
+        #expect(pages.prefix(4).allSatisfy { $0.textColor == CaptionSpeakerColors.palette[0] })
+        #expect(pages.suffix(2).allSatisfy { $0.textColor == nil })
+        let plan = try CaptionOverlayPlan.plan(pages: pages, style: base, styles: renderers.styles)
+        #expect(plan.overlays.map { $0.raster.styleID } == pages.map(\.styleID))
+        #expect(plan.overlays.filter { ["10", "20"].contains($0.raster.text) }.allSatisfy { $0.raster.emphasis == [0] })
+        #expect(plan.overlays.suffix(2).allSatisfy { $0.raster.emphasis.isEmpty })
+    }
+
+    @Test func mixedStylesApplyRevealHighlightEmojiAndAnimationPerPage() throws {
+        let base = CaptionStyle()
+        var speaker = base
+        speaker.reveal = "word"
+        speaker.revealMotion = true
+        speaker.highlight = "color"
+        speaker.emoji = true
+        speaker.animation = "pop"
+        let page = CaptionPage(text: "More money", start: 0, end: 2)
+        let plan = try CaptionOverlayPlan.plan(pages: [
+            .init(caption: page, position: "auto"),
+            .init(caption: page, position: "auto", styleID: "ana")], style: base, styles: ["ana": speaker])
+        let plain = plan.overlays.filter { $0.raster.styleID == nil }
+        let styled = plan.overlays.filter { $0.raster.styleID == "ana" }
+        #expect(plain.count == 1 && plain.first?.raster.text == "More money")
+        #expect(plain.first?.raster.activeIndex == nil && plain.first?.raster.frame == .init())
+        #expect(styled.count == 10)
+        #expect(styled.first?.raster.text == "More" && styled.first?.raster.activeIndex == 0)
+        #expect(styled.last?.raster.text == "More money 💰" && styled.last?.raster.activeIndex == 1)
+        #expect(styled.filter { $0.raster.frame.scale == 0.85 }.count == 2)
+    }
+
+    @Test func staticFallbackKeepsSpeakerStyleBoundaries() throws {
+        var style = CaptionStyle()
+        style.highlight = "color"
+        let pages = ["ana", "ana", "bob", "bob", "ana", "ana"].enumerated().map { index, key in
+            CaptionOverlayPlan.Page(caption: .init(text: "word\(index)", start: Double(index), end: Double(index + 1)),
+                                    position: "auto", styleID: key)
+        }
+        let plan = try CaptionOverlayPlan.plan(pages: pages, style: style, limit: 3)
+        #expect(plan.usedPageFallback)
+        #expect(plan.overlays.map { $0.raster.styleID } == ["ana", "bob", "ana"])
+        #expect(plan.overlays.map { $0.raster.text } == ["word0 word1", "word2 word3", "word4 word5"])
+        #expect(plan.overlays.map(\.start) == [0, 2, 4])
+        #expect(plan.overlays.map(\.end) == [2, 4, 6])
+    }
+
     @Test func sourceClocksAreStretchedAndClippedBeforeHighlighting() throws {
         var style = CaptionStyle()
         style.highlight = "color"
@@ -60,7 +127,9 @@ struct CaptionOverlayPlanTests {
         color.textColor = "#ff0000"
         var frame = plain
         frame.frame.scale = 0.85
-        #expect(Set([plain, active, emphasis, color, frame]).count == 5)
+        var speaker = plain
+        speaker.styleID = "ana"
+        #expect(Set([plain, active, emphasis, color, frame, speaker]).count == 6)
     }
 }
 
@@ -207,5 +276,30 @@ extension CaptionOverlayPlanTests {
         #expect(plan.overlays.map(\.start) == [0, 0.5])
         #expect(plan.overlays.map(\.end) == [0.5, 1.5])
         #expect(plan.overlays.allSatisfy { $0.raster.frame == .init() })
+    }
+}
+
+extension CaptionOverlayPlanTests {
+    @Test func speakerPositionsApplyWithoutAStyleOverrideAndFallBackPerPerson() throws {
+        let style = CaptionStyle()
+        let renderers = CaptionRendererSet(base: CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style, safeArea: nil))
+        let turns: [SpeakerTurn] = [
+            .init(videoID: 1, start: 0, end: 2, cluster: 0, confidence: 1, personKey: "ana"),
+            .init(videoID: 1, start: 2, end: 4, cluster: 1, confidence: 1, personKey: "bob"),
+            .init(videoID: 1, start: 4, end: 6, cluster: 2, confidence: 1, personKey: "chris")]
+        let segments = turns.map { TranscriptSegment(start: $0.start, end: $0.end, text: "Hello") }
+        let ordinals = CaptionSpeakerOrder.ordinals(turns: turns, rows: [], roster: [])
+        let pages = CaptionOverlayPlan.pages(segments: segments, renderers: renderers,
+            sourceStart: 0, speed: 1, duration: 6, position: "middle", speakerTurns: turns,
+            speakerPositions: { person in
+                CaptionSpeakerOrder.position(forPerson: person, ordinals: ordinals,
+                    positions: ["speaker1": "top", "speaker2": "bottom"], runPosition: "middle")
+            })
+        #expect(pages.map(\.position) == ["top", "bottom", "middle"])
+        #expect(pages.allSatisfy { $0.styleID == nil })
+        #expect(try CaptionOverlayPlan.plan(pages: pages, style: style).overlays.map(\.position) == ["top", "bottom", "middle"])
+        let defaults = CaptionOverlayPlan.pages(segments: segments, renderers: renderers,
+            sourceStart: 0, speed: 1, duration: 6, position: "bottom", speakerTurns: turns)
+        #expect(defaults.allSatisfy { $0.position == "bottom" })
     }
 }

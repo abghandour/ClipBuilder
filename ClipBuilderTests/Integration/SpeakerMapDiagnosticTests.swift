@@ -82,6 +82,32 @@ struct SpeakerMapDiagnosticTests {
             }
             histogram = "Enrolled posterior over speech bins: <0.6: \(buckets[0]), 0.6–0.8: \(buckets[1]), 0.8–0.95: \(buckets[2]), ≥0.95: \(buckets[3])"
         }
+        // A per-bin dump of one stretch (CLIPBUILDER_SPEAKER_DIAG_WINDOW="55-80"):
+        // what the picture, the blind voices and the enrolled voices said and
+        // which slot the path took, with the words spoken there.
+        var window = ""
+        if let spec = environment["CLIPBUILDER_SPEAKER_DIAG_WINDOW"], let outcome {
+            let parts = spec.split(separator: "-").compactMap { Double($0) }
+            if parts.count == 2 {
+                let binSeconds = VisualSpeechActivity.binSeconds
+                let slots = outcome.highlight.count
+                var dump: [String] = ["Window \(parts[0])–\(parts[1]) s (bin \(binSeconds) s): time speech path | lit per slot | mouths per slot | blind voices per cluster | enrolled per slot"]
+                for (b, bin) in outcome.bins.enumerated() where bin.start >= parts[0] && bin.start < parts[1] {
+                    let lit = (0..<slots).map { String(format: "%.2f", outcome.highlight[$0][safe: b] ?? 0) }.joined(separator: " ")
+                    let mouths = bin.mouths.map { String(format: "%.2f", $0) }.joined(separator: " ")
+                    let voices = bin.voices.map { String(format: "%.2f", $0) }.joined(separator: " ")
+                    let enrolled = (outcome.enrolledVoices[safe: b] ?? []).map { String(format: "%.2f", $0) }.joined(separator: " ")
+                    dump.append(String(format: "%7.2f %@ %2d | %@ | %@ | %@ | %@", bin.start, bin.speech ? "S" : "-",
+                                       outcome.path[safe: b] ?? -1, lit, mouths, voices, enrolled))
+                }
+                let spoken = words.filter { $0.end > parts[0] && $0.start < parts[1] }
+                    .map { String(format: "%6.2f %@", $0.start, $0.word.trimmingCharacters(in: .whitespaces)) }
+                dump.append("Words:")
+                dump.append(contentsOf: spoken)
+                dump.append("Tiles: \(outcome.turns.isEmpty ? "" : "") clusterSlots=\(outcome.clusterSlots) affinity=\(outcome.affinity)")
+                window = dump.joined(separator: "\n")
+            }
+        }
         let report = """
         Speaker map diagnostic — \(video.filename), \(Int(video.duration)) s, ran in \(Int(elapsed)) s
 
@@ -95,6 +121,8 @@ struct SpeakerMapDiagnosticTests {
 
         Hops (short turn inside another speaker's stretch; the hop's words in brackets): \(hops.count)
         \(hops.joined(separator: "\n"))
+
+        \(window)
         """
         try report.write(toFile: reportPath, atomically: true, encoding: .utf8)
         #expect(!turns.isEmpty)

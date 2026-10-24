@@ -144,6 +144,8 @@ nonisolated struct RenderSegmentKey: Encodable, Sendable {
     var masks: [String: String]
     var fontFingerprints: [String]
     var captionStyle: CaptionStyle
+    /// RenderSegmentCache.key encodes dictionary keys in sorted order.
+    var speakerCaptionStyles: [String: CaptionStyle] = [:]
     var settings: RenderSettings
     var encoder: [String]
     var burnIns: [RenderEngine.ClipOverlay]?

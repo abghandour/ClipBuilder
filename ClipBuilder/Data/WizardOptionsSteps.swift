@@ -53,6 +53,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var safeAreaOnly: Bool?
     var safeAreaPlatforms: [SocialPlatform]?
     var captionPosition: String?
+    var speakerCaptionPositions: [String: String]?
     var captionStyleID: String?
     var captionLanguage: String?
     var dubLanguage: String?
@@ -112,6 +113,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         case safeAreaOnly = "safe_area_only"
         case safeAreaPlatforms = "safe_area_platforms"
         case captionPosition
+        case speakerCaptionPositions
         case captionStyleID
         case captionLanguage
         case dubLanguage
@@ -207,6 +209,7 @@ nonisolated extension WizardOptions {
         result.safeAreaOnly = safeAreaOnly
         result.safeAreaPlatforms = safeAreaPlatforms
         result.captionPosition = captionPosition
+        result.speakerCaptionPositions = speakerCaptionPositions
         result.captionStyleID = captionStyleID
         result.captionLanguage = captionLanguage
         result.dubLanguage = dubLanguage
@@ -298,6 +301,7 @@ nonisolated extension WizardOptions {
         result.safeAreaOnly = step2.safeAreaOnly
         result.safeAreaPlatforms = step2.safeAreaPlatforms
         result.captionPosition = step2.captionPosition
+        result.speakerCaptionPositions = step2.speakerCaptionPositions
         result.captionStyleID = step2.captionStyleID
         result.captionLanguage = step2.captionLanguage
         result.dubLanguage = step2.dubLanguage

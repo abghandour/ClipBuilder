@@ -53,6 +53,7 @@ struct MiniTranscriptPickView: View {
 
     var body: some View {
         RangeReviewView(items: items, rows: rows, labels: transcript?.labels ?? [:],
+                        speakerSpans: transcript?.speakerSpans ?? [],
                         preferredTranslationLanguage: store.activeProfile.captionLanguages.first,
                         emptyTitle: "Pick a passage",
                         emptyMessage: "Select New pick, press a word in the transcript and drag, then press Add.",
@@ -62,8 +63,8 @@ struct MiniTranscriptPickView: View {
                         onDelete: { item in store.deleteMiniTranscriptPick(item.id.ownerID) },
                         onDeleteAll: { store.deleteAllMiniTranscriptPicks() },
                         spanSelection: true, playAll: true,
-                        transcriptAccessory: { item in
-                            // Add lives beside Follow / Translation once a passage is marked.
+                        trimAccessory: { item in
+                            // Add sits under the picture once a passage is marked.
                             guard item.isDraft, item.range.upperBound > item.range.lowerBound else { return nil }
                             return AnyView(addButton(item))
                         },

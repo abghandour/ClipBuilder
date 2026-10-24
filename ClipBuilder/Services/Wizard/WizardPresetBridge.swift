@@ -30,6 +30,7 @@ nonisolated enum WizardPresetBridge {
         fields["miniDubLanguage"] = settings.dubLanguage.map(JSONSetting.string) ?? .null
         fields["addCaptions"] = .bool(settings.captions)
         fields["captionPosition"] = settings.captionPosition.map(JSONSetting.string) ?? .null
+        fields["speakerCaptionPositions"] = settings.speakerCaptionPositions.map(JSONSetting.dictionaryValue) ?? .null
         fields["captionStyleID"] = settings.captionStyleID.map(JSONSetting.string) ?? .null
         fields["captionLanguage"] = settings.englishCaptions ? .string("en") : .null
         fields["includeIntroBumper"] = .bool(settings.introVideo)
@@ -88,6 +89,7 @@ nonisolated enum WizardPresetBridge {
         if let value = fields["dub"]?.bool { settings.dub = value }
         if let captions = fields["addCaptions"]?.bool { settings.captions = captions }
         if let value = fields["captionPosition"] { settings.captionPosition = value.string }
+        if let value = fields["speakerCaptionPositions"] { settings.speakerCaptionPositions = value.decodeValue() }
         if let value = fields["captionStyleID"] { settings.captionStyleID = value.string }
         if let language = fields["captionLanguage"] { settings.englishCaptions = language.string?.lowercased().hasPrefix("en") == true }
         if let intro = fields["includeIntroBumper"]?.bool { settings.introVideo = intro }

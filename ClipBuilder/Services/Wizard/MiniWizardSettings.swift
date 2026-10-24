@@ -15,6 +15,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var captions = false
     var englishCaptions = false
     var captionPosition: String?
+    var speakerCaptionPositions: [String: String]?
     var captionStyleID: String?
     var introVideo = false
     var outroVideo = false
@@ -73,7 +74,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     init() {}
 
     enum CodingKeys: String, CodingKey {
-        case quality, preset, cameraFocus, interviewZoom, interviewZoomMoves, interviewCuts, interviewPunchIn, captions, englishCaptions, captionPosition, captionStyleID
+        case quality, preset, cameraFocus, interviewZoom, interviewZoomMoves, interviewCuts, interviewPunchIn, captions, englishCaptions, captionPosition, speakerCaptionPositions, captionStyleID
         case introVideo, outroVideo, introBumper, outroBumper
         case safeAreaOnly, safeAreaPlatforms
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
@@ -97,6 +98,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         captions = try c.decodeIfPresent(Bool.self, forKey: .captions) ?? base.captions
         englishCaptions = try c.decodeIfPresent(Bool.self, forKey: .englishCaptions) ?? base.englishCaptions
         captionPosition = try c.decodeIfPresent(String.self, forKey: .captionPosition)
+        speakerCaptionPositions = try c.decodeIfPresent([String: String].self, forKey: .speakerCaptionPositions)
         captionStyleID = try c.decodeIfPresent(String.self, forKey: .captionStyleID)
         introVideo = try c.decodeIfPresent(Bool.self, forKey: .introVideo) ?? base.introVideo
         outroVideo = try c.decodeIfPresent(Bool.self, forKey: .outroVideo) ?? base.outroVideo
@@ -151,6 +153,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.podcastFraming = cameraFocus == WizardCameraFocus.original ? .original : .followSpeaker
         result.addCaptions = captions
         result.captionPosition = captionPosition
+        result.speakerCaptionPositions = speakerCaptionPositions
         result.captionStyleID = captionStyleID
         result.captionLanguage = englishCaptions ? "en" : nil
         result.dubLanguage = dub ? (dubLanguage ?? DubLanguageChoices.defaultLanguage) : nil
@@ -255,6 +258,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         if result.quality == .custom { result.quality = .balanced }
         if result.preset == .custom { result.preset = .portrait1080 }
         result.captionPosition = defaults.string(forKey: key(.captionPosition))
+        result.speakerCaptionPositions = defaults.dictionary(forKey: key(.speakerCaptionPositions)) as? [String: String]
         result.captionStyleID = defaults.string(forKey: key(.captionStyleID))
         result.nameTagContent = defaults.string(forKey: key(.nameTagContent))
         result.nameTagStyle = defaults.string(forKey: key(.nameTagStyle))
@@ -299,6 +303,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         defaults.set(quality.rawValue, forKey: key(.quality))
         defaults.set(preset.rawValue, forKey: key(.preset))
         defaults.set(captionPosition, forKey: key(.captionPosition))
+        defaults.set(speakerCaptionPositions, forKey: key(.speakerCaptionPositions))
         defaults.set(captionStyleID, forKey: key(.captionStyleID))
         defaults.set(nameTagContent, forKey: key(.nameTagContent))
         defaults.set(nameTagStyle, forKey: key(.nameTagStyle))

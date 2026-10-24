@@ -109,6 +109,10 @@ extension WizardView {
                     CaptionStylePicker(selection: captionChoice(\.captionStyleID), profile: store.activeProfile)
                 }
                 .formDependent()
+                CaptionSpeakerStylesEditor(people: eligibleSourcePeople, videoIDs: nil,
+                    runStyleID: captionStyleID, profile: store.activeProfile,
+                    positions: speakerPositionChoices, ordinals: captionOrdinals)
+                    .formDependent()
                 if !dubLanguage.isEmpty {
                     FormCaption("Captions follow the dub language (\(DubLanguageChoices.name(dubLanguage))).")
                         .formDependent()

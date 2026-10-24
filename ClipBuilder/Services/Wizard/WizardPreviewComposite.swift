@@ -51,6 +51,17 @@ nonisolated enum WizardPreviewComposite {
         var sourceSize = CGSize(width: 16, height: 9)
         var framing: Framing = .cover(face: nil)
         var framingWarning: String? = nil
+        var speakerTurns: [SpeakerTurn] = []
+        var speakerRows: [TranscriptRow] = []
+        var captionSegment: TranscriptSegment? = nil
+        var roster: [String: String] = [:]
+        var speakingPeople: Set<String> = []
+        /// Full-wizard source order; nil resolves from this recording's snapshot.
+        var captionOrdinals: [String: Int]? = nil
+
+        var resolvedCaptionOrdinals: [String: Int] {
+            captionOrdinals ?? CaptionSpeakerOrder.ordinals(turns: speakerTurns, rows: speakerRows, roster: Array(roster.keys))
+        }
     }
 
     struct Input: Sendable {
@@ -59,6 +70,10 @@ nonisolated enum WizardPreviewComposite {
         var profile: BrandProfile
         var templates: [OverlayTemplate]
         var frameData: Data
+        /// People whose captions the preview draws. nil draws the moment's
+        /// speaker only (no chips); a set draws exactly those people, with the
+        /// moment's speaker on top when listed. Speech with no person always shows.
+        var shownSpeakers: Set<String>? = nil
     }
 
     enum PreviewError: LocalizedError {
@@ -75,9 +90,16 @@ nonisolated enum WizardPreviewComposite {
     /// Where the draggable elements landed, in canvas pixels from the top
     /// left, so the preview can offer them as handles.
     struct Layout: Sendable, Equatable {
-        var caption: CGRect?
+        var captions: [CaptionBox] = []
         var tags: [CGRect] = []
         var overlay: CGRect?
+    }
+
+    struct CaptionBox: Sendable, Equatable {
+        var rect: CGRect
+        var personKey: String?
+        var name: String
+        var isTalking: Bool
     }
 
     static func render(_ input: Input) async throws -> CGImage {
@@ -146,33 +168,77 @@ nonisolated enum WizardPreviewComposite {
             }
             let style = input.profile.captionStyle(id: options.captionStyleID)
             if options.addCaptions {
-                let renderer = CaptionRenderer(videoWidth: settings.width, videoHeight: settings.height, style: style,
+                let base = CaptionRenderer(videoWidth: settings.width, videoHeight: settings.height, style: style,
                     safeArea: options.resolvedSafeArea, safeAreaOnly: options.safeAreaOnly == true)
-                let text = input.scene.captionText?.trimmingCharacters(in: .whitespacesAndNewlines)
-                let start = input.scene.words?.first?.start ?? 0
-                let end = max(start + 3, input.scene.words?.last?.end ?? 3)
-                let segment = TranscriptSegment(start: start, end: end,
-                    text: text.flatMap { $0.isEmpty ? nil : $0 } ?? CaptionPreviewImage.sampleText, words: input.scene.words)
-                if let page = renderer.pages(for: segment).first {
+                let renderers = CaptionRendererSet(base: base,
+                    speakerStyles: input.profile.speakerCaptionStyles(runStyleID: options.captionStyleID))
+                let moment = TranscriptSegment(start: input.scene.time, end: input.scene.time.nextUp, text: "")
+                let talking = CaptionSpeakerColors.personKey(CaptionSpeakerColors.speakerKey(for: moment,
+                    turns: input.scene.speakerTurns, rows: input.scene.speakerRows))
+                let ordinals = input.scene.resolvedCaptionOrdinals
+                func drawCaption(person: String?, isTalking: Bool) throws {
+                    let styleID = person.flatMap { renderers.perSpeaker[$0] == nil ? nil : $0 }
+                    let renderer = renderers.renderer(styleID: styleID)
+                    var colorMoment = moment
+                    if !isTalking, let person {
+                        let times = (input.scene.speakerTurns.map(\.start) + input.scene.speakerRows.map(\.startTime)).sorted()
+                        if let time = times.first(where: { time in
+                            CaptionSpeakerColors.personKey(CaptionSpeakerColors.speakerKey(
+                                for: .init(start: time, end: time.nextUp, text: ""),
+                                turns: input.scene.speakerTurns, rows: input.scene.speakerRows)) == person
+                        }) { colorMoment = .init(start: time, end: time.nextUp, text: "") }
+                    }
+                    let color = renderer.style.resolvedSpeakerColors
+                        ? CaptionSpeakerColors.color(for: colorMoment, turns: input.scene.speakerTurns, rows: input.scene.speakerRows) : nil
+                    let text = input.scene.captionText?.trimmingCharacters(in: .whitespacesAndNewlines)
+                    let start = input.scene.words?.first?.start ?? 0
+                    let end = max(start + 3, input.scene.words?.last?.end ?? 3)
+                    let segment = isTalking
+                        ? (input.scene.captionSegment ?? TranscriptSegment(start: start, end: end,
+                            text: text.flatMap { $0.isEmpty ? nil : $0 } ?? CaptionPreviewImage.sampleText, words: input.scene.words))
+                        : TranscriptSegment(start: 0, end: 3, text: CaptionPreviewImage.sampleText)
+                    let pages = renderer.pages(for: segment)
+                    let selectedPage = isTalking
+                        ? pages.first(where: { $0.start <= input.scene.time && input.scene.time < $0.end }) ?? pages.first
+                        : pages.first
+                    guard let page = selectedPage else { return }
                     let middleWord = page.text.split(whereSeparator: \.isWhitespace).count / 2
-                    let position = options.captionPositionOverride ?? "auto"
+                    let position = CaptionSpeakerOrder.position(forPerson: person, ordinals: ordinals,
+                        positions: options.speakerCaptionPositions, runPosition: options.captionPositionOverride ?? "auto")
                     // The production plan supplies emphasis, emoji and word reveal as well as highlighting.
                     let plan = try CaptionOverlayPlan.plan(pages: [.init(caption: page, position: position,
-                        language: options.effectiveCaptionLanguage ?? "")], style: style)
+                        language: options.effectiveCaptionLanguage ?? "", textColor: color, styleID: styleID)],
+                        style: style, styles: renderers.styles)
                     let middleTime = (page.start + page.end) / 2
-                    if let overlay = plan.overlays.last(where: { $0.raster.activeIndex == middleWord })
+                    let current = isTalking ? plan.overlays.first(where: {
+                        $0.start <= input.scene.time && input.scene.time < $0.end
+                    }) : nil
+                    if let overlay = current ?? plan.overlays.last(where: { $0.raster.activeIndex == middleWord })
                         ?? plan.overlays.first(where: { $0.start <= middleTime && middleTime < $0.end })
                         ?? plan.overlays.first {
                         let raster = overlay.raster
                         let caption = try renderer.render(text: raster.text, activeIndex: raster.activeIndex,
                             emphasis: raster.emphasis, textColor: raster.textColor, frame: raster.frame, to: scratch)
                         let origin = renderer.position(for: caption, positionOverride: position)
-                        layout.caption = CGRect(x: origin.x, y: origin.y, width: caption.width, height: caption.height)
+                        layout.captions.append(CaptionBox(
+                            rect: CGRect(x: origin.x, y: origin.y, width: caption.width, height: caption.height),
+                            personKey: person, name: person.map { input.scene.roster[$0] ?? $0 } ?? "Caption", isTalking: isTalking))
                         try draw(caption.pngURL, in: CGRect(x: origin.x, y: settings.height - origin.y - caption.height,
                                                            width: caption.width, height: caption.height))
                     }
                 }
+                for person in (input.shownSpeakers ?? []).sorted() where person != talking {
+                    let hasPosition = ordinals[person].flatMap { options.speakerCaptionPositions?[CaptionSpeakerOrder.slot($0)] } != nil
+                    if renderers.perSpeaker[person] != nil || hasPosition || input.scene.roster[person] != nil {
+                        try drawCaption(person: person, isTalking: false)
+                    }
+                }
+                // The current speaker sits above the samples; a chip can hide them.
+                if talking == nil || input.shownSpeakers?.contains(talking!) != false {
+                    try drawCaption(person: talking, isTalking: true)
+                }
             }
+
             if options.usesNameTags {
                 let geometry = tagGeometry(scene: input.scene, canvas: canvas.size)
                 let tagStyle = input.profile.tagStyle(id: options.nameTagStyleID)

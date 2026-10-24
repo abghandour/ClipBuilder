@@ -21,4 +21,5 @@ nonisolated struct MiniWizardTranscript: Sendable {
     var rows: [TranscriptRow]
     var labels: [Int64: String]
     var picks: [TranscriptPick]
+    var speakerSpans: [TranscriptQATrim.SpeakerSpan] = []
 }

@@ -7,6 +7,118 @@ import UniformTypeIdentifiers
 
 @Suite("Wizard preview composite")
 struct WizardPreviewCompositeTests {
+    @Test func namedClusterTurnsUseThePersonsCaptionStyleAndMarkerName() async throws {
+        let temp = try TempDatabase()
+        let fixture = try await Fixtures.personCorrection(in: temp)
+        let raw = try SQLiteConnection(path: temp.path.path)
+        try raw.execute("UPDATE speaker_turns SET person_key = NULL WHERE video_id = ?", [.integer(fixture.video.id)])
+        try raw.execute("UPDATE transcripts SET speaker_key = NULL WHERE video_id = ?", [.integer(fixture.video.id)])
+        let clusterTurns = try await temp.database.fetchSpeakerTurns(videoID: fixture.video.id)
+        #expect(clusterTurns.allSatisfy { $0.personKey == nil })
+        let evidence = await CaptionSpeakerEvidence.load(database: temp.database, videoID: fixture.video.id)
+
+        var input = try input()
+        input.options.addCaptions = true
+        input.options.nameTags = false
+        input.options.captionPosition = nil
+        input.scene.time = 1
+        input.scene.captionSegment = .init(start: 0, end: 4, text: "A strong moment")
+        input.scene.speakerTurns = evidence.turns
+        input.scene.speakerRows = evidence.rows
+        input.scene.roster = evidence.names
+        var speakerStyle = input.profile.captions
+        speakerStyle.color = "#ff0000"
+        speakerStyle.position = "top"
+        let named = NamedCaptionStyle(name: "Guest", style: speakerStyle)
+        input.profile.captionStyles = [named]
+        input.profile.personCaptionStyles = [fixture.from.key: named.id.uuidString]
+        let base = try WizardPreviewComposite.croppedFrame(input)
+        let rendered = try WizardPreviewComposite.renderWithLayout(input, baseFrame: base)
+        let marker = try #require(rendered.layout.captions.first)
+        #expect(rendered.layout.captions.count == 1)
+        #expect(marker.personKey == fixture.from.key)
+        #expect(marker.name == fixture.from.displayName)
+        #expect(marker.isTalking)
+
+        // The named speaker renders identically to selecting their style for the run.
+        var expected = input
+        expected.profile.personCaptionStyles = nil
+        expected.profile.captions = speakerStyle
+        let direct = try WizardPreviewComposite.renderWithLayout(expected, baseFrame: base)
+        let canvas = CGRect(x: 0, y: 0, width: 640, height: 360)
+        #expect(try changedPixels(rendered.image, direct.image, in: canvas) == 0)
+        #expect(rendered.layout == direct.layout)
+        input.scene.speakerTurns = clusterTurns
+        let unnamed = try WizardPreviewComposite.renderWithLayout(input, baseFrame: base)
+        #expect(unnamed.layout.captions.first?.name == "Caption")
+        #expect(try changedPixels(rendered.image, unnamed.image, in: canvas) > 100)
+    }
+
+    @Test func previewMomentUsesSpeakerStyleAndMatchesDirectCaptionRender() throws {
+        var input = try input()
+        input.options.addCaptions = true
+        input.options.nameTags = false
+        input.options.captionPosition = nil
+        input.scene.time = 5
+        input.scene.person = PersonRecord(id: 1, key: "host", name: "Host", descriptor: "")
+        input.scene.captionText = "A strong moment"
+        input.scene.captionSegment = .init(start: 4, end: 8, text: "A strong moment")
+        input.scene.speakerTurns = [
+            .init(videoID: 1, start: 0, end: 4, cluster: 0, confidence: 1, personKey: "host"),
+            .init(videoID: 1, start: 4, end: 8, cluster: 1, confidence: 1, personKey: "ana")]
+        input.profile.captions = CaptionStyle()
+        var speakerStyle = input.profile.captions
+        speakerStyle.color = "#ff0000"
+        speakerStyle.position = "top"
+        let named = NamedCaptionStyle(name: "Ana", style: speakerStyle)
+        input.profile.captionStyles = [named]
+        input.profile.personCaptionStyles = ["ana": named.id.uuidString]
+        let base = try WizardPreviewComposite.croppedFrame(input)
+        let rendered = try WizardPreviewComposite.renderWithLayout(input, baseFrame: base)
+
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let renderer = CaptionRenderer(videoWidth: 640, videoHeight: 360, style: speakerStyle,
+            safeArea: input.options.resolvedSafeArea, safeAreaOnly: input.options.safeAreaOnly == true)
+        let caption = try renderer.render(text: "A strong moment", to: folder)
+        let origin = renderer.position(for: caption, positionOverride: "auto")
+        let source = try #require(CGImageSourceCreateWithURL(caption.pngURL as CFURL, nil))
+        let png = try #require(CGImageSourceCreateImageAtIndex(source, 0, nil))
+        let context = try #require(CGContext(data: nil, width: 640, height: 360, bitsPerComponent: 8,
+            bytesPerRow: 0, space: CGColorSpaceCreateDeviceRGB(),
+            bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+        context.interpolationQuality = .high
+        let canvas = CGRect(x: 0, y: 0, width: 640, height: 360)
+        context.draw(base, in: canvas)
+        context.draw(png, in: CGRect(x: origin.x, y: 360 - origin.y - caption.height,
+                                    width: caption.width, height: caption.height))
+        let expected = try #require(context.makeImage())
+        #expect(try changedPixels(rendered.image, expected, in: canvas) == 0)
+        #expect(rendered.layout.captions.first?.rect == CGRect(x: origin.x, y: origin.y, width: caption.width, height: caption.height))
+
+        var plain = input
+        plain.profile.personCaptionStyles = nil
+        let fallback = try WizardPreviewComposite.render(plain, baseFrame: base)
+        #expect(try changedPixels(rendered.image, fallback, in: canvas) > 100)
+        input.scene.speakerRows = [.init(id: 1, videoID: 1, language: "en", isTranslation: false,
+            startTime: 4, endTime: 8, text: "A strong moment", speakerKey: "")]
+        #expect(try changedPixels(WizardPreviewComposite.render(input, baseFrame: base), fallback, in: canvas) == 0)
+    }
+
+    @Test func personCaptionChoicesInvalidatePreviewKeyWithoutAProfileGenerationChange() {
+        let scene = Fixtures.scene()
+        let options = WizardOptions()
+        var profile = Fixtures.brand()
+        let original = PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: [])
+        let named = NamedCaptionStyle(name: "Speaker", style: CaptionStyle())
+        profile.personCaptionStyles = ["ana": named.id.uuidString]
+        let changed = PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: [])
+        #expect(changed != original)
+        profile.personCaptionStyles = nil
+        #expect(PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: []) == original)
+    }
+
     @Test func fallbackTagPersonPrefersThisVideoRosterThenAnyNamedPerson() {
         let roster = [VideoPersonRecord(videoID: 1, personID: 2, key: "guest", name: "Guest",
             descriptor: "", portraitAt: 0, portraitBox: nil, vip: false)]
@@ -397,7 +509,7 @@ struct WizardPreviewCompositeTests {
         input.options.fixedOverlayPosition = CustomPosition(x: 0.5, y: 0.6).string
         let base = try await WizardPreviewComposite.prepareBase(input)
         let rendered = try WizardPreviewComposite.renderWithLayout(input, baseFrame: base.image)
-        let caption = try #require(rendered.layout.caption)
+        let caption = try #require(rendered.layout.captions.first?.rect)
         #expect(abs(caption.midX - 320) <= 2 && abs(caption.midY - 90) <= 2, "caption centred on the dragged point")
         let tag = try #require(rendered.layout.tags.first)
         #expect(abs(tag.midX - 320) <= 2, "tag centred on the dragged x")
@@ -828,4 +940,82 @@ extension WizardPreviewCompositeTests {
     }
 
     private enum TestError: Error { case expectedCells }
+}
+
+extension WizardPreviewCompositeTests {
+    @Test func shownSpeakersHaveIndependentPositionsAndTalkingCaptionIsOnTop() throws {
+        var input = try input()
+        input.options.addCaptions = true
+        input.options.nameTags = false
+        input.options.captionPosition = "bottom"
+        input.options.speakerCaptionPositions = ["speaker1": "top", "speaker2": "bottom"]
+        input.scene.time = 1
+        input.scene.speakerTurns = [
+            .init(videoID: 1, start: 0, end: 2, cluster: 0, confidence: 1, personKey: "ana"),
+            .init(videoID: 1, start: 2, end: 4, cluster: 1, confidence: 1, personKey: "bob")]
+        input.scene.roster = ["ana": "Ana", "bob": "Bob"]
+        input.shownSpeakers = ["ana", "bob", "missing"]
+        let base = try WizardPreviewComposite.croppedFrame(input)
+        let result = try WizardPreviewComposite.renderWithLayout(input, baseFrame: base)
+        #expect(result.layout.captions.count == 2)
+        let ana = try #require(result.layout.captions.first { $0.personKey == "ana" })
+        let bob = try #require(result.layout.captions.first { $0.personKey == "bob" })
+        #expect(ana.isTalking && !bob.isTalking)
+        #expect(ana.name == "Ana" && bob.name == "Bob")
+        #expect(ana.rect.midY < bob.rect.midY)
+        #expect(result.layout.captions.last?.personKey == "ana")
+        input.shownSpeakers = nil
+        let single = try WizardPreviewComposite.renderWithLayout(input, baseFrame: base)
+        #expect(single.layout.captions == [ana])
+        // Chips decide: an unticked talker is hidden, an empty set hides every person.
+        input.shownSpeakers = ["bob"]
+        #expect(try WizardPreviewComposite.renderWithLayout(input, baseFrame: base).layout.captions == [bob])
+        input.shownSpeakers = []
+        #expect(try WizardPreviewComposite.renderWithLayout(input, baseFrame: base).layout.captions.isEmpty)
+        input.shownSpeakers = ["ana", "bob"]
+        input.options.speakerCaptionPositions = ["speaker1": "middle", "speaker2": "middle"]
+        let overlapping = try WizardPreviewComposite.renderWithLayout(input, baseFrame: base)
+        #expect(overlapping.layout.captions.count == 2)
+        #expect(overlapping.layout.captions.last?.personKey == "ana")
+    }
+
+    @Test func previewUsesWholeRunOrdinalsAndUnknownSpeechUsesRunCaption() throws {
+        var input = try input()
+        input.options.addCaptions = true
+        input.options.nameTags = false
+        input.options.captionPosition = "bottom"
+        input.options.speakerCaptionPositions = ["speaker1": "bottom", "speaker3": "top"]
+        input.scene.speakerTurns = [.init(videoID: 2, start: 0, end: 3, cluster: 0, confidence: 1, personKey: "ana")]
+        input.scene.roster = ["ana": "Ana"]
+        input.scene.captionOrdinals = ["earlier": 1, "another": 2, "ana": 3]
+        let base = try WizardPreviewComposite.croppedFrame(input)
+        let mapped = try WizardPreviewComposite.renderWithLayout(input, baseFrame: base)
+        input.scene.captionOrdinals = nil
+        let local = try WizardPreviewComposite.renderWithLayout(input, baseFrame: base)
+        let mappedBox = try #require(mapped.layout.captions.first)
+        let localBox = try #require(local.layout.captions.first)
+        #expect(mappedBox.rect.midY < localBox.rect.midY)
+        input.scene.speakerRows = [.init(id: 1, videoID: 2, language: "en", isTranslation: false,
+            startTime: 0, endTime: 3, text: "Unknown", speakerKey: "")]
+        let unknown = try WizardPreviewComposite.renderWithLayout(input, baseFrame: base)
+        #expect(unknown.layout.captions.count == 1)
+        #expect(unknown.layout.captions.first?.personKey == nil)
+        #expect(unknown.layout.captions.first?.name == "Caption")
+    }
+
+    @Test func positionsShownSpeakersAndSourceOrdinalsInvalidatePreviewCache() {
+        let scene = Fixtures.scene(), profile = Fixtures.brand()
+        var options = WizardOptions()
+        let original = PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: [])
+        options.speakerCaptionPositions = ["speaker1": "top"]
+        let positioned = PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: [])
+        #expect(original != positioned)
+        let shown = PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0,
+            overlayTexts: [], shownSpeakers: ["ana", "bob"])
+        #expect(shown != positioned)
+        #expect(shown == PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0,
+            overlayTexts: [], shownSpeakers: ["bob", "ana"]))
+        #expect(shown != PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0,
+            overlayTexts: [], shownSpeakers: ["ana", "bob"], captionOrdinals: ["ana": 2, "bob": 1]))
+    }
 }

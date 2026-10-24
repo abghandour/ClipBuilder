@@ -9,6 +9,7 @@ struct WizardFootageReviewView: View {
     let options: WizardOptions
     @State private var rows: [TranscriptRow] = []
     @State private var labels: [Int64: String] = [:]
+    @State private var speakerSpans: [TranscriptQATrim.SpeakerSpan] = []
     @State private var transcriptError: String?
     @State private var notes: [Int64: String] = [:]
     @State private var selectedTakeID: Int64?
@@ -44,7 +45,7 @@ struct WizardFootageReviewView: View {
     }
 
     var body: some View {
-        RangeReviewView(items: items, rows: rows, labels: labels, kept: kept,
+        RangeReviewView(items: items, rows: rows, labels: labels, speakerSpans: speakerSpans, kept: kept,
                         preferredTranslationLanguage: store.activeProfile.captionLanguages.first,
                         selection: selection, emptyTitle: "Select a take",
                         emptyMessage: "Choose a take to watch it and adjust its cuts.",
@@ -130,10 +131,12 @@ struct WizardFootageReviewView: View {
         let ids = videoIDs
         rows = []
         labels = [:]
+        speakerSpans = []
         transcriptError = nil
         do {
             var loadedRows: [TranscriptRow] = []
             var loadedLabels: [Int64: String] = [:]
+            var loadedSpans: [TranscriptQATrim.SpeakerSpan] = []
             for id in ids {
                 let videoRows = try await database.fetchTranscripts(videoID: id)
                 let speakers = await store.speakerTurns(videoID: id)
@@ -158,9 +161,11 @@ struct WizardFootageReviewView: View {
                 guard generation == store.profileGeneration else { return }
                 loadedRows.append(contentsOf: videoRows)
                 loadedLabels.merge(videoLabels, uniquingKeysWith: { first, _ in first })
+                loadedSpans += TranscriptSpeakers.spans(turns: speakers.turns, roster: speakers.roster)
             }
             rows = loadedRows
             labels = loadedLabels
+            speakerSpans = loadedSpans
         } catch is CancellationError {
             return
         } catch {

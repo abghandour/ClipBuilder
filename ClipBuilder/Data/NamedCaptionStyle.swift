@@ -18,6 +18,27 @@ nonisolated extension BrandProfile {
               let named = captionStyles?.first(where: { $0.id == uuid }) else { return captions }
         return named.style
     }
+
+    func captionStyle(forPerson key: String, runStyleID: String?) -> CaptionStyle {
+        guard let id = personCaptionStyles?[key], let uuid = UUID(uuidString: id),
+              let named = captionStyles?.first(where: { $0.id == uuid }) else {
+            return captionStyle(id: runStyleID)
+        }
+        return named.style
+    }
+
+    /// Keep only valid overrides that change the run's appearance.
+    func speakerCaptionStyles(runStyleID: String?) -> [String: CaptionStyle] {
+        let runStyle = captionStyle(id: runStyleID)
+        var styles: [String: CaptionStyle] = [:]
+        for (key, id) in personCaptionStyles ?? [:] {
+            guard let uuid = UUID(uuidString: id),
+                  let named = captionStyles?.first(where: { $0.id == uuid }),
+                  named.style != runStyle else { continue }
+            styles[key] = named.style
+        }
+        return styles
+    }
 }
 
 nonisolated extension WizardOptions {

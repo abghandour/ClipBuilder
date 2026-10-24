@@ -47,6 +47,7 @@ struct RenderSegmentCacheTests {
             { $0.captions[0].end = 1 },
             { $0.captions[0].y = 200 },
             { $0.captionStyle.font = "mono" },
+            { $0.speakerCaptionStyles = ["ana": CaptionStyle()] },
             { $0.fontFingerprints = ["font-v2"] },
             { $0.settings.preset = .square1080 },
             { $0.settings.customCRF = 24 },
@@ -66,6 +67,21 @@ struct RenderSegmentCacheTests {
             change(&changed)
             #expect(try RenderSegmentCache.key(changed) != key, "input mutation \(index) must invalidate")
         }
+    }
+
+    @Test func speakerStylesInvalidateKeysAndEncodeInSortedOrder() throws {
+        var red = CaptionStyle()
+        red.color = "#ff0000"
+        var input = RenderSegmentKey(start: 0, duration: 3, clips: [], captions: [], overlays: [],
+            masks: [:], fontFingerprints: [], captionStyle: CaptionStyle(),
+            speakerCaptionStyles: ["ana": red, "bob": CaptionStyle()], settings: RenderSettings(), encoder: [])
+        let key = try RenderSegmentCache.key(input)
+        input.speakerCaptionStyles = ["bob": CaptionStyle(), "ana": red]
+        #expect(try RenderSegmentCache.key(input) == key)
+        input.speakerCaptionStyles["ana"]?.position = "top"
+        #expect(try RenderSegmentCache.key(input) != key)
+        input.speakerCaptionStyles = [:]
+        #expect(try RenderSegmentCache.key(input) != key)
     }
 
     @Test("restore refreshes LRU order, eviction persists across cache instances")

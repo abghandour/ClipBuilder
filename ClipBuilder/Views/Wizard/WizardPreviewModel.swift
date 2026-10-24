@@ -15,22 +15,29 @@ nonisolated struct PreviewKey: Hashable, Sendable {
     var profileName: String
     var captions: CaptionStyle
     var captionStyles: [NamedCaptionStyle]?
+    var personCaptionStyles: [String: String]?
     var tagStyle: TagStyle?
     var tagStyles: [NamedTagStyle]?
     var logoPath: String
     var profileRenderSettings: RenderSettings
     var contentRevision: Int
     var captionLanguage: String?
+    var shownSpeakers: Set<String>
+    var captionOrdinals: [String: Int]?
     var look: String
     var lookIntensity: Double?
 
     init(options: WizardOptions, scene: SceneRecord, profile: BrandProfile,
-         contentRevision: Int, overlayTexts: [String], time: Double? = nil) {
+         contentRevision: Int, overlayTexts: [String], time: Double? = nil,
+         shownSpeakers: Set<String> = [], captionOrdinals: [String: Int]? = nil) {
         var visual = MiniWizardSettings()
         visual.preset = options.renderSettings.preset
         visual.captions = options.addCaptions
         visual.englishCaptions = options.captionLanguage == "en"
         visual.captionPosition = options.captionPositionOverride
+        visual.speakerCaptionPositions = options.speakerCaptionPositions
+        self.shownSpeakers = shownSpeakers
+        self.captionOrdinals = captionOrdinals
         visual.captionStyleID = options.captionStyleID
         visual.nameTags = options.usesNameTags
         visual.nameTagContent = options.nameTagContent
@@ -67,6 +74,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
         profileName = profile.profileName
         captions = profile.captions
         captionStyles = profile.captionStyles
+        personCaptionStyles = profile.personCaptionStyles
         tagStyle = profile.tagStyle
         tagStyles = profile.tagStyles
         logoPath = profile.logoPath
@@ -111,7 +119,10 @@ nonisolated struct PreviewKey: Hashable, Sendable {
         var roster: [VideoPersonRecord]
         var video: VideoRecord?
         var turns: [SpeakerTurn]
+        var speakerRows: [TranscriptRow]
         var tagText: [String: String]
+        var captionOrdinals: [String: Int]
+        var speakingPeople: Set<String>
     }
     @ObservationIgnored private var gradedFrames: [(key: GradeKey, image: CGImage)] = []
     private let thumbnails: ThumbnailService
@@ -186,13 +197,20 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             } else {
                 let segments = (try? await database.transcriptSegments(videoID: record.videoID,
                     start: 0, end: max(record.videoDuration, record.endTime), language: language)) ?? []
-                let roster = (try? await database.fetchVideoPeople(videoID: record.videoID)) ?? []
                 let video = try? await database.video(id: record.videoID)
                 let transcription = try? await database.activeTranscription(videoID: record.videoID).key
-                let turns = (try? await database.fetchSpeakerTurns(videoID: record.videoID, transcriptionKey: transcription)) ?? []
+                let evidence = await CaptionSpeakerEvidence.load(database: database, videoID: record.videoID,
+                    transcriptionKey: transcription)
                 let tagText = (try? await database.tagText(field: profile.tagStyle(id: tagStyleID).description.field)) ?? [:]
-                guard sceneRequestID == id else { return }
-                let fresh = RecordingSnapshot(key: key, segments: segments, roster: roster, video: video, turns: turns, tagText: tagText)
+                let captionOrder = await Task.detached {
+                    let speaking = CaptionSpeakerOrder.ordinals(turns: evidence.turns, rows: evidence.rows, roster: [])
+                    let all = CaptionSpeakerOrder.ordinals(turns: evidence.turns, rows: evidence.rows, roster: evidence.rosterKeys)
+                    return (all, Set(speaking.keys))
+                }.value
+                guard sceneRequestID == id, !Task.isCancelled else { return }
+                let fresh = RecordingSnapshot(key: key, segments: segments, roster: evidence.roster, video: video,
+                    turns: evidence.turns, speakerRows: evidence.rows, tagText: tagText,
+                    captionOrdinals: captionOrder.0, speakingPeople: captionOrder.1)
                 snapshot = fresh
                 loaded = fresh
             }
@@ -237,6 +255,12 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             try Task.checkCancellation()
             var scene = WizardPreviewComposite.Scene(videoURL: record.videoURL, time: time,
                 faceRect: face, person: person, captionText: segment?.text, words: segment?.words)
+            scene.roster = Dictionary(roster.map { ($0.key, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+            scene.speakerTurns = turns
+            scene.speakerRows = snapshotForWorker?.speakerRows ?? []
+            scene.captionSegment = segment
+            scene.speakingPeople = snapshotForWorker?.speakingPeople ?? []
+            scene.captionOrdinals = snapshotForWorker?.captionOrdinals ?? [:]
             scene.cameraPath = original.centerStagePath
             scene.contentIsWide = record.wide
             if let video, video.width > 0, video.height > 0 { scene.sourceSize = CGSize(width: video.width, height: video.height) }
@@ -253,6 +277,11 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             fingerprint.combine(scene.framingWarning)
             fingerprint.combine(scene.captionText)
             fingerprint.combine(try JSONEncoder().encode(scene.words))
+            fingerprint.combine(scene.roster)
+            fingerprint.combine(scene.speakerTurns)
+            fingerprint.combine(scene.speakerRows)
+            fingerprint.combine(scene.captionSegment?.start)
+            fingerprint.combine(scene.captionSegment?.end)
             fingerprint.combine(face?.minX)
             fingerprint.combine(face?.minY)
             fingerprint.combine(face?.width)

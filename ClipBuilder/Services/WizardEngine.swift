@@ -26,7 +26,7 @@ nonisolated struct WizardOptions: Codable, Sendable {
         case safeAreaOnly = "safe_area_only"
         case safeAreaPlatforms = "safe_area_platforms"
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
-        case captionPosition, captionStyleID, nameTagsOnly, workflow, critiqueTargetScore, critiqueMaxVersions, musicTrack, overlayStyle, overlayAnimation, overlayPlacement
+        case captionPosition, speakerCaptionPositions, captionStyleID, nameTagsOnly, workflow, critiqueTargetScore, critiqueMaxVersions, musicTrack, overlayStyle, overlayAnimation, overlayPlacement
         case highlightFraming, interviewZoom, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
         case fixedOverlayPosition
         case interviewZoomMoves
@@ -47,6 +47,7 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var renderSettings = RenderSettings()
     var pacing = EditPacing()
     var captionPosition: String?
+    var speakerCaptionPositions: [String: String]?
     var captionStyleID: String?
     var captionLanguage: String?
     var dubLanguage: String?
@@ -3935,12 +3936,24 @@ actor WizardEngine {
                 return owner.videoFile == job.scene.videoPath && !owner.muted
             })
         })
+        var captionEvidence = CaptionSpeakerEvidence()
+        if options.addCaptions, options.speakerCaptionPositions?.isEmpty == false {
+            let sourceScenes = try await database.fetchScenes(projectID: options.projectID,
+                scope: options.selectedRunIDs.isEmpty && !options.sourceSceneSelection ? .active : .history,
+                includeExcluded: false)
+            let sourceIDs = CaptionSpeakerOrder.sourceVideoIDs(scenes: sourceScenes, options: options)
+            let videoIDs = Set(sourceIDs).union(sceneMap.values.map(\.videoID)).sorted()
+            captionEvidence = await CaptionSpeakerEvidence.load(database: database, videoIDs: videoIDs)
+            try Task.checkCancellation()
+        }
+        let captionOrdinals = CaptionSpeakerOrder.ordinals(turns: captionEvidence.turns,
+            rows: captionEvidence.rows, roster: captionEvidence.rosterKeys)
         let extracted = try await WizardTiming.measure("extract clips", emit: emit) {
             try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job in
                 try await self.extractPlannedClip(job.clip, index: job.index, of: clipCount,
                                                   scene: job.scene, sceneMap: sceneMap, options: options,
                                                   dubLines: dubLinesByJob[job.index] ?? [],
-                                                  captionStyle: captionStyle, captionFallbacks: captionFallbacks,
+                                                  captionStyle: captionStyle, captionFallbacks: captionFallbacks, captionOrdinals: captionOrdinals,
                                                   brandOverlays: brandOverlayFiles, topOverlays: clipWatermark,
                                                   podcastDocument: podcastCuts[job.index], nameTagPeople: people, tagText: tagText, profile: profile,
                                                   database: database, scratch: scratch,
@@ -4094,6 +4107,7 @@ actor WizardEngine {
                                     scene: SceneRecord, sceneMap: [Int64: SceneRecord] = [:],
                                     options: WizardOptions, dubLines: [DubLine] = [],
                                     captionStyle: CaptionStyle, captionFallbacks: WizardCaptionFallbackLog,
+                                    captionOrdinals: [String: Int] = [:],
                                     brandOverlays: [URL] = [], topOverlays: [RenderEngine.ClipOverlay] = [],
                                     podcastDocument: TimelineDocument? = nil, nameTagPeople: [PersonRecord] = [], tagText: [String: String], profile: BrandProfile,
                                     database: Database, scratch: URL,
@@ -4159,6 +4173,8 @@ actor WizardEngine {
                                            videoHeight: RenderEngine.outputHeight,
                                            style: captionStyle, safeArea: options.resolvedSafeArea,
                                            safeAreaOnly: options.safeAreaOnly == true)
+            let renderers = CaptionRendererSet(base: renderer,
+                speakerStyles: profile.speakerCaptionStyles(runStyleID: options.captionStyleID))
             let captionSpeed = podcastDocument == nil ? clip.speed : 1
             let dubbed = DubPlanning.captionSegments(lines: dubLines, sourceStart: clip.start, sourceEnd: clip.end,
                                                     speed: captionSpeed)
@@ -4175,25 +4191,32 @@ actor WizardEngine {
                 emit("Captions: could not read \(scene.videoFilename) (\(error)) — skipping captions")
                 sourceSegments = []
             } }
-            // Speaker colours are decoration: a failed read leaves the captions uncoloured.
-            let turns = captionStyle.resolvedSpeakerColors ? ((try? await database.fetchSpeakerTurns(videoID: scene.videoID)) ?? []) : []
-            let speakerRows = captionStyle.resolvedSpeakerColors ? ((try? await database.fetchTranscripts(videoID: scene.videoID)) ?? []) : []
+            // Missing speaker evidence falls back to the run style.
+            let needsSpeakers = captionStyle.resolvedSpeakerColors || renderers.usesSpeakers
+                || options.speakerCaptionPositions?.isEmpty == false
+            let evidence = needsSpeakers
+                ? await CaptionSpeakerEvidence.load(database: database, videoID: scene.videoID)
+                : CaptionSpeakerEvidence()
             try Task.checkCancellation()
-            let pages = CaptionOverlayPlan.pages(segments: sourceSegments, renderer: renderer,
+            let pages = CaptionOverlayPlan.pages(segments: sourceSegments, renderers: renderers,
                 sourceStart: clip.start, speed: captionSpeed, duration: duration,
                 position: options.captionPositionOverride ?? "auto", language: options.effectiveCaptionLanguage ?? "",
-                speakerTurns: turns, speakerRows: speakerRows)
-            let captionPlan = try CaptionOverlayPlan.plan(pages: pages, style: captionStyle)
+                speakerTurns: evidence.turns, speakerRows: evidence.rows, speakerPositions: { person in
+                    CaptionSpeakerOrder.position(forPerson: person, ordinals: captionOrdinals,
+                        positions: options.speakerCaptionPositions, runPosition: options.captionPositionOverride ?? "auto")
+                })
+            let captionPlan = try CaptionOverlayPlan.plan(pages: pages, style: captionStyle, styles: renderers.styles)
             if captionPlan.usedRevealFallback { emit("Captions: input limit reached; simplified word reveal or motion for this clip") }
             if captionPlan.usedPageFallback { emit("Captions: over 400 inputs; using static page overlays for this clip") }
-            let cache = CaptionPNGCache(renderer: renderer, directory: scratch)
+            let cache = CaptionPNGCache(renderers: renderers, directory: scratch)
             for overlay in captionPlan.overlays {
                 // One caption that fails to rasterize is skipped, as before.
                 guard let rendered = try? await cache.rendered(overlay.raster) else {
                     try Task.checkCancellation()
                     continue
                 }
-                let (x, y) = renderer.position(for: rendered, positionOverride: overlay.position)
+                let (x, y) = cache.renderer(styleID: overlay.raster.styleID)
+                    .position(for: rendered, positionOverride: overlay.position)
                 overlays.append(RenderEngine.ClipOverlay(png: rendered.pngURL, x: x, y: y,
                                                          start: overlay.start, end: overlay.end))
             }

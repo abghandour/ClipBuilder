@@ -34,7 +34,8 @@ extension AppStore {
                 }
                 miniRun = MiniWizardRun(projectID: projectID, video: video, footageKind: .transcript,
                     length: .automatic, batchID: UUID().uuidString, candidates: [], options: options,
-                    transcript: MiniWizardTranscript(rows: rows, labels: labels, picks: picks))
+                    transcript: MiniWizardTranscript(rows: rows, labels: labels, picks: picks,
+                                                     speakerSpans: TranscriptSpeakers.spans(turns: namedTurns, roster: speakers.roster)))
                 appendLog(\.wizardLog, ["Express: transcript ready, \(picks.count) saved picks."])
             } catch is CancellationError {
                 if generation == profileGeneration { appendLog(\.wizardLog, ["Loading transcript stopped."]) }

@@ -13,6 +13,17 @@ nonisolated enum TranscriptQATrim {
         var rows: [TranscriptRow]
         var labels: [Int64: String]
         var videoID: Int64
+        /// Who talks when, by name, from the speaker map. A row whose words
+        /// cross a speaker change is split into one line per speaker; rows
+        /// the user attributed by hand keep their single label.
+        var speakerSpans: [SpeakerSpan] = []
+    }
+
+    /// One speaker turn with the name the transcript shows for it.
+    struct SpeakerSpan: Equatable, Sendable, Hashable {
+        var start: Double
+        var end: Double
+        var label: String
     }
 
     struct Transcript: Equatable, Sendable {
@@ -32,13 +43,15 @@ nonisolated enum TranscriptQATrim {
             for row in rows {
                 let tokens = TranscriptQATrim.words(for: row, startingAt: words.count)
                 guard !tokens.isEmpty else { continue }
-                let label = input.labels[row.id]
-                if let index = lines.indices.last, let label, label == lines[index].speaker {
-                    lines[index].end = max(lines[index].end, row.endTime)
-                    lines[index].words.append(contentsOf: tokens)
-                } else {
-                    lines.append(Line(id: lines.count, start: row.startTime, end: row.endTime,
-                                      speaker: label, words: tokens))
+                for run in TranscriptQATrim.speakerRuns(row: row, words: tokens, label: input.labels[row.id],
+                                                        spans: input.speakerSpans) {
+                    if let index = lines.indices.last, let label = run.label, label == lines[index].speaker {
+                        lines[index].end = max(lines[index].end, run.end)
+                        lines[index].words.append(contentsOf: run.words)
+                    } else {
+                        lines.append(Line(id: lines.count, start: run.start, end: run.end,
+                                          speaker: run.label, words: run.words))
+                    }
                 }
                 words.append(contentsOf: tokens)
             }
@@ -92,6 +105,55 @@ nonisolated enum TranscriptQATrim {
             else { result[match.id] = text }
         }
         return result
+    }
+
+    struct SpeakerRun: Equatable, Sendable {
+        var start: Double
+        var end: Double
+        var label: String?
+        var words: [Word]
+    }
+
+    /// A row's words grouped by who the speaker map says is talking. Each
+    /// word takes the span covering most of it; a word no span covers stays
+    /// with the words before it. Rows attributed by hand, rows without
+    /// timed words and rows no span touches stay one run under `label`.
+    static func speakerRuns(row: TranscriptRow, words: [Word], label: String?, spans: [SpeakerSpan]) -> [SpeakerRun] {
+        let whole = [SpeakerRun(start: row.startTime, end: row.endTime, label: label, words: words)]
+        guard !words.isEmpty, !spans.isEmpty, row.speaker == .automatic,
+              !(row.words ?? []).isEmpty else { return whole }
+        let covering = spans.filter { $0.end > row.startTime && $0.start < row.endTime }
+            .sorted { $0.start < $1.start }
+        guard covering.count > 1 else { return whole }
+        func speaker(of word: Word) -> String? {
+            var best: (label: String, overlap: Double)?
+            for span in covering {
+                let overlap = min(span.end, max(word.end, word.start + 0.001)) - max(span.start, word.start)
+                guard overlap > 0, overlap > (best?.overlap ?? 0) else { continue }
+                best = (span.label, overlap)
+            }
+            return best?.label
+        }
+        var runs: [SpeakerRun] = []
+        for word in words {
+            let name = speaker(of: word) ?? runs.last?.label
+            if let index = runs.indices.last, runs[index].label == name {
+                runs[index].words.append(word)
+                runs[index].end = max(runs[index].end, word.end)
+            } else {
+                runs.append(SpeakerRun(start: word.start, end: word.end, label: name, words: [word]))
+            }
+        }
+        // Words before the first covered word belong to the first speaker.
+        if runs.count > 1, runs[0].label == nil {
+            let first = runs.removeFirst()
+            runs[0].words.insert(contentsOf: first.words, at: 0)
+            runs[0].start = first.start
+        }
+        guard runs.count > 1 else { return whole }
+        runs[0].start = min(runs[0].start, row.startTime)
+        runs[runs.count - 1].end = max(runs[runs.count - 1].end, row.endTime)
+        return runs
     }
 
     static func words(for row: TranscriptRow, startingAt firstID: Int = 0) -> [Word] {

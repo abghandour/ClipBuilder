@@ -50,6 +50,8 @@ struct WizardView: View {
     @AppStorage("wizard.safeAreaPlatforms") var safeAreaPlatforms = ""
     @State var captionPosition: String?
     @State var captionStyleID: String?
+    @State var speakerCaptionPositions: [String: String]?
+    @State var captionOrdinals: [String: Int] = [:]
     @AppStorage("wizard.captionLanguage") var captionLanguage = ""
     @AppStorage("wizard.dubLanguage") var dubLanguage = ""
     @AppStorage(WizardDefaults.workflowKey) var reviewWorkflowRaw = WizardWorkflow.automatic.rawValue
@@ -168,14 +170,25 @@ struct WizardView: View {
         let saved = WizardCaptionChoices.load(profileName: store.activeProfile.profileName)
         captionPosition = saved.captionPosition
         captionStyleID = saved.captionStyleID
+        speakerCaptionPositions = saved.speakerCaptionPositions
+    }
+
+    var speakerPositionChoices: Binding<[String: String]?> {
+        Binding(get: { speakerCaptionPositions }, set: { positions in
+            speakerCaptionPositions = positions
+            WizardCaptionChoices(captionPosition: captionPosition, captionStyleID: captionStyleID,
+                speakerCaptionPositions: positions).save(profileName: store.activeProfile.profileName)
+        })
     }
 
     func captionChoice(_ path: WritableKeyPath<WizardCaptionChoices, String?>) -> Binding<String?> {
         Binding(get: {
-            let choices = WizardCaptionChoices(captionPosition: captionPosition, captionStyleID: captionStyleID)
+            let choices = WizardCaptionChoices(captionPosition: captionPosition, captionStyleID: captionStyleID,
+                speakerCaptionPositions: speakerCaptionPositions)
             return choices[keyPath: path]
         }, set: { value in
-            var choices = WizardCaptionChoices(captionPosition: captionPosition, captionStyleID: captionStyleID)
+            var choices = WizardCaptionChoices(captionPosition: captionPosition, captionStyleID: captionStyleID,
+                speakerCaptionPositions: speakerCaptionPositions)
             choices[keyPath: path] = value
             captionPosition = choices.captionPosition
             captionStyleID = choices.captionStyleID
@@ -712,6 +725,7 @@ struct WizardView: View {
         options.formatPreset = selectedRecipe.id
         let text = textMode.output(transcriptsAvailable: available, recipe: selectedRecipe.id)
         options.captionPosition = captionPosition
+        options.speakerCaptionPositions = speakerCaptionPositions
         options.captionStyleID = captionStyleID
         options.addCaptions = text.captions
         options.enableTextOverlays = text.headlines
@@ -1343,6 +1357,7 @@ struct WizardView: View {
         options.overlayPlacement = overlayPlacementRaw.isEmpty ? nil : overlayPlacementRaw
         options.muteSource = audio.muteSource && options.useMusic
         options.captionPosition = captionPosition
+        options.speakerCaptionPositions = speakerCaptionPositions
         options.captionStyleID = captionStyleID
         options.addCaptions = text.captions
         options.enableTextOverlays = text.headlines

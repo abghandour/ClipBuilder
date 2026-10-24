@@ -152,6 +152,9 @@ nonisolated enum SpeakerTracker {
     static let highlightYield = 0.6
     static let switchPenalty = 0.30
     static let minimumTurn = 0.4
+    /// A voice must prefer some slot by at least this much beyond chance
+    /// (of a possible 1 − 1/slots) before it is allowed to name that slot.
+    static let directionFloor = 0.03
 
     static func track(_ input: Input, videoID: Int64) -> Outcome {
         let tiles = input.tiles.sorted { $0.index < $1.index }
@@ -217,6 +220,16 @@ nonisolated enum SpeakerTracker {
             let total = row.reduce(0, +)
             return row.map { total > 1e-9 ? max(0, $0 / total - 1 / Double(slots)) : 0 }
         }
+        // Which slot each voice points at, at full strength, once it points
+        // anywhere at all. In one-camera footage the "tiles" are half-frames
+        // and mouth motion tells the voices apart only weakly, so a
+        // preference-weighted voice would lose to every twitch of a mouth
+        // even while the clusters themselves are certain. A voice with no
+        // preference (it covers everyone's speech) still says nothing.
+        let direction: [[Double]] = preference.map { row in
+            let peak = row.max() ?? 0
+            return peak >= directionFloor ? row.map { $0 / peak } : row.map { _ in 0 }
+        }
         // Voice profiles from the border: where the picture taught enough,
         // each bin's audio is matched against the slots' own voices, and
         // that match replaces the blind cluster preference in proportion to
@@ -247,7 +260,7 @@ nonisolated enum SpeakerTracker {
         let highlight = highlightBins
         let scores: [[Double]] = bins.enumerated().map { b, bin in
             (0..<slots).map { s in
-                let voice = (0..<clusterCount).reduce(0.0) { $0 + bin.voices[$1] * preference[$1][s] }
+                let voice = (0..<clusterCount).reduce(0.0) { $0 + bin.voices[$1] * direction[$1][s] }
                 let mouth = bin.mouths[s]
                 let lit = highlight[safe: s]?[safe: b] ?? 0
                 let blind = audioWeight * voice * Double(slots) / max(1, Double(slots) - 1)

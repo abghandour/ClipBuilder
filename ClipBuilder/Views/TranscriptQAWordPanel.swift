@@ -11,7 +11,9 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     let preferredTranslationLanguage: String?
     let sectionID: SelectionID
     let range: ClosedRange<Double>
-    let otherRanges: [ClosedRange<Double>]
+    /// Saved picks' ranges with their palette index; their words show as
+    /// pastel blocks and the first word carries the list row's bar.
+    let otherRanges: [RangeReviewMarkedRange]
     let playback: PodcastHighlightTrimPlayback
     let canTrim: Bool
     let onSelect: (TranscriptQATrim.Word) -> Void
@@ -21,8 +23,6 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     /// Press a word and drag to select; a click on the selection clears it.
     /// Word clicks then no longer move the nearer end; the anchors still adjust.
     var spanSelection = false
-    /// Tint the line being spoken. Off in Transcript picks, where it reads as part of the selection.
-    var highlightsCurrentLine = true
     var onSpanPreview: ((ClosedRange<Double>) -> Void)? = nil
     var onSpanClear: (() -> Void)? = nil
     /// Shown after the Follow / Translation controls (Express puts its Add button here).
@@ -35,6 +35,8 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     @State private var dragging: TranscriptQATrim.Edge?
     /// The word the span drag started on.
     @State private var spanAnchor: Int?
+    /// The first word of each saved pick, found once per transcript and pick set.
+    @State private var firstWordIDs: [RangeReviewMarkedRange: Int] = [:]
     @State private var spanMoved = false
     @State private var pointer: CGPoint?
     @State private var dragFrame: CGRect?
@@ -50,6 +52,19 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
             selected: selectedTranslationLanguages[videoID], preferred: preferredTranslationLanguage)
     }
     private var showsTranslation: Bool { showTranslation && translationLanguage != nil }
+
+    private struct FirstWordKey: Equatable {
+        var words: [TranscriptQATrim.Word]
+        var ranges: [RangeReviewMarkedRange]
+    }
+
+    private func refreshFirstWords() {
+        var result: [RangeReviewMarkedRange: Int] = [:]
+        for marked in otherRanges {
+            result[marked] = transcript.words.first { TranscriptQATrim.contains($0, in: marked.range) }?.id
+        }
+        firstWordIDs = result
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -86,6 +101,8 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
             }
         }
         .onChange(of: sectionID) { _, _ in cancelDrag() }
+        .onAppear { refreshFirstWords() }
+        .onChange(of: FirstWordKey(words: transcript.words, ranges: otherRanges)) { _, _ in refreshFirstWords() }
         .onChange(of: isEnabled) { _, enabled in if !enabled { cancelDrag() } }
         .onChange(of: transcript) { _, _ in cancelDrag(); frames = [:] }
         .onChange(of: showsTranslation) { _, _ in cancelDrag(); frames = [:] }
@@ -198,8 +215,9 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
         }
         .padding(.horizontal, Theme.spaceS)
         .padding(.vertical, 4)
-        .background(highlightsCurrentLine && line.id == currentLine ? Color.accentColor.opacity(0.12) : Color.clear,
-                    in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
+        // The line being spoken is not tinted: a block behind the whole turn
+        // read as part of the selection. The yellow spoken word and Follow
+        // scrolling show where playback is.
     }
 
     @ViewBuilder
@@ -229,7 +247,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                         .foregroundStyle(SpeakerColors.color(for: speaker))
                         .lineLimit(1).help(speaker)
                 }
-                FlowLayout(spacing: 3) {
+                FlowLayout(spacing: TranscriptQAWordCursor.wordSpacing, rowSpacing: TranscriptQAWordCursor.rowSpacing) {
                     ForEach(line.words) { word in wordToken(word) }
                 }
             }
@@ -239,20 +257,42 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
 
     private func wordToken(_ word: TranscriptQATrim.Word) -> some View {
         let inside = TranscriptQATrim.contains(word, in: range)
-        let other = otherRanges.contains { TranscriptQATrim.contains(word, in: $0) }
+        // Nested picks: the tightest range owns the word.
+        let other = otherRanges.filter { TranscriptQATrim.contains(word, in: $0.range) }
+            .min { ($0.range.upperBound - $0.range.lowerBound) < ($1.range.upperBound - $1.range.lowerBound) }
+        let startsOther = other.map { firstWordIDs[$0] == word.id } ?? false
         // The spoken word is marked only while playing; a parked playhead would
         // otherwise sit yellow inside the selection being made.
         let spoken = playback.isPlaying && playback.time >= word.start && playback.time < word.end
         return Button { if !spanSelection { onSelect(word) } } label: {
             Text(word.text)
                 .font(.callout).fontWeight(spoken ? .bold : .regular)
-                .foregroundStyle(spoken ? Color.black : inside ? Color.primary : Color.secondary)
+                .foregroundStyle(spoken ? Color.black : inside || other != nil ? Color.primary : Color.secondary)
                 .padding(.horizontal, 2)
                 .background {
-                    RoundedRectangle(cornerRadius: 3)
-                        .fill(spoken ? AnyShapeStyle(Color.yellow)
-                              : inside ? AnyShapeStyle(Color.accentColor.opacity(0.28))
-                              : other ? AnyShapeStyle(.quaternary) : AnyShapeStyle(Color.clear))
+                    if spoken {
+                        RoundedRectangle(cornerRadius: 3).fill(Color.yellow)
+                    } else if inside {
+                        // Reach across the gaps to the neighbouring words and
+                        // rows so the selection reads as one block, spaces
+                        // included. The fill is opaque: translucent rectangles
+                        // would show their overlaps as darker seams.
+                        Rectangle().fill(TranscriptQAWordCursor.selectionColor)
+                            .padding(.horizontal, -TranscriptQAWordCursor.wordSpacing / 2 - 0.5)
+                            .padding(.vertical, -TranscriptQAWordCursor.rowSpacing / 2 - 0.5)
+                    } else if let other {
+                        // Saved picks read as the same kind of block in their
+                        // own pastel; the first word carries the row's bar.
+                        Rectangle().fill(RangeReviewPalette.block(other.paletteIndex))
+                            .overlay(alignment: .leading) {
+                                if startsOther {
+                                    Rectangle().fill(RangeReviewPalette.bar(other.paletteIndex))
+                                        .frame(width: RangeReviewPalette.barWidth)
+                                }
+                            }
+                            .padding(.horizontal, -TranscriptQAWordCursor.wordSpacing / 2 - 0.5)
+                            .padding(.vertical, -TranscriptQAWordCursor.rowSpacing / 2 - 0.5)
+                    }
                 }
                 .contentShape(Rectangle())
         }
@@ -286,6 +326,12 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                 .frame(width: 20, height: max(28, frame.height + 8))
                 .contentShape(Rectangle())
                 .position(x: edge == .start ? frame.minX : frame.maxX, y: frame.midY)
+                .onHover { hovering in
+                    guard canTrim else { return }
+                    // An open hand over the handle, a closed one while dragging.
+                    if hovering { if dragging == nil { TranscriptQAWordCursor.set(.openHand) } }
+                    else if dragging == nil { TranscriptQAWordCursor.set(nil) }
+                }
                 .gesture(DragGesture(minimumDistance: 0, coordinateSpace: .named(Self.scrollSpace))
                     .onChanged { value in
                         guard isEnabled, canTrim else { return }
@@ -294,6 +340,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                             dragFrame = frame
                             lastPreviewedWord = nil
                             playback.pause()
+                            TranscriptQAWordCursor.set(.closedHand)
                         }
                         pointer = value.location
                         scrollDirection = value.location.y < 32 ? -1 : value.location.y > viewportHeight - 32 ? 1 : 0
@@ -302,6 +349,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                     .onEnded { _ in
                         guard dragging != nil else { return }
                         clearDrag()
+                        TranscriptQAWordCursor.set(nil)
                         if isEnabled { onCommit() } else { onCancel() }
                     })
                 .help(edge == .start ? "Drag to move the start" : "Drag to move the end")
@@ -406,5 +454,27 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
         guard dragging != nil || spanAnchor != nil else { return }
         clearDrag()
         onCancel()
+    }
+}
+
+/// Constants and the anchor cursor shared by every word panel instance.
+enum TranscriptQAWordCursor {
+    /// Gap between word tokens on a line; a selected block fills it.
+    static let wordSpacing: CGFloat = 3
+    /// Gap between wrapped rows of one line; a selected block fills it too.
+    static let rowSpacing: CGFloat = 2
+
+    /// The accent toned down over the window background, opaque so adjoining
+    /// word rectangles join without seams.
+    static var selectionColor: Color {
+        Color(nsColor: NSColor.controlAccentColor.blended(withFraction: 0.7, of: .windowBackgroundColor)
+              ?? NSColor.controlAccentColor.withAlphaComponent(0.3))
+    }
+
+    /// One pushed cursor at a time: nil restores the arrow.
+    private static var pushed = false
+    static func set(_ cursor: NSCursor?) {
+        if pushed { NSCursor.pop(); pushed = false }
+        if let cursor { cursor.push(); pushed = true }
     }
 }

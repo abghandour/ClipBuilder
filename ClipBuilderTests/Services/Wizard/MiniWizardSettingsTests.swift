@@ -336,7 +336,6 @@ extension MiniWizardSettingsTests {
     }
 }
 
-
 extension MiniWizardSettingsTests {
     @Test func tagStyleSelectionMapsToStepTwoAndOldTemplateIsIgnored() throws {
         let named = NamedTagStyle(name: "Guest", style: TagStyle())
@@ -525,5 +524,42 @@ extension MiniWizardSettingsTests {
         #expect(unknown.previewOptions(profile: Fixtures.brand()).interviewPunchIn == "vip")
         #expect(CropRecipe(kind: .interview).interviewCuts == false)
         #expect(CropRecipe(kind: .interview).interviewPunchIn == .vip)
+    }
+}
+
+extension MiniWizardSettingsTests {
+    @Test func speakerPositionsSurviveLegacyDecodePresetsAndEffectiveOptions() throws {
+        let old = try JSONDecoder().decode(MiniWizardSettings.self, from: Data("{}".utf8))
+        #expect(old.speakerCaptionPositions == nil)
+        var settings = old
+        settings.captions = true
+        settings.speakerCaptionPositions = ["speaker1": "top", "speaker2": "custom:0.2500,0.6000"]
+        let decoded = try JSONDecoder().decode(MiniWizardSettings.self, from: JSONEncoder().encode(settings))
+        #expect(decoded == settings)
+        let preset = MiniWizardPreset(name: "Interview", savedAt: Date(), settings: settings)
+        let restored = try JSONDecoder().decode(MiniWizardPreset.self, from: JSONEncoder().encode(preset))
+        #expect(restored.settings.speakerCaptionPositions == settings.speakerCaptionPositions)
+        let effective = settings.effective(for: MiniWizardFlow(video: Fixtures.video()), introAvailable: false, outroAvailable: false)
+        #expect(effective.previewOptions(profile: Fixtures.brand()).speakerCaptionPositions == settings.speakerCaptionPositions)
+        let fields = WizardPresetBridge.wizardFields(from: settings)
+        #expect(WizardPresetBridge.miniSettings(from: fields).speakerCaptionPositions == settings.speakerCaptionPositions)
+        #expect(WizardPresetBridge.miniSettings(from: ["speakerCaptionPositions": .null], base: settings).speakerCaptionPositions == nil)
+    }
+
+    @Test func speakerPositionsAreRememberedPerProfileAndCanBeCleared() throws {
+        let suite = "caption-position-memory-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var settings = MiniWizardSettings()
+        settings.speakerCaptionPositions = ["speaker1": "middle", "speaker2": "top"]
+        settings.remember(profileName: "First", defaults: defaults)
+        #expect(MiniWizardSettings.remembered(profile: Fixtures.brand(name: "First"), defaults: defaults)
+            .speakerCaptionPositions == settings.speakerCaptionPositions)
+        #expect(MiniWizardSettings.remembered(profile: Fixtures.brand(name: "Second"), defaults: defaults)
+            .speakerCaptionPositions == nil)
+        settings.speakerCaptionPositions = nil
+        settings.remember(profileName: "First", defaults: defaults)
+        #expect(MiniWizardSettings.remembered(profile: Fixtures.brand(name: "First"), defaults: defaults)
+            .speakerCaptionPositions == nil)
     }
 }

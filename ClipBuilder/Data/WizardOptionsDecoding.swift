@@ -30,6 +30,7 @@ nonisolated extension WizardOptions {
         renderSettings = try values.decodeIfPresent(RenderSettings.self, forKey: .renderSettings) ?? renderSettings
         pacing = try values.decodeIfPresent(EditPacing.self, forKey: .pacing) ?? pacing
         captionPosition = try values.decodeIfPresent(String.self, forKey: .captionPosition)
+        speakerCaptionPositions = try values.decodeIfPresent([String: String].self, forKey: .speakerCaptionPositions)
         captionStyleID = try values.decodeIfPresent(String.self, forKey: .captionStyleID)
         captionLanguage = try values.decodeIfPresent(String.self, forKey: .captionLanguage)
         dubLanguage = try values.decodeIfPresent(String.self, forKey: .dubLanguage)

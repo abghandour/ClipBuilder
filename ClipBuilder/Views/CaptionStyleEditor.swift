@@ -5,24 +5,6 @@ struct CaptionStyleEditor: View {
     @Binding var style: CaptionStyle
     let isDefault: Bool
 
-    /// The shared asset/system font picker uses nil for the default sans face.
-    private var fontFamily: Binding<String?> {
-        Binding(get: {
-            switch style.font {
-            case "sans", "": nil
-            case "serif": "Times New Roman"
-            case "mono": "Menlo"
-            default: style.font
-            }
-        }, set: { style.font = $0 ?? "sans" })
-    }
-
-    /// Per-state font: nil inherits the text font; the picker's empty pick clears it.
-    private func stateFont(_ key: WritableKeyPath<CaptionStyle, String?>) -> Binding<String?> {
-        Binding(get: { style[keyPath: key]?.isEmpty == false ? style[keyPath: key] : nil },
-                set: { style[keyPath: key] = $0?.isEmpty == false ? $0 : nil })
-    }
-
     private var alignment: Binding<String> {
         Binding(get: { style.alignment ?? "center" }, set: { style.alignment = $0 == "center" ? nil : $0 })
     }
@@ -39,17 +21,7 @@ struct CaptionStyleEditor: View {
                 TextField("Name", text: $name).disabled(isDefault)
             }
             Section {
-                FormGroupHeader("Text")
-                FontFamilyPicker(family: fontFamily)
-                    .help("Font for regular caption text and any states that inherit it.")
-                CaptionWordDecorControls(style: $style, state: .text)
-                Picker("Weight", selection: setting(\.weight, default: "regular")) {
-                    Text("Regular").tag("regular")
-                    Text("Bold").tag("bold")
-                    Text("Black").tag("black")
-                }.help("Font weight used for captions.")
-                Toggle("Uppercase", isOn: setting(\.uppercase, default: false))
-                    .help("Display captions in uppercase without changing the transcript.")
+                FormGroupHeader("Captions")
                 Picker("Words per page", selection: $style.wordsPerPage) {
                     Text("Fit two rows").tag(nil as Int?)
                     ForEach(1...8, id: \.self) { Text(String($0)).tag(Optional($0)) }
@@ -65,27 +37,46 @@ struct CaptionStyleEditor: View {
                     Text("Trailing").lineLimit(1).fixedSize().tag("trailing")
                 }
                 .pickerStyle(.segmented)
-                ColorPicker("Text colour", selection: overlayColorBinding($style.color), supportsOpacity: false)
-                    .help("Colour for regular caption text.")
+                Toggle("Uppercase", isOn: setting(\.uppercase, default: false))
+                    .help("Display captions in uppercase without changing the transcript.")
                 Toggle("Background", isOn: $style.bgOn)
                     .help("Fill a background behind the whole caption page.")
                 if style.bgOn {
                     ColorPicker("Background colour", selection: overlayColorBinding($style.bgColor), supportsOpacity: false)
                         .help("Colour of the caption page background.")
+                        .formDependent()
                     Slider(value: setting(\.bgRadius, default: style.resolvedPageRadius), in: 0...60, step: 1) {
                         Text("Corner radius: \(Int(style.resolvedPageRadius)) pt").lineLimit(1).fixedSize()
                     }
                     .help("Round the page background corners at 1080 pixels wide. Zero makes square corners.")
                     .formDependent()
                 }
-                Slider(value: setting(\.strokeWidth, default: 1), in: 0...6, step: 0.5) {
-                    Text("Outline: \(style.resolvedStrokeWidth, specifier: "%.1f") pt").lineLimit(1).fixedSize()
-                }.help("Black outline width at 1080 pixels wide, when Background is off.")
-                Slider(value: setting(\.letterSpacing, default: 0), in: -2...6, step: 0.5) {
-                    Text("Letter spacing: \(style.resolvedLetterSpacing, specifier: "%.1f") pt").lineLimit(1).fixedSize()
-                }.help("Space between letters at 1080 pixels wide.")
-                Toggle("Shadow", isOn: setting(\.shadow, default: false))
-                    .help("Add a soft shadow behind the text.")
+                Picker(selection: setting(\.reveal, default: style.resolvedReveal)) {
+                    Text("All at once").lineLimit(1).fixedSize().tag("none")
+                    Text("As spoken").lineLimit(1).fixedSize().tag("word")
+                } label: {
+                    Text("Words appear").lineLimit(1).fixedSize()
+                }
+                .help("Show each word of a page as it is spoken. Makes no difference with one word per page.")
+                Picker("Page entrance", selection: setting(\.animation, default: "none")) {
+                    Text("None").tag("none")
+                    Text("Pop").tag("pop")
+                    Text("Slide up").tag("slide-up")
+                    Text("Fade").tag("fade")
+                }.help("Animate each new caption page.")
+                if style.resolvedReveal == "word" {
+                    Toggle(isOn: setting(\.revealMotion, default: false)) {
+                        Text("Animate each word").lineLimit(1).fixedSize()
+                    }
+                    .disabled(style.resolvedAnimation == "none")
+                    .help("Each new word uses the Page entrance; off animates only the page.")
+                    .formDependent()
+                    if style.resolvedAnimation == "none" {
+                        FormCaption("Choose a Page entrance first.")
+                    }
+                }
+                Toggle("Emoji", isOn: setting(\.emoji, default: false))
+                    .help("Append a matching emoji when the page contains a supported keyword.")
                 Toggle("Speaker colours", isOn: setting(\.speakerColors, default: false))
                     .help("Use a consistent text colour for each speaker when speaker turns are available.")
                 if style.resolvedSpeakerColors {
@@ -100,11 +91,17 @@ struct CaptionStyleEditor: View {
                                 .accessibilityLabel("Speaker colour \(index + 1), \(hex)")
                         }
                     }
+                    .formDependent()
                     FormCaption("Colours follow speaker identity. A line spanning speakers uses the first speaker.")
                 }
                 FormCaption(isDefault
                     ? "Used whenever a run selects Profile default. Changes save automatically."
                     : "Available in this profile’s Express and full Wizard. Changes save automatically.")
+            }
+            Section {
+                FormGroupHeader("Text")
+                CaptionWordDecorControls(style: $style, state: .text)
+                FormCaption("Regular words. Highlight and Emphasis follow these settings until changed.")
             }
             Section {
                 FormGroupHeader("Highlight")
@@ -114,28 +111,6 @@ struct CaptionStyleEditor: View {
                     Text("Box").tag("box")
                     Text("Scale").tag("scale")
                 }.help("Highlight each word while it is spoken. Translations use evenly timed words.")
-                Picker(selection: setting(\.reveal, default: style.resolvedReveal)) {
-                    Text("All at once").lineLimit(1).fixedSize().tag("none")
-                    Text("As spoken").lineLimit(1).fixedSize().tag("word")
-                } label: {
-                    Text("Words appear").lineLimit(1).fixedSize()
-                }
-                .help("Show each word of a page as it is spoken. Makes no difference with one word per page.")
-                if style.resolvedReveal == "word" {
-                    Toggle(isOn: setting(\.revealMotion, default: false)) {
-                        Text("Animate each word").lineLimit(1).fixedSize()
-                    }
-                    .disabled(style.resolvedAnimation == "none")
-                    .help("Each new word uses the Motion entrance; off animates only the page.")
-                    .formDependent()
-                    if style.resolvedAnimation == "none" {
-                        FormCaption("Choose a Motion entrance first.")
-                    }
-                }
-                ColorPicker("Highlight colour", selection: overlayColorBinding(setting(\.highlightColor, default: "#ffd60a")), supportsOpacity: false)
-                    .help("Colour for the spoken word or its box.")
-                FontFamilyPicker(family: stateFont(\.highlightFont), label: "Highlight font", defaultLabel: "Same as text")
-                    .help("Font for the spoken word; Same as text follows the Text font.")
                 CaptionWordDecorControls(style: $style, state: .highlight)
             }
             Section {
@@ -147,22 +122,7 @@ struct CaptionStyleEditor: View {
                     Text("Colour and scale").tag("both")
                     Text("Font only").tag("font")
                 }.help("Emphasise up to two keywords per page, chosen on this Mac.")
-                ColorPicker("Emphasis colour", selection: overlayColorBinding(setting(\.emphasisColor, default: style.resolvedHighlightColor)), supportsOpacity: false)
-                    .help("Keyword colour; follows Highlight colour until changed.")
-                FontFamilyPicker(family: stateFont(\.emphasisFont), label: "Emphasis font", defaultLabel: "Same as text")
-                    .help("Font for emphasised keywords; Same as text follows the Text font.")
                 CaptionWordDecorControls(style: $style, state: .emphasis)
-                Toggle("Emoji", isOn: setting(\.emoji, default: false))
-                    .help("Append a matching emoji when the page contains a supported keyword.")
-            }
-            Section {
-                FormGroupHeader("Motion")
-                Picker("Page entrance", selection: setting(\.animation, default: "none")) {
-                    Text("None").tag("none")
-                    Text("Pop").tag("pop")
-                    Text("Slide up").tag("slide-up")
-                    Text("Fade").tag("fade")
-                }.help("Animate each new caption page.")
             }
         }
         .formStyle(.grouped)

@@ -1,8 +1,9 @@
 import SwiftUI
 
 /// An element the user can drag to a new place in the preview.
-enum PreviewElement: String, Sendable {
-    case caption, nameTag, overlay
+enum PreviewElement: Hashable, Sendable {
+    case caption(slot: String?)
+    case nameTag, overlay
 
     var label: String {
         switch self {
@@ -22,6 +23,7 @@ struct WizardPreviewColumn: View {
     let clips: [WizardPreviewClip]
     let options: WizardOptions
     let profile: BrandProfile
+    var captionOrdinals: [String: Int]? = nil
     /// Pinned under the preview: Express puts its run summary and Generate here.
     var footer: AnyView? = nil
     /// Called when the user drops a dragged element; the owner stores the
@@ -32,14 +34,20 @@ struct WizardPreviewColumn: View {
     @State private var clipIndex = 0
     /// Scrubber position in source seconds; nil shows the middle of the clip.
     @State private var scrubTime: Double?
+    /// Chips the user has set for this recording; nil means every speaker.
+    @State private var shownSpeakers: Set<String>?
+    /// Name markers show briefly after a chip changes or while a caption is hovered.
+    @State private var markersRevealed = false
+    @State private var markerRevealID = 0
 
     init(scenes: [SceneRecord], clips: [WizardPreviewClip] = [], options: WizardOptions, profile: BrandProfile,
-         thumbnails: ThumbnailService, footer: AnyView? = nil,
+         thumbnails: ThumbnailService, footer: AnyView? = nil, captionOrdinals: [String: Int]? = nil,
          onMove: ((PreviewElement, CustomPosition) -> Void)? = nil) {
         self.scenes = scenes
         self.clips = clips
         self.options = options
         self.profile = profile
+        self.captionOrdinals = captionOrdinals
         self.footer = footer
         self.onMove = onMove
         _model = State(initialValue: WizardPreviewModel(thumbnails: thumbnails))
@@ -104,7 +112,8 @@ struct WizardPreviewColumn: View {
     private func key(overlayTexts: [String]) -> PreviewKey? {
         guard let record = previewRecord else { return nil }
         return PreviewKey(options: options, scene: record, profile: profile,
-                          contentRevision: model.contentRevision, overlayTexts: overlayTexts, time: previewTime)
+                          contentRevision: model.contentRevision, overlayTexts: overlayTexts, time: previewTime,
+                          shownSpeakers: effectiveShownSpeakers, captionOrdinals: captionOrdinals)
     }
 
     var body: some View {
@@ -129,12 +138,13 @@ struct WizardPreviewColumn: View {
                 // Size the image explicitly so the scrubber and captions sit
                 // flush under it; a flexible frame would keep its full height.
                 let aspect = max(0.01, options.renderSettings.aspectRatio)
-                let height = min(max(120, available.size.height - (currentClip == nil ? 88 : 120)),
+                let height = min(max(120, available.size.height - (currentClip == nil ? 88 : 120) - (options.addCaptions && !speakerKeys.isEmpty ? 30 : 0)),
                                  available.size.width / aspect)
                 VStack(alignment: .leading, spacing: Theme.spaceS) {
                     preview
                         .frame(width: height * aspect, height: height)
                     if let clip = currentClip { scrubber(clip).frame(width: height * aspect) }
+                    if options.addCaptions, !speakerKeys.isEmpty { speakerChips.frame(width: height * aspect) }
                     if let error = model.error {
                         Text(error).font(.caption).foregroundStyle(.secondary)
                         Button("Retry preview") { reloadID += 1 }
@@ -160,6 +170,14 @@ struct WizardPreviewColumn: View {
             }
         }
         .padding(Theme.spaceM)
+        .onChange(of: shownSpeakersKey, initial: true) { _, key in
+            // While no recording is resolved the key is a placeholder; keep the
+            // chips as they are rather than resetting them to "everyone".
+            guard previewRecord != nil else { return }
+            shownSpeakers = UserDefaults.standard.string(forKey: key).map {
+                Set($0.split(separator: "\n").map(String.init))
+            }
+        }
         .onChange(of: scenes, initial: true) { _, values in model.setScenes(values) }
         .onChange(of: clips.map(\.id)) { _, ids in
             if clipIndex >= ids.count { clipIndex = 0 }
@@ -187,6 +205,72 @@ struct WizardPreviewColumn: View {
             if !Task.isCancelled { refresh() }
         }
         .onDisappear { model.cancel() }
+    }
+
+    private var shownSpeakersKey: String {
+        "preview.shownSpeakers.\(profile.profileName).\(previewRecord?.videoID ?? -1)"
+    }
+
+    private var resolvedOrdinals: [String: Int] {
+        captionOrdinals ?? model.scene?.resolvedCaptionOrdinals ?? [:]
+    }
+
+    private var speakerKeys: [String] {
+        guard let scene = model.scene else { return [] }
+        return scene.roster.keys.filter { scene.speakingPeople.contains($0) }.sorted {
+            let lhs = resolvedOrdinals[$0] ?? Int.max, rhs = resolvedOrdinals[$1] ?? Int.max
+            return lhs == rhs ? $0 < $1 : lhs < rhs
+        }
+    }
+
+    private var talkingSpeaker: String? {
+        guard let scene = model.scene else { return nil }
+        return CaptionSpeakerColors.personKey(CaptionSpeakerColors.speakerKey(
+            for: .init(start: scene.time, end: scene.time.nextUp, text: ""),
+            turns: scene.speakerTurns, rows: scene.speakerRows))
+    }
+
+    /// The people drawn: the chips when set, else everyone who speaks.
+    private var effectiveShownSpeakers: Set<String> { shownSpeakers ?? Set(speakerKeys) }
+
+    private func toggleSpeaker(_ key: String) {
+        var shown = effectiveShownSpeakers
+        if shown.contains(key) { shown.remove(key) } else { shown.insert(key) }
+        shownSpeakers = shown
+        if previewRecord != nil {
+            UserDefaults.standard.set(shown.sorted().joined(separator: "\n"), forKey: shownSpeakersKey)
+        }
+        revealMarkers()
+    }
+
+    private func revealMarkers() {
+        markerRevealID += 1
+        let id = markerRevealID
+        markersRevealed = true
+        Task {
+            try? await Task.sleep(for: .seconds(3))
+            if markerRevealID == id { markersRevealed = false }
+        }
+    }
+
+    private var speakerChips: some View {
+        ScrollView(.horizontal) {
+            HStack(spacing: Theme.spaceS) {
+                ForEach(speakerKeys, id: \.self) { key in
+                    let selected = effectiveShownSpeakers.contains(key)
+                    Button { toggleSpeaker(key) } label: {
+                        Label(model.scene?.roster[key] ?? key, systemImage: selected ? "checkmark.circle.fill" : "circle")
+                            .font(.caption).lineLimit(1).fixedSize()
+                    }
+                    .buttonStyle(.bordered).controlSize(.small)
+                    .tint(selected ? Color.accentColor : Color.secondary)
+                    .help(key == talkingSpeaker ? "Talking at this moment. Show or hide this speaker's caption in the preview."
+                        : "Show or hide this speaker's caption in the preview")
+                    .accessibilityValue(selected ? "Shown" : "Hidden")
+                }
+            }
+        }
+        .scrollIndicators(.hidden)
     }
 
     private var title: some View {
@@ -271,7 +355,8 @@ struct WizardPreviewColumn: View {
                     GeometryReader { geometry in
                         PreviewHandlesLayer(layout: layout, canvas: CGSize(width: options.renderSettings.width,
                                                                            height: options.renderSettings.height),
-                                            size: geometry.size, onMove: onMove)
+                                            size: geometry.size, ordinals: resolvedOrdinals,
+                                            revealMarkers: markersRevealed, onMove: onMove)
                     }
                 }
             }
@@ -287,9 +372,11 @@ struct WizardPreviewColumn: View {
 
     private func refresh() {
         guard let record = previewRecord, model.loadedSceneID == record.id,
-              let scene = model.scene, let key = key(overlayTexts: options.fixedOverlayTexts ?? []) else { return }
+              var scene = model.scene, let key = key(overlayTexts: options.fixedOverlayTexts ?? []) else { return }
+        scene.captionOrdinals = captionOrdinals ?? scene.captionOrdinals
         model.update(key: key) {
-            .init(scene: scene, options: options, profile: profile, templates: model.templates, frameData: Data())
+            .init(scene: scene, options: options, profile: profile, templates: model.templates,
+                  frameData: Data(), shownSpeakers: speakerKeys.isEmpty ? nil : effectiveShownSpeakers)
         }
     }
 }
@@ -301,6 +388,8 @@ private struct PreviewHandlesLayer: View {
     let layout: WizardPreviewComposite.Layout
     let canvas: CGSize
     let size: CGSize
+    let ordinals: [String: Int]
+    let revealMarkers: Bool
     let onMove: (PreviewElement, CustomPosition) -> Void
 
     private var scale: CGFloat {
@@ -325,8 +414,10 @@ private struct PreviewHandlesLayer: View {
             ForEach(Array(layout.tags.enumerated()), id: \.offset) { _, rect in
                 PreviewHandle(element: .nameTag, rect: viewRect(rect), size: size, onMove: onMove)
             }
-            if let rect = layout.caption {
-                PreviewHandle(element: .caption, rect: viewRect(rect), size: size, onMove: onMove)
+            ForEach(Array(layout.captions.enumerated()), id: \.element.personKey) { _, caption in
+                let slot = caption.personKey.flatMap { ordinals[$0] }.map(CaptionSpeakerOrder.slot)
+                PreviewHandle(element: .caption(slot: slot), rect: viewRect(caption.rect), size: size,
+                              name: caption.name, isTalking: caption.isTalking, revealMarker: revealMarkers, onMove: onMove)
             }
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
@@ -339,9 +430,16 @@ private struct PreviewHandle: View {
     let rect: CGRect
     /// The preview view's size, which the drop maps to canvas fractions.
     let size: CGSize
+    var name: String? = nil
+    var isTalking = false
+    /// The owner asks every marker to show for a moment (a chip changed).
+    var revealMarker = false
     let onMove: (PreviewElement, CustomPosition) -> Void
     @State private var translation = CGSize.zero
     @State private var hovering = false
+    /// Keeps the marker up for a couple of seconds after the pointer leaves.
+    @State private var lingering = false
+    @State private var lingerID = 0
 
     var body: some View {
         let active = hovering || translation != .zero
@@ -351,10 +449,21 @@ private struct PreviewHandle: View {
             .foregroundStyle(active ? Color.accentColor : Color.white.opacity(0.45))
             .contentShape(Rectangle())
             .frame(width: max(24, rect.width), height: max(16, rect.height))
+            .overlay(alignment: .topLeading) {
+                // The marker sits just above the outline so it never covers the
+                // words, and only while hovered, just after, or on a chip change.
+                if let name, revealMarker || hovering || lingering || translation != .zero {
+                    Text(name).font(.caption2).lineLimit(1).fixedSize()
+                        .padding(.horizontal, 6).padding(.vertical, 2)
+                        .foregroundStyle(.white)
+                        .background(isTalking ? Color.accentColor : Color.secondary, in: Capsule())
+                        .alignmentGuide(.top) { $0[.bottom] + 2 }
+                }
+            }
             .position(x: rect.midX + translation.width, y: rect.midY + translation.height)
             .onHover { inside in
                 hovering = inside
-                if inside { NSCursor.openHand.push() } else { NSCursor.pop() }
+                if inside { NSCursor.openHand.push() } else { NSCursor.pop(); linger() }
             }
             .gesture(DragGesture(minimumDistance: 2)
                 .onChanged { translation = $0.translation }
@@ -366,6 +475,16 @@ private struct PreviewHandle: View {
                                                    y: (rect.midY + moved.height) / size.height))
                 })
             .help("Drag to place the \(element.label)")
-            .accessibilityLabel("\(element.label.capitalized) position")
+            .accessibilityLabel("\(name ?? element.label.capitalized) position")
+    }
+
+    private func linger() {
+        lingerID += 1
+        let id = lingerID
+        lingering = true
+        Task {
+            try? await Task.sleep(for: .seconds(2))
+            if lingerID == id { lingering = false }
+        }
     }
 }

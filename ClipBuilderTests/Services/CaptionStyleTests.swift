@@ -153,3 +153,40 @@ extension CaptionStyleTests {
         #expect(CTFontGetSymbolicTraits(italic).contains(.traitBold))
     }
 }
+
+extension CaptionStyleTests {
+    @Test func stateTypographyInheritsTextThenTheLegacyFieldsAndRoundTrips() throws {
+        var style = CaptionStyle()
+        style.weight = "bold"
+        style.strokeWidth = 3
+        style.letterSpacing = 2
+        style.shadow = true
+        // Nothing stored per state: every state reads the whole-caption fields.
+        for state in CaptionStyle.WordState.allCases {
+            let decor = style.resolvedDecor(for: state)
+            #expect(decor.resolvedWeight == "bold" && decor.resolvedStrokeWidth == 3)
+            #expect(decor.resolvedLetterSpacing == 2 && decor.resolvedShadow)
+        }
+        // Text overrides flow to the other states; a state's own value wins.
+        style.text = CaptionWordDecor(weight: "black", strokeWidth: 0, letterSpacing: -1, shadow: false)
+        style.emphasisDecor = CaptionWordDecor(weight: "regular", shadow: true)
+        #expect(style.resolvedDecor(for: .highlight).resolvedWeight == "black")
+        #expect(style.resolvedDecor(for: .highlight).resolvedStrokeWidth == 0)
+        #expect(style.resolvedDecor(for: .highlight).resolvedLetterSpacing == -1)
+        #expect(!style.resolvedDecor(for: .highlight).resolvedShadow)
+        #expect(style.resolvedDecor(for: .emphasis).resolvedWeight == "regular")
+        #expect(style.resolvedDecor(for: .emphasis).resolvedShadow)
+        #expect(style.resolvedDecor(for: .emphasis).resolvedStrokeWidth == 0, "unset fields still inherit Text")
+        let data = try JSONEncoder().encode(style)
+        #expect(try JSONDecoder().decode(CaptionStyle.self, from: data) == style)
+        let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+        let text = try #require(object["text_decor"] as? [String: Any])
+        #expect(text["weight"] as? String == "black")
+        #expect(text["stroke_width"] as? Double == 0)
+        #expect(text["letter_spacing"] as? Double == -1)
+        #expect(text["shadow"] as? Bool == false)
+        // Old decor JSON without the new keys decodes to inherited values.
+        let legacy = try JSONDecoder().decode(CaptionWordDecor.self, from: Data(#"{"italic":true}"#.utf8))
+        #expect(legacy.weight == nil && legacy.strokeWidth == nil && legacy.letterSpacing == nil && legacy.shadow == nil)
+    }
+}

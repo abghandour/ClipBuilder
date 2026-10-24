@@ -16,6 +16,7 @@ nonisolated enum CaptionOverlayPlan {
         var streamID: String = ""
         var windowStart: Double?
         var windowEnd: Double?
+        var styleID: String?
     }
 
     struct Raster: Hashable, Sendable {
@@ -24,6 +25,7 @@ nonisolated enum CaptionOverlayPlan {
         var emphasis: [Int] = []
         var textColor: String?
         var frame = CaptionAnimation.Frame()
+        var styleID: String?
     }
 
     struct Overlay: Sendable {
@@ -42,10 +44,23 @@ nonisolated enum CaptionOverlayPlan {
     static func pages(segments: [TranscriptSegment], renderer: CaptionRenderer,
                       sourceStart: Double, speed: Double, duration: Double, position: String, language: String = "",
                       speakerTurns: [SpeakerTurn] = [], speakerRows: [TranscriptRow] = [], streamID: String = "") -> [Page] {
+        pages(segments: segments, renderers: CaptionRendererSet(base: renderer), sourceStart: sourceStart,
+              speed: speed, duration: duration, position: position, language: language,
+              speakerTurns: speakerTurns, speakerRows: speakerRows, streamID: streamID)
+    }
+
+    static func pages(segments: [TranscriptSegment], renderers: CaptionRendererSet,
+                      sourceStart: Double, speed: Double, duration: Double, position: String, language: String = "",
+                      speakerTurns: [SpeakerTurn] = [], speakerRows: [TranscriptRow] = [], streamID: String = "",
+                      speakerPositions: ((String?) -> String)? = nil) -> [Page] {
         guard speed.isFinite, speed > 0 else { return [] }
         return segments.flatMap { segment -> [Page] in
+            let (renderer, styleID) = renderers.renderer(for: segment, turns: speakerTurns, rows: speakerRows)
             let color = renderer.style.resolvedSpeakerColors
                 ? CaptionSpeakerColors.color(for: segment, turns: speakerTurns, rows: speakerRows) : nil
+            let person = CaptionSpeakerColors.personKey(CaptionSpeakerColors.speakerKey(
+                for: segment, turns: speakerTurns, rows: speakerRows))
+            let resolvedPosition = speakerPositions?(person) ?? position
             return renderer.pages(for: segment).compactMap { original in
                 var page = original
                 page.start = (original.start - sourceStart) / speed
@@ -54,19 +69,20 @@ nonisolated enum CaptionOverlayPlan {
                 page.words = original.words?.map {
                     TranscriptWord(word: $0.word, start: ($0.start - sourceStart) / speed, end: ($0.end - sourceStart) / speed)
                 }
-                return Page(caption: page, position: position, language: language, textColor: color, streamID: streamID,
-                            windowStart: 0, windowEnd: duration)
+                return Page(caption: page, position: resolvedPosition, language: language, textColor: color, streamID: streamID,
+                            windowStart: 0, windowEnd: duration, styleID: styleID)
             }
         }
     }
 
-    static func plan(pages: [Page], style: CaptionStyle, limit: Int = inputLimit) throws -> Plan {
+    static func plan(pages: [Page], style: CaptionStyle, styles: [String: CaptionStyle] = [:], limit: Int = inputLimit) throws -> Plan {
         func raster(for item: Page, activeIndex: Int? = nil) -> Raster {
+            let style = item.styleID.flatMap { styles[$0] } ?? style
             let emphasis = style.resolvedEmphasis == "none" ? []
                 : CaptionEmphasis.indices(for: item.caption, language: item.language)
             let emoji = style.resolvedEmoji ? CaptionEmphasis.emoji(for: item.caption, language: item.language) : nil
             return Raster(text: item.caption.text + (emoji.map { " " + $0 } ?? ""),
-                          activeIndex: activeIndex, emphasis: emphasis, textColor: item.textColor)
+                          activeIndex: activeIndex, emphasis: emphasis, textColor: item.textColor, styleID: item.styleID)
         }
         func clipped(_ overlay: Overlay, to item: Page) -> Overlay? {
             var overlay = overlay
@@ -76,6 +92,9 @@ nonisolated enum CaptionOverlayPlan {
         }
         func scheduledOverlays(reveal: Bool, revealMotion: Bool) -> [Overlay] {
             pages.flatMap { item -> [Overlay] in
+                let style = item.styleID.flatMap { styles[$0] } ?? style
+                let reveal = reveal && style.resolvedReveal == "word"
+                let revealMotion = revealMotion && style.resolvedRevealMotion
                 let baseRaster = raster(for: item)
                 let tokens = item.caption.text.split(whereSeparator: \.isWhitespace)
                 let states = !reveal && style.resolvedHighlight == "none"
@@ -117,8 +136,11 @@ nonisolated enum CaptionOverlayPlan {
                 return scheduled.compactMap { clipped($0, to: item) }
             }
         }
-        let reveal = style.resolvedReveal == "word"
-        let revealMotion = reveal && style.resolvedRevealMotion && style.resolvedAnimation != "none"
+        let pageStyles = pages.map { $0.styleID.flatMap { styles[$0] } ?? style }
+        let reveal = pageStyles.contains { $0.resolvedReveal == "word" }
+        let revealMotion = pageStyles.contains {
+            $0.resolvedReveal == "word" && $0.resolvedRevealMotion && $0.resolvedAnimation != "none"
+        }
         var overlays = scheduledOverlays(reveal: reveal, revealMotion: revealMotion)
         var usedRevealFallback = false
         if overlays.count > limit, revealMotion {
@@ -154,6 +176,19 @@ nonisolated enum CaptionOverlayPlan {
             let key = page.streamID + "|" + page.position
             if let index = keys.firstIndex(of: key) { groups[index].append(page) }
             else { keys.append(key); groups.append([page]) }
+        }
+        // Never merge across a speaker-style boundary, including A → B → A:
+        // that would show A's merged caption over B's words and placement.
+        groups = groups.flatMap { group -> [[Page]] in
+            var runs: [[Page]] = []
+            for page in group {
+                if let last = runs.last, last.last?.styleID == page.styleID {
+                    runs[runs.count - 1].append(page)
+                } else {
+                    runs.append([page])
+                }
+            }
+            return runs
         }
         guard limit > 0, groups.count <= limit else { throw PlanningError.tooManyStreams }
         var result: [Page] = []

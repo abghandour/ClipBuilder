@@ -130,6 +130,8 @@ struct MiniSettingsCard: View {
                 MiniRow("Caption style") {
                     CaptionStylePicker(selection: $settings.captionStyleID, profile: store.activeProfile)
                 }
+                CaptionSpeakerStylesEditor(people: nil, videoIDs: [run.video.id],
+                    runStyleID: settings.captionStyleID, profile: store.activeProfile, positions: $settings.speakerCaptionPositions)
                 if settings.dub {
                     FormCaption("Captions follow the dub language.")
                 } else if flow.showsCaptionLanguage {

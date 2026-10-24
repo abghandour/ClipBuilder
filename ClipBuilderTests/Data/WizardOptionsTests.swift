@@ -48,3 +48,32 @@ extension WizardOptionsTests {
         #expect(defaults.string(forKey: "wizard.safeAreaPlatforms") == "")
     }
 }
+
+extension WizardOptionsTests {
+    @Test func speakerPositionsRoundTripThroughOptionsAndPresentationSteps() throws {
+        let old = try JSONDecoder().decode(WizardOptions.self, from: Data("{}".utf8))
+        #expect(old.speakerCaptionPositions == nil)
+        #expect(try JSONDecoder().decode(WizardStep2Options.self, from: Data("{}".utf8)).speakerCaptionPositions == nil)
+        var options = old
+        options.speakerCaptionPositions = ["speaker1": "top", "speaker2": "custom:0.5000,0.2500"]
+        let decoded = try JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(options))
+        #expect(decoded.speakerCaptionPositions == options.speakerCaptionPositions)
+        let step2 = try JSONDecoder().decode(WizardStep2Options.self, from: JSONEncoder().encode(options.step2))
+        #expect(WizardOptions.merge(step1: options.step1, step2: step2).speakerCaptionPositions == options.speakerCaptionPositions)
+        #expect(WizardOptions.merge(step1: options.step1, step2: WizardStep2Options(), base: options).speakerCaptionPositions == nil)
+    }
+
+    @MainActor @Test func speakerPositionsSurviveWizardPreferencesAndPresetFields() throws {
+        let suite = "wizard-speaker-position-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let profile = Fixtures.brand()
+        let positions = ["speaker1": "top", "speaker2": "middle"]
+        let fields = ["speakerCaptionPositions": JSONSetting.dictionaryValue(positions)]
+        AISettingsPreferences.write(fields, kind: .wizard, scopes: [.options], profileName: profile.profileName, defaults: defaults)
+        #expect(WizardCaptionChoices.load(profileName: profile.profileName, defaults: defaults).speakerCaptionPositions == positions)
+        #expect(AISettingsPreferences.wizard(defaults: defaults, profile: profile)["speakerCaptionPositions"] == fields["speakerCaptionPositions"])
+        AISettingsPreferences.write(["speakerCaptionPositions": .null], kind: .wizard, scopes: [.options], profileName: profile.profileName, defaults: defaults)
+        #expect(WizardCaptionChoices.load(profileName: profile.profileName, defaults: defaults).speakerCaptionPositions == nil)
+    }
+}

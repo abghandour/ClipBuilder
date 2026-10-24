@@ -3,6 +3,7 @@ import Foundation
 nonisolated struct WizardCaptionChoices: Equatable, Sendable {
     var captionPosition: String?
     var captionStyleID: String?
+    var speakerCaptionPositions: [String: String]?
 
     /// Ranges use original video time, before any framing or speed changes.
     /// The caller supplies only translations in the requested target language.
@@ -21,10 +22,12 @@ nonisolated struct WizardCaptionChoices: Equatable, Sendable {
 
     static func load(profileName: String, defaults: UserDefaults = .standard) -> Self {
         Self(captionPosition: defaults.string(forKey: "wizard.\(profileName).captionPosition"),
-             captionStyleID: defaults.string(forKey: "wizard.\(profileName).captionStyleID"))
+             captionStyleID: defaults.string(forKey: "wizard.\(profileName).captionStyleID"),
+             speakerCaptionPositions: defaults.dictionary(forKey: "wizard.\(profileName).speakerCaptionPositions") as? [String: String])
     }
 
     func save(profileName: String, defaults: UserDefaults = .standard) {
+        defaults.set(speakerCaptionPositions, forKey: "wizard.\(profileName).speakerCaptionPositions")
         defaults.set(captionPosition, forKey: "wizard.\(profileName).captionPosition")
         defaults.set(captionStyleID, forKey: "wizard.\(profileName).captionStyleID")
     }

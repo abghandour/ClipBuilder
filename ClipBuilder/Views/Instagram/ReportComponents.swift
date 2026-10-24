@@ -190,6 +190,9 @@ struct BreakdownChips: View {
 /// Left-to-right, top-to-bottom wrapping layout for chips.
 struct FlowLayout: Layout {
     var spacing: CGFloat = 6
+    /// Vertical gap between rows; defaults to `spacing`.
+    var rowSpacing: CGFloat? = nil
+    private var rowGap: CGFloat { rowSpacing ?? spacing }
 
     func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? .infinity
@@ -198,7 +201,7 @@ struct FlowLayout: Layout {
             let size = subview.sizeThatFits(.unspecified)
             if x > 0 && x + size.width > width {
                 x = 0
-                y += rowHeight + spacing
+                y += rowHeight + rowGap
                 rowHeight = 0
             }
             x += size.width + spacing
@@ -214,7 +217,7 @@ struct FlowLayout: Layout {
             let size = subview.sizeThatFits(.unspecified)
             if x > bounds.minX && x + size.width > bounds.maxX {
                 x = bounds.minX
-                y += rowHeight + spacing
+                y += rowHeight + rowGap
                 rowHeight = 0
             }
             subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))

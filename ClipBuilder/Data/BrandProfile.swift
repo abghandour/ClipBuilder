@@ -55,6 +55,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var socials: [String: SocialSlot]
     var captions: CaptionStyle
     var captionStyles: [NamedCaptionStyle]?
+    /// Person key → named caption style UUID; nil entries follow the run style.
+    var personCaptionStyles: [String: String]?
     var tagStyle: TagStyle?
     var tagStyles: [NamedTagStyle]?
     // Brand kit — drives the wizard's watermark, headline, and outro card.
@@ -134,6 +136,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case hashtags
         case captions
         case captionStyles = "caption_styles"
+        case personCaptionStyles = "person_caption_styles"
         case tagStyle = "tag_style"
         case tagStyles = "tag_styles"
         case logoPath = "logo_path"
@@ -184,6 +187,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         tagSchema = try container.decodeIfPresent([String: [String]].self, forKey: .tagSchema) ?? [:]
         socials = try container.decodeIfPresent([String: SocialSlot].self, forKey: .socials) ?? [:]
         captionStyles = try container.decodeIfPresent([NamedCaptionStyle].self, forKey: .captionStyles)
+        personCaptionStyles = try container.decodeIfPresent([String: String].self, forKey: .personCaptionStyles)
         tagStyle = try container.decodeIfPresent(TagStyle.self, forKey: .tagStyle)
         tagStyles = try container.decodeIfPresent([NamedTagStyle].self, forKey: .tagStyles)
         captions = try container.decodeIfPresent(CaptionStyle.self, forKey: .captions) ?? CaptionStyle()
@@ -370,6 +374,12 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
         decor.underline = decor.underline ?? text?.underline ?? false
         decor.strikethrough = decor.strikethrough ?? text?.strikethrough ?? false
         decor.bgOn = (state == .highlight && resolvedHighlight == "box") || (decor.bgOn ?? false)
+        // Typography inherits Text, which in turn falls back to the
+        // whole-caption fields older styles stored.
+        decor.weight = decor.weight ?? text?.weight ?? weight
+        decor.strokeWidth = decor.strokeWidth ?? text?.strokeWidth ?? strokeWidth
+        decor.letterSpacing = decor.letterSpacing ?? text?.letterSpacing ?? letterSpacing
+        decor.shadow = decor.shadow ?? text?.shadow ?? shadow
         return decor
     }
 

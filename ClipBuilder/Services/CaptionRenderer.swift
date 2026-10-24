@@ -7,9 +7,9 @@ import UniformTypeIdentifiers
 /// Renders caption text to transparent PNGs for ffmpeg overlay burn-in —
 /// the Core Text port of captions.py's Pillow renderer: same wrap width,
 /// padding, outline, and position math so output matches the Python app.
-nonisolated struct CaptionRenderer {
+nonisolated struct CaptionRenderer: Sendable {
 
-    struct RenderedCaption {
+    struct RenderedCaption: Sendable {
         var pngURL: URL
         var width: Int
         var height: Int
@@ -36,8 +36,10 @@ nonisolated struct CaptionRenderer {
 
     /// The caption face at `size`; `family` defaults to the style's text font
     /// and the lit or emphasised word may ask for its own.
-    private func resolveFont(size: CGFloat, family: String? = nil, italic: Bool = false) -> CTFont {
+    private func resolveFont(size: CGFloat, family: String? = nil, italic: Bool = false,
+                             weight: String? = nil) -> CTFont {
         let family = family ?? style.font
+        let weight = weight ?? style.resolvedWeight
         let familyNames: [String]
         switch family.lowercased() {
         case "serif": familyNames = ["Times New Roman", "Times", "Georgia"]
@@ -50,7 +52,7 @@ nonisolated struct CaptionRenderer {
             // CTFontCreateWithName falls back silently; accept the first result.
             let bold = CTFontCreateCopyWithSymbolicTraits(font, size, nil, .traitBold, .traitBold) ?? font
             let weighted: CTFont
-            switch style.resolvedWeight {
+            switch weight {
             case "black":
                 // Heaviest face of the family at normal width; a family whose
                 // only heavier faces are condensed keeps its bold.
@@ -80,6 +82,12 @@ nonisolated struct CaptionRenderer {
     private struct MeasuredFont {
         var font: CTFont
         var padding: CGFloat
+        var kern: CGFloat = 0
+    }
+
+    /// Letter spacing of a word state in canvas pixels.
+    private func kern(for state: CaptionStyle.WordState) -> CGFloat {
+        style.resolvedDecor(for: state).resolvedLetterSpacing * CGFloat(videoWidth) / 1080
     }
 
     /// Preserve historical sizing when an old profile has no explicit text size.
@@ -110,7 +118,8 @@ nonisolated struct CaptionRenderer {
         let pixels = ownSize != nil
             ? style.resolvedSize(for: state) * CGFloat(videoWidth) / 1080 * size / baseSize
             : size * style.resolvedSize(for: state) / style.resolvedSize(for: .text)
-        return resolveFont(size: pixels, family: family, italic: style.resolvedDecor(for: state).resolvedItalic)
+        let decor = style.resolvedDecor(for: state)
+        return resolveFont(size: pixels, family: family, italic: decor.resolvedItalic, weight: decor.resolvedWeight)
     }
 
     /// Include padding and italic ink overhang in each state's reserved slot.
@@ -125,33 +134,35 @@ nonisolated struct CaptionRenderer {
             return states.map { state in
                 let family = state == .highlight ? style.resolvedHighlightFont
                     : state == .emphasis ? style.resolvedEmphasisFont : style.font
-                return MeasuredFont(font: resolveFont(size: size * scale, family: family), padding: 0)
+                return MeasuredFont(font: resolveFont(size: size * scale, family: family), padding: 0,
+                                    kern: kern(for: .text))
             }
         }
         return states.map { state in
             let font = stateFont(state, size: size)
-            return MeasuredFont(font: font, padding: style.resolvedDecor(for: state).resolvedBackground ? CTFontGetSize(font) / 8 : 0)
+            return MeasuredFont(font: font, padding: style.resolvedDecor(for: state).resolvedBackground ? CTFontGetSize(font) / 8 : 0,
+                                kern: kern(for: state))
         }
     }
 
-    private func wordBounds(_ token: String, font: CTFont) -> CGRect {
+    private func wordBounds(_ token: String, font: CTFont, kern: CGFloat) -> CGRect {
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: token, attributes: [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
-            NSAttributedString.Key(kCTKernAttributeName as String): style.resolvedLetterSpacing * Double(videoWidth) / 1080,
+            NSAttributedString.Key(kCTKernAttributeName as String): kern,
         ]))
         let ink = usesLegacyDecorations ? CGRect.zero : CTLineGetBoundsWithOptions(line, .useGlyphPathBounds)
         let left = min(0, ink.minX)
         return CGRect(x: left, y: -CTFontGetDescent(font),
-                      width: max(lineWidth(token, font: font), ink.maxX) - left,
+                      width: max(lineWidth(token, font: font, kern: kern), ink.maxX) - left,
                       height: CTFontGetAscent(font) + CTFontGetDescent(font))
     }
 
     private func reservedWidth(_ token: String, fonts: [MeasuredFont]) -> CGFloat {
-        fonts.map { wordBounds(token, font: $0.font).width + $0.padding * 2 }.max() ?? 0
+        fonts.map { wordBounds(token, font: $0.font, kern: $0.kern).width + $0.padding * 2 }.max() ?? 0
     }
 
     private func spaceWidth(_ fonts: [MeasuredFont]) -> CGFloat {
-        fonts.first.map { lineWidth(" ", font: $0.font) } ?? 0
+        fonts.first.map { lineWidth(" ", font: $0.font, kern: $0.kern) } ?? 0
     }
 
     /// A line's width with every word at its reserved width.
@@ -162,10 +173,10 @@ nonisolated struct CaptionRenderer {
             + spaceWidth(fonts) * CGFloat(tokens.count - 1)
     }
 
-    private func lineWidth(_ text: String, font: CTFont) -> CGFloat {
+    private func lineWidth(_ text: String, font: CTFont, kern: CGFloat) -> CGFloat {
         let attributed = NSAttributedString(string: text, attributes: [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
-            NSAttributedString.Key(kCTKernAttributeName as String): style.resolvedLetterSpacing * Double(videoWidth) / 1080,
+            NSAttributedString.Key(kCTKernAttributeName as String): kern,
         ])
         let line = CTLineCreateWithAttributedString(attributed)
         return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
@@ -331,9 +342,12 @@ nonisolated struct CaptionRenderer {
                     && emphasised && ["scale", "both"].contains(style.resolvedEmphasis) {
                     drawFont = resolveFont(size: fontSize * 1.12, family: style.resolvedHighlightFont)
                 }
+                let wordKern = usesLegacyDecorations ? kern(for: .text) : kern(for: state)
+                let strokeWidth = usesLegacyDecorations ? style.resolvedStrokeWidth : decor.resolvedStrokeWidth
+                let shadow = usesLegacyDecorations ? style.resolvedShadow : decor.resolvedShadow
                 let reserved = reservedWidth(token, fonts: fonts)
-                let bounds = wordBounds(token, font: drawFont)
-                let drawWidth = lineWidth(token, font: drawFont)
+                let bounds = wordBounds(token, font: drawFont, kern: wordKern)
+                let drawWidth = lineWidth(token, font: drawFont, kern: wordKern)
                 let tokenX = cursor + (reserved - bounds.width) / 2 - bounds.minX
                 var fill = textColor ?? style.color
                 if emphasised && ["color", "both"].contains(style.resolvedEmphasis) { fill = style.resolvedEmphasisColor }
@@ -357,15 +371,15 @@ nonisolated struct CaptionRenderer {
                 var attributes: [NSAttributedString.Key: Any] = [
                     NSAttributedString.Key(kCTFontAttributeName as String): drawFont,
                     NSAttributedString.Key(kCTForegroundColorAttributeName as String): color(fill),
-                    NSAttributedString.Key(kCTKernAttributeName as String): style.resolvedLetterSpacing * Double(videoWidth) / 1080,
+                    NSAttributedString.Key(kCTKernAttributeName as String): wordKern,
                 ]
-                if !style.bgOn && style.resolvedStrokeWidth > 0 {
+                if !style.bgOn && strokeWidth > 0 {
                     attributes[NSAttributedString.Key(kCTStrokeColorAttributeName as String)] = CGColor(gray: 0, alpha: 0.86)
                     attributes[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] =
-                        -100 * style.resolvedStrokeWidth * Double(videoWidth) / 1080 / Double(CTFontGetSize(drawFont))
+                        -100 * strokeWidth * Double(videoWidth) / 1080 / Double(CTFontGetSize(drawFont))
                 }
                 context.saveGState()
-                if style.resolvedShadow {
+                if shadow {
                     context.setShadow(offset: CGSize(width: 0, height: -2), blur: 4,
                                       color: CGColor(gray: 0, alpha: 0.75))
                 }
@@ -383,9 +397,9 @@ nonisolated struct CaptionRenderer {
                 }
                 // Outline first, then the fill on top, so a thin rule keeps
                 // its colour inside the same outline width as the glyphs.
-                if !style.bgOn && style.resolvedStrokeWidth > 0 {
+                if !style.bgOn && strokeWidth > 0 {
                     context.setStrokeColor(CGColor(gray: 0, alpha: 0.86))
-                    context.setLineWidth(2 * style.resolvedStrokeWidth * CGFloat(videoWidth) / 1080)
+                    context.setLineWidth(2 * strokeWidth * CGFloat(videoWidth) / 1080)
                     for rect in decorations { context.stroke(rect) }
                 }
                 context.setFillColor(color(fill))

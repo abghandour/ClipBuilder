@@ -106,7 +106,12 @@ struct MiniWizardView: View {
                     footer: generateFooter,
                     onMove: { element, position in
                         switch element {
-                        case .caption: miniSettings.captionPosition = position.string
+                        case .caption(let slot):
+                            if let slot {
+                                var positions = miniSettings.speakerCaptionPositions ?? [:]
+                                positions[slot] = position.string
+                                miniSettings.speakerCaptionPositions = positions
+                            } else { miniSettings.captionPosition = position.string }
                         case .nameTag: miniSettings.nameTagPosition = position.string
                         case .overlay: miniSettings.overlayPosition = position.string
                         }

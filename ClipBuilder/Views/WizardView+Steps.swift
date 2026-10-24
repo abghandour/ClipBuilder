@@ -72,10 +72,15 @@ extension WizardView {
         HSplitView {
             configurationCards.frame(minWidth: 480, maxWidth: .infinity)
             WizardPreviewColumn(scenes: previewScenes, options: presentationOptions(),
-                profile: store.activeProfile, thumbnails: store.thumbnails,
+                profile: store.activeProfile, thumbnails: store.thumbnails, captionOrdinals: captionOrdinals,
                 onMove: { element, position in
                     switch element {
-                    case .caption: captionChoice(\.captionPosition).wrappedValue = position.string
+                    case .caption(let slot):
+                        if let slot {
+                            var positions = speakerCaptionPositions ?? [:]
+                            positions[slot] = position.string
+                            speakerPositionChoices.wrappedValue = positions
+                        } else { captionChoice(\.captionPosition).wrappedValue = position.string }
                     case .nameTag: nameTagPosition = position.string
                     case .overlay: fixedOverlayPosition = position.string
                     }
@@ -83,6 +88,20 @@ extension WizardView {
                 .id("\(store.profileGeneration):\(store.activeProjectID ?? 0)")
                 .rememberedPaneWidth("pane.wizard.preview", min: 240, initial: 320, max: 480)
         }
+        .task(id: "\(store.profileGeneration)|\(store.transcriptCountsVersion)|\(sourceVideoIDs.sorted())") {
+            await loadCaptionOrdinals()
+        }
+    }
+
+    private func loadCaptionOrdinals() async {
+        captionOrdinals = [:]
+        guard let database = store.database else { return }
+        let evidence = await CaptionSpeakerEvidence.load(database: database, videoIDs: sourceVideoIDs.sorted())
+        let resolved = await Task.detached {
+            CaptionSpeakerOrder.ordinals(turns: evidence.turns, rows: evidence.rows, roster: evidence.rosterKeys)
+        }.value
+        guard !Task.isCancelled, store.database === database else { return }
+        captionOrdinals = resolved
     }
 
     private var previewScenes: [SceneRecord] {

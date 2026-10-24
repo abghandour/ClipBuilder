@@ -14,7 +14,7 @@ nonisolated enum CaptionSpeakerColors {
     /// Assign palette slots from the whole video's ordered turns, so cuts and
     /// translations retain the same colours. Explicit line attribution wins;
     /// a line crossing speakers uses the first overlapping turn, not the longest.
-    static func color(for segment: TranscriptSegment, turns: [SpeakerTurn], rows: [TranscriptRow]) -> String? {
+    static func speakerKey(for segment: TranscriptSegment, turns: [SpeakerTurn], rows: [TranscriptRow]) -> String? {
         guard !turns.isEmpty else { return nil }
         let ordered = turns.sorted { $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start }
         let originals = rows.filter { !$0.isTranslation }.sorted { $0.startTime < $1.startTime }
@@ -29,7 +29,18 @@ nonisolated enum CaptionSpeakerColors {
             let end = line?.endTime ?? segment.end
             selected = ordered.first { $0.end > start && $0.start < end }.map { key(for: $0) }
         }
-        guard let selected else { return nil }
+        return selected
+    }
+
+    static func personKey(_ speakerKey: String?) -> String? {
+        guard let speakerKey, speakerKey.hasPrefix("person:") else { return nil }
+        return String(speakerKey.dropFirst("person:".count))
+    }
+
+    static func color(for segment: TranscriptSegment, turns: [SpeakerTurn], rows: [TranscriptRow]) -> String? {
+        guard let selected = speakerKey(for: segment, turns: turns, rows: rows) else { return nil }
+        let ordered = turns.sorted { $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start }
+        let originals = rows.filter { !$0.isTranslation }.sorted { $0.startTime < $1.startTime }
         var keys: [String] = []
         for turn in ordered {
             let key = key(for: turn)

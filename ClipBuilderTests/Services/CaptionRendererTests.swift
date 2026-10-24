@@ -5,6 +5,43 @@ import ImageIO
 @testable import Clip_Builder
 
 struct CaptionRendererTests {
+    @Test func speakerPNGCacheSeparatesStylesAndUsesTheirPlacement() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        var style = CaptionStyle()
+        style.color = "#ffffff"
+        style.position = "bottom"
+        var red = style
+        red.color = "#ff0000"
+        red.position = "top"
+        let safe = try #require(PlatformSafeArea.resolve(platforms: [.instagram], aspectRatio: 9.0 / 16))
+        let base = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style,
+                                   safeArea: safe, safeAreaOnly: true)
+        let renderers = CaptionRendererSet(base: base, speakerStyles: ["ana": red])
+        let cache = CaptionPNGCache(renderers: renderers, directory: folder)
+        let raster = CaptionOverlayPlan.Raster(text: "Same words")
+        var speakerRaster = raster
+        speakerRaster.styleID = "ana"
+        let plain = try await cache.rendered(raster)
+        let speaker = try await cache.rendered(speakerRaster)
+        let repeatSpeaker = try await cache.rendered(speakerRaster)
+        #expect(plain.pngURL != speaker.pngURL)
+        #expect(repeatSpeaker.pngURL == speaker.pngURL)
+        #expect(try Self.pixels(plain) != Self.pixels(speaker))
+        let selected = cache.renderer(styleID: speakerRaster.styleID)
+        #expect(selected.videoWidth == base.videoWidth && selected.videoHeight == base.videoHeight)
+        #expect(selected.safeArea == base.safeArea && selected.safeAreaOnly == base.safeAreaOnly)
+        #expect(selected.position(for: speaker).y < base.position(for: plain).y)
+        #expect(renderers.renderer(styleID: "deleted").style == style)
+        #expect(!CaptionRendererSet(base: base).usesSpeakers && renderers.usesSpeakers)
+        let segment = TranscriptSegment(start: 0, end: 1, text: "Same words")
+        var turn = SpeakerTurn(videoID: 1, start: 0, end: 1, cluster: 0, confidence: 1, personKey: "ana")
+        #expect(renderers.renderer(for: segment, turns: [turn], rows: []).styleID == "ana")
+        turn.personKey = nil
+        #expect(renderers.renderer(for: segment, turns: [turn], rows: []).styleID == nil)
+    }
+
     @Test func wrappedLinesUseTheSelectedAlignment() {
         #expect(CaptionRenderer.lineOrigin(width: 100, boxWidth: 300, padding: 20, alignment: nil) == 100)
         #expect(CaptionRenderer.lineOrigin(width: 100, boxWidth: 300, padding: 20, alignment: "center") == 100)
@@ -362,6 +399,38 @@ extension CaptionRendererTests {
             }
             let hasRed: Bool = stride(from: 0, to: pixels.count, by: 4).contains { isRed($0) }
             #expect(hasRed, "the spoken word is drawn in the highlight red")
+        }.value
+    }
+}
+
+extension CaptionRendererTests {
+    @Test func highlightWordCanHaveItsOwnWeightOutlineSpacingAndShadow() async throws {
+        try await Task.detached {
+            let folder = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: folder) }
+            var style = CaptionStyle()
+            style.strokeWidth = 0
+            style.highlight = "color"
+            style.highlightColor = style.color
+            style.text = CaptionWordDecor()
+            style.highlightDecor = CaptionWordDecor()
+            let inherited = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style)
+            let plain = try inherited.render(text: "Quiet strength", to: folder)
+            let lit = try inherited.render(text: "Quiet strength", activeIndex: 1, to: folder)
+            #expect(try Self.pixels(plain) == Self.pixels(lit), "same colour, same typography: nothing changes")
+            for change: (inout CaptionWordDecor) -> Void in [
+                { $0.weight = "black" }, { $0.strokeWidth = 4 }, { $0.letterSpacing = 4 }, { $0.shadow = true },
+            ] {
+                var variant = style
+                change(&variant.highlightDecor!)
+                let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: variant)
+                let unlit = try renderer.render(text: "Quiet strength", to: folder)
+                #expect(try Self.pixels(unlit) == Self.pixels(plain) || unlit.width != plain.width,
+                        "the plain word is unaffected except for the reserved width")
+                let highlighted = try renderer.render(text: "Quiet strength", activeIndex: 1, to: folder)
+                #expect(try Self.pixels(highlighted) != Self.pixels(unlit), "the spoken word shows its own typography")
+            }
         }.value
     }
 }

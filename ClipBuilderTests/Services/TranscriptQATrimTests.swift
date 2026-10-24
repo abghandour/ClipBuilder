@@ -273,3 +273,49 @@ struct TranscriptQATrimTests {
         #expect(TranscriptQATrim.releasing(10.5...20, from: 10...20, words: [], limits: 9...24) == 10.5...20)
     }
 }
+
+extension TranscriptQATrimTests {
+    @Test func rowCrossingASpeakerChangeSplitsIntoOneLinePerSpeaker() throws {
+        // "Yeah. How did you start? Only a couple street bars." — the asker
+        // stops after "start?" and the answer begins mid-row.
+        let timed = [("Yeah.", 0.0, 0.4), ("How", 0.5, 0.7), ("did", 0.7, 0.9), ("you", 0.9, 1.1), ("start?", 1.1, 1.6),
+                     ("Only", 2.0, 2.3), ("a", 2.3, 2.4), ("couple", 2.4, 2.8), ("street", 2.8, 3.2), ("bars.", 3.2, 3.8)]
+            .map { TranscriptWord(word: $0.0, start: $0.1, end: $0.2) }
+        let json = String(decoding: try JSONEncoder().encode(timed), as: UTF8.self)
+        var crossing = row(0, 4, timed.map(\.word).joined(separator: " "), wordsJSON: json)
+        crossing.id = 1
+        var next = row(4, 6, "Then I moved.")
+        next.id = 2
+        let spans = [TranscriptQATrim.SpeakerSpan(start: 0, end: 1.8, label: "Marcello"),
+                     TranscriptQATrim.SpeakerSpan(start: 1.9, end: 6, label: "John")]
+        let transcript = TranscriptQATrim.Transcript(.init(rows: [crossing, next], labels: [1: "Marcello", 2: "John"],
+                                                           videoID: 1, speakerSpans: spans))
+        #expect(transcript.lines.map(\.speaker) == ["Marcello", "John"])
+        #expect(transcript.lines[0].words.map(\.text) == ["Yeah.", "How", "did", "you", "start?"])
+        #expect(transcript.lines[1].words.map(\.text) == ["Only", "a", "couple", "street", "bars.", "Then", "I", "moved."],
+                "the answer run merges with the next row by the same speaker")
+        #expect(transcript.lines[0].start == 0 && transcript.lines[0].end == 1.6)
+        #expect(transcript.lines[1].start == 2.0 && transcript.lines[1].end == 6)
+        #expect(transcript.words.map(\.id) == Array(0..<transcript.words.count))
+        // A row the user attributed by hand keeps its one label.
+        var attributed = crossing
+        attributed.speaker = .person(key: "marcello")
+        let manual = TranscriptQATrim.Transcript(.init(rows: [attributed], labels: [1: "Marcello"], videoID: 1, speakerSpans: spans))
+        #expect(manual.lines.map(\.speaker) == ["Marcello"])
+        // Without timed words there is nothing to split on.
+        let untimed = TranscriptQATrim.Transcript(.init(rows: [row(0, 4, "Yeah. How did you start? Only a couple.")],
+                                                        labels: [1: "Marcello"], videoID: 1, speakerSpans: spans))
+        #expect(untimed.lines.count == 1)
+        // A word in a gap between spans stays with the words before it ("start?"
+        // ends at 1.6, after Marcello's span); a word touching the next span joins it.
+        let gap = [TranscriptQATrim.SpeakerSpan(start: 0, end: 1.0, label: "Marcello"),
+                   TranscriptQATrim.SpeakerSpan(start: 2.2, end: 6, label: "John")]
+        let gapped = TranscriptQATrim.Transcript(.init(rows: [crossing], labels: [1: "Marcello"], videoID: 1, speakerSpans: gap))
+        #expect(gapped.lines.map(\.speaker) == ["Marcello", "John"])
+        #expect(gapped.lines[0].words.map(\.text) == ["Yeah.", "How", "did", "you", "start?"])
+        // Only one speaker covers the row: nothing to split.
+        let single = TranscriptQATrim.Transcript(.init(rows: [crossing], labels: [1: "Marcello"], videoID: 1,
+                                                       speakerSpans: [.init(start: 0, end: 6, label: "Marcello")]))
+        #expect(single.lines.count == 1)
+    }
+}

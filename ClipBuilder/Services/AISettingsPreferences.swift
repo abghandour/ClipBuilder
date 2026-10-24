@@ -84,6 +84,7 @@ import Foundation
         }
         let captionChoices = WizardCaptionChoices.load(profileName: profile.profileName, defaults: defaults)
         result["captionPosition"] = captionChoices.captionPosition.map(JSONSetting.string) ?? .null
+        result["speakerCaptionPositions"] = captionChoices.speakerCaptionPositions.map(JSONSetting.dictionaryValue) ?? .null
         result["captionStyleID"] = captionChoices.captionStyleID.map(JSONSetting.string) ?? .null
         if CropRecipe.Kind(rawValue: result["highlightFraming"]?.string ?? "") == nil {
             result["highlightFraming"] = .null
@@ -164,6 +165,7 @@ import Foundation
         if kind == .wizard, let profileName, scopes.contains(.options) {
             var choices = WizardCaptionChoices.load(profileName: profileName, defaults: defaults)
             if let value = result["captionPosition"] { choices.captionPosition = value.string }
+            if let value = result["speakerCaptionPositions"] { choices.speakerCaptionPositions = value.decodeValue() }
             if let value = result["captionStyleID"] { choices.captionStyleID = value.string }
             choices.save(profileName: profileName, defaults: defaults)
         }
