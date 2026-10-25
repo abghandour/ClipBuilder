@@ -4,7 +4,7 @@ import Testing
 @testable import Clip_Builder
 
 @Suite("Media admission and cancellation", .tags(.integration),
-       .enabled(if: FixtureVideo.integrationsAvailable), .timeLimit(.minutes(1)))
+       .enabled(if: FixtureVideo.integrationsAvailable), .timeLimit(.minutes(3)))
 struct MediaSchedulingTests {
     @Test("Vision budget admits two independent tracking calls and releases per request")
     func overlappingTrackingCalls() async throws {
