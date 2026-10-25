@@ -173,6 +173,7 @@ struct JSONStoresTests {
         // Both legacy scope toggles on: batch scope wins, favorite filter drops.
         defaults.set(true, forKey: "wizard.limitToSelection")
         defaults.set(true, forKey: "wizard.favoritesOnly")
+        WizardDefaults.resetForTesting(defaults: defaults)
         WizardDefaults.migrateLegacy(defaults: defaults)
         #expect(!defaults.bool(forKey: "wizard.favoritesOnly"))
     }

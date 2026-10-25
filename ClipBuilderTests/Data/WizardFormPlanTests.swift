@@ -332,6 +332,8 @@ extension WizardFormPlanTests {
                 == (legacy ? WizardWorkflow.reviewMoments.rawValue : WizardWorkflow.automatic.rawValue))
             defaults.set(WizardWorkflow.reviewMomentsAndLook.rawValue, forKey: WizardDefaults.workflowKey)
             defaults.set(!legacy, forKey: "wizard.reviewProposedCuts")
+            // Simulate a later process seeing legacy keys again.
+            WizardDefaults.resetForTesting(defaults: defaults)
             WizardDefaults.migrateLegacy(defaults: defaults)
             #expect(defaults.object(forKey: "wizard.reviewProposedCuts") == nil)
             #expect(defaults.string(forKey: WizardDefaults.workflowKey) == WizardWorkflow.reviewMomentsAndLook.rawValue)
