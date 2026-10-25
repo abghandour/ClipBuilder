@@ -50,7 +50,8 @@ struct WizardReelBatchTests {
            waiting: { pending in waiting.withLock { $0.append(pending) } })
         let events = journal.all
         func position(_ event: String) throws -> Int { try #require(events.firstIndex(of: event)) }
-        #expect(try position("render 1 start") < position("finish 0 start"))
+        // Reel 0's finish task and reel 1's render start concurrently, so which
+        // logs first is a scheduling race; the gates prove they overlap.
         #expect(try position("finish 0 start") < position("render 1 end"))
         #expect(try position("render 2 end") < position("finish 1 end"))
         #expect(events.contains("log 0: caption 0") && events.contains("log 1: caption 1"))
