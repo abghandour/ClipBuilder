@@ -70,14 +70,25 @@ nonisolated enum WizardFootageReview {
     /// The videos a selection's takes draw from: the recorded footage, else
     /// the takes' scenes resolved against the analysis on this Mac.
     static func videoIDs(of summary: WizardSelectionSummary, scenes: [SceneRecord]) -> Set<Int64> {
-        let sceneMap = Dictionary(scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        videoIDs(of: summary, sceneVideos: sceneVideoIDs(scenes))
+    }
+
+    /// Scene id to video id, built once and shared by every selection: a
+    /// per-selection map made the Wizard's footage check O(selections × scenes).
+    static func sceneVideoIDs(_ scenes: [SceneRecord]) -> [Int64: Int64] {
+        var map = [Int64: Int64](minimumCapacity: scenes.count)
+        for scene in scenes where map[scene.id] == nil { map[scene.id] = scene.videoID }
+        return map
+    }
+
+    static func videoIDs(of summary: WizardSelectionSummary, sceneVideos: [Int64: Int64]) -> Set<Int64> {
         var ids = Set<Int64>()
         for take in summary.takes {
             if let footage = take.plan.footage, !footage.isEmpty {
                 ids.formUnion(footage.compactMap(\.videoID))
             } else {
-                ids.formUnion(take.sceneIDs.compactMap { sceneMap[$0]?.videoID })
-                ids.formUnion(take.plan.clips.compactMap { sceneMap[$0.sceneID]?.videoID })
+                ids.formUnion(take.sceneIDs.compactMap { sceneVideos[$0] })
+                ids.formUnion(take.plan.clips.compactMap { sceneVideos[$0.sceneID] })
             }
         }
         return ids
@@ -88,8 +99,9 @@ nonisolated enum WizardFootageReview {
     /// whose footage cannot be traced stays visible.
     static func selections(_ selections: [WizardSelectionSummary], usingVideos videoIDs: Set<Int64>,
                            scenes: [SceneRecord]) -> [WizardSelectionSummary] {
-        selections.filter { summary in
-            let used = Self.videoIDs(of: summary, scenes: scenes)
+        let sceneVideos = sceneVideoIDs(scenes)
+        return selections.filter { summary in
+            let used = Self.videoIDs(of: summary, sceneVideos: sceneVideos)
             return used.isEmpty || !used.isDisjoint(with: videoIDs)
         }
     }

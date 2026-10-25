@@ -1,7 +1,18 @@
 import Foundation
 
 nonisolated struct OutputFolder: Identifiable, Equatable {
-    enum Section: String, CaseIterable { case smart = "Smart", date = "By Date", source = "By Source", batch = "By Batch" }
+    enum Section: String, CaseIterable {
+        case smart = "Smart", date = "By Date", source = "By Source", batch = "By Batch"
+
+        var symbol: String {
+            switch self {
+            case .smart: "sparkles.rectangle.stack"
+            case .date: "calendar"
+            case .source: "film"
+            case .batch: "square.stack.3d.up"
+            }
+        }
+    }
     var id: String
     var title: String
     var section: Section

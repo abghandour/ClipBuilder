@@ -120,7 +120,7 @@ struct MiniWizardView: View {
                     .rememberedPaneWidth("pane.express.preview", min: 240, initial: 320, max: 480)
             }
         }
-        .screenTitle("AI Wizard Express")
+        .screenTitle("AI Wizard", subtitle: "Express")
         .sheet(item: $presetSheet) { sheet in
             let lastUsed = UserDefaults.standard.string(forKey: MiniWizardPresetStore.lastUsedKey(profileName: profileName))
             switch sheet {

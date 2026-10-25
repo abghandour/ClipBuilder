@@ -36,12 +36,12 @@ nonisolated enum WizardPresetStore {
 
     static func rememberLoaded(_ loaded: Loaded?, profileName: String, defaults: UserDefaults = .standard) {
         guard let loaded else {
-            defaults.removeObject(forKey: lastUsedKey(profileName: profileName))
-            defaults.removeObject(forKey: baselineKey(profileName: profileName))
+            defaults.setIfChanged(nil, forKey: lastUsedKey(profileName: profileName))
+            defaults.setIfChanged(nil, forKey: baselineKey(profileName: profileName))
             return
         }
-        defaults.set(loaded.name, forKey: lastUsedKey(profileName: profileName))
-        defaults.set(AISettingsJSON.encode(loaded.settings), forKey: baselineKey(profileName: profileName))
+        defaults.setIfChanged(loaded.name, forKey: lastUsedKey(profileName: profileName))
+        defaults.setIfChanged(AISettingsJSON.encode(loaded.settings), forKey: baselineKey(profileName: profileName))
     }
 
     static func loaded(profileName: String, defaults: UserDefaults = .standard) -> Loaded? {
@@ -122,10 +122,14 @@ nonisolated enum WizardPresetStore {
                 settings["pacing"].flatMap { $0.decodeValue() })
     }
 
+    /// True when the stored answers changed. Writing an identical value would
+    /// post `didChangeNotification` and re-run every listener for nothing.
+    @discardableResult
     static func remember(profile: BrandProfile, renderSettings: RenderSettings?, pacing: EditPacing?,
-                         defaults: UserDefaults = .standard) {
+                         defaults: UserDefaults = .standard) -> Bool {
         let captured = capture(profile: profile, renderSettings: renderSettings, pacing: pacing, defaults: defaults)
-        defaults.set(AISettingsJSON.encode(captured), forKey: WizardPresetStore.answersKey(profileName: profile.profileName))
+        return defaults.setIfChanged(AISettingsJSON.encode(captured),
+                                     forKey: WizardPresetStore.answersKey(profileName: profile.profileName))
     }
 
     /// Nil when this profile has never been remembered: the live answers stand.

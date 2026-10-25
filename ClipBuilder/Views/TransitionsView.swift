@@ -273,7 +273,7 @@ struct TransitionsView: View {
                     sampleMenu(slot: .videoB, title: "Video B", url: samples.videoB, sources: sources)
                 }
             }
-            Text("Previews use a still from each video. Video A is shared with Looks.")
+            Text("Previews use a still from each video. Video A is shared with Effects.")
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1).fixedSize(horizontal: false, vertical: true)

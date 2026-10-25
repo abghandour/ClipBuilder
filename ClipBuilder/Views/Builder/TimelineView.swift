@@ -194,7 +194,7 @@ struct TimelineView: View {
                 TrackHeader(track: track)
                     .frame(height: layout.videoTracks[track].laneHeight)
             }
-            laneHeader(title: "Overlays", systemImage: "square.2.layers.3d", shade: TimelineTrackStyle.overlays)
+            laneHeader(title: "Overlays", systemImage: "square.on.square", shade: TimelineTrackStyle.overlays)
                 .frame(height: CGFloat(layout.overlayRowCount)
                        * BuilderTimelineModel.overlayRowHeight)
             laneHeader(title: "Sound", systemImage: "music.note", shade: TimelineTrackStyle.sound)
@@ -976,7 +976,7 @@ struct CropLaneHeader: View {
     var body: some View {
         let model = store.builder
         HStack(spacing: 6) {
-            Image(systemName: "crop")
+            Image(systemName: "aspectratio")
                 .foregroundStyle(.secondary)
             Text("Screen")
                 .font(.caption)
@@ -990,7 +990,7 @@ struct CropLaneHeader: View {
             .labelStyle(.iconOnly)
             .buttonStyle(.borderless)
             .controlSize(.small)
-            .help("Add a Screen Crop layout or a bumper at the playhead. Layouts come from Resources > Screen Crop, bumpers from Resources > Bumpers.")
+            .help("Add a Screen Layout or a bumper at the playhead. Layouts come from Resources > Screen Layouts, bumpers from Resources > Bumpers.")
             .popover(isPresented: $showAdd) {
                 VStack(alignment: .leading, spacing: 2) {
                     ForEach(BuilderTimelineModel.availableCropLayouts(), id: \.self) { layout in
@@ -1220,7 +1220,7 @@ struct CropBlockView: View {
                       effect.preset != "none", effect.intensity > 0 else { return nil }
                 return (index, EffectCatalog.preset(for: effect.preset)?.name ?? effect.preset)
             })
-        let lookSummary = looks.isEmpty ? "" : " · \(looks.count) \(looks.count == 1 ? "look" : "looks")"
+        let lookSummary = looks.isEmpty ? "" : " · \(looks.count) \(looks.count == 1 ? "effect" : "effects")"
         // The last block reads as "to the end": it fills the visible row.
         let naturalWidth = CGFloat(block.duration) * pps
         let room = contentWidth - CGFloat(block.startTime) * pps
@@ -1640,7 +1640,7 @@ struct OverlayBlockView: View {
         let width = max(24, CGFloat(item.duration) * pps + (isTrimming ? trimDelta : 0))
 
         HStack(spacing: 4) {
-            Image(systemName: "square.2.layers.3d")
+            Image(systemName: "square.on.square")
                 .font(.caption)
             Text(item.name)
                 .font(.caption)

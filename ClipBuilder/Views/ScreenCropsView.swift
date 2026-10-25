@@ -51,9 +51,9 @@ struct ScreenCropsView: View {
             }
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .screenTitle("Screen Crop", subtitle: navigationSubtitle)
+        .screenTitle("Screen Layouts", subtitle: navigationSubtitle)
         .toolbar { screenCropToolbarContent }
-        .alert("Rename Screen Crop", isPresented: $renamePrompt) {
+        .alert("Rename Screen Layout", isPresented: $renamePrompt) {
             TextField("Name", text: $renameText)
             Button("Rename", action: renameSelected)
             Button("Cancel", role: .cancel) {}
@@ -121,8 +121,8 @@ struct ScreenCropsView: View {
 
     private var screenCropEmptyState: some View {
         ContentUnavailableView(
-            "Select a Screen Crop",
-            systemImage: "crop",
+            "Select a Screen Layout",
+            systemImage: "aspectratio",
             description: Text("Pick a built-in layout to see it, or create a custom one and draw named areas."))
             .frame(minWidth: 620, maxWidth: .infinity, maxHeight: .infinity)
     }
@@ -130,8 +130,8 @@ struct ScreenCropsView: View {
     @ToolbarContentBuilder
     private var screenCropToolbarContent: some ToolbarContent {
         ToolbarItemGroup {
-            Button("New Screen Crop", systemImage: "plus", action: createLayout)
-                .help("Create a screen-crop layout")
+            Button("New Screen Layout", systemImage: "plus", action: createLayout)
+                .help("Create a screen layout")
             if selectedName != nil, !isBuiltInSelected {
                 Label(isSaving ? "Saving…" : "Saved",
                       systemImage: isSaving ? "arrow.triangle.2.circlepath" : "checkmark")
@@ -311,7 +311,7 @@ struct ScreenCropsView: View {
     }
 
     private func createLayout() {
-        let name = ScreenCropStore.uniqueName(base: "Screen Crop")
+        let name = ScreenCropStore.uniqueName(base: "Screen Layout")
         let created = ScreenCropLayout(name: name)
         do {
             try ScreenCropStore.save(created)

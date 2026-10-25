@@ -95,7 +95,7 @@ struct WizardResultsSheet: View {
                     } label: {
                         Label("Back to Settings", systemImage: "slider.horizontal.3").lineLimit(1).fixedSize()
                     }
-                    .help("Return to AI Wizard Express to change the picks or settings and generate again")
+                    .help("Return to the Express tab of the AI Wizard to change the picks or settings and generate again")
                 } else {
                     Button {
                         store.retryWizard()

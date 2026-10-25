@@ -99,11 +99,11 @@ struct MiniSettingsCard: View {
                 }
             }
         }
-        MiniRow("Look") {
+        MiniRow("Effect") {
             lookPicker
         }
         FormCaption(settings.lookName == nil
-            ? "Grades the footage of every clip with a look from the Looks library."
+            ? "Grades the footage of every clip with an effect from the Effects library."
             : "Graded into every clip's footage; captions, name tags and overlays stay clean.")
         MiniRow("Transition") {
             transitionPicker
@@ -418,10 +418,10 @@ struct MiniSettingsCard: View {
             preset.id != "none" && (availableLookIDs?.contains(preset.id) ?? true)
         }
         let groups: [(title: String, presets: [EffectCatalog.Preset])] = [
-            ("Looks", available.filter { $0.group == "looks" }),
+            ("Effects", available.filter { $0.group == "looks" }),
             ("Film stocks", available.filter { $0.group == "film" }),
         ].filter { !$0.presets.isEmpty }
-        return Picker("Look", selection: $settings.look) {
+        return Picker("Effect", selection: $settings.look) {
             Text("None").lineLimit(1).fixedSize().tag("")
             ForEach(groups, id: \.title) { group in
                 Section(group.title) {

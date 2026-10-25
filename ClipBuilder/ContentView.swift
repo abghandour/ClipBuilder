@@ -172,7 +172,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
 
     /// People sit with the project: a project's People screen shows only
     /// people with footage in it (identities stay profile-wide).
-    static let projectSections: [SidebarSection] = [.sources, .scenes, .wizard, .wizardMini, .timelines, .outputs, .people]
+    static let projectSections: [SidebarSection] = [.sources, .scenes, .wizard, .timelines, .outputs, .people]
     static let studioSections: [SidebarSection] = [.instagram, .instagramReports]
     /// Every resource library is its own row: one click, one screen, as the
     /// app always had it — a tab strip inside one screen hid them.
@@ -231,12 +231,12 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .fonts: return AssetKind.fonts.title
         case .images: return AssetKind.images.title
         case .captions: return "Captions"
-        case .tags: return "Tags"
+        case .tags: return "Name Tags"
         case .overlays: return "Overlays"
         case .effects: return "Transitions"
-        case .looks: return "Looks"
+        case .looks: return "Effects"
         case .bumpers: return "Bumpers"
-        case .screenCrops: return "Screen Crop"
+        case .screenCrops: return "Screen Layouts"
         }
     }
 
@@ -259,11 +259,11 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .images: return AssetKind.images.systemImage
         case .captions: return "captions.bubble"
         case .tags: return "tag"
-        case .overlays: return "character.textbox"
-        case .effects: return "rectangle.on.rectangle"
-        case .looks: return "camera.filters"
+        case .overlays: return "square.on.square"
+        case .effects: return "arrow.left.arrow.right"
+        case .looks: return "sparkles"
         case .bumpers: return "film.stack"
-        case .screenCrops: return "crop"
+        case .screenCrops: return "aspectratio"
         }
     }
 
@@ -274,8 +274,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .scenes: .scenes
         case .timelines, .builder: .timelines
         case .learned: .learned
-        case .wizard: .wizard
-        case .wizardMini: .wizardMini
+        case .wizard, .wizardMini: .wizard
         case .outputs, .library: .outputs
         case .people: .people
         case .instagram: .instagram

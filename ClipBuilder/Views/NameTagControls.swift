@@ -18,8 +18,8 @@ struct NameTagControls: View {
     }
 
     var body: some View {
-        MiniRow("Tag style") {
-            Picker("Tag style", selection: resolvedStyle) {
+        MiniRow("Name tag style") {
+            Picker("Name tag style", selection: resolvedStyle) {
                 Text("Profile default").lineLimit(1).fixedSize().tag(nil as String?)
                 ForEach(profile.tagStyles ?? []) { named in
                     Text(named.name).lineLimit(1).fixedSize().tag(Optional(named.id.uuidString))
@@ -27,8 +27,8 @@ struct NameTagControls: View {
             }
             .pickerStyle(.menu)
         }
-        MiniRow("Tag position") {
-            Picker("Tag position", selection: $position) {
+        MiniRow("Name tag position") {
+            Picker("Name tag position", selection: $position) {
                 Text("Auto").lineLimit(1).fixedSize().tag(nil as String?)
                 Text("Top left").lineLimit(1).fixedSize().tag("topLeading" as String?)
                 Text("Top right").lineLimit(1).fixedSize().tag("topTrailing" as String?)
@@ -42,7 +42,7 @@ struct NameTagControls: View {
             .pickerStyle(.menu)
         }
         FormCaption(CustomPosition.isCustom(position)
-            ? "Placed where you dragged it in the preview. A person's own Tag position still wins."
+            ? "Placed where you dragged it in the preview. A person's own Name tag position still wins."
             : "Auto keeps clear of the platform buttons. Safe area only also keeps chosen corners clear. Drag a tag in the preview to place it by hand.")
             .onAppear {
                 if position == "auto" { position = nil }

@@ -33,7 +33,7 @@ struct AssetSyncSettingsSection: View {
                     DisclosureGroup("Refresh details") { DriveActivityRows(assetProfile: profile) }
                 }
             } else {
-                Text("Keep music, fonts, images, bumpers, overlays and screen crops in a Drive folder")
+                Text("Keep music, fonts, images, bumpers, overlays and screen layouts in a Drive folder")
                 Button("Choose folder…") { choosingFolder = true }
             }
             if let error { Text(error).foregroundStyle(.red).textSelection(.enabled) }

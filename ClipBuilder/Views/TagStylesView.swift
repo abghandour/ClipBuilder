@@ -49,19 +49,19 @@ struct TagStylesView: View {
                 .frame(minWidth: 640, maxWidth: .infinity, maxHeight: .infinity)
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
-        .screenTitle("Tags", subtitle: "\(styleCount) style\(styleCount == 1 ? "" : "s")")
+        .screenTitle("Name Tags", subtitle: "\(styleCount) style\(styleCount == 1 ? "" : "s")")
         .toolbar {
             ToolbarItemGroup {
                 Button("New Style", systemImage: "plus") { addStyle(duplicate: false) }
-                    .help("Create a tag style")
+                    .help("Create a name tag style")
                 Button("Duplicate", systemImage: "plus.square.on.square") { addStyle(duplicate: true) }
-                    .help("Duplicate the selected tag style")
+                    .help("Duplicate the selected name tag style")
                 Button("Delete", systemImage: "trash", role: .destructive) { deleting = true }
-                    .help("Delete the selected tag style")
+                    .help("Delete the selected name tag style")
                     .disabled(selectedIndex == nil)
             }
         }
-        .confirmationDialog("Delete this tag style?", isPresented: $deleting) {
+        .confirmationDialog("Delete this name tag style?", isPresented: $deleting) {
             Button("Delete Style", role: .destructive, action: deleteStyle)
             Button("Cancel", role: .cancel) {}
         } message: {

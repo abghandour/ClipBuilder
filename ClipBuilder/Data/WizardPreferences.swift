@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 nonisolated enum WizardWorkflow: String, Codable, CaseIterable, Sendable {
     case automatic, reviewMoments, reviewMomentsAndLook
@@ -213,7 +214,42 @@ nonisolated enum WizardBrandingOverride: String, CaseIterable, Sendable {
 /// Centralized persistence and migration for the Wizard's output defaults.
 /// Keeping the keys here prevents the execution form from becoming the owner
 /// of asset, branding, and rendering preferences again.
+extension UserDefaults {
+    /// Writes only when the stored value differs. Every `set` posts
+    /// `didChangeNotification`; a view that remembers its answers on that
+    /// notification would otherwise wake itself forever.
+    @discardableResult
+    nonisolated func setIfChanged(_ value: Any?, forKey key: String) -> Bool {
+        let current = object(forKey: key)
+        switch (current, value) {
+        case (nil, nil):
+            return false
+        case (nil, .some(let new)):
+            set(new, forKey: key)
+            return true
+        case (.some, nil):
+            removeObject(forKey: key)
+            return true
+        case (.some(let old), .some(let new)):
+            if (old as AnyObject).isEqual(new) { return false }
+            set(new, forKey: key)
+            return true
+        }
+    }
+}
+
 nonisolated enum WizardDefaults {
+    // Only accessed under migratedDefaults' lock. Weak references let temporary
+    // suites go away without a recycled ObjectIdentifier skipping migration.
+    private struct DefaultsReference: @unchecked Sendable {
+        weak var value: UserDefaults?
+    }
+    private static let migratedDefaults = Mutex<[ObjectIdentifier: DefaultsReference]>([:])
+
+    static func resetForTesting(defaults: UserDefaults) {
+        migratedDefaults.withLock { $0[ObjectIdentifier(defaults)] = nil }
+    }
+
     /// One resolution policy for the controls and the submitted run.
     static func resolvedPacing(run: EditPacing?, copied: WizardOptions?, profile: EditPacing) -> EditPacing {
         run ?? copied?.pacing ?? profile
@@ -244,13 +280,23 @@ nonisolated enum WizardDefaults {
     static let emptyFootageDefaultKey = "wizard.emptyFootageDefaultApplied"
 
     static func migrateLegacy(defaults: UserDefaults = .standard) {
+        let firstCall = migratedDefaults.withLock { migrated in
+            let id = ObjectIdentifier(defaults)
+            guard migrated[id]?.value !== defaults else { return false }
+            migrated = migrated.filter { $0.value.value != nil }
+            migrated[id] = DefaultsReference(value: defaults)
+            return true
+        }
+        guard firstCall else { return }
         WizardCameraFocus.migrate(defaults: defaults)
         if defaults.object(forKey: workflowKey) == nil {
             let workflow: WizardWorkflow = defaults.bool(forKey: "wizard.reviewProposedCuts")
                 ? .reviewMoments : .automatic
             defaults.set(workflow.rawValue, forKey: workflowKey)
         }
-        defaults.removeObject(forKey: "wizard.reviewProposedCuts")
+        if defaults.object(forKey: "wizard.reviewProposedCuts") != nil {
+            defaults.removeObject(forKey: "wizard.reviewProposedCuts")
+        }
         if let oldValue = defaults.object(forKey: "wizard.curatedOnly") {
             if defaults.object(forKey: "wizard.favoritesOnly") == nil {
                 defaults.set(oldValue, forKey: "wizard.favoritesOnly")

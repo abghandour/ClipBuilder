@@ -24,7 +24,7 @@ struct LooksView: View {
         EffectSamplePicker.Page.looks.selectedItem(rememberedItem, for: tab) ?? ""
     }
     private var preset: EffectCatalog.Preset? { EffectCatalog.presets.first { $0.id == selectedItem } }
-    private var subtitle: String { "\(preset?.name ?? "No looks") · \(tab.capitalized)" }
+    private var subtitle: String { "\(preset?.name ?? "No effects") · \(tab == "looks" ? "Effects" : tab.capitalized)" }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
@@ -61,17 +61,17 @@ struct LooksView: View {
             }
         }
         .padding()
-        .screenTitle("Looks", subtitle: subtitle)
+        .screenTitle("Effects", subtitle: subtitle)
         .toolbar {
             ToolbarItemGroup {
                 Button("Render All Previews", systemImage: "play.rectangle.on.rectangle") {
                     render(EffectCatalog.ids)
                 }
                 .disabled(renderTask != nil || availableIDs == nil || store.database == nil)
-                .help("Render a sample of every available look through the final render pipeline")
+                .help("Render a sample of every available effect through the final render pipeline")
                 .lineLimit(1).fixedSize()
                 Button("Change sample…", systemImage: "film") { pickingSample = true }
-                    .help("Choose the video used for every look and Transitions Video A")
+                    .help("Choose the video used for every effect and Transitions Video A")
                     .lineLimit(1).fixedSize()
             }
         }
@@ -138,7 +138,7 @@ struct LooksView: View {
             Slider(value: $playbackSpeed, in: 0.25...2, step: 0.25)
                 .frame(width: 140)
                 .accessibilityLabel("Preview playback speed")
-                .help("Preview speed: 0.25×…2×. This does not change the look or timeline.")
+                .help("Preview speed: 0.25×…2×. This does not change the effect or timeline.")
             Text(playbackSpeed.formatted(.number.precision(.fractionLength(0...2))) + "×")
                 .font(.callout.monospacedDigit())
                 .frame(width: 44, alignment: .leading)
@@ -203,8 +203,8 @@ struct LooksView: View {
                         .controlSize(.small)
                         .lineLimit(1).fixedSize()
                         .disabled(renderTask != nil || store.database == nil)
-                        .help(store.database == nil ? "Open a profile to render look samples"
-                              : "Render this look through the final render pipeline")
+                        .help(store.database == nil ? "Open a profile to render effect samples"
+                              : "Render this effect through the final render pipeline")
                 }
                 .padding(Theme.spaceS)
             }

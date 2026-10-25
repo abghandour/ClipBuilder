@@ -22,10 +22,7 @@ struct ProjectWorkspaceDetail: View {
                         BuilderView()
                     }
                 case .wizard:
-                    WizardView()
-                case .wizardMini:
-                    MiniWizardView(profileName: store.activeProfile.profileName)
-                        .id(store.activeProfile.profileName)
+                    WizardHostView()
                 case .outputs:
                     LibraryView()
                 case .people:

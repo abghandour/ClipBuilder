@@ -11,6 +11,8 @@ struct ScenesView: View {
     @State private var showHidden = false
     @State private var searchText = ""
     @State private var transcriptVideo: VideoRecord?
+    /// Filters the Analyze Batches column by batch or video name.
+    @State private var batchNameQuery = ""
     @State private var renamingRun: AnalysisRun?
     @State private var renameText = ""
     @State private var deletingRuns: [AnalysisRun] = []
@@ -60,8 +62,25 @@ struct ScenesView: View {
     /// The batches to filter by; nil = show everything (nothing selected,
     /// or "All Batches" is part of the selection).
     private var runFilter: Set<Int64>? {
-        selectedRunIDs.contains(Self.allBatchesID)
-            ? nil : (selectedRunIDs.isEmpty ? store.activeRunIDs : selectedRunIDs)
+        if selectedRunIDs.contains(Self.allBatchesID) { return nil }
+        if selectedRunIDs.isEmpty { return store.activeRunIDs }
+        return SceneBatchFilter.runIDs(for: selectedRunIDs, runs: filterRuns, now: Date())
+    }
+
+    /// Batches with what the built-in rows (Recent, Interviews, Podcasts,
+    /// Fights) match on: when they were analyzed and their video's type.
+    private var filterRuns: [SceneBatchFilter.Run] {
+        let types = Dictionary(store.videos.map { ($0.id, $0.type) }, uniquingKeysWith: { first, _ in first })
+        return store.analysisRuns.map { run in
+            SceneBatchFilter.Run(id: run.id, analyzedAt: Database.parseSQLiteDate(run.createdAt),
+                                 videoType: types[run.videoID] ?? nil)
+        }
+    }
+
+    /// Scene count of the batches a built-in row matches.
+    private func sceneCount(for filter: SceneBatchFilter) -> Int {
+        let ids = SceneBatchFilter.runIDs(for: [filter.id], runs: filterRuns, now: Date())
+        return store.analysisRuns.reduce(0) { $0 + (ids.contains($1.id) ? $1.sceneCount : 0) }
     }
 
     private var selectedRuns: [AnalysisRun] {
@@ -407,17 +426,73 @@ struct ScenesView: View {
     }
 
     private var fileList: some View {
+        VStack(spacing: 0) {
+            HStack(spacing: 6) {
+                Image(systemName: "magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+                TextField("Filter by name", text: $batchNameQuery)
+                    .textFieldStyle(.roundedBorder)
+                    .lineLimit(1)
+                if !batchNameQuery.isEmpty {
+                    Button("Clear name filter", systemImage: "xmark.circle.fill") {
+                        batchNameQuery = ""
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.plain)
+                    .foregroundStyle(.secondary)
+                    .fixedSize()
+                }
+            }
+            .padding(.horizontal, 12)
+            .padding(.vertical, 8)
+            .help("Show only the Analyze Batches whose name or video name contains this text")
+            Divider()
+            batchList
+        }
+    }
+
+    /// Batches matching the name filter; every batch when it is empty.
+    private var filteredRuns: [AnalysisRun] {
+        let query = batchNameQuery.trimmingCharacters(in: .whitespacesAndNewlines)
+        guard !query.isEmpty else { return store.analysisRuns }
+        return store.analysisRuns.filter { run in
+            run.name.localizedStandardContains(query)
+                || run.videoURL.lastPathComponent.localizedStandardContains(query)
+        }
+    }
+
+    private var batchList: some View {
         List(selection: $selectedRunIDs) {
             Section("Analyze Batches") {
                 HStack {
                     Image(systemName: "square.grid.3x3")
+                        .frame(width: 20)
                     Text("All batches (\(store.analysisRuns.count))")
                     Spacer()
                     Text("\(store.historyScenes.count)")
                         .foregroundStyle(.secondary)
                 }
                 .tag(Self.allBatchesID)
-                ForEach(store.analysisRuns) { run in
+                ForEach(SceneBatchFilter.allCases, id: \.self) { filter in
+                    HStack {
+                        Image(systemName: filter.systemImage)
+                            .frame(width: 20)
+                        Text(filter.title)
+                        Spacer()
+                        Text("\(sceneCount(for: filter))")
+                            .foregroundStyle(.secondary)
+                    }
+                    .tag(filter.id)
+                    .help(filter.help)
+                }
+                if filteredRuns.isEmpty {
+                    Text("No batches match \u{201C}\(batchNameQuery)\u{201D}")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                        .selectionDisabled()
+                }
+                ForEach(filteredRuns) { run in
                     HStack {
                         Image(systemName: "sparkles.rectangle.stack")
                             .foregroundStyle(.secondary)
@@ -615,8 +690,10 @@ struct ScenesView: View {
     }
 
     private func restoreProjectState() {
-        selectedRunIDs = store.sceneRunSelection.intersection(Set(store.analysisRuns.map(\.id)).union([Self.allBatchesID]))
-        if selectedRunIDs.isEmpty { selectedRunIDs = store.activeRunIDs }
+        let builtIn = Set(SceneBatchFilter.allCases.map(\.id)).union([Self.allBatchesID])
+        selectedRunIDs = store.sceneRunSelection.intersection(Set(store.analysisRuns.map(\.id)).union(builtIn))
+        // Recent is the default view of the Scenes screen.
+        if selectedRunIDs.isEmpty { selectedRunIDs = [SceneBatchFilter.recent.id] }
         selectedSceneIDs = store.sceneSelection.intersection(Set(store.historyScenes.map(\.id)))
         selectionAnchorID = selectedSceneIDs.first
         tagFilter = store.sceneTagFilter

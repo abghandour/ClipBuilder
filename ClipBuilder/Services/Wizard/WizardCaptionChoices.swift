@@ -27,8 +27,8 @@ nonisolated struct WizardCaptionChoices: Equatable, Sendable {
     }
 
     func save(profileName: String, defaults: UserDefaults = .standard) {
-        defaults.set(speakerCaptionPositions, forKey: "wizard.\(profileName).speakerCaptionPositions")
-        defaults.set(captionPosition, forKey: "wizard.\(profileName).captionPosition")
-        defaults.set(captionStyleID, forKey: "wizard.\(profileName).captionStyleID")
+        defaults.setIfChanged(speakerCaptionPositions, forKey: "wizard.\(profileName).speakerCaptionPositions")
+        defaults.setIfChanged(captionPosition, forKey: "wizard.\(profileName).captionPosition")
+        defaults.setIfChanged(captionStyleID, forKey: "wizard.\(profileName).captionStyleID")
     }
 }

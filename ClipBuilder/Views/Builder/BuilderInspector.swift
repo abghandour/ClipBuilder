@@ -351,7 +351,7 @@ struct ClipInspector: View {
             }
 
             if !clip.bumper {
-                InspectorSection("Look") {
+                InspectorSection("Effect") {
                     let inherited = model.document.trackSettings[safe: clip.track]?.effect
                     EffectControls(effect: binding(\.effect),
                                    inheritedLookName: EffectCatalog.preset(for: inherited?.preset ?? "none")?.name ?? "None")
@@ -716,7 +716,7 @@ struct OverlayBlockInspector: View {
     var body: some View {
         let model = store.builder
         VStack(alignment: .leading, spacing: 12) {
-            Label(item.name, systemImage: "square.2.layers.3d")
+            Label(item.name, systemImage: "square.on.square")
                 .font(.headline)
                 .lineLimit(1)
 
@@ -775,7 +775,7 @@ struct CropBlockInspector: View {
                     Text("\(block.layout.name) (missing)").tag(block.layout)
                 }
             }
-            .help("Layouts come from Resources > Screen Crop")
+            .help("Layouts come from Resources > Screen Layouts")
 
             LabeledContent("From", value: block.startTime.timecode)
             LabeledContent("To", value: block.endTime.timecode)

@@ -72,6 +72,7 @@ final class AppStore {
                 Task { await ai.updateConfig(config) }
             }
             if oldValue.profileName != activeProfile.profileName {
+                wizardMode = WizardMode.remembered(profileName: activeProfile.profileName)
                 logEvent("app", "Profile switched: \(activeProfile.profileName)")
             }
         }
@@ -307,6 +308,15 @@ final class AppStore {
     // Transcription job
     var transcribingVideoIDs: Set<Int64> = []
     var transcriptionTasks: [Int64: Task<Void, Never>] = [:]
+
+    /// The selected Wizard tab belongs to the profile, independent of either form's settings.
+    var wizardMode: WizardMode {
+        didSet {
+            if oldValue != wizardMode {
+                wizardMode.remember(profileName: activeProfile.profileName)
+            }
+        }
+    }
 
     // Wizard job
     var isWizardRunning = false
@@ -736,6 +746,7 @@ final class AppStore {
         self.settings = settings
         self.profiles = profiles
         activeProfile = active
+        wizardMode = WizardMode.remembered(profileName: active.profileName)
         self.database = database
         self.ai = ai
         analyzer = Analyzer(ai: ai)

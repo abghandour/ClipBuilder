@@ -89,7 +89,7 @@ struct EffectSamplePickerTests {
     @Test func tabsMatchEveryCatalogSectionInDisplayOrder() {
         let looks = EffectSamplePicker.Page.looks.tabs
         #expect(looks.map(\.id) == EffectControls.groups)
-        #expect(looks.map(\.title) == ["Looks", "Film", "Adjust", "Detail", "Stylize"])
+        #expect(looks.map(\.title) == ["Effects", "Film", "Adjust", "Detail", "Stylize"])
         #expect(Set(looks.map(\.id)) == Set(EffectCatalog.presets.map(\.group)))
         #expect(looks.count == Set(looks.map(\.id)).count)
 

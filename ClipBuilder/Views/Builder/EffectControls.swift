@@ -10,30 +10,30 @@ struct EffectControls: View {
     static let groups = EffectSamplePicker.lookGroups
 
     var body: some View {
-        Picker("Look", selection: Self.selectionBinding(effect: $effect,
+        Picker("Effect", selection: Self.selectionBinding(effect: $effect,
                                                        inherits: inheritedLookName != nil)) {
             if let inheritedLookName {
                 Text("Inherit from area (\(inheritedLookName))").tag("inherit")
-                    .help("Use the area's look, including future changes to it")
+                    .help("Use the area's effect, including future changes to it")
             }
             Text("None").tag("none")
-                .help("Show this footage without a look")
+                .help("Show this footage without an effect")
             ForEach(Self.groups, id: \.self) { group in
-                Section(group.capitalized) {
+                Section(group == "looks" ? "Effects" : group.capitalized) {
                     ForEach(EffectCatalog.presets.filter { $0.group == group && $0.id != "none" }, id: \.id) { preset in
                         let available = availableIDs?.contains(preset.id) == true
                         Text(preset.name).tag(preset.id)
                             .disabled(!available)
                             .help(available ? "Apply \(preset.name)"
-                                  : availableIDs == nil ? "Checking local look support"
+                                  : availableIDs == nil ? "Checking local effect support"
                                   : "Unavailable: the local ffmpeg lacks a required filter or the LUT is missing")
                     }
                 }
             }
         }
         .help(inheritedLookName == nil
-              ? "Apply a look to footage in this area"
-              : "Inherit the area's look, turn it off, or override it for this clip")
+              ? "Apply an effect to footage in this area"
+              : "Inherit the area's effect, turn it off, or override it for this clip")
         .task { availableIDs = await Self.availablePresetIDs() }
 
         if let effect, effect.preset != "none", let preset = EffectCatalog.preset(for: effect.preset) {
@@ -62,8 +62,8 @@ struct EffectControls: View {
                         .foregroundStyle(.secondary)
                 }
                 Slider(value: Self.intensityBinding(effect: $effect), in: 0...1)
-                    .accessibilityLabel("Look intensity")
-                    .help("Intensity: 0…1. Blend from the original footage to the full look.")
+                    .accessibilityLabel("Effect intensity")
+                    .help("Intensity: 0…1. Blend from the original footage to the full effect.")
             }
             .font(.caption)
         }

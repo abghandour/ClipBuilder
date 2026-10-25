@@ -1,12 +1,70 @@
 import SwiftUI
 
 struct TimelinesView: View {
+    /// Shown from the Builder's All Timelines button: a sheet with its own
+    /// header and Close button instead of the window toolbar.
+    var presentedAsSheet = false
+
     @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
     @State private var renameTarget: TimelineRecord?
     @State private var renameText = ""
     @State private var deleteTarget: TimelineRecord?
 
     var body: some View {
+        if presentedAsSheet {
+            VStack(spacing: 0) {
+                sheetHeader
+                Divider()
+                content
+            }
+            .frame(minWidth: 560, idealWidth: 640, minHeight: 420, idealHeight: 560)
+            .modifier(dialogs)
+        } else {
+            content
+                .screenTitle("Timelines", subtitle: subtitle)
+                .toolbar {
+                    ToolbarItemGroup {
+                        Button("New Timeline", systemImage: "plus", action: newTimeline)
+                        Button("New from Wizard…", systemImage: "wand.and.stars", action: openWizard)
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
+                .modifier(dialogs)
+        }
+    }
+
+    private var sheetHeader: some View {
+        HStack(spacing: Theme.spaceS) {
+            VStack(alignment: .leading, spacing: 2) {
+                Text("All Timelines").font(.headline)
+                Text(subtitle).font(.caption).foregroundStyle(.secondary)
+            }
+            .lineLimit(1)
+            Spacer(minLength: Theme.spaceM)
+            Button("New Timeline", systemImage: "plus", action: newTimeline)
+                .fixedSize()
+            Button("New from Wizard…", systemImage: "wand.and.stars", action: openWizard)
+                .fixedSize()
+            Button("Close") { dismiss() }
+                .keyboardShortcut(.cancelAction)
+                .buttonStyle(.borderedProminent)
+                .fixedSize()
+        }
+        .padding(Theme.spaceM)
+    }
+
+    private var dialogs: TimelineDialogs {
+        TimelineDialogs(
+            renameTarget: $renameTarget,
+            renameText: $renameText,
+            deleteTarget: $deleteTarget,
+            onRename: renameTimeline,
+            onDelete: deleteTimeline
+        )
+    }
+
+    private var content: some View {
         Group {
             if store.timelines.isEmpty {
                 ContentUnavailableView {
@@ -23,42 +81,13 @@ struct TimelinesView: View {
                 List(store.timelines) { timeline in
                     TimelineRowView(
                         timeline: timeline,
-                        onOpen: { store.openTimelineRecord(timeline) },
+                        onOpen: { open(timeline) },
                         onRename: { beginRename(timeline) },
                         onDuplicate: { store.duplicateTimeline(timeline) },
                         onDelete: { deleteTarget = timeline }
                     )
                 }
             }
-        }
-        .screenTitle("Timelines", subtitle: subtitle)
-        .toolbar {
-            ToolbarItemGroup {
-                Button("New Timeline", systemImage: "plus", action: newTimeline)
-                Button("New from Wizard…", systemImage: "wand.and.stars", action: openWizard)
-                    .buttonStyle(.borderedProminent)
-            }
-        }
-        .alert(
-            "Rename Timeline",
-            isPresented: Binding(
-                get: { renameTarget != nil },
-                set: { if !$0 { renameTarget = nil } }
-            )
-        ) {
-            TextField("Timeline name", text: $renameText)
-            Button("Rename", action: renameTimeline)
-            Button("Cancel", role: .cancel) { renameTarget = nil }
-        }
-        .confirmationDialog(
-            "Delete \(deleteTarget?.name ?? "timeline")?",
-            isPresented: Binding(
-                get: { deleteTarget != nil },
-                set: { if !$0 { deleteTarget = nil } }
-            )
-        ) {
-            Button("Delete Timeline", role: .destructive, action: deleteTimeline)
-            Button("Cancel", role: .cancel) { deleteTarget = nil }
         }
     }
 
@@ -68,12 +97,19 @@ struct TimelinesView: View {
         return "\(store.activeProject?.name ?? "Project") · \(builders) Builder, \(wizards) Wizard"
     }
 
+    private func open(_ timeline: TimelineRecord) {
+        store.openTimelineRecord(timeline)
+        if presentedAsSheet { dismiss() }
+    }
+
     private func openWizard() {
         store.selectSection(.wizard)
+        if presentedAsSheet { dismiss() }
     }
 
     private func newTimeline() {
         store.createTimeline()
+        if presentedAsSheet { dismiss() }
     }
 
     private func beginRename(_ timeline: TimelineRecord) {
@@ -89,5 +125,39 @@ struct TimelinesView: View {
     private func deleteTimeline() {
         if let deleteTarget { store.deleteTimeline(deleteTarget) }
         deleteTarget = nil
+    }
+}
+
+/// Rename alert and delete confirmation shared by the page and the sheet.
+private struct TimelineDialogs: ViewModifier {
+    @Binding var renameTarget: TimelineRecord?
+    @Binding var renameText: String
+    @Binding var deleteTarget: TimelineRecord?
+    let onRename: () -> Void
+    let onDelete: () -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .alert(
+                "Rename Timeline",
+                isPresented: Binding(
+                    get: { renameTarget != nil },
+                    set: { if !$0 { renameTarget = nil } }
+                )
+            ) {
+                TextField("Timeline name", text: $renameText)
+                Button("Rename", action: onRename)
+                Button("Cancel", role: .cancel) { renameTarget = nil }
+            }
+            .confirmationDialog(
+                "Delete \(deleteTarget?.name ?? "timeline")?",
+                isPresented: Binding(
+                    get: { deleteTarget != nil },
+                    set: { if !$0 { deleteTarget = nil } }
+                )
+            ) {
+                Button("Delete Timeline", role: .destructive, action: onDelete)
+                Button("Cancel", role: .cancel) { deleteTarget = nil }
+            }
     }
 }

@@ -10,7 +10,7 @@ nonisolated enum EffectSamplePicker {
         var defaultsKey: String { "\(rawValue).tab" }
         var itemDefaultsKey: String { "\(rawValue).item" }
 
-        var itemLabel: String { self == .looks ? "look" : "transition" }
+        var itemLabel: String { self == .looks ? "effect" : "transition" }
 
         func items(for tab: String) -> [Tab] {
             switch self {
@@ -47,7 +47,7 @@ nonisolated enum EffectSamplePicker {
         var tabs: [Tab] {
             switch self {
             case .looks:
-                return EffectSamplePicker.lookGroups.map { Tab(id: $0, title: $0.capitalized) }
+                return EffectSamplePicker.lookGroups.map { Tab(id: $0, title: $0 == "looks" ? "Effects" : $0.capitalized) }
             case .transitions:
                 return TransitionEffect.Category.allCases.map { Tab(id: $0.rawValue, title: $0.title) }
             }

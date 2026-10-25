@@ -162,7 +162,7 @@ extension WizardView {
             } else {
                 FormCaption(layoutMode == .singleScene
                      ? "Every clip fills the frame on its own."
-                     : "Layouts approved under Resources → Screen Crop may be used.")
+                     : "Layouts approved under Resources → Screen Layouts may be used.")
                     .formDependent()
             }
         }

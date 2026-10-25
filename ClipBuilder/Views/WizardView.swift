@@ -279,7 +279,7 @@ struct WizardView: View {
         let layouts = ScreenCropStore.all().filter { !$0.areas.isEmpty }
         return VStack(alignment: .leading, spacing: 4) {
             if layouts.isEmpty {
-                Text("No layouts yet — create some under Resources → Screen Crop.")
+                Text("No layouts yet — create some under Resources → Screen Layouts.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             } else {
@@ -606,8 +606,10 @@ struct WizardView: View {
         }
         .onReceive(defaultsChanged) { _ in
             guard answersProfile == store.activeProfile.profileName else { return }
-            WizardMemory.remember(profile: store.activeProfile, renderSettings: runRenderSettings, pacing: runPacing)
-            refreshPresetTitle()
+            // Only a real change refreshes the title; an identical write posts nothing.
+            if WizardMemory.remember(profile: store.activeProfile, renderSettings: runRenderSettings, pacing: runPacing) {
+                refreshPresetTitle()
+            }
         }
         .sheet(item: $presetSheet) { sheet in
             let profileName = store.activeProfile.profileName
@@ -635,7 +637,7 @@ struct WizardView: View {
                                     WizardPresetStore.rememberLoaded(newName.map { .init(name: $0, settings: tracked.settings) }, profileName: profileName)
                                     refreshPresetTitle()
                                 },
-                                imports: ("From AI Wizard Express",
+                                imports: ("From the Express tab",
                                           WizardPresetBridge.wizardPresets(from: store.expressPresets(profileName: profileName))))
             }
         }
@@ -933,9 +935,10 @@ struct WizardView: View {
         if needsFootageProposal {
             return "Find matching footage in this project, then review the selection before generating."
         }
-        if cardFlow.settingsRenders {
-            let count = cardFlow.outputCount(oneReel: outputMode == .oneReel)
-            return (count == 1 ? "1 video" : "\(count) videos") + " from the kept takes · " + cardFlow.summary(for: .settings)
+        let flow = cardFlow
+        if flow.settingsRenders {
+            let count = flow.outputCount(oneReel: outputMode == .oneReel)
+            return (count == 1 ? "1 video" : "\(count) videos") + " from the kept takes · " + flow.summary(for: .settings)
         }
         return runSummary
     }
@@ -949,9 +952,8 @@ struct WizardView: View {
                 Label("Stop", systemImage: "stop.fill")
             }
             .controlSize(.large).lineLimit(1).fixedSize()
-        } else if cardFlow.settingsRenders {
+        } else if let flow = Optional(cardFlow), flow.settingsRenders {
             // Every kept selection renders, as Express renders its kept candidates.
-            let flow = cardFlow
             Button {
                 store.generateWizardSelections(options: presentationOptions(), oneReel: outputMode == .oneReel,
                                                selectionIDs: Set(visibleSelections.map(\.id)))

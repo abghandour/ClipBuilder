@@ -43,12 +43,12 @@ nonisolated enum MiniWizardPresetStore {
 
     static func rememberLoaded(_ loaded: Loaded?, profileName: String, defaults: UserDefaults = .standard) {
         guard let loaded else {
-            defaults.removeObject(forKey: lastUsedKey(profileName: profileName))
-            defaults.removeObject(forKey: baselineKey(profileName: profileName))
+            defaults.setIfChanged(nil, forKey: lastUsedKey(profileName: profileName))
+            defaults.setIfChanged(nil, forKey: baselineKey(profileName: profileName))
             return
         }
-        defaults.set(loaded.name, forKey: lastUsedKey(profileName: profileName))
-        defaults.set(try? JSONEncoder().encode(loaded.settings), forKey: baselineKey(profileName: profileName))
+        defaults.setIfChanged(loaded.name, forKey: lastUsedKey(profileName: profileName))
+        defaults.setIfChanged(try? JSONEncoder().encode(loaded.settings), forKey: baselineKey(profileName: profileName))
     }
 
     /// Nil until a preset has been saved or loaded for this profile.

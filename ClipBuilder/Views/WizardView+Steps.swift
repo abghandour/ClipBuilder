@@ -21,7 +21,8 @@ extension WizardView {
 
     /// The selection the Settings card renders: the active one when it is visible.
     var visibleSelection: WizardSelectionSummary? {
-        visibleSelections.first { $0.id == store.activeWizardSelectionID } ?? visibleSelections.first
+        let selections = visibleSelections
+        return selections.first { $0.id == store.activeWizardSelectionID } ?? selections.first
     }
 
     var cardFlow: WizardCardFlow {

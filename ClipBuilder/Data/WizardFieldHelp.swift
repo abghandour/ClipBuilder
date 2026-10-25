@@ -86,7 +86,7 @@ nonisolated enum WizardFieldHelp {
         "Which learned taste guides the plan.",
         caption: "Profile taste applies what the Wizard has learned from your reviews and studied reels. A learned video type applies only that type's rubric. No style reference plans from the recipe alone.")
     static let layouts = FieldHelp(
-        "Whether clips may share the frame through Screen Crop layouts.")
+        "Whether clips may share the frame through Screen Layouts.")
     static let bumperIntro = FieldHelp(
         "Start the reel with one of your bumper videos.")
     static let bumperOutro = FieldHelp(

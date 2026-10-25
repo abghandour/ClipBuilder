@@ -60,7 +60,7 @@ struct BuilderAddMenu: View {
                 }
             }
 
-            Menu("Crop Layout", systemImage: "crop") {
+            Menu("Screen Layout", systemImage: "aspectratio") {
                 let layouts = BuilderTimelineModel.availableCropLayouts()
                 ForEach(layouts, id: \.self) { layout in
                     Button(layout.displayName) {
@@ -68,7 +68,7 @@ struct BuilderAddMenu: View {
                     }
                 }
                 if layouts.count == 1 {
-                    Text("Add layouts under Resources > Screen Crop")
+                    Text("Add layouts under Resources > Screen Layouts")
                 }
             }
 
@@ -91,7 +91,7 @@ struct BuilderAddMenu: View {
                 showImagePicker = true
             }
 
-            Menu("Overlay", systemImage: "square.2.layers.3d") {
+            Menu("Overlay", systemImage: "square.on.square") {
                 Menu("Lower Third", systemImage: "rectangle.bottomthird.inset.filled") {
                     Button("Blank Lower Third") {
                         store.builder.addOverlayBlock(

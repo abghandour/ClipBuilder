@@ -397,7 +397,7 @@ nonisolated enum CropRecipePlanner {
             throw Failure(description: "This recipe needs a recording with two or more feeds or people; only the full-screen talker works here.")
         }
         guard let layoutName = recipe.layout ?? layoutName(kind: recipe.kind, people: people) else {
-            throw Failure(description: "No built-in layout holds \(people) people; name a Screen Crop layout.")
+            throw Failure(description: "No built-in layout holds \(people) people; name a Screen Layout.")
         }
         let ref = CropLayoutRef(name: layoutName)
         let areas: [ScreenCropArea]

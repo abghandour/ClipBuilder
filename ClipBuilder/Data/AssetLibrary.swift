@@ -30,7 +30,7 @@ nonisolated enum AssetKind: String, CaseIterable, Identifiable, Sendable {
         case .music: return "music.note"
         case .fonts: return "textformat"
         case .bumpers: return "film.stack"
-        case .images: return "photo.on.rectangle.angled"
+        case .images: return "photo"
         }
     }
 

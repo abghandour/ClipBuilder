@@ -105,6 +105,65 @@ struct WizardPresetStoreTests {
     }
 
     @MainActor
+    /// Counts `didChangeNotification` posts for one suite. Each write posts
+    /// once, so an idle Wizard that re-remembers unchanged answers would be
+    /// visible here as a nonzero count.
+    private final class ChangeCounter: @unchecked Sendable {
+        private(set) var count = 0
+        private var token: NSObjectProtocol?
+        init(_ defaults: UserDefaults) {
+            token = NotificationCenter.default.addObserver(forName: UserDefaults.didChangeNotification,
+                                                           object: defaults, queue: nil) { [weak self] _ in
+                self?.count += 1
+            }
+        }
+        deinit { if let token { NotificationCenter.default.removeObserver(token) } }
+    }
+
+    @Test func rememberingUnchangedAnswersWritesNothing() {
+        let defaults = scratchDefaults("quiet")
+        let profile = Fixtures.brand(name: "Quiet")
+        defaults.set("podcast", forKey: "wizard.formatPreset")
+        #expect(WizardMemory.remember(profile: profile, renderSettings: nil, pacing: nil, defaults: defaults))
+        let counter = ChangeCounter(defaults)
+        #expect(!WizardMemory.remember(profile: profile, renderSettings: nil, pacing: nil, defaults: defaults))
+        #expect(!WizardMemory.remember(profile: profile, renderSettings: nil, pacing: nil, defaults: defaults))
+        #expect(counter.count == 0)
+        defaults.set("fight", forKey: "wizard.formatPreset")
+        #expect(WizardMemory.remember(profile: profile, renderSettings: nil, pacing: nil, defaults: defaults))
+        #expect(counter.count == 2)
+
+        let loaded = WizardPresetStore.Loaded(name: "Tight", settings: ["formatPreset": .string("fight")])
+        WizardPresetStore.rememberLoaded(loaded, profileName: profile.profileName, defaults: defaults)
+        let afterLoad = counter.count
+        WizardPresetStore.rememberLoaded(loaded, profileName: profile.profileName, defaults: defaults)
+        #expect(counter.count == afterLoad)
+        WizardPresetStore.rememberLoaded(nil, profileName: profile.profileName, defaults: defaults)
+        let afterClear = counter.count
+        #expect(afterClear > afterLoad)
+        WizardPresetStore.rememberLoaded(nil, profileName: profile.profileName, defaults: defaults)
+        #expect(counter.count == afterClear)
+    }
+
+    @Test func setIfChangedComparesBridgedValues() {
+        let defaults = scratchDefaults("bridge")
+        #expect(defaults.setIfChanged(true, forKey: "flag"))
+        #expect(!defaults.setIfChanged(true, forKey: "flag"))
+        #expect(defaults.setIfChanged(false, forKey: "flag"))
+        #expect(defaults.setIfChanged(["a": "b"], forKey: "dict"))
+        #expect(!defaults.setIfChanged(["a": "b"], forKey: "dict"))
+        #expect(defaults.setIfChanged(["a", "b"], forKey: "list"))
+        #expect(!defaults.setIfChanged(["a", "b"], forKey: "list"))
+        #expect(defaults.setIfChanged(["b", "a"], forKey: "list"))
+        #expect(defaults.setIfChanged(0.5, forKey: "number"))
+        #expect(!defaults.setIfChanged(0.5, forKey: "number"))
+        #expect(!defaults.setIfChanged(nil, forKey: "missing"))
+        #expect(defaults.setIfChanged(nil, forKey: "number"))
+        #expect(defaults.object(forKey: "number") == nil)
+        let optional: String? = nil
+        #expect(!defaults.setIfChanged(optional, forKey: "number"))
+    }
+
     @Test func eachProfileRemembersItsOwnAnswers() {
         let defaults = scratchDefaults("memory")
         let first = Fixtures.brand(name: "First")

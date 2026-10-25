@@ -13,12 +13,12 @@ struct LooksPreviewBadge: View {
         if inline {
             ViewThatFits(in: .horizontal) {
                 label.lineLimit(1).fixedSize()
-                Image(systemName: "camera.filters")
+                Image(systemName: "sparkles")
                     .font(.caption2.weight(.semibold))
                     .padding(.horizontal, Theme.spaceS)
                     .padding(.vertical, Theme.spaceXS)
                     .background(.regularMaterial, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
-                    .accessibilityLabel("Looks not shown — use Render Preview")
+                    .accessibilityLabel("Effects not shown — use Render Preview")
             }
             .help(Self.helpText)
         } else {
@@ -28,10 +28,10 @@ struct LooksPreviewBadge: View {
         }
     }
 
-    private static let helpText = "Fast previews omit looks. Render Preview uses the same look processing as the final export."
+    private static let helpText = "Fast previews omit effects. Render Preview uses the same effect processing as the final export."
 
     private var label: some View {
-        Label("Looks not shown — use Render Preview", systemImage: "camera.filters")
+        Label("Effects not shown — use Render Preview", systemImage: "sparkles")
             .font(.caption2.weight(.semibold))
             .padding(.horizontal, Theme.spaceS)
             .padding(.vertical, Theme.spaceXS)

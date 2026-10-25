@@ -298,36 +298,42 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         return result
     }
 
-    func remember(profileName: String, defaults: UserDefaults = .standard) {
+    /// True when any remembered key changed. Identical writes still post
+    /// `didChangeNotification`, so skip them.
+    @discardableResult
+    func remember(profileName: String, defaults: UserDefaults = .standard) -> Bool {
         func key(_ field: MiniWizardMemory.Field) -> String { MiniWizardMemory.key(for: field, profileName: profileName) }
-        defaults.set(quality.rawValue, forKey: key(.quality))
-        defaults.set(preset.rawValue, forKey: key(.preset))
-        defaults.set(captionPosition, forKey: key(.captionPosition))
-        defaults.set(speakerCaptionPositions, forKey: key(.speakerCaptionPositions))
-        defaults.set(captionStyleID, forKey: key(.captionStyleID))
-        defaults.set(nameTagContent, forKey: key(.nameTagContent))
-        defaults.set(nameTagStyle, forKey: key(.nameTagStyle))
-        defaults.set(nameTagStyleID, forKey: key(.nameTagStyleID))
-        defaults.set(nameTagPosition, forKey: key(.nameTagPosition))
-        defaults.set(safeAreaPlatforms, forKey: key(.safeAreaPlatforms))
-        defaults.set(interviewPunchIn, forKey: key(.interviewPunchIn))
-        defaults.set(cameraFocus, forKey: key(.cameraFocus))
-        defaults.set(interviewZoom, forKey: key(.interviewZoom))
-        defaults.set(overlayTemplate, forKey: key(.overlayTemplate))
-        defaults.set(overlayTexts, forKey: key(.overlayTexts))
-        defaults.set(overlayPosition, forKey: key(.overlayPosition))
-        defaults.set(watermarkOverlay, forKey: key(.watermarkOverlay))
-        defaults.set(watermarkOpacity, forKey: key(.watermarkOpacity))
-        defaults.set(introBumper, forKey: key(.introBumper))
-        defaults.set(outroBumper, forKey: key(.outroBumper))
-        defaults.set(overlayStart, forKey: key(.overlayStart))
-        defaults.set(overlayDuration, forKey: key(.overlayDuration))
-        defaults.set(outputMode.rawValue, forKey: key(.outputMode))
-        defaults.set(transition, forKey: key(.transition))
-        defaults.set(look, forKey: key(.look))
-        defaults.set(musicTrack, forKey: key(.musicTrack))
-        defaults.set(dubLanguage, forKey: key(.dubLanguage))
-        for (field, path) in Self.booleanFields { defaults.set(self[keyPath: path], forKey: key(field)) }
+        var changed = false
+        func set(_ value: Any?, forKey key: String) { if defaults.setIfChanged(value, forKey: key) { changed = true } }
+        set(quality.rawValue, forKey: key(.quality))
+        set(preset.rawValue, forKey: key(.preset))
+        set(captionPosition, forKey: key(.captionPosition))
+        set(speakerCaptionPositions, forKey: key(.speakerCaptionPositions))
+        set(captionStyleID, forKey: key(.captionStyleID))
+        set(nameTagContent, forKey: key(.nameTagContent))
+        set(nameTagStyle, forKey: key(.nameTagStyle))
+        set(nameTagStyleID, forKey: key(.nameTagStyleID))
+        set(nameTagPosition, forKey: key(.nameTagPosition))
+        set(safeAreaPlatforms, forKey: key(.safeAreaPlatforms))
+        set(interviewPunchIn, forKey: key(.interviewPunchIn))
+        set(cameraFocus, forKey: key(.cameraFocus))
+        set(interviewZoom, forKey: key(.interviewZoom))
+        set(overlayTemplate, forKey: key(.overlayTemplate))
+        set(overlayTexts, forKey: key(.overlayTexts))
+        set(overlayPosition, forKey: key(.overlayPosition))
+        set(watermarkOverlay, forKey: key(.watermarkOverlay))
+        set(watermarkOpacity, forKey: key(.watermarkOpacity))
+        set(introBumper, forKey: key(.introBumper))
+        set(outroBumper, forKey: key(.outroBumper))
+        set(overlayStart, forKey: key(.overlayStart))
+        set(overlayDuration, forKey: key(.overlayDuration))
+        set(outputMode.rawValue, forKey: key(.outputMode))
+        set(transition, forKey: key(.transition))
+        set(look, forKey: key(.look))
+        set(musicTrack, forKey: key(.musicTrack))
+        set(dubLanguage, forKey: key(.dubLanguage))
+        for (field, path) in Self.booleanFields { set(self[keyPath: path], forKey: key(field)) }
+        return changed
     }
 
     private static var booleanFields: [(MiniWizardMemory.Field, WritableKeyPath<Self, Bool>)] {

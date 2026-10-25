@@ -27,7 +27,7 @@ struct OverlayTemplatesView: View {
             if templates.isEmpty {
                 ContentUnavailableView(
                     "No Overlay Templates",
-                    systemImage: "character.textbox",
+                    systemImage: "square.on.square",
                     description: Text("Create a starter template, then add text and images only when you need them. Use the toolbar to create a template or extract one from an image."))
             } else {
                 HSplitView {
@@ -38,7 +38,7 @@ struct OverlayTemplatesView: View {
                         OverlayTemplateEditor(name: selectedName, composition: $composition)
                             .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
                     } else {
-                        ContentUnavailableView("Select a Template", systemImage: "character.textbox",
+                        ContentUnavailableView("Select a Template", systemImage: "square.on.square",
                                                description: Text("Choose a template from the list to edit it."))
                             .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
                     }

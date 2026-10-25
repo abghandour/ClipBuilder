@@ -64,7 +64,7 @@ extension WizardView {
                     Label(musicFolderRaw.isEmpty
                           ? "No music has been added yet"
                           : "The “\(musicFolderRaw)” folder has no music — the whole library will be used",
-                          systemImage: "music.note.list")
+                          systemImage: "music.note")
                         .font(.caption)
                         .foregroundStyle(.orange)
                     Spacer()
@@ -177,13 +177,13 @@ extension WizardView {
     /// Look, pacing and transitions, camera focus and B-roll.
     @ViewBuilder var pictureFields: some View {
         FormGroupHeader("Picture")
-        WizardControlRow("Look") { lookPicker }
+        WizardControlRow("Effect") { lookPicker }
         if !lookPresetRaw.isEmpty, lookPresetRaw != "none" {
-            WizardControlRow("Look strength") {
+            WizardControlRow("Effect strength") {
                 HStack(spacing: Theme.spaceS) {
                     Slider(value: $lookIntensity, in: 0.05...1)
                         .frame(width: 160)
-                        .accessibilityLabel("Look strength")
+                        .accessibilityLabel("Effect strength")
                     Text("\(Int((lookIntensity * 100).rounded()))%")
                         .monospacedDigit().foregroundStyle(.secondary)
                         .frame(width: 40, alignment: .trailing)
@@ -367,10 +367,10 @@ extension WizardView {
             preset.id != "none" && (availableLookIDs?.contains(preset.id) ?? true)
         }
         let groups: [(title: String, presets: [EffectCatalog.Preset])] = [
-            ("Looks", available.filter { $0.group == "looks" }),
+            ("Effects", available.filter { $0.group == "looks" }),
             ("Film stocks", available.filter { $0.group == "film" }),
         ].filter { !$0.presets.isEmpty }
-        return Picker("Look", selection: $lookPresetRaw) {
+        return Picker("Effect", selection: $lookPresetRaw) {
             Text("None").lineLimit(1).fixedSize().tag("")
             ForEach(groups, id: \.title) { group in
                 Section(group.title) {

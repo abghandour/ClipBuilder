@@ -18,8 +18,125 @@ struct BuilderView: View {
     @State private var pendingPickerPreview: WizardSheetModel?
     @State private var showImagePicker = false
     @State private var confirmClear = false
+    @State private var showAllTimelines = false
     #if DEBUG
     @State private var showScriptPreview = false
+    #endif
+
+    /// The open timeline's name is the switcher: every timeline in the
+    /// project is one click away. It heads the left column, under the window
+    /// title and above the browser tabs, with the timeline actions as a row
+    /// of buttons under it.
+    private var timelineSwitcher: some View {
+        VStack(spacing: Theme.spaceS) {
+            Menu {
+                ForEach(store.switchableTimelines) { timeline in
+                    Button {
+                        store.switchTimeline(to: timeline)
+                    } label: {
+                        if timeline.id == store.openTimelineID {
+                            Label(timeline.name, systemImage: "checkmark")
+                        } else {
+                            Text(timeline.name)
+                        }
+                    }
+                }
+            } label: {
+                // The menu draws its own indicator; a chevron in the label doubled it.
+                Text(store.openTimeline?.name ?? "Timeline")
+            }
+            .help("Switch to another timeline in this project. ⌥⌘[ and ⌥⌘] cycle.")
+            .lineLimit(1)
+            .truncationMode(.middle)
+            .frame(maxWidth: 320)
+
+            HStack(spacing: Theme.spaceS) {
+                timelineActions
+            }
+            .buttonStyle(.bordered)
+            .labelStyle(.iconOnly)
+            .fixedSize()
+        }
+        .padding(.horizontal, Theme.spaceM)
+        .padding(.top, Theme.spaceS)
+        .frame(maxWidth: .infinity)
+    }
+
+    @ViewBuilder
+    private var timelineActions: some View {
+        Button {
+            store.createTimeline()
+        } label: {
+            timelineActionLabel("New Timeline", systemImage: "plus")
+        }
+        .help("New Timeline")
+        Button {
+            if let timeline = store.openTimeline {
+                store.duplicateTimeline(timeline, openCopy: true)
+            }
+        } label: {
+            timelineActionLabel("Duplicate This Timeline", systemImage: "plus.square.on.square")
+        }
+        .help("Duplicate This Timeline")
+        .disabled(store.openTimeline == nil)
+        #if DEBUG
+        Button {
+            exportScriptReference()
+        } label: {
+            timelineActionLabel("Export Script Reference…", systemImage: "doc.text")
+        }
+        .help("Export Script Reference: save the current command catalog and JavaScript header reference as Markdown.")
+        Button {
+            runJavaScriptFile()
+        } label: {
+            timelineActionLabel("Run JavaScript File…", systemImage: "curlybraces")
+        }
+        .help("Run JavaScript File: run a file with header defaults, then review and Apply manually.")
+        Button {
+            showScriptPreview = true
+        } label: {
+            timelineActionLabel("Preview JSON Script…", systemImage: "doc.text.magnifyingglass")
+        }
+        .help("Preview JSON Script: run a JSON script in an isolated session and inspect its diff.")
+        #endif
+        Button {
+            showAllTimelines = true
+        } label: {
+            timelineActionLabel("All Timelines…", systemImage: "list.bullet")
+        }
+        .help("All Timelines")
+    }
+
+    /// Same-size icon for every timeline action, so the bordered buttons
+    /// share one height whatever the symbol's shape.
+    private func timelineActionLabel(_ title: String, systemImage: String) -> some View {
+        Label {
+            Text(title)
+        } icon: {
+            Image(systemName: systemImage)
+                .frame(width: 16, height: 16)
+        }
+    }
+
+    #if DEBUG
+    private func runJavaScriptFile() {
+        let panel = NSOpenPanel()
+        panel.allowedContentTypes = [.javaScript]
+        panel.allowsMultipleSelection = false
+        panel.canChooseDirectories = false
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            let wizard = WizardSheetModel(store: store)
+            showWizard(wizard)
+            do {
+                let data = try Data(contentsOf: url, options: .mappedIfSafe)
+                guard data.count <= 256 * 1024, let source = String(data: data, encoding: .utf8) else {
+                    throw ScriptError.invalid("Expected a UTF-8 JavaScript file of at most 256 KiB.")
+                }
+                wizard.beginJavaScript(source: source)
+            } catch { wizard.refuseJavaScriptFile(error) }
+        }
+    }
     #endif
 
     var body: some View {
@@ -34,8 +151,11 @@ struct BuilderView: View {
                 }.padding(12).background(.quinary)
             }
             HSplitView {
-                ClipBrowserPane(selectedTab: $browserTab, wizardModel: wizardModel,
-                                discardWizard: discardWizard, openWizardPicker: openWizardPicker)
+                VStack(spacing: 0) {
+                    timelineSwitcher
+                    ClipBrowserPane(selectedTab: $browserTab, wizardModel: wizardModel,
+                                    discardWizard: discardWizard, openWizardPicker: openWizardPicker)
+                }
                     .rememberedPaneWidth("pane.builder.browser", min: 250, initial: 300, max: 480)
                     .frame(maxHeight: .infinity, alignment: .top)
                 // Preview/inspector above, timeline below, with a draggable
@@ -94,75 +214,12 @@ struct BuilderView: View {
         }
         .screenTitle(store.openTimeline?.name ?? "Timeline", subtitle: "\(store.activeProject?.name ?? "Project") · \(model.document.videoTrack.count) clips · \(model.totalDuration.timecode)")
         .sheet(isPresented: $showDubSetup) { DubSetupSheet() }
+        .sheet(isPresented: $showAllTimelines) { TimelinesView(presentedAsSheet: true) }
         .toolbar {
             ToolbarItem {
                 Button("Dub…", systemImage: "waveform") { showDubSetup = true }
                     .lineLimit(1).fixedSize()
                     .disabled(model.document.videoTrack.isEmpty)
-            }
-            // The open timeline's name is the switcher: every timeline in the
-            // project is one click away, the same way the sidebar header
-            // switches projects.
-            ToolbarItem(placement: .navigation) {
-                Menu {
-                    ForEach(store.switchableTimelines) { timeline in
-                        Button {
-                            store.switchTimeline(to: timeline)
-                        } label: {
-                            if timeline.id == store.openTimelineID {
-                                Label(timeline.name, systemImage: "checkmark")
-                            } else {
-                                Text(timeline.name)
-                            }
-                        }
-                    }
-                    Divider()
-                    Button("New Timeline", systemImage: "plus") {
-                        store.createTimeline()
-                    }
-                    if let timeline = store.openTimeline {
-                        Button("Duplicate This Timeline", systemImage: "plus.square.on.square") {
-                            store.duplicateTimeline(timeline, openCopy: true)
-                        }
-                    }
-                    Divider()
-                    #if DEBUG
-                    Button("Export Script Reference…", systemImage: "doc.text") {
-                        exportScriptReference()
-                    }
-                    .help("Save the current command catalog and JavaScript header reference as Markdown.")
-                    Button("Run JavaScript File…", systemImage: "curlybraces") {
-                        let panel = NSOpenPanel()
-                        panel.allowedContentTypes = [.javaScript]
-                        panel.allowsMultipleSelection = false
-                        panel.canChooseDirectories = false
-                        panel.begin { response in
-                            guard response == .OK, let url = panel.url else { return }
-                            let wizard = WizardSheetModel(store: store)
-                            showWizard(wizard)
-                            do {
-                                let data = try Data(contentsOf: url, options: .mappedIfSafe)
-                                guard data.count <= 256 * 1024, let source = String(data: data, encoding: .utf8) else {
-                                    throw ScriptError.invalid("Expected a UTF-8 JavaScript file of at most 256 KiB.")
-                                }
-                                wizard.beginJavaScript(source: source)
-                            } catch { wizard.refuseJavaScriptFile(error) }
-                        }
-                    }
-                    .help("Run a JavaScript file with header defaults, then review and Apply manually.")
-                    Button("Preview JSON Script…", systemImage: "curlybraces") {
-                        showScriptPreview = true
-                    }
-                    .help("Run a JSON script in an isolated session and inspect its diff.")
-                    #endif
-                    Button("All Timelines…", systemImage: "list.bullet") {
-                        store.closeTimeline()
-                    }
-                } label: {
-                    // The menu draws its own indicator; a chevron in the label doubled it.
-                    Text(store.openTimeline?.name ?? "Timeline")
-                }
-                .help("Switch to another timeline in this project, or create one. ⌥⌘[ and ⌥⌘] cycle.")
             }
             ToolbarItem {
                 Button(role: .destructive) {
@@ -493,9 +550,9 @@ private struct CropStyleMenu: View {
                 }
             }
         } label: {
-            Label("Screen: \(target?.layout.displayName ?? "—")", systemImage: "crop")
+            Label("Screen: \(target?.layout.displayName ?? "—")", systemImage: "aspectratio")
         }
         .disabled(target == nil)
-        .help("Change the Screen Crop layout of the selected crop block (or the one at the playhead). Layouts come from Resources > Screen Crop.")
+        .help("Change the Screen Layout of the selected crop block (or the one at the playhead). Layouts come from Resources > Screen Layouts.")
     }
 }

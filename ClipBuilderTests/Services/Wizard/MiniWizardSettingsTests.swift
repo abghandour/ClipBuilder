@@ -206,6 +206,20 @@ struct MiniWizardSettingsTests {
         #expect(settings.effective(for: podcast, introAvailable: true, outroAvailable: true) == settings)
     }
 
+    @Test func rememberingUnchangedExpressAnswersWritesNoKey() throws {
+        let suite = "MiniWizardSettingsTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let profile = Fixtures.brand()
+        var settings = MiniWizardSettings.remembered(profile: profile, defaults: defaults)
+        #expect(settings.remember(profileName: profile.profileName, defaults: defaults))
+        #expect(!settings.remember(profileName: profile.profileName, defaults: defaults))
+        settings.captions.toggle()
+        #expect(settings.remember(profileName: profile.profileName, defaults: defaults))
+        #expect(!settings.remember(profileName: profile.profileName, defaults: defaults))
+        #expect(MiniWizardSettings.remembered(profile: profile, defaults: defaults) == settings)
+    }
+
     @Test func remembersEachProfileAndUsesProfileRenderDefaults() throws {
         let suite = "MiniWizardSettingsTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))

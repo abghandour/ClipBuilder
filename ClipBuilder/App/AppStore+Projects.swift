@@ -75,6 +75,9 @@ extension AppStore {
             projects = try await database.fetchProjects()
             applyLibrarySnapshot(snapshot, generation: profileGeneration)
             let state = projectState(for: activeProject)
+            if SidebarSection(rawValue: state.section) == .wizardMini {
+                wizardMode = .express
+            }
             selectedSection = state.section == "curated" ? .scenes
                 : SidebarSection(rawValue: state.section)?.projectDestination ?? .sources
             sceneMode = "all"
@@ -84,7 +87,9 @@ extension AppStore {
             sourceScrollID = state.sourceScrollID
             sceneSelection = state.sceneSelection.intersection(Set(scenes.map(\.id)))
             sceneScrollID = state.sceneScrollID
-            sceneRunSelection = state.sceneRunSelection.intersection(Set(analysisRuns.map(\.id)))
+            // Negative IDs are the built-in rows (All batches, Recent, Interviews, ...).
+            let runIDs = Set(analysisRuns.map(\.id))
+            sceneRunSelection = state.sceneRunSelection.filter { $0 < 0 || runIDs.contains($0) }
             sceneTagFilter = state.sceneTagFilter
             sceneSearchText = state.sceneSearchText
             sceneShowHidden = state.sceneShowHidden
@@ -313,6 +318,7 @@ extension AppStore {
     }
 
     func selectSection(_ section: SidebarSection) {
+        if section == .wizardMini { wizardMode = .express }
         if activeProjectID != nil || section == .learned { isShowingProjectsHome = false }
         selectedSection = section.projectDestination
         persistActiveProjectState()

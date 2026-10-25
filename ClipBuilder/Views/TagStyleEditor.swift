@@ -43,7 +43,7 @@ struct TagStyleEditor: View {
     private var settings: some View {
         Form {
             Section {
-                FormGroupHeader("Tag style")
+                FormGroupHeader("Name tag style")
                 TextField("Name", text: $name).disabled(isDefault)
                 Picker("Alignment", selection: $style.alignment) {
                     Text("Leading").lineLimit(1).fixedSize().tag("leading")

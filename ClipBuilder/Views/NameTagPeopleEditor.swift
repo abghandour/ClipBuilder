@@ -50,7 +50,7 @@ struct NameTagPeopleEditor: View {
                     FormCaption("Looking up who appears in the footage…")
                 } else {
                     FormCaption("Tags print the name and \(field). Edit either here; the change applies to the person everywhere and is saved as you type. "
-                        + "Position overrides the run's tag position for that person.")
+                        + "Position overrides the run's name tag position for that person.")
                     ForEach(shown) { person in
                         row(person)
                     }
@@ -114,8 +114,8 @@ struct NameTagPeopleEditor: View {
             .pickerStyle(.menu)
             .labelsHidden()
             .fixedSize()
-            .accessibilityLabel("Tag position of \(person.displayName)")
-            .help("Where this person's tag sits; Run default follows the Tag position above")
+            .accessibilityLabel("Name tag position of \(person.displayName)")
+            .help("Where this person's tag sits; Run default follows the Name tag position above")
             Image(systemName: hasChanges(person) ? "ellipsis.circle" : "checkmark.circle")
                 .foregroundStyle(hasChanges(person) ? Color.secondary : Color.green)
                 .controlSize(.small)
