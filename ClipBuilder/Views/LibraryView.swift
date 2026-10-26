@@ -49,7 +49,7 @@ struct LibraryView: View {
             driveSelection = []
             store.outputsScrollID = nil
         }
-        .screenTitle("Outputs", subtitle: "\(sorted.count) of \(store.generatedVideos.count) videos")
+        .screenTitle("Exports", subtitle: "\(sorted.count) of \(store.generatedVideos.count) videos")
         .toolbar {
             ToolbarItem {
                 DriveMediaMenu(media: sorted.filter { driveSelection.contains($0.id) }.map(\.driveMedia))

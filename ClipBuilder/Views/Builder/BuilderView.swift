@@ -25,10 +25,13 @@ struct BuilderView: View {
 
     /// The open timeline's name is the switcher: every timeline in the
     /// project is one click away. It heads the left column, under the window
-    /// title and above the browser tabs, with the timeline actions as a row
-    /// of buttons under it.
+    /// title and above the browser tabs, with the timeline actions in a "…"
+    /// menu beside it.
     private var timelineSwitcher: some View {
-        VStack(spacing: Theme.spaceS) {
+        HStack(spacing: Theme.spaceS) {
+            Text("Timeline")
+                .foregroundStyle(.secondary)
+                .lineLimit(1).fixedSize()
             Menu {
                 ForEach(store.switchableTimelines) { timeline in
                     Button {
@@ -50,12 +53,19 @@ struct BuilderView: View {
             .truncationMode(.middle)
             .frame(maxWidth: 320)
 
-            HStack(spacing: Theme.spaceS) {
+            Menu {
                 timelineActions
+            } label: {
+                timelineActionLabel("More Actions", systemImage: "ellipsis.circle")
+                    .labelStyle(.iconOnly)
             }
+            .menuStyle(.button)
             .buttonStyle(.bordered)
-            .labelStyle(.iconOnly)
+            .controlSize(.regular)
+            .menuIndicator(.hidden)
             .fixedSize()
+            .help("Timeline actions: new, duplicate, all timelines")
+            .accessibilityLabel("More Actions")
         }
         .padding(.horizontal, Theme.spaceM)
         .padding(.top, Theme.spaceS)
@@ -79,26 +89,6 @@ struct BuilderView: View {
         }
         .help("Duplicate This Timeline")
         .disabled(store.openTimeline == nil)
-        #if DEBUG
-        Button {
-            exportScriptReference()
-        } label: {
-            timelineActionLabel("Export Script Reference…", systemImage: "doc.text")
-        }
-        .help("Export Script Reference: save the current command catalog and JavaScript header reference as Markdown.")
-        Button {
-            runJavaScriptFile()
-        } label: {
-            timelineActionLabel("Run JavaScript File…", systemImage: "curlybraces")
-        }
-        .help("Run JavaScript File: run a file with header defaults, then review and Apply manually.")
-        Button {
-            showScriptPreview = true
-        } label: {
-            timelineActionLabel("Preview JSON Script…", systemImage: "doc.text.magnifyingglass")
-        }
-        .help("Preview JSON Script: run a JSON script in an isolated session and inspect its diff.")
-        #endif
         Button {
             showAllTimelines = true
         } label: {
@@ -116,6 +106,17 @@ struct BuilderView: View {
             Image(systemName: systemImage)
                 .frame(width: 16, height: 16)
         }
+    }
+
+    /// Developer script tools, shown as buttons in the Scripts tab.
+    private var scriptTools: BuilderScriptTools? {
+        #if DEBUG
+        BuilderScriptTools(exportReference: exportScriptReference,
+                           runJavaScriptFile: runJavaScriptFile,
+                           previewJSON: { showScriptPreview = true })
+        #else
+        nil
+        #endif
     }
 
     #if DEBUG
@@ -154,7 +155,8 @@ struct BuilderView: View {
                 VStack(spacing: 0) {
                     timelineSwitcher
                     ClipBrowserPane(selectedTab: $browserTab, wizardModel: wizardModel,
-                                    discardWizard: discardWizard, openWizardPicker: openWizardPicker)
+                                    discardWizard: discardWizard, openWizardPicker: openWizardPicker,
+                                    scriptTools: scriptTools)
                 }
                     .rememberedPaneWidth("pane.builder.browser", min: 250, initial: 300, max: 480)
                     .frame(maxHeight: .infinity, alignment: .top)
@@ -245,14 +247,14 @@ struct BuilderView: View {
                     Button {
                         store.renderBuilderTimeline()
                     } label: {
-                        ToolbarBubbleLabel(text: "Render to Library", systemImage: "play.rectangle.fill")
+                        ToolbarBubbleLabel(text: "Render to Exports", systemImage: "play.rectangle.fill")
                     }
                     .disabled(model.document.videoTrack.isEmpty || store.isBuilderPreviewRendering
                               || FootageAvailability.missingSource(document: model.document, scenes: model.scenes) != nil)
                     .help(FootageAvailability.missingSource(document: model.document, scenes: model.scenes) != nil
                           ? VideoRecord.notPresentReason
                           : store.isBuilderPreviewRendering ? "Wait for the temporary Render Preview to finish"
-                          : "Render the timeline to a video in the Library")
+                          : "Render the timeline to a video in Exports")
                 }
             }
         }

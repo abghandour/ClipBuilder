@@ -324,7 +324,7 @@ final class AppStore {
     /// progress toolbar.
     var isPlanningIntoBuilder = false
     var builderPlanResult: BuilderPlanResult?
-    /// The last "Render to Library" output, presented in a player as soon as
+    /// The last "Render to Exports" output, presented in a player as soon as
     /// the render finishes; cleared when the sheet closes.
     var finishedBuilderRender: FinishedRender?
     /// The live inline Wizard also supplies the window-wide status and log.

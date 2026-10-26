@@ -34,7 +34,7 @@ nonisolated struct AppError: Identifiable, Equatable, Sendable {
 }
 
 /// A finished Builder render, shown in a player sheet right after
-/// "Render to Library" completes.
+/// "Render to Exports" completes.
 nonisolated struct FinishedRender: Identifiable, Equatable, Sendable {
     let id = UUID()
     let url: URL

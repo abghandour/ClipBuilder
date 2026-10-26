@@ -1,10 +1,18 @@
 import SwiftUI
 import UniformTypeIdentifiers
 
+/// Developer script tools (debug builds) that the Builder hands to the Scripts tab.
+struct BuilderScriptTools {
+    let exportReference: () -> Void
+    let runJavaScriptFile: () -> Void
+    let previewJSON: () -> Void
+}
+
 struct BuilderScriptsSection: View {
     @Bindable var wizard: WizardSheetModel
     @Bindable var model: ScriptLibraryModel
     var showWizard: () -> Void = {}
+    var tools: BuilderScriptTools? = nil
     @State private var showingSheet = false
     @State private var editing = false
     @State private var opening = false
@@ -12,6 +20,17 @@ struct BuilderScriptsSection: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceS) {
             HStack {
+                if let tools {
+                    Group {
+                        Button("Run JavaScript File…", systemImage: "curlybraces", action: tools.runJavaScriptFile)
+                            .help("Run JavaScript File: run a file with header defaults, then review and Apply manually.")
+                        Button("Preview JSON Script…", systemImage: "doc.text.magnifyingglass", action: tools.previewJSON)
+                            .help("Preview JSON Script: run a JSON script in an isolated session and inspect its diff.")
+                        Button("Export Script Reference…", systemImage: "doc.text", action: tools.exportReference)
+                            .help("Export Script Reference: save the current command catalog and JavaScript header reference as Markdown.")
+                    }
+                    .labelStyle(.iconOnly)
+                }
                 Spacer(minLength: 0)
                 Button("Restore examples") { Task { await model.installExamples(restoring: true) } }
                     .help("Reinstall missing examples and reset bundled app-origin scripts, including edits. Duplicate an example first to keep your version.")

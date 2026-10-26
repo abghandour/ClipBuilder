@@ -83,7 +83,7 @@ struct BuilderPreviewControls: View {
                     .buttonStyle(.borderedProminent)
                     .disabled(store.isBuilderRendering || model.document.videoTrack.isEmpty)
                     .help(store.isBuilderRendering
-                          ? "Wait for the Library render to finish."
+                          ? "Wait for the render to Exports to finish."
                           : "Render \(seconds) seconds of the final video from the playhead and play it in the monitor. Cached slices play at once. Nothing is added to the Library.")
             }
         }

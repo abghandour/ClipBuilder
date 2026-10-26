@@ -574,7 +574,7 @@ extension AppStore {
     func startBuilderPreview(from time: Double? = nil) {
         stopBuilderPreview()
         guard !builder.document.videoTrack.isEmpty else { presentError("Add clips to the timeline first."); return }
-        guard !isBuilderRendering else { presentError("Wait for the Library render to finish."); return }
+        guard !isBuilderRendering else { presentError("Wait for the render to Exports to finish."); return }
         pruneBuilderPreviewCache()
         let playhead = time ?? builder.playhead
         let window = Self.exactPreviewRange(from: playhead, seconds: Self.exactPreviewWindow, totalDuration: builder.totalDuration)

@@ -51,7 +51,7 @@ struct TimelineRowView: View {
             // Every action visible, as icons with tooltips; no More menu.
             HStack(spacing: Theme.spaceXS) {
                 Button(timeline.isWizard ? "Open in Builder" : "Open",
-                       systemImage: "arrow.up.forward.app", action: onOpen)
+                       systemImage: "folder", action: onOpen)
                     .help(timeline.isWizard ? "Open this Wizard run in the Builder" : "Open in the Builder (or double-click the row)")
                 Button("Rename…", systemImage: "pencil", action: onRename)
                     .disabled(timeline.isWizard)

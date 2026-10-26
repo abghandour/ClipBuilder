@@ -647,7 +647,7 @@ struct TimelinePreviewSheet: View {
                 .controlSize(.small)
                 .disabled(store.isBuilderPreviewRendering || store.isBuilderRendering)
                 .help(store.isBuilderRendering
-                      ? "Wait for the Library render to finish."
+                      ? "Wait for the render to Exports to finish."
                       : "Render \(Int(AppStore.exactPreviewWindow)) seconds of the final video from the playhead into a temporary file. Nothing is added to the Library.")
                 Button("Done") { dismiss() }
                     .controlSize(.small)

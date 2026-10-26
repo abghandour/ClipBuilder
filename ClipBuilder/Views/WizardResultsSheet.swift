@@ -137,10 +137,10 @@ struct WizardResultsSheet: View {
             "Keep the best version only?",
             isPresented: Binding(get: { keepingBest != nil }, set: { if !$0 { keepingBest = nil } })
         ) {
-            Button("Remove from Library and Delete Files", role: .destructive) {
+            Button("Remove from Exports and Delete Files", role: .destructive) {
                 discardOtherVersions(removeFiles: true)
             }
-            Button("Remove from Library Only") { discardOtherVersions(removeFiles: false) }
+            Button("Remove from Exports Only") { discardOtherVersions(removeFiles: false) }
             Button("Cancel", role: .cancel) { keepingBest = nil }
         } message: {
             Text("Keep \(keepingBest?.filename ?? "the best version") and remove the other versions from this run. No other batch is affected.")

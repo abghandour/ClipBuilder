@@ -243,7 +243,7 @@ struct ManualBuildSheet: View {
                 }
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .help("Render the manual build to the Library — progress shows in App Log → Generation")
+                .help("Render the manual build to Exports — progress shows in App Log → Generation")
             }
         }
         .padding(.horizontal, 16)

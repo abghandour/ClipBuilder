@@ -10,6 +10,7 @@ struct ClipBrowserPane: View {
     let wizardModel: WizardSheetModel?
     let discardWizard: () -> Void
     let openWizardPicker: (BuilderWizardPickerRequest) -> Void
+    var scriptTools: BuilderScriptTools? = nil
 
     @State private var searchText = ""
     @State private var tagFilter: String?
@@ -201,7 +202,7 @@ struct ClipBrowserPane: View {
                 }
             } else if selectedTab == "scripts" {
                 if let wizardModel {
-                    BuilderScriptsPanel(model: wizardModel, selectedTab: $selectedTab)
+                    BuilderScriptsPanel(model: wizardModel, selectedTab: $selectedTab, tools: scriptTools)
                 } else {
                     Text("Open a timeline to use saved scripts.").foregroundStyle(.secondary)
                 }

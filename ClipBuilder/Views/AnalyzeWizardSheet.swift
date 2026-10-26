@@ -110,7 +110,7 @@ struct AnalyzeWizardSheet: View {
                         .disabled(!generate)
                         .padding(.leading, 18)
                     taskRow(.coverFrame, $coverFrame, "Pick cover frames",
-                            "The AI picks each finished reel's Library thumbnail.", enabled: generate)
+                            "The AI picks each finished reel's thumbnail in Exports.", enabled: generate)
                         .disabled(!generate)
                         .padding(.leading, 18)
                 }
