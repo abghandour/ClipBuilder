@@ -98,8 +98,11 @@ extension AppStore {
         let plan = AnalysisRequest.capturePlan(defaults: .standard, singleVideo: true, provider: nil, model: nil, includeFightScoring: true)
         for video in videos where video.isPresent {
             do {
+                // Previews trust the size/date-validated identity cache; Analyze
+                // itself re-reads the source before it runs.
                 let request = try await captureAnalysisRequest(video: video, plan: plan, profile: activeProfile,
-                    config: effectiveAIConfig, podcast: podcastEditingSettings, language: editingDefaults.footage.language)
+                    config: effectiveAIConfig, podcast: podcastEditingSettings, language: editingDefaults.footage.language,
+                    freshSource: false)
                 guard !Task.isCancelled, generation == profileGeneration else { return }
                 analysisRequestPreviews[video.id] = request
             } catch { analysisRequestPreviews[video.id] = nil }

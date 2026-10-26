@@ -173,8 +173,9 @@ nonisolated enum WizardPreviewComposite {
                 let renderers = CaptionRendererSet(base: base,
                     speakerStyles: input.profile.speakerCaptionStyles(runStyleID: options.captionStyleID))
                 let moment = TranscriptSegment(start: input.scene.time, end: input.scene.time.nextUp, text: "")
+                let speakers = CaptionSpeakerColors.Sorted(turns: input.scene.speakerTurns, rows: input.scene.speakerRows)
                 let talking = CaptionSpeakerColors.personKey(CaptionSpeakerColors.speakerKey(for: moment,
-                    turns: input.scene.speakerTurns, rows: input.scene.speakerRows))
+                    sorted: speakers))
                 let ordinals = input.scene.resolvedCaptionOrdinals
                 func drawCaption(person: String?, isTalking: Bool) throws {
                     let styleID = person.flatMap { renderers.perSpeaker[$0] == nil ? nil : $0 }
@@ -185,11 +186,11 @@ nonisolated enum WizardPreviewComposite {
                         if let time = times.first(where: { time in
                             CaptionSpeakerColors.personKey(CaptionSpeakerColors.speakerKey(
                                 for: .init(start: time, end: time.nextUp, text: ""),
-                                turns: input.scene.speakerTurns, rows: input.scene.speakerRows)) == person
+                                sorted: speakers)) == person
                         }) { colorMoment = .init(start: time, end: time.nextUp, text: "") }
                     }
                     let color = renderer.style.resolvedSpeakerColors
-                        ? CaptionSpeakerColors.color(for: colorMoment, turns: input.scene.speakerTurns, rows: input.scene.speakerRows) : nil
+                        ? CaptionSpeakerColors.color(for: colorMoment, sorted: speakers) : nil
                     let text = input.scene.captionText?.trimmingCharacters(in: .whitespacesAndNewlines)
                     let start = input.scene.words?.first?.start ?? 0
                     let end = max(start + 3, input.scene.words?.last?.end ?? 3)

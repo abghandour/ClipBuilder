@@ -172,6 +172,14 @@ struct PersonFaceAvatar: View {
     /// and the same person can get a new hand-picked avatar.
     @State private var loadedKey: String?
 
+    /// Finished avatars shared by every instance, so the same person in the
+    /// roster, a picker and the detail header is found once, not per view.
+    private static let sharedImages: NSCache<NSString, NSImage> = {
+        let cache = NSCache<NSString, NSImage>()
+        cache.countLimit = 400
+        return cache
+    }()
+
     private var initials: String {
         person.name.split(separator: " ").prefix(2)
             .compactMap(\.first).map(String.init).joined()
@@ -210,8 +218,17 @@ struct PersonFaceAvatar: View {
         .clipShape(Circle())
         .task(id: avatarKey) {
             guard loadedKey != avatarKey else { return }
-            image = nil
             loadedKey = avatarKey
+            // Person ids are per profile database.
+            let cacheKey = "\(store.activeProfile.profileName)|\(avatarKey)" as NSString
+            if let cached = Self.sharedImages.object(forKey: cacheKey) {
+                image = cached
+                return
+            }
+            image = nil
+            defer {
+                if let image, !Task.isCancelled { Self.sharedImages.setObject(image, forKey: cacheKey) }
+            }
             // The user's hand-picked avatar frame wins over everything.
             if let videoID = person.avatarVideoID, let time = person.avatarTime,
                let video = store.videos.first(where: { $0.id == videoID }),

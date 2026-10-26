@@ -519,6 +519,8 @@ actor MultitrackRenderer {
         let captionRenderers = CaptionRendererSet(base: captionRenderer,
             speakerStyles: profile.speakerCaptionStyles(runStyleID: nil))
         let captionCache = CaptionPNGCache(renderers: captionRenderers, directory: scratch)
+        let captionEvidence = CaptionSpeakerEvidenceMemo(database: database)
+        let segmentDedupe = SegmentDedupe()
         let segmentCount = fullSegments.count
 
         // Text and image overlays — pre-rendered to full-frame PNGs and
@@ -613,7 +615,9 @@ actor MultitrackRenderer {
                                          scratch: scratch, database: database,
                                          captionLanguage: profile.captionLanguages.first,
                                          captionRenderers: captionRenderers,
-                                         captionCache: captionCache, captionStyle: profile.captions,
+                                         captionCache: captionCache, captionEvidence: captionEvidence,
+                                         dedupe: segmentDedupe,
+                                         captionStyle: profile.captions,
                                          fontFingerprints: fontFingerprints,
                                          overlays: overlayPlan.bySegment[index] ?? [],
                                          prerendered: prerenderedSources,
@@ -1613,6 +1617,8 @@ actor MultitrackRenderer {
                                captionLanguage: String?,
                                captionRenderers: CaptionRendererSet,
                                captionCache: CaptionPNGCache,
+                               captionEvidence: CaptionSpeakerEvidenceMemo,
+                               dedupe: SegmentDedupe,
                                captionStyle: CaptionStyle, fontFingerprints: [String]?,
                                overlays: [TimedOverlayPNG],
                                prerendered: Set<String> = [],
@@ -1624,7 +1630,7 @@ actor MultitrackRenderer {
         if burnIns.isEmpty, !muteSource, compositeEffect == nil, segment.clips.isEmpty || segment.clips.allSatisfy(\.missingBumper) {
             emit("Segment \(index + 1)/\(total): gap (\(String(format: "%.1fs", segment.duration)))")
             let gapPath = scratch.appendingPathComponent(String(format: "gap%03d.mp4", index))
-            let input = RenderSegmentKey(start: segment.start, duration: segment.duration, clips: [],
+            let input = RenderSegmentKey(start: 0, duration: segment.duration.rounded(toPlaces: 6), clips: [],
                 captions: [], overlays: [], masks: [:], fontFingerprints: [], captionStyle: CaptionStyle(),
                 speakerCaptionStyles: [:],
                 settings: RenderContext.settings, encoder: FFmpeg.encodeArgs)
@@ -1633,9 +1639,24 @@ actor MultitrackRenderer {
                 emit("Segment \(index + 1): cache hit; encodes=0")
                 return SegmentArtifact(url: gapPath, key: nil, wasCached: true)
             }
-            emit("Segment \(index + 1): encode pass")
-            try await generatePlaceholder(duration: segment.duration, output: gapPath)
-            try Task.checkCancellation()
+            let owns: Bool
+            switch await dedupe.claim(key) {
+            case .owner: owns = true
+            case .shared(let url):
+                try FileManager.default.copyItemReplacing(at: url, to: gapPath)
+                emit("Segment \(index + 1): same as an earlier segment; encodes=0")
+                return SegmentArtifact(url: gapPath, key: nil, wasShared: true)
+            case .ownerFailed: owns = false
+            }
+            do {
+                emit("Segment \(index + 1): encode pass")
+                try await generatePlaceholder(duration: segment.duration, output: gapPath)
+                try Task.checkCancellation()
+            } catch {
+                if owns { await dedupe.finish(key, url: nil) }
+                throw error
+            }
+            if owns { await dedupe.finish(key, url: gapPath) }
             return SegmentArtifact(url: gapPath, key: key)
         }
 
@@ -1662,7 +1683,7 @@ actor MultitrackRenderer {
             // Missing speaker evidence falls back to the run style.
             let needsSpeakers = captionStyle.resolvedSpeakerColors || captionRenderers.usesSpeakers
             let evidence = needsSpeakers
-                ? await CaptionSpeakerEvidence.load(database: database, videoID: videoID)
+                ? await captionEvidence.evidence(videoID: videoID)
                 : CaptionSpeakerEvidence()
             try Task.checkCancellation()
             captionPages += CaptionOverlayPlan.pages(segments: rows, renderers: captionRenderers,
@@ -1724,18 +1745,33 @@ actor MultitrackRenderer {
         let localBumper = segment.clips.count == 1 && segment.clips[0].bumper
             && captions.isEmpty && overlays.isEmpty
             && burnIns.isEmpty
+        // A segment's pixels depend on its clips relative to the segment, not
+        // on where it sits in the timeline (captions and fused overlays are
+        // already segment-local): lengthening an early clip must not
+        // re-encode every later segment. Burn-ins are placed at absolute
+        // times, so those segments keep their position in the key.
+        for index in keyClips.indices {
+            keyClips[index].startTime = (keyClips[index].startTime - segment.start).rounded(toPlaces: 6)
+            keyClips[index].originalStart = (keyClips[index].originalStart - segment.start).rounded(toPlaces: 6)
+            keyClips[index].originalEnd = (keyClips[index].originalEnd - segment.start).rounded(toPlaces: 6)
+        }
+        for index in keyCaptions.indices {
+            keyCaptions[index].start = keyCaptions[index].start.rounded(toPlaces: 6)
+            keyCaptions[index].end = keyCaptions[index].end.rounded(toPlaces: 6)
+        }
+        for index in keyOverlays.indices {
+            keyOverlays[index].startTime = keyOverlays[index].startTime.rounded(toPlaces: 6)
+            keyOverlays[index].endTime = keyOverlays[index].endTime.rounded(toPlaces: 6)
+        }
         if localBumper {
             for index in keyClips.indices {
-                keyClips[index].startTime = (keyClips[index].startTime - segment.start).rounded(toPlaces: 6)
-                keyClips[index].originalStart = (keyClips[index].originalStart - segment.start).rounded(toPlaces: 6)
-                keyClips[index].originalEnd = (keyClips[index].originalEnd - segment.start).rounded(toPlaces: 6)
                 // Joins happen after this segment and cannot change its pixels.
                 keyClips[index].transIn = nil
                 keyClips[index].transOut = nil
             }
         }
-        let input = RenderSegmentKey(start: localBumper ? 0 : segment.start,
-            duration: localBumper ? segment.duration.rounded(toPlaces: 6) : segment.duration, clips: keyClips,
+        let input = RenderSegmentKey(start: burnIns.isEmpty ? 0 : segment.start,
+            duration: segment.duration.rounded(toPlaces: 6), clips: keyClips,
             captions: keyCaptions, overlays: keyOverlays, masks: maskKeys,
             fontFingerprints: fontFingerprints ?? [], captionStyle: captionStyle,
             speakerCaptionStyles: captionRenderers.styles,
@@ -1758,26 +1794,46 @@ actor MultitrackRenderer {
             try Task.checkCancellation()
             return SegmentArtifact(url: segmentPath, key: nil)
         }
-        do {
-            emit("Segment \(index + 1): encode pass")
-            try await compositeLayeredSegment(placements: placements, duration: segment.duration,
-                captions: captions, overlays: overlays, maskFiles: masks, burnIns: burnIns,
-                burnInDuration: burnInDuration, timelineOffset: segment.start, muteSource: muteSource, compositeEffect: compositeEffect,
-                intermediateSources: prerendered.union(segment.clips.filter {
-                    $0.originalSourcePath != nil && $0.originalSourcePath != $0.sourcePath
-                }.map(\.sourcePath)), output: segmentPath)
-        } catch where !captions.isEmpty {
-            try Task.checkCancellation()
-            key = nil // A degraded result must never satisfy the full key.
-            emit("Segment \(index + 1): caption burn failed, retrying without captions; encode pass")
-            try await compositeLayeredSegment(placements: placements, duration: segment.duration,
-                captions: [], overlays: overlays, maskFiles: masks, burnIns: burnIns,
-                burnInDuration: burnInDuration, timelineOffset: segment.start, muteSource: muteSource, compositeEffect: compositeEffect,
-                intermediateSources: prerendered.union(segment.clips.filter {
-                    $0.originalSourcePath != nil && $0.originalSourcePath != $0.sourcePath
-                }.map(\.sourcePath)), output: segmentPath)
+        // A repeated clip makes an identical segment: encode it once and copy
+        // the bytes, so both the work and the finishing digests are shared.
+        var ownedKey: String?
+        if let key {
+            switch await dedupe.claim(key) {
+            case .owner: ownedKey = key
+            case .shared(let url):
+                try FileManager.default.copyItemReplacing(at: url, to: segmentPath)
+                emit("Segment \(index + 1): same as an earlier segment; encodes=0")
+                return SegmentArtifact(url: segmentPath, key: nil, wasShared: true)
+            case .ownerFailed: ownedKey = nil
+            }
         }
-        try Task.checkCancellation()
+        do {
+            do {
+                emit("Segment \(index + 1): encode pass")
+                try await compositeLayeredSegment(placements: placements, duration: segment.duration,
+                    captions: captions, overlays: overlays, maskFiles: masks, burnIns: burnIns,
+                    burnInDuration: burnInDuration, timelineOffset: segment.start, muteSource: muteSource, compositeEffect: compositeEffect,
+                    intermediateSources: prerendered.union(segment.clips.filter {
+                        $0.originalSourcePath != nil && $0.originalSourcePath != $0.sourcePath
+                    }.map(\.sourcePath)), output: segmentPath)
+            } catch where !captions.isEmpty {
+                try Task.checkCancellation()
+                key = nil // A degraded result must never satisfy the full key.
+                emit("Segment \(index + 1): caption burn failed, retrying without captions; encode pass")
+                try await compositeLayeredSegment(placements: placements, duration: segment.duration,
+                    captions: [], overlays: overlays, maskFiles: masks, burnIns: burnIns,
+                    burnInDuration: burnInDuration, timelineOffset: segment.start, muteSource: muteSource, compositeEffect: compositeEffect,
+                    intermediateSources: prerendered.union(segment.clips.filter {
+                        $0.originalSourcePath != nil && $0.originalSourcePath != $0.sourcePath
+                    }.map(\.sourcePath)), output: segmentPath)
+            }
+            try Task.checkCancellation()
+        } catch {
+            if let ownedKey { await dedupe.finish(ownedKey, url: nil) }
+            throw error
+        }
+        // A degraded (caption-less) result is not the keyed segment: siblings encode their own.
+        if let ownedKey { await dedupe.finish(ownedKey, url: key == nil ? nil : segmentPath) }
         return SegmentArtifact(url: segmentPath, key: key)
     }
 
@@ -1785,7 +1841,31 @@ actor MultitrackRenderer {
         var url: URL
         var key: String?
         var wasCached = false
-        var reusable: Bool { key != nil || wasCached }
+        /// A copy of an identical segment encoded earlier in this render.
+        var wasShared = false
+        var reusable: Bool { key != nil || wasCached || wasShared }
+    }
+
+    /// Identical segments in one render (a repeated clip, equal gaps): the
+    /// first claims the key and encodes, the rest wait and copy its file.
+    actor SegmentDedupe {
+        enum Claim { case owner, shared(URL), ownerFailed }
+        private var owners: Set<String> = []
+        private var results: [String: URL?] = [:]
+        private var waiters: [String: [CheckedContinuation<URL?, Never>]] = [:]
+
+        /// `.owner` obliges the caller to `finish` the key on every path.
+        func claim(_ key: String) async -> Claim {
+            if let done = results[key] { return done.map(Claim.shared) ?? .ownerFailed }
+            if owners.insert(key).inserted { return .owner }
+            let url = await withCheckedContinuation { waiters[key, default: []].append($0) }
+            return url.map(Claim.shared) ?? .ownerFailed
+        }
+
+        func finish(_ key: String, url: URL?) {
+            results[key] = url
+            for waiter in waiters.removeValue(forKey: key) ?? [] { waiter.resume(returning: url) }
+        }
     }
 
     /// True when the segment would re-encode `placement` unchanged: the

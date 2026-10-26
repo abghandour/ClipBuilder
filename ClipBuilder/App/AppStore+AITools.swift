@@ -176,24 +176,15 @@ extension AppStore {
         if scoped.count < candidates.count {
             log("Searching the \(scoped.count) most recent of \(candidates.count) scenes")
         }
-        var tasteLines: [String] = []
-        if let modelStore = reelModelStore,
-           let taste = try? modelStore.predictor(item: .taste, config: settings.ai, trainer: CreateMLReelModelTrainer()) {
-            for scene in scoped {
-                if let image = await ThumbnailService.jpegFrame(url: scene.videoURL, at: (scene.startTime + scene.endTime) / 2),
-                   let score = try? await TasteSimilarity.scoreOnDevice(image: image, predictor: taste) {
-                    let line = "Scene \(scene.id) looks like ours: \((score * 100).formatted(.number.precision(.fractionLength(0))))%"
-                    tasteLines.append(line); log(line)
-                }
-            }
-        }
         if useLocal {
             let names = Dictionary(uniqueKeysWithValues: people.map { ($0.tag, $0.name) })
             let vocabularyOnly = LocalSceneSearch.vocabularyOnly(query, vocabulary: activeProfile.effectiveTags.values.flatMap(\.self) + people.map(\.name))
+            let runDates = Dictionary(analysisRuns.compactMap { run in run.createdAt.map { (run.id, $0) } },
+                                      uniquingKeysWith: { first, _ in first })
             let rows = scoped.map { scene in
                 LocalTextMatcher.Row(id: String(scene.id),
                     fields: scene.tags + scene.tags.compactMap { names[$0] } + (vocabularyOnly ? [] : [scene.narrative ?? ""]),
-                    date: AIProvenance.parseDate(analysisRuns.first { $0.id == scene.runID }?.createdAt) ?? .distantPast)
+                    date: AIProvenance.parseDate(scene.runID.flatMap { runDates[$0] }) ?? .distantPast)
             }
             if vocabularyOnly {
                 let ids = LocalTextMatcher.rank(query: query, rows: rows, useEmbedding: false)
@@ -203,6 +194,20 @@ extension AppStore {
             }
             let ids = Set(LocalSceneSearch.narrow(query: query, rows: rows))
             scoped = scoped.filter { ids.contains(String($0.id)) }
+        }
+        var tasteLines: [String] = []
+        if let modelStore = reelModelStore,
+           let taste = try? modelStore.predictor(item: .taste, config: settings.ai, trainer: CreateMLReelModelTrainer()) {
+            // Only the scenes the model will see: a keyword answer returns
+            // above without scoring anything.
+            for scene in scoped {
+                try Task.checkCancellation()
+                if let image = await ThumbnailService.jpegFrame(url: scene.videoURL, at: (scene.startTime + scene.endTime) / 2),
+                   let score = try? await TasteSimilarity.scoreOnDevice(image: image, predictor: taste) {
+                    let line = "Scene \(scene.id) looks like ours: \((score * 100).formatted(.number.precision(.fractionLength(0))))%"
+                    tasteLines.append(line); log(line)
+                }
+            }
         }
         log(useLocal ? "Scene candidates narrowed by keywords — asking the model" : "Scene search — asking the model")
         let prompt = SceneFinder.prompt(query: query, scenes: scoped, people: people)

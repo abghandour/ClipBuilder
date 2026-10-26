@@ -54,12 +54,13 @@ nonisolated enum CaptionOverlayPlan {
                       speakerTurns: [SpeakerTurn] = [], speakerRows: [TranscriptRow] = [], streamID: String = "",
                       speakerPositions: ((String?) -> String)? = nil) -> [Page] {
         guard speed.isFinite, speed > 0 else { return [] }
+        let speakers = CaptionSpeakerColors.Sorted(turns: speakerTurns, rows: speakerRows)
         return segments.flatMap { segment -> [Page] in
-            let (renderer, styleID) = renderers.renderer(for: segment, turns: speakerTurns, rows: speakerRows)
+            let (renderer, styleID) = renderers.renderer(for: segment, speakers: speakers)
             let color = renderer.style.resolvedSpeakerColors
-                ? CaptionSpeakerColors.color(for: segment, turns: speakerTurns, rows: speakerRows) : nil
+                ? CaptionSpeakerColors.color(for: segment, sorted: speakers) : nil
             let person = CaptionSpeakerColors.personKey(CaptionSpeakerColors.speakerKey(
-                for: segment, turns: speakerTurns, rows: speakerRows))
+                for: segment, sorted: speakers))
             let resolvedPosition = speakerPositions?(person) ?? position
             return renderer.pages(for: segment).compactMap { original in
                 var page = original

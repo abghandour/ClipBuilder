@@ -226,7 +226,7 @@ extension WizardView {
                     restrictionChip("Selected Analyze batches: \(selectedRunIDs.count)") { limitToSelection = false }
                 }
                 WizardSourceEvidence(scenes: Array(sourcePool.prefix(6)),
-                    people: projectPeople.filter { selectedSourcePeople.contains($0.key) })
+                    people: { let selected = selectedSourcePeople; return projectPeople.filter { selected.contains($0.key) } }())
                 copiedSourceRestrictions
                 Text(framingStatus).font(.caption).foregroundStyle(.secondary)
             }

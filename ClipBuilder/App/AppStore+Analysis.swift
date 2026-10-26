@@ -401,11 +401,9 @@ extension AppStore {
                     if includeFightScoring && !checkpoint.fightScoringDone {
                         do {
                             analysisStage = "scoring fight action"
-                            let allScenes = (try? await database.fetchScenes(includeExcluded: true)) ?? []
                             let scoreRunKey = try await database.fetchAnalysisRuns().first { $0.id == runID }?.runKey
                             _ = try await analyzer.scoreFightAction(
-                                video: video, scenes: allScenes.filter { $0.videoID == video.id },
-                                profile: profile, database: database,
+                                video: video, profile: profile, database: database,
                                 provider: provider, model: model, runKey: scoreRunKey,
                                 log: logSink(\.analysisLog))
                             await updateAnalysisCheckpoint(videoID: videoID) { $0.fightScoringDone = true }
@@ -1014,15 +1012,25 @@ extension AppStore {
     /// only; runs in the background.
     private func recomputeCenterStagePaths(videoID: Int64, around time: Double?) {
         guard let database else { return }
+        let pending = centerStageRetracks[videoID]
         let affected = scenes.filter { scene in
             guard scene.videoID == videoID, scene.centerStagePathJSON != nil else { return false }
+            if pending?.sceneIDs.contains(scene.id) == true { return true }
             guard let time else { return true }
             return scene.startTime - 0.25 <= time && time <= scene.endTime + 0.25
         }
         guard !affected.isEmpty,
               let video = videos.first(where: { $0.id == videoID }) else { return }
+        pending?.task.cancel()
         let canvasAspect = activeProfile.defaultRenderSettings.aspectRatio
-        Task {
+        let generation = profileGeneration
+        let task = Task {
+            defer {
+                if generation == profileGeneration, centerStageRetracks[videoID]?.sceneIDs == Set(affected.map(\.id)),
+                   !Task.isCancelled {
+                    centerStageRetracks[videoID] = nil
+                }
+            }
             let centerStage = CenterStageService()
             let markers = (try? await database.personMarkers(videoID: videoID)) ?? []
             let named = markers.filter { $0.personID != nil && !$0.ignored }
@@ -1067,6 +1075,7 @@ extension AppStore {
                         path = nil
                     }
                 }
+                guard !Task.isCancelled, generation == profileGeneration else { return }
                 guard let path,
                       let data = try? JSONEncoder().encode(path),
                       let json = String(data: data, encoding: .utf8) else { continue }
@@ -1078,8 +1087,10 @@ extension AppStore {
                                                            people: peopleReferences)
                 }
             }
+            guard !Task.isCancelled, generation == profileGeneration else { return }
             refreshAll()
         }
+        centerStageRetracks[videoID] = (task, Set(affected.map(\.id)))
     }
 
     /// A marker's ignore flag changed — its effect spans the whole video,

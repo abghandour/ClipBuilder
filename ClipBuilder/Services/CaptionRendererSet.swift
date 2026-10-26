@@ -23,7 +23,12 @@ nonisolated struct CaptionRendererSet: Sendable {
 
     func renderer(for segment: TranscriptSegment, turns: [SpeakerTurn], rows: [TranscriptRow])
         -> (CaptionRenderer, styleID: String?) {
-        let speaker = CaptionSpeakerColors.speakerKey(for: segment, turns: turns, rows: rows)
+        renderer(for: segment, speakers: CaptionSpeakerColors.Sorted(turns: turns, rows: rows))
+    }
+
+    func renderer(for segment: TranscriptSegment, speakers: CaptionSpeakerColors.Sorted)
+        -> (CaptionRenderer, styleID: String?) {
+        let speaker = CaptionSpeakerColors.speakerKey(for: segment, sorted: speakers)
         guard let key = CaptionSpeakerColors.personKey(speaker), let renderer = perSpeaker[key] else {
             return (base, nil)
         }

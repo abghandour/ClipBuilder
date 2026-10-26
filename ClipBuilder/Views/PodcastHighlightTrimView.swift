@@ -16,12 +16,14 @@ final class PodcastHighlightTrimPlayback {
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var loadTask: Task<Void, Never>?
+    private var loadedURL: URL?
     /// Bumped each time playback reaches the range's end (not on a pause or
     /// scrub), so Play All advances only on a finished cut.
     private(set) var endCount = 0
 
     func load(url: URL, range: ClosedRange<Double>, autoplay: Bool, muted: Bool = false) {
         tearDown()
+        loadedURL = url
         self.range = range
         time = range.lowerBound
         loadTask = Task { [weak self] in
@@ -64,6 +66,20 @@ final class PodcastHighlightTrimPlayback {
 
     /// Retarget playback to a new source range: the end time moves with it
     /// and a playhead left outside it jumps to the new start.
+    /// Move to another range of the same recording without reopening the
+    /// file (screening advances through highlights of one recording).
+    func retarget(url: URL, range newRange: ClosedRange<Double>, autoplay: Bool) {
+        guard url == loadedURL, player != nil else {
+            load(url: url, range: newRange, autoplay: autoplay)
+            return
+        }
+        pause()
+        range = newRange
+        player?.currentItem?.forwardPlaybackEndTime = CMTime(seconds: newRange.upperBound, preferredTimescale: 600)
+        seek(to: newRange.lowerBound)
+        if autoplay { play() }
+    }
+
     func setRange(_ newRange: ClosedRange<Double>) {
         guard newRange != range else { return }
         let startChanged = abs(newRange.lowerBound - range.lowerBound) > 0.01
@@ -122,6 +138,7 @@ final class PodcastHighlightTrimPlayback {
         player?.currentItem?.cancelPendingSeeks()
         player?.replaceCurrentItem(with: nil)
         player = nil
+        loadedURL = nil
         isPlaying = false
     }
 }
@@ -193,8 +210,9 @@ struct PodcastHighlightTrimView: View {
         .onDisappear { playback.tearDown() }
         .onChange(of: candidate.id) { _, _ in
             draft = nil
+            followsPlayback = true
             recenterWindow()
-            playback.load(url: url, range: range, autoplay: autoplay)
+            playback.retarget(url: url, range: range, autoplay: autoplay)
         }
         .onChange(of: range) { _, newRange in
             if draft == nil { playback.setRange(newRange) }

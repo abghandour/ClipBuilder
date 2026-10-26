@@ -29,6 +29,7 @@ nonisolated enum CaptionSpeakerOrder {
             let videoRows = rows.filter { $0.videoID == video && !$0.isTranslation }.sorted {
                 $0.startTime == $1.startTime ? $0.id < $1.id : $0.startTime < $1.startTime
             }
+            let sorted = CaptionSpeakerColors.Sorted(turns: videoTurns, rows: videoRows)
             let times = Set(videoTurns.map(\.start) + videoRows.flatMap { [$0.startTime, $0.endTime] }).sorted()
             for time in times {
                 // Visit row starts as well as turn starts so a manual attribution
@@ -39,7 +40,7 @@ nonisolated enum CaptionSpeakerOrder {
                     append(key)
                 } else {
                     append(CaptionSpeakerColors.personKey(CaptionSpeakerColors.speakerKey(
-                        for: moment, turns: videoTurns, rows: videoRows)))
+                        for: moment, sorted: sorted)))
                 }
             }
         }

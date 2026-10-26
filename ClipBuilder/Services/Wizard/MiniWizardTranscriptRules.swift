@@ -6,21 +6,28 @@ nonisolated enum MiniWizardTranscriptRules {
 
     /// The spoken words inside the pick, in order, for titles and the AI prompt.
     static func text(for range: ClosedRange<Double>, rows: [TranscriptRow]) -> String {
-        let ordered = rows.filter { !$0.isTranslation }
+        text(for: range, words: orderedWords(rows: rows))
+    }
+
+    /// Every original-language word in transcript order, decoded once so a
+    /// list of picks does not re-decode the transcript per pick.
+    static func orderedWords(rows: [TranscriptRow]) -> [TranscriptQATrim.Word] {
+        rows.filter { !$0.isTranslation }
             .sorted { $0.startTime == $1.startTime ? $0.id < $1.id : $0.startTime < $1.startTime }
-        var words: [String] = []
-        for row in ordered {
-            for word in TranscriptQATrim.words(for: row) where TranscriptQATrim.contains(word, in: range) {
-                words.append(word.text)
-            }
-        }
-        return words.joined(separator: " ")
+            .flatMap { TranscriptQATrim.words(for: $0) }
+    }
+
+    static func text(for range: ClosedRange<Double>, words: [TranscriptQATrim.Word]) -> String {
+        words.filter { TranscriptQATrim.contains($0, in: range) }.map(\.text).joined(separator: " ")
     }
 
     /// The first words of the passage: the pick's label and selection name.
     static func title(for range: ClosedRange<Double>, rows: [TranscriptRow], number: Int,
                       limit: Int = titleLimit) -> String {
-        let text = self.text(for: range, rows: rows)
+        title(text: text(for: range, rows: rows), number: number, limit: limit)
+    }
+
+    static func title(text: String, number: Int, limit: Int = titleLimit) -> String {
         guard !text.isEmpty else { return "Pick \(number)" }
         guard text.count > limit else { return text }
         // Cut at a word boundary so the label never ends mid-word.

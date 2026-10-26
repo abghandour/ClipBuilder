@@ -20,13 +20,29 @@ nonisolated enum WizardSelectionRules {
         "Take \(take.ordinal) · \(Int(duration(take.plan).rounded())) s · \(take.plan.clips.count) \(take.plan.clips.count == 1 ? "cut" : "cuts")"
     }
 
+    /// Scenes keyed by id (first copy wins, as `first(where:)` would) and by
+    /// video, so resolving many takes does not scan every scene per cut.
+    struct SceneIndex: Sendable {
+        let byID: [Int64: SceneRecord]
+        let byVideo: [Int64: [SceneRecord]]
+
+        init(_ scenes: [SceneRecord]) {
+            byID = Dictionary(scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            byVideo = Dictionary(grouping: scenes, by: \.videoID)
+        }
+    }
+
     static func snapshot(_ plan: WizardPlan, scenes: [SceneRecord]) -> WizardPlan {
+        snapshot(plan, index: SceneIndex(scenes))
+    }
+
+    static func snapshot(_ plan: WizardPlan, index: SceneIndex) -> WizardPlan {
         var plan = plan
         let ids = Set(plan.clips.flatMap { [$0.sceneID] + $0.areaClips.map(\.sceneID) })
         let existing = plan.footage ?? []
         plan.footage = ids.sorted().compactMap { id in
             if let reference = existing.first(where: { $0.sceneID == id }) { return reference }
-            guard let scene = scenes.first(where: { $0.id == id }) else { return nil }
+            guard let scene = index.byID[id] else { return nil }
             return WizardFootageReference(sceneID: id, videoID: scene.videoID, videoPath: scene.videoPath,
                 start: scene.startTime, end: scene.endTime, videoDuration: scene.videoDuration)
         }
@@ -37,19 +53,30 @@ nonisolated enum WizardSelectionRules {
     /// Re-analysis commonly creates new IDs for identical footage. Remap those
     /// IDs, including multi-area cuts, before previewing or rendering the plan.
     static func resolvedPlan(_ original: WizardPlan, scenes: [SceneRecord]) -> WizardPlan? {
-        let plan = original.footage == nil ? snapshot(original, scenes: scenes) : original
+        resolvedPlan(original, index: SceneIndex(scenes))
+    }
+
+    static func resolvedPlan(_ original: WizardPlan, index: SceneIndex) -> WizardPlan? {
+        let plan = original.footage == nil ? snapshot(original, index: index) : original
         let ids = Set(plan.clips.flatMap { [$0.sceneID] + $0.areaClips.map(\.sceneID) })
         var matches: [Int64: SceneRecord] = [:]
         for id in ids {
             guard let reference = plan.footage?.first(where: { $0.sceneID == id }),
                   let start = reference.start, let end = reference.end else { return nil }
-            let matching = scenes.filter {
-                $0.videoID == reference.videoID && $0.videoPath == reference.videoPath
-                    && abs($0.startTime - start) < 0.001 && abs($0.endTime - end) < 0.001
-                    && (reference.videoDuration == nil || abs($0.videoDuration - reference.videoDuration!) < 0.001)
+            func same(_ scene: SceneRecord) -> Bool {
+                scene.videoID == reference.videoID && scene.videoPath == reference.videoPath
+                    && abs(scene.startTime - start) < 0.001 && abs(scene.endTime - end) < 0.001
+                    && (reference.videoDuration == nil || abs(scene.videoDuration - reference.videoDuration!) < 0.001)
             }
-            guard let scene = matching.first(where: { $0.id == id })
-                    ?? matching.max(by: { $0.id < $1.id }) else { return nil }
+            // The original id first; otherwise the newest identical range.
+            let found: SceneRecord?
+            if let own = index.byID[id], same(own) {
+                found = own
+            } else {
+                let matching = reference.videoID.flatMap { index.byVideo[$0] }?.filter(same) ?? []
+                found = matching.first(where: { $0.id == id }) ?? matching.max(by: { $0.id < $1.id })
+            }
+            guard let scene = found else { return nil }
             matches[id] = scene
         }
         var resolved = plan

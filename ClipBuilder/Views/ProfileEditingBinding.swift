@@ -6,7 +6,7 @@ extension AppStore {
             var editing = self.editingDefaults
             editing[keyPath: keyPath] = value
             self.activeProfile.editing = editing
-            self.saveActiveProfile()
+            self.scheduleActiveProfileSave()
         })
     }
 }

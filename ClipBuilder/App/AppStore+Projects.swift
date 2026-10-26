@@ -301,6 +301,7 @@ extension AppStore {
     /// wait for the database to have them, so nothing is lost to the
     /// autosave debounce or an unawaited task when the process exits.
     func flushForTermination() async {
+        flushPendingProfileSave()
         clearBuilderPreviewCache()
         guard let database else { return }
         builder.cancelPendingAutosave()
@@ -339,8 +340,29 @@ extension AppStore {
         }
     }
 
+    /// Continuous edits (sliders, colour wells, typing) save once they settle
+    /// rather than rewriting the profile on every tick. Any real save, a
+    /// profile switch and quitting flush it first.
+    func scheduleActiveProfileSave() {
+        pendingProfileSave?.cancel()
+        let generation = profileGeneration
+        pendingProfileSave = Task {
+            try? await Task.sleep(for: .milliseconds(400))
+            guard !Task.isCancelled, generation == profileGeneration else { return }
+            pendingProfileSave = nil
+            saveActiveProfile()
+        }
+    }
+
+    func flushPendingProfileSave() {
+        guard pendingProfileSave != nil else { return }
+        saveActiveProfile()
+    }
+
     @discardableResult
     func saveActiveProfile() -> Task<Void, Never>? {
+        pendingProfileSave?.cancel()
+        pendingProfileSave = nil
         if activeProfile.editing == nil, activeProfile.teamID == nil {
             activeProfile.editing = editingDefaults
         }

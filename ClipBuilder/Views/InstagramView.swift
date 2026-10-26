@@ -34,17 +34,21 @@ struct InstagramView: View {
     @State private var studiedIDs: Set<Int64> = []
 
     private var sortedMedia: [IGMediaRecord] {
+        // `stats` decodes JSON on every read: decode each reel once, not per comparison.
+        func sorted(by value: (IGStats) -> Double) -> [IGMediaRecord] {
+            store.igMedia.map { ($0, value($0.stats)) }.sorted { $0.1 > $1.1 }.map(\.0)
+        }
         switch sortOrder {
         case .recent:
             return store.igMedia   // already posted_at DESC from the DB
         case .views:
-            return store.igMedia.sorted { ($0.stats.views ?? -1) > ($1.stats.views ?? -1) }
+            return sorted { Double($0.views ?? -1) }
         case .likes:
-            return store.igMedia.sorted { ($0.stats.likes ?? -1) > ($1.stats.likes ?? -1) }
+            return sorted { Double($0.likes ?? -1) }
         case .comments:
-            return store.igMedia.sorted { ($0.stats.comments ?? -1) > ($1.stats.comments ?? -1) }
+            return sorted { Double($0.comments ?? -1) }
         case .quality:
-            return store.igMedia.sorted { ReelPerformance.score($0.stats) > ReelPerformance.score($1.stats) }
+            return sorted { ReelPerformance.score($0) }
         }
     }
 
@@ -161,7 +165,7 @@ struct InstagramView: View {
                     Button("Learn from Selected (\(learnSelection.count))") { learnSelected() }
                         .disabled(learnSelection.isEmpty || store.isStudyingTaste)
                     Button("Learn from Top 5 Quality Reels") { learnTopPerformers() }
-                        .disabled(store.isStudyingTaste || sortedMedia.isEmpty)
+                        .disabled(store.isStudyingTaste || store.igMedia.isEmpty)
                     Divider()
                     Button(store.isDistillingPerformanceLessons
                            ? "Distilling Performance Lessons…"
@@ -229,7 +233,7 @@ struct InstagramView: View {
 
     private var grid: some View {
         ScrollView {
-            if sortedMedia.isEmpty && !store.isFetchingInstagram {
+            if store.igMedia.isEmpty && !store.isFetchingInstagram {
                 ContentUnavailableView {
                     Label("No Reels Yet", systemImage: "play.rectangle.on.rectangle")
                 } description: {

@@ -23,7 +23,6 @@ struct PodcastHighlightScreeningView: View {
                 PodcastHighlightTrimView(url: url, candidate: $candidates[index],
                                          original: originals.first { $0.id == candidate.id } ?? candidate,
                                          trim: trim)
-                    .id(candidate.id)
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
                     .accessibilityLabel("Preview of \(candidate.title)")
                 PodcastHighlightDetails(candidate: candidate)

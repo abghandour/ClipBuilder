@@ -23,6 +23,8 @@ nonisolated struct DriveTransfer: Codable, Identifiable, Sendable {
     var groupID: UUID?
     var isAsset: Bool { assetOperation != nil }
     var isUpload: Bool { operation == .upload }
+    /// A footage download from the transfer queue (not a preview fetch or asset).
+    var isQueuedDownload: Bool { operation == .download && !isAsset }
     var title: String { assetPath ?? file?.name ?? URL(fileURLWithPath: media?.path ?? "").lastPathComponent }
 }
 
@@ -191,8 +193,15 @@ final class GoogleDriveTransfers {
         }
     }
 
+    /// Downloads that may run at once: each holds a 16 MiB chunk, and the
+    /// shared session multiplexes them all over one HTTP/2 connection.
+    /// Fetches (opening a file to preview) are never queued behind them.
+    private static let maximumDownloads = 3
+
     private func pumpUploads() {
-        for job in jobs where job.isUpload && job.status == .waiting { start(job.id) }
+        for job in jobs where (job.isUpload || job.isQueuedDownload) && job.status == .waiting && tasks[job.id] == nil {
+            start(job.id)
+        }
     }
 
     func fetch(_ media: DriveMedia, profile: String) async throws -> URL {
@@ -283,6 +292,17 @@ final class GoogleDriveTransfers {
         if job.isUpload {
             let active = jobs.filter { $0.isUpload && tasks[$0.id] != nil }.count
             if active >= 2 {
+                update(id) {
+                    $0.status = .waiting
+                    $0.message = "Waiting"
+                }
+                Task { await persist(profile: job.profile) }
+                return
+            }
+        }
+        if job.isQueuedDownload {
+            let active = jobs.filter { $0.isQueuedDownload && tasks[$0.id] != nil }.count
+            if active >= Self.maximumDownloads {
                 update(id) {
                     $0.status = .waiting
                     $0.message = "Waiting"

@@ -88,6 +88,11 @@ final class AppStore {
     let googleDrive = GoogleDriveTransfers.shared
     @ObservationIgnored var sourceDiscoveryTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored var didShowAutoDriveUploadNotice = false
+    /// One re-tracking pass per video; a newer edit cancels the older pass and
+    /// takes over its scenes, so passes never overlap or save stale paths.
+    @ObservationIgnored var centerStageRetracks: [Int64: (task: Task<Void, Never>, sceneIDs: Set<Int64>)] = [:]
+    /// A profile save waiting for a slider drag or typing to settle.
+    @ObservationIgnored var pendingProfileSave: Task<Void, Never>?
     var database: Database?
 
     // Project workspace. Projects scope footage, scenes, timelines, and
@@ -971,6 +976,9 @@ final class AppStore {
 
     func switchProfile(named name: String) {
         guard let profile = profiles.first(where: { $0.profileName == name }) else { return }
+        flushPendingProfileSave()
+        centerStageRetracks.values.forEach { $0.task.cancel() }
+        centerStageRetracks = [:]
         builder.flushPendingAutosave()
         flushActiveProjectState()
         activeProfile = profile

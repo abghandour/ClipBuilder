@@ -146,8 +146,12 @@ struct WizardView: View {
         var recipeID: String
         var stackLevel: String
         var proposedSceneIDs: Set<Int64>?
+        /// A pasted settings snapshot restricts sources; part of the key so it can be memoized too.
+        var pastedSnapshot: String
     }
     @State private var sourcePoolMemo = MemoBox<SourcePoolKey, [SceneRecord]>()
+    /// `centerStagePath` decodes JSON on every read; count saved framings once per pool.
+    @State private var framingCountMemo = MemoBox<SourcePoolKey, (wide: Int, saved: Int)>()
 
     var recipe: ReelRecipe { ReelRecipe.recipe(id: formatPreset) ?? .custom }
     var formPlan: WizardFormPlan { WizardFormPlan(recipe: recipe) }
@@ -828,7 +832,8 @@ struct WizardView: View {
     }
 
     private var runSummary: String {
-        let names = projectPeople.filter { selectedSourcePeople.contains($0.key) }.map(\.displayName)
+        let selected = selectedSourcePeople
+        let names = projectPeople.filter { selected.contains($0.key) }.map(\.displayName)
         let source = capabilities.sources == .podcastRecording
             ? store.videos.first(where: { $0.path == highlightVideoPath })?.filename ?? "the selected recording"
             : names.isEmpty ? "in this project" : "of " + names.joined(separator: ", ")
@@ -1042,8 +1047,9 @@ struct WizardView: View {
                 : copiedOptions?.sourcesRestricted == true ? "Copied source selection" : "All analyzed scenes"
         }
 
+        let selected = selectedSourcePeople
         let names = projectPeople
-            .filter { selectedSourcePeople.contains($0.key) }
+            .filter { selected.contains($0.key) }
             .map(\.displayName)
         if !names.isEmpty {
             summary += " · " + names.prefix(2).joined(separator: ", ")
@@ -1053,30 +1059,38 @@ struct WizardView: View {
     }
 
     var framingStatus: String {
-        let wideScenes = sourcePool.filter(\.wide)
-        guard !wideScenes.isEmpty else {
+        let pool = sourcePool
+        let counts = framingCountMemo(sourcePoolKey) {
+            let wideScenes = pool.filter(\.wide)
+            return (wideScenes.count, wideScenes.filter { $0.centerStagePath != nil }.count)
+        }
+        guard counts.wide > 0 else {
             return "No wide scenes in this source selection."
         }
-        let saved = wideScenes.filter { $0.centerStagePath != nil }.count
-        if saved == wideScenes.count {
-            return "Framing: all \(saved) wide scenes use their saved 9:16 framing."
+        if counts.saved == counts.wide {
+            return "Framing: all \(counts.saved) wide scenes use their saved 9:16 framing."
         }
-        return "Framing: \(saved) of \(wideScenes.count) wide scenes use saved 9:16 framing; the rest use an automatic crop."
+        return "Framing: \(counts.saved) of \(counts.wide) wide scenes use saved 9:16 framing; the rest use an automatic crop."
     }
 
     /// Shared source policy for both AI planning and the manual alternative.
     /// Memoized because the form reads the eligible selection in several rows.
     var sourcePool: [SceneRecord] {
+        let key = sourcePoolKey
+        return sourcePoolMemo(key) { computeSourcePool(personTags: key.personTags) }
+    }
+
+    private var sourcePoolKey: SourcePoolKey {
+        let selected = selectedSourcePeople
         let personTags = Set(store.people
-            .filter { selectedSourcePeople.contains($0.key) }
+            .filter { selected.contains($0.key) }
             .map(\.tag))
-        let key = SourcePoolKey(scenesVersion: store.scenesVersion,
+        return SourcePoolKey(scenesVersion: store.scenesVersion,
                                 favoritesOnly: favoritesOnly,
                                 limitToSelection: limitToSelection,
                                 selectedRunIDsRaw: selectedRunIDsRaw,
-                                personTags: personTags, recipeID: recipe.id, stackLevel: stackLevelRaw, proposedSceneIDs: proposedSceneIDs)
-        if !pastedSnapshot.isEmpty { return computeSourcePool(personTags: personTags) }
-        return sourcePoolMemo(key) { computeSourcePool(personTags: personTags) }
+                                personTags: personTags, recipeID: recipe.id, stackLevel: stackLevelRaw, proposedSceneIDs: proposedSceneIDs,
+                                pastedSnapshot: pastedSnapshot)
     }
 
     private func computeSourcePool(personTags: Set<String>) -> [SceneRecord] {

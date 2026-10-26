@@ -14,8 +14,7 @@ extension AppStore {
                 analysisStage = "running missing \(name)"
                 guard let kind = AnalysisPassRecord.Pass(rawValue: name) else { continue }
                 if kind == .fightScore {
-                    let scenes = try await database.fetchScenes(scope: .history).filter { $0.runID == run.id }
-                    _ = try await analyzer.scoreFightAction(video: video, scenes: scenes, profile: profile,
+                    _ = try await analyzer.scoreFightAction(video: video, profile: profile,
                         database: database, runKey: run.runKey, log: logSink(\.analysisLog))
                     let receipts = try await database.fetchAnalysisPasses()
                     guard receipts.last(where: { $0.videoID == video.id && $0.pass == .fightScore && $0.runKey == run.runKey })?.status == .completed else {

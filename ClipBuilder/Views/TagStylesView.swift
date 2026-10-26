@@ -17,7 +17,7 @@ struct TagStylesView: View {
         }, set: { value in
             guard let index = selectedIndex else { return }
             store.activeProfile.tagStyles?[index].name = value
-            store.saveActiveProfile()
+            store.scheduleActiveProfileSave()
         })
     }
 
@@ -28,7 +28,7 @@ struct TagStylesView: View {
             } else {
                 store.activeProfile.tagStyle = value
             }
-            store.saveActiveProfile()
+            store.scheduleActiveProfileSave()
         })
     }
 

@@ -15,12 +15,44 @@ nonisolated enum CaptionSpeakerColors {
     /// translations retain the same colours. Explicit line attribution wins;
     /// a line crossing speakers uses the first overlapping turn, not the longest.
     static func speakerKey(for segment: TranscriptSegment, turns: [SpeakerTurn], rows: [TranscriptRow]) -> String? {
-        let originals = rows.filter { !$0.isTranslation }.sorted { $0.startTime < $1.startTime }
-        let line = originals.first { $0.endTime > segment.start && $0.startTime < segment.end }
+        speakerKey(for: segment, sorted: Sorted(turns: turns, rows: rows, paletteKeys: false))
+    }
+
+    /// One video's evidence sorted once, for callers that ask at every
+    /// boundary or every frame. Same order the per-call overloads sort into.
+    struct Sorted: Sendable {
+        let originals: [TranscriptRow]
+        let turns: [SpeakerTurn]
+        /// Palette slot order: turn keys first, then hand-attributed people.
+        let paletteKeys: [String]
+
+        init(turns: [SpeakerTurn], rows: [TranscriptRow]) {
+            self.init(turns: turns, rows: rows, paletteKeys: true)
+        }
+
+        fileprivate init(turns: [SpeakerTurn], rows: [TranscriptRow], paletteKeys: Bool) {
+            originals = rows.filter { !$0.isTranslation }.sorted { $0.startTime < $1.startTime }
+            self.turns = turns.sorted { $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start }
+            var keys: [String] = []
+            if paletteKeys {
+                for turn in self.turns {
+                    let key = CaptionSpeakerColors.key(for: turn)
+                    if !keys.contains(key) { keys.append(key) }
+                }
+                for row in originals {
+                    if case .person(let person) = row.speaker, !keys.contains("person:" + person) { keys.append("person:" + person) }
+                }
+            }
+            self.paletteKeys = keys
+        }
+    }
+
+    static func speakerKey(for segment: TranscriptSegment, sorted: Sorted) -> String? {
+        let line = sorted.originals.first { $0.endTime > segment.start && $0.startTime < segment.end }
         // A hand attribution counts even without diarized turns.
         if let line, case .person(let person) = line.speaker { return "person:" + person }
-        guard !turns.isEmpty else { return nil }
-        let ordered = turns.sorted { $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start }
+        let ordered = sorted.turns
+        guard !ordered.isEmpty else { return nil }
         let selected: String?
         if let line, case .unknown = line.speaker {
             selected = nil
@@ -38,18 +70,12 @@ nonisolated enum CaptionSpeakerColors {
     }
 
     static func color(for segment: TranscriptSegment, turns: [SpeakerTurn], rows: [TranscriptRow]) -> String? {
-        guard let selected = speakerKey(for: segment, turns: turns, rows: rows) else { return nil }
-        let ordered = turns.sorted { $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start }
-        let originals = rows.filter { !$0.isTranslation }.sorted { $0.startTime < $1.startTime }
-        var keys: [String] = []
-        for turn in ordered {
-            let key = key(for: turn)
-            if !keys.contains(key) { keys.append(key) }
-        }
-        for row in originals {
-            if case .person(let person) = row.speaker, !keys.contains("person:" + person) { keys.append("person:" + person) }
-        }
-        guard let index = keys.firstIndex(of: selected) else { return nil }
+        color(for: segment, sorted: Sorted(turns: turns, rows: rows))
+    }
+
+    static func color(for segment: TranscriptSegment, sorted: Sorted) -> String? {
+        guard let selected = speakerKey(for: segment, sorted: sorted),
+              let index = sorted.paletteKeys.firstIndex(of: selected) else { return nil }
         return palette[index % palette.count]
     }
 }

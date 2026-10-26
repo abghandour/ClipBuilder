@@ -229,7 +229,9 @@ nonisolated enum TranscriptQATrim {
     /// Words without a frame (not laid out yet) are skipped.
     static func lineStartWords(words: [Word], ranges: [ClosedRange<Double>], frames: [Int: CGRect]) -> Set<Int> {
         var owners: [Int: [Word]] = [:]
-        for word in words {
+        // Only measured (on-screen) words can start a line; matching every
+        // word of a long recording against every pick on each scroll was the cost.
+        for word in words where frames[word.id] != nil {
             let owner = ranges.indices.filter { contains(word, in: ranges[$0]) }
                 .min { (ranges[$0].upperBound - ranges[$0].lowerBound) < (ranges[$1].upperBound - ranges[$1].lowerBound) }
             if let owner { owners[owner, default: []].append(word) }

@@ -45,3 +45,22 @@ nonisolated struct CaptionSpeakerEvidence: Sendable {
         return result
     }
 }
+
+/// One evidence load per video for a whole render: concurrent segment jobs
+/// captioning the same recording share the first job's load.
+actor CaptionSpeakerEvidenceMemo {
+    private let database: Database
+    private var loads: [Int64: Task<CaptionSpeakerEvidence, Never>] = [:]
+
+    init(database: Database) {
+        self.database = database
+    }
+
+    func evidence(videoID: Int64) async -> CaptionSpeakerEvidence {
+        if let load = loads[videoID] { return await load.value }
+        let database = database
+        let load = Task { await CaptionSpeakerEvidence.load(database: database, videoID: videoID) }
+        loads[videoID] = load
+        return await load.value
+    }
+}

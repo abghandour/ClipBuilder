@@ -297,8 +297,7 @@ actor TranscriptionService {
     private func enrich(_ segments: [TranscriptSegment], transcriptionKey: String, video: VideoRecord,
                         database: Database) async throws {
         let people = try await database.fetchVideoPeople(videoID: video.id)
-        let scenes = try await database.fetchScenes(includeExcluded: true)
-            .filter { $0.videoID == video.id }
+        let scenes = try await database.fetchScenes(videoID: video.id, includeExcluded: true)
         let settings = AnalysisRequestContext.current.flatMap { AISettingsJSON.decode(PodcastSettings.self, $0.podcastJSON) }
             ?? capturedPodcastSettings ?? PodcastSettings()
         let analysis = TranscriptFeatureAnalyzer.analyze(

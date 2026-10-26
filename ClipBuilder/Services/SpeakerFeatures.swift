@@ -34,6 +34,7 @@ nonisolated enum SpeakerFeatures {
         for range in speech {
             var start = range.lowerBound
             while start + windowSeconds * 0.6 <= range.upperBound {
+                try Task.checkCancellation()
                 let end = min(range.upperBound, start + windowSeconds)
                 let frames = AVAudioFrameCount(((end - start) * rate).rounded())
                 guard frames > AVAudioFrameCount(frameLength), let buffer = AVAudioPCMBuffer(pcmFormat: file.processingFormat, frameCapacity: frames) else { break }

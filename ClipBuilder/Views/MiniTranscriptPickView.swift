@@ -38,11 +38,15 @@ struct MiniTranscriptPickView: View {
             captions: empty ? [] : [.init(text: RangeReviewItem.rangeCaption(draft), monospaced: true)],
             video: run.video, range: draft, originalRange: draft, limits: limits, trimPolicy: .pick,
             isAvailable: run.video.isPresent, isDraft: true)
+        // Decode the transcript once per rebuild, not twice per pick.
+        let allWords = MiniWizardTranscriptRules.orderedWords(rows: rows)
+        let wordsByVideo = Dictionary(grouping: rows, by: \.videoID).mapValues(MiniWizardTranscriptRules.orderedWords)
         let pickItems = picks.enumerated().map { index, pick in
             RangeReviewItem(id: .init(ownerID: pick.id),
-                title: "\(index + 1). " + MiniWizardTranscriptRules.title(for: pick, rows: rows, number: index + 1,
-                                                                           limit: Self.labelLimit),
-                titleHelp: MiniWizardTranscriptRules.text(for: pick.range, rows: rows),
+                title: "\(index + 1). " + MiniWizardTranscriptRules.title(
+                    text: MiniWizardTranscriptRules.text(for: pick.range, words: wordsByVideo[pick.videoID] ?? []),
+                    number: index + 1, limit: Self.labelLimit),
+                titleHelp: MiniWizardTranscriptRules.text(for: pick.range, words: allWords),
                 keepLabel: "Pick \(index + 1)",
                 captions: [.init(text: RangeReviewItem.rangeCaption(pick.range), monospaced: true)],
                 video: run.video, range: pick.range, originalRange: pick.originalRange, limits: limits,

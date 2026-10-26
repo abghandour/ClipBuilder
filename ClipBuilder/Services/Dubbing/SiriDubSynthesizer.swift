@@ -32,17 +32,22 @@ nonisolated enum SiriDubSynthesizer {
         let name = try DubSynthesizer.cacheName(language: language, voice: voice, rate: rate, text: text)
         let output = directory.appendingPathComponent(name)
         if (try? DubSynthesizer.fileDuration(of: output)) ?? 0 > 0 { return output }
+        // The shortcut ignores rate, so a sped-up line reuses the cached
+        // rate-1 audio and only needs the atempo pass.
+        if rate > 1 + 1e-9 {
+            let plain = directory.appendingPathComponent(
+                try DubSynthesizer.cacheName(language: language, voice: voice, rate: 1, text: text))
+            if (try? DubSynthesizer.fileDuration(of: plain)) ?? 0 > 0 {
+                return try await convert(plain, rate: rate, to: output, directory: directory)
+            }
+        }
         let shortcut = SiriDubVoices.shortcutName(for: voice)
         guard FileManager.default.isExecutableFile(atPath: SiriDubVoices.shortcutsExecutable.path) else {
             throw ScriptError.invalid("The Shortcuts command line tool (/usr/bin/shortcuts) is missing; Siri voices need macOS 12 or later.")
         }
         try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
         let spoken = directory.appendingPathComponent(UUID().uuidString + ".m4a")
-        let temporary = directory.appendingPathComponent(UUID().uuidString + ".caf")
-        defer {
-            try? FileManager.default.removeItem(at: spoken)
-            try? FileManager.default.removeItem(at: temporary)
-        }
+        defer { try? FileManager.default.removeItem(at: spoken) }
         let result = try await ProcessRunner.run(executable: SiriDubVoices.shortcutsExecutable,
             arguments: ["run", shortcut, "--output-path", spoken.path],
             stdin: Data(text.utf8), timeout: timeout)
@@ -58,7 +63,13 @@ nonisolated enum SiriDubSynthesizer {
             throw ScriptError.invalid("The shortcut “\(shortcut)” produced no audio"
                 + (detail.isEmpty ? "." : ": \(detail)") + " Open it in Shortcuts and run it once to allow its output.")
         }
-        _ = try await FFmpeg.run(conversionArguments(input: spoken, output: temporary, rate: rate),
+        return try await convert(spoken, rate: rate, to: output, directory: directory)
+    }
+
+    private static func convert(_ input: URL, rate: Double, to output: URL, directory: URL) async throws -> URL {
+        let temporary = directory.appendingPathComponent(UUID().uuidString + ".caf")
+        defer { try? FileManager.default.removeItem(at: temporary) }
+        _ = try await FFmpeg.run(conversionArguments(input: input, output: temporary, rate: rate),
                                  timeout: timeout, purpose: "siri dub line")
         guard try DubSynthesizer.fileDuration(of: temporary) > 0 else {
             throw ScriptError.invalid("The Siri voice returned an empty dub line.")

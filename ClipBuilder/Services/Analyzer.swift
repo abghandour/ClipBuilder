@@ -1336,7 +1336,7 @@ actor Analyzer {
     /// assigns the weights and replaces the video's event list. The pace
     /// graph and per-fighter score lines render from these events. Returns
     /// the number of events saved.
-    func scoreFightAction(video: VideoRecord, scenes: [SceneRecord], profile: BrandProfile,
+    func scoreFightAction(video: VideoRecord, profile: BrandProfile,
                           database: Database, provider: String? = nil, model: String? = nil, runKey: String? = nil,
                           log: @escaping @Sendable (String) -> Void) async throws -> Int {
         let scenes: [SceneRecord]

@@ -13,17 +13,20 @@ nonisolated enum WizardFootageReview {
     static func items(selections: [WizardSelectionSummary], scenes: [SceneRecord],
                       videos: [VideoRecord]) -> [RangeReviewItem] {
         let sceneMap = Dictionary(scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        // Indexed once for every take, not rebuilt and scanned per cut.
+        let sceneIndex = WizardSelectionRules.SceneIndex(Array(sceneMap.values))
         let videoMap = Dictionary(videos.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         return selections.flatMap { summary in
             summary.takes.sorted { $0.ordinal < $1.ordinal }.map { take in
-                item(for: take, in: summary, sceneMap: sceneMap, videoMap: videoMap)
+                item(for: take, in: summary, sceneMap: sceneMap, sceneIndex: sceneIndex, videoMap: videoMap)
             }
         }
     }
 
     private static func item(for take: WizardSelectionTake, in summary: WizardSelectionSummary,
-                             sceneMap: [Int64: SceneRecord], videoMap: [Int64: VideoRecord]) -> RangeReviewItem {
-        let resolved = WizardSelectionRules.resolvedPlan(take.plan, scenes: Array(sceneMap.values))
+                             sceneMap: [Int64: SceneRecord], sceneIndex: WizardSelectionRules.SceneIndex,
+                             videoMap: [Int64: VideoRecord]) -> RangeReviewItem {
+        let resolved = WizardSelectionRules.resolvedPlan(take.plan, index: sceneIndex)
         let plan = resolved ?? take.plan
         let fallback = videoMap.values.first ?? placeholderVideo
         let cuts = plan.clips.enumerated().map { index, clip -> RangeReviewItem in

@@ -873,17 +873,33 @@ actor CenterStageService {
     /// top-left coordinates of the full frame.
     @concurrent
     static func faces(source: URL, at time: Double, region: FreeCropRect? = nil) async throws -> [CGRect] {
+        let image = try await faceFrame(source: source, at: time)
+        return try await faces(in: image, region: region)
+    }
+
+    /// The frame `faces(source:)` detects on, so a caller looking at several
+    /// regions of one moment decodes it once.
+    @concurrent
+    static func faceFrame(source: URL, at time: Double) async throws -> CGImage {
         try Task.checkCancellation()
         let asset = AVURLAsset(url: source)
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.maximumSize = CGSize(width: 960, height: 960)
         let decodePermit = try await MediaWorkScheduler.current.acquire(.decoding)
-        let image: CGImage
-        do {
-            defer { withExtendedLifetime(decodePermit) {} }
-            image = try await generator.image(at: CMTime(seconds: max(0, time), preferredTimescale: 600)).image
-        }
+        defer { withExtendedLifetime(decodePermit) {} }
+        return try await generator.image(at: CMTime(seconds: max(0, time), preferredTimescale: 600)).image
+    }
+
+    /// The largest face on `region` of a frame from `faceFrame`.
+    @concurrent
+    static func faceCenter(in image: CGImage, region: FreeCropRect? = nil) async throws -> CGRect? {
+        try await faces(in: image, region: region).max { $0.width * $0.height < $1.width * $1.height }
+    }
+
+    /// Every face on a frame from `faceFrame` (or on `region` of it).
+    @concurrent
+    static func faces(in image: CGImage, region: FreeCropRect? = nil) async throws -> [CGRect] {
         let visionPermit = try await MediaWorkScheduler.current.acquire(.vision)
         defer { withExtendedLifetime(visionPermit) {} }
         try Task.checkCancellation()

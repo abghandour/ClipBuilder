@@ -70,7 +70,11 @@ struct CameraKeyframeEditor: View {
         let aspect = model.sourceAspect(for: clip) ?? 16.0 / 9.0
         return Group {
             if let url = model.sourceURL(for: clip) {
-                VideoThumbnail(url: url, time: model.sourceTime(for: clip, atTimeline: playhead), cornerRadius: 4,
+                // During playback the playhead moves 30 times a second; sample on the
+                // half-second grid the preview uses so frames finish decoding.
+                let thumbnailTime = store.builderPreview == nil ? playhead
+                    : min(max(clip.startTime, BuilderTimelineModel.snap(playhead)), clip.startTime + clip.duration - 1.0 / 30)
+                VideoThumbnail(url: url, time: model.sourceTime(for: clip, atTimeline: thumbnailTime), cornerRadius: 4,
                                contentMode: .fit)
                     .aspectRatio(aspect, contentMode: .fit)
                     .frame(maxWidth: .infinity, maxHeight: 170)

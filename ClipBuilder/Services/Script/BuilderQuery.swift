@@ -437,21 +437,24 @@ extension BuilderQuery {
                       decoded.allSatisfy({ $0.start.isFinite && $0.end.isFinite && $0.end >= $0.start }) else { return nil }
                 return decoded.sorted { $0.start < $1.start }
             }
+            // Decode each row's words once per query; gap checks reuse them.
+            let rowWords = rows.map { words($0) }
+            let untimed = zip(rows, rowWords).filter { $0.1 == nil }.map(\.0)
             if kind == .transcript {
-                result.transcripts = page(rows.filter { range?.overlaps(start: $0.startTime, end: $0.endTime) ?? true }.map { row in
+                result.transcripts = page(zip(rows, rowWords).filter { range?.overlaps(start: $0.0.startTime, end: $0.0.endTime) ?? true }.map { row, rowWords in
                     TranscriptQueryRow(id: row.id, language: row.language,
                         start: max(row.startTime, range?.start ?? row.startTime),
                         end: min(row.endTime, range?.end ?? row.endTime), text: String(row.text.prefix(4000)),
-                        words: words(row).map { words in words.filter { range?.overlaps(start: $0.start, end: $0.end) ?? true }
+                        words: rowWords.map { words in words.filter { range?.overlaps(start: $0.start, end: $0.end) ?? true }
                             .map { WordQueryRow(word: $0.word, start: max($0.start, range?.start ?? $0.start),
                                                end: min($0.end, range?.end ?? $0.end)) } })
                 })
-                if rows.isEmpty || rows.contains(where: { words($0) == nil }) { result.unknown = ["word_timings"] }
+                if rows.isEmpty || !untimed.isEmpty { result.unknown = ["word_timings"] }
             } else {
                 var spans: [(Double, Double, String)] = library.features.filter { $0.videoID == videoID && $0.kind == .silence }
                     .map { ($0.startTime, $0.endTime, "classified_silence") }
-                let timed = rows.compactMap { words($0) }.flatMap { $0 }.sorted { $0.start < $1.start }
-                if timed.isEmpty || rows.contains(where: { words($0) == nil }) { result.unknown = ["word_timings"] }
+                let timed = rowWords.compactMap { $0 }.flatMap { $0 }.sorted { $0.start < $1.start }
+                if timed.isEmpty || !untimed.isEmpty { result.unknown = ["word_timings"] }
                 // No leading/trailing guesses: only observed word-to-word gaps.
                 var previousEnd: Double?
                 for word in timed {
@@ -464,8 +467,8 @@ extension BuilderQuery {
                 for (start, end, evidence) in spans {
                     // An untimed transcript row between timed rows is unknown
                     // speech, not evidence of silence across that hole.
-                    if evidence == "word_gap", rows.contains(where: {
-                        words($0) == nil && $0.startTime < end && start < $0.endTime
+                    if evidence == "word_gap", untimed.contains(where: {
+                        $0.startTime < end && start < $0.endTime
                     }) { continue }
                     var lower = max(start, range?.start ?? start)
                     var upper = min(end, range?.end ?? end)

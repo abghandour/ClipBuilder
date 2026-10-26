@@ -148,7 +148,7 @@ actor GoogleDriveClient {
             try? fm.removeItem(at: checkpoint)
             throw GoogleDriveError.conflict
         }
-        if let expected = file.md5Checksum, try checksum(partial) != expected {
+        if let expected = file.md5Checksum, try await Self.checksum(partial, chunkSize: chunkSize) != expected {
             try? fm.removeItem(at: checkpoint)
             throw GoogleDriveError.conflict
         }
@@ -176,7 +176,7 @@ actor GoogleDriveClient {
         let signature =
             "\(file.path)|\(size)|\((attrs[.modificationDate] as? Date)?.timeIntervalSince1970 ?? 0)|\(folder)"
         let uploadSignature = signature + (replacingID.map { "|replace:\($0)" } ?? "")
-        let expectedMD5 = verifyChecksum ? try checksum(file) : nil
+        let expectedMD5 = verifyChecksum ? try await Self.checksum(file, chunkSize: chunkSize) : nil
         var saved = (try? Data(contentsOf: checkpoint)).flatMap {
             try? JSONDecoder().decode(UploadCheckpoint.self, from: $0)
         }
@@ -287,11 +287,17 @@ actor GoogleDriveClient {
         try JSONEncoder().encode(value).write(to: url, options: .atomic)
         try FileManager.default.setAttributes([.posixPermissions: 0o600], ofItemAtPath: url.path)
     }
-    private func checksum(_ url: URL) throws -> String {
+    /// Off the client actor: hashing multi-GB footage must not hold up
+    /// listings and other transfers that share this client.
+    @concurrent
+    private nonisolated static func checksum(_ url: URL, chunkSize: Int) async throws -> String {
         let handle = try FileHandle(forReadingFrom: url)
         defer { try? handle.close() }
         var hash = Insecure.MD5()
-        while let bytes = try handle.read(upToCount: chunkSize), !bytes.isEmpty { hash.update(data: bytes) }
+        while let bytes = try handle.read(upToCount: chunkSize), !bytes.isEmpty {
+            try Task.checkCancellation()
+            hash.update(data: bytes)
+        }
         return hash.finalize().map { String(format: "%02x", $0) }.joined()
     }
     private func encodeID(_ id: String) -> String {

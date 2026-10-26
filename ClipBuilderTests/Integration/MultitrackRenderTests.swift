@@ -41,7 +41,10 @@ struct MultitrackRenderTests {
             }
             outputs.append(result.url)
             let segmentCommands = commands.withLock { $0.filter { $0.last?.contains("_layered.mp4") == true } }
-            #expect(segmentCommands.count == 2) // Warm cache must not hide the enabled variant.
+            // Warm cache must not hide the enabled variant. The two clips are
+            // identical, so the second segment copies the first one's encode.
+            #expect(segmentCommands.count == 1)
+            #expect(messages.withLock { $0.contains("Segment 2: same as an earlier segment; encodes=0") })
             #expect(segmentCommands.allSatisfy { $0.contains("-hwaccel") == enabled })
             let overlay = try #require(commands.withLock { $0.first { $0.last?.hasSuffix("with_overlays.mp4") == true } })
             #expect(overlay.contains("-hwaccel") == enabled)
@@ -646,7 +649,9 @@ struct MultitrackRenderTests {
         #expect(fused.lines.contains("Spanning overlays fused into segments: 2"))
         #expect(!fused.lines.contains { $0.hasPrefix("Burning") })
         #expect(finalPass.lines.filter { $0.hasPrefix("Burning 2 overlay") }.count == 1)
-        #expect(fused.encodes == 3 && finalPass.encodes == 4)
+        // Without fusion the three identical segments encode once and are
+        // shared; the final pass adds one encode.
+        #expect(fused.encodes == 3 && finalPass.encodes == 2)
         // The final pass re-encodes the assembled video, shifts its timestamps
         // by about 10 ms and appends one frame; the fused output is the
         // assembled video itself, so compare frame by frame over the common
@@ -1294,6 +1299,46 @@ extension MultitrackRenderTests {
 }
 
 extension MultitrackRenderTests {
+    @Test("lengthening an early clip reuses every later hard-cut segment")
+    func shiftedSegmentsHitTheCache() async throws {
+        let temp = try TempDatabase()
+        let (source, scene) = try await seedScene(in: temp, hash: "shifted-segments")
+        func document(firstLength: Double) -> TimelineDocument {
+            var first = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: firstLength)
+            first.videoFile = source.path
+            var second = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 2, duration: 1)
+            second.videoFile = source.path
+            second.startTime = firstLength
+            var third = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 3, duration: 1)
+            third.videoFile = source.path
+            third.startTime = firstLength + 1
+            var document = Fixtures.timelineDocument(clips: [first, second, third])
+            document.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+            return document
+        }
+        let cache = RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("cache"))
+        let messages = Mutex<[String]>([])
+        var outputs: [URL] = []
+        defer { for url in outputs { try? FileManager.default.removeItem(at: url) } }
+        func render(_ document: TimelineDocument, cache: RenderSegmentCache) async throws -> URL {
+            messages.withLock { $0.removeAll() }
+            let result = try await MultitrackRenderer(render: RenderEngine(), segmentCache: cache, finishingCacheEnabled: false)
+                .render(document: document, scenes: [scene], profile: Fixtures.brand(), database: temp.database,
+                        preview: true, emit: { line in messages.withLock { $0.append(line) } })
+            outputs.append(result.url)
+            return result.url
+        }
+        _ = try await render(document(firstLength: 1.5), cache: cache)
+        let shifted = try await render(document(firstLength: 2), cache: cache)
+        // The first clip changed; the two after it only moved.
+        #expect(messages.withLock { $0.filter { $0.contains("cache hit; encodes=0") }.count } == 2)
+        let reference = try await render(document(firstLength: 2),
+            cache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("reference-cache")))
+        let comparison = try await Self.compareDecoded(shifted, reference, trailingFramesAllowed: 1)
+        #expect(comparison.audioIdentical)
+        #expect(comparison.minimumSSIM >= 0.99, Comment(rawValue: "minimum per-frame SSIM \(comparison.minimumSSIM)"))
+    }
+
     @Test("caption edits reuse only unaffected crossfade groups with identical decoded output")
     func captionEditReusesUnaffectedAssembly() async throws {
         let temp = try TempDatabase()

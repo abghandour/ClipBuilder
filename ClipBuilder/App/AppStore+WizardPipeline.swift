@@ -179,11 +179,9 @@ extension AppStore {
                         log("\(video.filename): not a fight — scoring skipped")
                     } else {
                         pipelineStage = "fight scoring — \(video.filename)"
-                        let allScenes = (try? await database.fetchScenes(includeExcluded: true)) ?? []
                         do {
                             _ = try await analyzer.scoreFightAction(
-                                video: current, scenes: allScenes.filter { $0.videoID == video.id },
-                                profile: activeProfile, database: database,
+                                video: current, profile: activeProfile, database: database,
                                 provider: nil, model: nil, log: relay)
                         } catch {
                             log("\(video.filename): fight scoring failed — \(error.userMessage)")

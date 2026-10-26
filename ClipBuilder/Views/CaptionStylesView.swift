@@ -17,7 +17,7 @@ struct CaptionStylesView: View {
         }, set: { value in
             guard let index = selectedIndex else { return }
             store.activeProfile.captionStyles?[index].name = value
-            store.saveActiveProfile()
+            store.scheduleActiveProfileSave()
         })
     }
 
@@ -28,7 +28,7 @@ struct CaptionStylesView: View {
             } else {
                 store.activeProfile.captions = value
             }
-            store.saveActiveProfile()
+            store.scheduleActiveProfileSave()
         })
     }
 

@@ -14,6 +14,7 @@ final class FolderWatcher {
     /// Recursive mode: changes only under these folders (e.g. an output
     /// folder inside the source folder) never fire.
     private var ignored: [String] = []
+    private var watching: [String] = []
     private let onChange: @MainActor () -> Void
 
     init(onChange: @escaping @MainActor () -> Void) {
@@ -21,7 +22,11 @@ final class FolderWatcher {
     }
 
     func watch(_ url: URL, recursive: Bool = false, ignoring: [URL] = []) {
+        // Every profile save calls this; recreating an identical stream is wasted work.
+        let request = [url.standardizedFileURL.path, recursive ? "1" : "0"] + ignoring.map(\.standardizedFileURL.path)
+        if request == watching, source != nil || stream != nil { return }
         stop()
+        watching = request
         if recursive {
             ignored = ignoring.map { $0.standardizedFileURL.path + "/" }
             watchTree(url)
@@ -83,6 +88,7 @@ final class FolderWatcher {
     }
 
     func stop() {
+        watching = []
         debounceTask?.cancel()
         source?.cancel()
         source = nil

@@ -86,6 +86,7 @@ nonisolated enum SpeakerEmbedder {
             var start = range.lowerBound
             let upper = min(range.upperBound, length)
             while start + minimumSeconds <= upper {
+                try Task.checkCancellation()
                 let end = min(upper, start + windowSeconds)
                 let frames = AVAudioFrameCount(((end - start) * rate).rounded())
                 guard frames >= AVAudioFrameCount(minimumSeconds * rate),

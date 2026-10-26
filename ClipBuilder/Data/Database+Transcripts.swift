@@ -7,11 +7,14 @@ extension Database {
     static func resolvedTranscriptionKeySQL(videoID: String) -> String {
         """
         COALESCE((SELECT v.active_transcription_key FROM videos v WHERE v.id = \(videoID)
+            AND v.active_transcription_key IS NOT NULL
             AND EXISTS (SELECT 1 FROM transcripts pinned WHERE pinned.video_id = v.id
                 AND pinned.transcription_key = v.active_transcription_key)),
+            -- The newest row's key is the newest set's key (same order as grouping by
+            -- MAX(created_at)); one seek on the `transcripts_set` index per row instead
+            -- of regrouping the video's whole transcript for every row.
             (SELECT chosen.transcription_key FROM transcripts chosen WHERE chosen.video_id = \(videoID)
-                GROUP BY chosen.transcription_key
-                ORDER BY MAX(chosen.transcription_created_at) DESC, chosen.transcription_key DESC LIMIT 1))
+                ORDER BY chosen.transcription_created_at DESC, chosen.transcription_key DESC LIMIT 1))
         """
     }
 

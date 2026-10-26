@@ -15,7 +15,10 @@ struct PreviewPane: View {
         let model = store.builder
         // Membership uses the exact playhead so a short bumper cannot be
         // skipped by thumbnail sampling. Frames still reuse the 0.5s grid.
-        let time = model.playhead
+        // While a rendered slice plays over the still, the still holds the
+        // slice's first frame: not reading the 30 Hz playhead keeps this
+        // whole tree from rebuilding (and re-requesting thumbnails) per tick.
+        let time = store.builderPreview?.window.lowerBound ?? model.playhead
         let bumper = model.document.videoTrack.filter {
             $0.bumper && $0.startTime <= time && time < $0.startTime + $0.duration
         }.sorted { ($0.startTime, $0.track) < ($1.startTime, $1.track) }.last

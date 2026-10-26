@@ -77,6 +77,18 @@ struct BuilderBRollPickerSheet: View {
     /// What the Library suggests for the spot being covered, recomputed
     /// when the track or the start time changes.
     @State private var suggested: [Source] = []
+    /// The filtered, sorted list. Trim drags re-run the body many times a
+    /// second and read the list about ten times per pass.
+    @State private var sourcesMemo = MemoBox<SourcesKey, [Source]>()
+
+    private struct SourcesKey: Equatable {
+        var scenesVersion: Int
+        var videosVersion: Int
+        var searchText: String
+        var bRollOnly: Bool
+        var favoritesOnly: Bool
+        var suggestedIDs: [String]
+    }
     /// How long a suggested photo stays on screen.
     @State private var photoLength: Double = 3
 
@@ -196,7 +208,13 @@ struct BuilderBRollPickerSheet: View {
     }
 
     private var sources: [Source] {
-        let suggestedIDs = Set(showsSuggested ? suggested.map(\.id) : [])
+        let key = SourcesKey(scenesVersion: store.scenesVersion, videosVersion: store.videosVersion,
+                             searchText: searchText, bRollOnly: bRollOnly, favoritesOnly: favoritesOnly,
+                             suggestedIDs: showsSuggested ? suggested.map(\.id) : [])
+        return sourcesMemo(key) { filteredSources(hiding: Set(key.suggestedIDs)) }
+    }
+
+    private func filteredSources(hiding suggestedIDs: Set<String>) -> [Source] {
         let needle = searchText.trimmingCharacters(in: .whitespacesAndNewlines)
         let filtered = allSources.filter { source in
             // Nothing is listed twice: a suggested scene lives in the group
@@ -225,6 +243,10 @@ struct BuilderBRollPickerSheet: View {
     private var length: Double { max(0.1, windowEnd - windowStart) }
 
     private var cuts: [Double] {
+        cuts(for: selected)
+    }
+
+    private func cuts(for selected: Source?) -> [Double] {
         guard let footage = selected?.source else { return [] }
         return model.mainCuts(inTrack: track, from: startTime, to: startTime + length)
             .map { windowStart + ($0 - startTime) }
@@ -704,6 +726,13 @@ struct BuilderBRollPickerSheet: View {
             return
         }
         let url = footage.url
+        // Same file already loaded (a nudge or trim drag): just move to the
+        // window instead of reopening the asset on every key repeat.
+        if let player, playerURL == url, player.currentItem != nil, loadTask == nil {
+            player.seek(to: CMTime(seconds: windowStart, preferredTimescale: 600),
+                        toleranceBefore: .zero, toleranceAfter: .zero)
+            return
+        }
         let created = player ?? AVPlayer()
         player = created
         playerURL = url
@@ -733,6 +762,7 @@ struct BuilderBRollPickerSheet: View {
             created.seek(to: CMTime(seconds: from, preferredTimescale: 600)) { _ in }
             // Only resume if the user has not stopped in the meantime.
             if wasLooping, looping { startLooping() }
+            loadTask = nil
         }
     }
 

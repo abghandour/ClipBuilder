@@ -2044,20 +2044,29 @@ actor WizardEngine {
             for videoID in videoIDs {
                 podcastSpeakerTurns[videoID] = try await database.fetchSpeakerTurns(videoID: videoID)
             }
+            // Transcripts and speaker names load once per video, not per scene.
+            var podcastSegments: [Int64: [TranscriptSegment]] = [:]
+            let speakerNames = Dictionary(people.map { ($0.key, $0.displayName) }, uniquingKeysWith: { first, _ in first })
             for scene in scenes {
-                let rows = (try? await database.fetchTranscripts(videoID: scene.videoID)) ?? []
-                let segments = rows.filter { !$0.isTranslation }.map { row in
-                    TranscriptSegment(start: row.startTime, end: row.endTime, text: row.text,
-                                      words: row.wordsJSON?.data(using: .utf8).flatMap {
-                                          try? JSONDecoder().decode([TranscriptWord].self, from: $0)
-                                      })
+                let segments: [TranscriptSegment]
+                if let cached = podcastSegments[scene.videoID] {
+                    segments = cached
+                } else {
+                    let rows = (try? await database.fetchTranscripts(videoID: scene.videoID)) ?? []
+                    segments = rows.filter { !$0.isTranslation }.map { row in
+                        TranscriptSegment(start: row.startTime, end: row.endTime, text: row.text,
+                                          words: row.wordsJSON?.data(using: .utf8).flatMap {
+                                              try? JSONDecoder().decode([TranscriptWord].self, from: $0)
+                                          })
+                    }
+                    podcastSegments[scene.videoID] = segments
                 }
                 let turns = podcastSpeakerTurns[scene.videoID] ?? []
                 podcastSentenceEnds[scene.id] = Self.podcastTrimPoints(
                     segments: segments, turns: turns, scene: scene)
                 podcastTranscripts[scene.id] = WizardPlanRules.podcastTranscriptText(
                     scene: scene.startTime...scene.endTime, segments: segments, turns: turns,
-                    speakerNames: Dictionary(people.map { ($0.key, $0.displayName) }, uniquingKeysWith: { first, _ in first }))
+                    speakerNames: speakerNames)
             }
         }
         let home = (try? await database.driveSetting("assetHome")) ?? ""
@@ -4167,9 +4176,12 @@ actor WizardEngine {
         // the file's aspect lies about the footage. Crop to the detected
         // content box and treat the CONTENT's aspect as the wide signal —
         // otherwise a landscape fight inside a portrait recording letterboxes
-        // no matter what the user asks for.
-        let contentBox = await render.detectContentBox(source: scene.videoURL,
-                                                       start: clip.start, duration: sourceDuration)
+        // no matter what the user asks for. The podcast document path frames
+        // from its own layout and never reads the box, so it skips the seeks.
+        let contentBox = podcastDocument == nil
+            ? await render.detectContentBox(source: scene.videoURL,
+                                            start: clip.start, duration: sourceDuration)
+            : nil
         let contentIsWide = contentBox?.isWide ?? scene.wide
         let usesSavedFraming = contentIsWide && scene.centerStagePath != nil
             && options.podcastFraming != .original

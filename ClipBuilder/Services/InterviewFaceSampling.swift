@@ -5,7 +5,7 @@ import Foundation
 /// portrait boxes, which were measured once, often minutes away from the
 /// clip; before an Interview focus plan is built the roster is refined with
 /// faces seen at the shot starts the plan will use. The maths here is pure;
-/// `refinedRoster` is the only piece that decodes frames, one per sample.
+/// `refinedRoster` is the only piece that decodes frames, one per sample time.
 nonisolated enum InterviewFaceSampling {
     static let maximumSamples = 6
 
@@ -80,18 +80,25 @@ nonisolated enum InterviewFaceSampling {
         }
         let times = sampleTimes(video: video, range: range, turns: turns, roster: roster, punchIn: punchIn, cuts: cuts)
         guard let first = times.first else { return roster }
-        var faces: [String: CGRect] = [:]
-        for tile in feeds {
-            guard let key = tile.personKey else { continue }
+        let regions = feeds.map { tile in
             let picture = tile.picture
-            let region = FreeCropRect(xFrac: picture.x, yFrac: picture.y, wFrac: picture.w, hFrac: picture.h)
-            var seen: [CGRect] = []
-            for time in times {
+            return FreeCropRect(xFrac: picture.x, yFrac: picture.y, wFrac: picture.w, hFrac: picture.h)
+        }
+        // One decode per sample time; every feed's region is cut from it.
+        var seenByFeed = Array(repeating: [CGRect](), count: feeds.count)
+        for time in times {
+            if Task.isCancelled { return roster }
+            guard let image = try? await CenterStageService.faceFrame(source: video.url, at: time) else { continue }
+            for (index, region) in regions.enumerated() {
                 if Task.isCancelled { return roster }
-                if let face = try? await CenterStageService.faceCenter(source: video.url, at: time, region: region) {
-                    seen.append(face)
+                if let face = try? await CenterStageService.faceCenter(in: image, region: region) {
+                    seenByFeed[index].append(face)
                 }
             }
+        }
+        var faces: [String: CGRect] = [:]
+        for (tile, seen) in zip(feeds, seenByFeed) {
+            guard let key = tile.personKey else { continue }
             if let face = merged(seen) {
                 faces[key] = face
                 log("Interview focus: face of \(key) seen at \(seen.count) of \(times.count) shot starts")

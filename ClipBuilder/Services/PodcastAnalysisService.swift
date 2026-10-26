@@ -50,6 +50,8 @@ actor PodcastAnalysisService {
         }
         progress(0.30, "separating speakers")
         let turns = try await PodcastSpeakerSeparator.separate(video: video, segments: segments)
+        // The motion pass needs only the turns; it runs alongside the people pass.
+        async let visualPass = PodcastVisualAnalyzer.analyze(video: video, turns: turns)
 
         progress(0.43, "identifying speakers")
         let roster: [VideoPersonRecord]
@@ -81,7 +83,7 @@ actor PodcastAnalysisService {
         }
 
         progress(0.55, "reading speaker motion")
-        var visual = await PodcastVisualAnalyzer.analyze(video: video, turns: turns)
+        var visual = await visualPass
         // Who sits in which tile: the People pass's portraits name the cells.
         visual.tiles = PodcastVisualAnalyzer.named(visual.tiles, roster: roster)
         try await database.setPodcastLayout(videoID: video.id, transcriptionKey: transcriptionKey, layout: visual.layout,
@@ -401,6 +403,8 @@ actor PodcastAnalysisService {
                     kind = .embedding
                     log("Voice embeddings: \(windows.count) windows through the on-device ECAPA-TDNN model")
                 }
+            } catch is CancellationError {
+                throw CancellationError()
             } catch {
                 log("Voice embeddings unavailable (\(error.localizedDescription)) — using spectral voice features")
             }
@@ -575,10 +579,17 @@ nonisolated enum PodcastSpeakerSeparator {
                       videoID: Int64) -> [SpeakerTurn] {
         guard segments.count == embeddings.count, !segments.isEmpty else { return [] }
         let labels = cluster(embeddings)
+        // Each label's own and other centroids, built once rather than per window.
+        var centroids: [Int: (own: [Double], other: [Double])] = [:]
+        for label in Set(labels) {
+            centroids[label] = (centroid(embeddings.enumerated().filter { labels[$0.offset] == label }.map(\.element)),
+                                centroid(embeddings.enumerated().filter { labels[$0.offset] != label }.map(\.element)))
+        }
         let raw = segments.enumerated().map { index, segment in
-            SpeakerTurn(videoID: videoID, start: segment.start, end: segment.end,
-                        cluster: labels[index], confidence: clusterConfidence(
-                            embeddings[index], label: labels[index], embeddings: embeddings, labels: labels))
+            let pair = centroids[labels[index]] ?? ([], [])
+            return SpeakerTurn(videoID: videoID, start: segment.start, end: segment.end,
+                               cluster: labels[index], confidence: clusterConfidence(
+                                   embeddings[index], own: pair.own, other: pair.other))
         }
         var merged: [SpeakerTurn] = []
         for turn in raw {
@@ -688,10 +699,7 @@ nonisolated enum PodcastSpeakerSeparator {
         guard let first = vectors.first else { return [] }
         return first.indices.map { index in vectors.reduce(0) { $0 + $1[index] } / Double(vectors.count) }
     }
-    private static func clusterConfidence(_ vector: [Double], label: Int,
-                                          embeddings: [[Double]], labels: [Int]) -> Double {
-        let own = centroid(embeddings.enumerated().filter { labels[$0.offset] == label }.map(\.element))
-        let other = centroid(embeddings.enumerated().filter { labels[$0.offset] != label }.map(\.element))
+    private static func clusterConfidence(_ vector: [Double], own: [Double], other: [Double]) -> Double {
         guard !other.isEmpty else { return 0.5 }
         let ownDistance = distance(normalize(vector), normalize(own))
         let otherDistance = distance(normalize(vector), normalize(other))

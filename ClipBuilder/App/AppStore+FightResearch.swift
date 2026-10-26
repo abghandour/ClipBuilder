@@ -99,8 +99,7 @@ extension AppStore {
             let fileLog = logSink(\.analysisLog)
             let log: @Sendable (String) -> Void = { line in jobLog(line); fileLog(line) }
             do {
-                let scenes = try await database.fetchScenes(includeExcluded: true).filter { $0.videoID == video.id }
-                _ = try await analyzer.scoreFightAction(video: video, scenes: scenes, profile: profile,
+                _ = try await analyzer.scoreFightAction(video: video, profile: profile,
                                                         database: database, log: log)
             } catch {
                 if generation == profileGeneration {
