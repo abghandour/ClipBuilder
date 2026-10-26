@@ -196,9 +196,10 @@ struct ScenesView: View {
     /// scenes excluded — grid filters like tags deliberately don't narrow
     /// the query's reach.
     private var searchCandidates: [SceneRecord] {
-        store.scenes.filter { scene in
-            if let runFilter, !(scene.runID.map(runFilter.contains) ?? false) { return false }
-            return !scene.excluded
+        // A chosen batch may be a superseded one, which only history holds.
+        guard let runFilter else { return store.scenes.filter { !$0.excluded } }
+        return store.historyScenes.filter { scene in
+            (scene.runID.map(runFilter.contains) ?? false) && !scene.excluded
         }
     }
 

@@ -503,7 +503,6 @@ actor Database {
     );
 
     CREATE INDEX IF NOT EXISTS idx_grades_scene ON grades(scene_id);
-    CREATE INDEX IF NOT EXISTS idx_scenes_run ON scenes(run_id);
     CREATE INDEX IF NOT EXISTS idx_scene_tags_tag ON scene_tags(tag);
     CREATE INDEX IF NOT EXISTS idx_fight_events_video ON fight_events(video_id);
     CREATE INDEX IF NOT EXISTS idx_person_markers_person ON person_markers(person_id);
@@ -825,6 +824,10 @@ actor Database {
                 }
                 try connection.execute("PRAGMA user_version = \(Self.schemaVersion)")
             }
+            // After `migrate`: databases from before analysis batches gain
+            // `scenes.run_id` there, and an index in the schema script would
+            // fail on them before the migration could run.
+            try connection.execute("CREATE INDEX IF NOT EXISTS idx_scenes_run ON scenes(run_id)")
         }
     }
 

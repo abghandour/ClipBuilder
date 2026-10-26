@@ -139,20 +139,24 @@ enum TranscriptTranslator {
                 provider: provenance?.provider ?? "apple", model: provenance?.model)
             return Outcome(segments: originals.count, summary: "Prepared \(originals.count) dub lines to \(target).")
         }
-        // An unanswered row must not overwrite an already stored translation.
-        let segments = originals.compactMap { row -> TranscriptSegment? in
-            if answered[row.id] == nil,
-               stored.contains(where: { $0.startTime == row.startTime && $0.endTime == row.endTime }) { return nil }
-            return TranscriptSegment(start: row.startTime, end: row.endTime, text: answered[row.id] ?? row.text, words: nil)
+        // Rows are written one by one, as for dubs: untouched lines keep their
+        // words, hand-set speakers and provider. An unanswered line with no
+        // stored translation falls back to the original text, marked
+        // "original" so the dub gate never takes it for a translation.
+        let fallbacks = originals.filter { row in
+            answered[row.id] == nil
+                && !stored.contains(where: { $0.startTime == row.startTime && $0.endTime == row.endTime })
         }
-        let kept = stored.filter { row in
-            !segments.contains { $0.start == row.startTime && $0.end == row.endTime }
-        }.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: nil) }
         try Task.checkCancellation()
-        try await database.replaceTranscripts(videoID: videoID, transcriptionKey: transcriptionKey, language: target, isTranslation: true,
-            segments: (segments + kept).sorted { $0.start < $1.start },
-            provider: provenance?.provider ?? (answered.isEmpty ? "original" : "apple"), model: provenance?.model,
-            technique: "numbered-translation-batch")
+        try await database.storeDubTranslations(videoID: videoID, transcriptionKey: transcriptionKey,
+            originals: originals, target: target, answered: answered,
+            provider: provenance?.provider ?? "apple", model: provenance?.model)
+        if !fallbacks.isEmpty {
+            try await database.storeDubTranslations(videoID: videoID, transcriptionKey: transcriptionKey,
+                originals: fallbacks, target: target,
+                answered: Dictionary(uniqueKeysWithValues: fallbacks.map { ($0.id, $0.text) }),
+                provider: "original", model: nil)
+        }
         if fallbackCount > 0 {
             await log("Captions: could not translate \(fallbackCount) lines — keeping stored captions or using the original language")
         }

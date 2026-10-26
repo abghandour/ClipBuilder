@@ -115,6 +115,11 @@ struct AIServiceTests {
         #expect(calls.split(separator: "\n").count == 1)
         #expect(logs.lines.filter { $0 == "Skipping Gemini CLI: unavailable for this account" }.count == 1)
         #expect(!logs.lines.contains { $0.contains("secret-stack") })
+        // Changing that provider's settings (another model or account) retries it.
+        var changed = config
+        changed.providers["gemini"] = AIProviderSettings(bin: failure.path, model: "other")
+        await service.updateConfig(changed)
+        #expect(await service.isProviderAvailable("gemini") == true)
     }
 
     @Test("a failed provider cools down for automatic dispatch, explicit choice still runs, sign-in clears it")

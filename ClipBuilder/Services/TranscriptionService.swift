@@ -94,9 +94,16 @@ actor TranscriptionService {
         // corrected, attributed by hand. A cache hit only fills an empty
         // transcript; otherwise the stored rows are the transcript.
         let stored = try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation }
+        // Stored rows in another language are not this transcript: the
+        // caller already rejected them, so the cached set is stored instead.
+        let otherLanguage = stored.first.map { row in
+            !row.language.isEmpty && !cached.detectedLanguage.isEmpty
+                && Locale(identifier: row.language).language.languageCode
+                    != Locale(identifier: cached.detectedLanguage).language.languageCode
+        } ?? false
         let segments: [TranscriptSegment]
         let transcriptionKey: String
-        if stored.isEmpty {
+        if stored.isEmpty || otherLanguage {
             transcriptionKey = try await Self.storeOriginal(videoID: video.id, language: cached.detectedLanguage,
                 segments: cached.segments, database: database)
             segments = cached.segments

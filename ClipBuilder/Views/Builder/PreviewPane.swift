@@ -22,10 +22,7 @@ struct PreviewPane: View {
         // The cropping row decides each track's area at this instant; a
         // track without one shows nothing, exactly like the render.
         let layout = model.document.cropBlock(at: time)?.layout
-        let active = model.document.videoTrack
-            .filter { $0.startTime <= time + 0.001 && time < $0.startTime + $0.duration }
-            .filter { layout == nil || $0.track < (layout?.areaCount ?? 1) }
-            .sorted { ($0.track, $0.startTime) < ($1.track, $1.startTime) }
+        let active = Self.drawOrder(model.document.videoTrack, at: time, areaCount: layout?.areaCount)
 
         GeometryReader { geo in
             let frame = fittedFrame(in: geo.size)
@@ -43,16 +40,24 @@ struct PreviewPane: View {
                     }
                 } else {
                     ForEach(active) { clip in
+                        // A cover-all cutaway fills the canvas unmasked,
+                        // like the render; everything else keeps its area.
                         clipLayer(clip: clip, time: time, frame: frame, model: model,
-                                  area: layout?.area(forTrack: clip.track))
+                                  area: Self.coversAll(clip) ? nil : layout?.area(forTrack: clip.track))
                     }
                     // Overlay-block items count too: the still shows what the
                     // render burns in at this instant.
+                    // Items expanded from a block exist only in this copy, so
+                    // they draw but don't take drags: edits go through the
+                    // block (Overlay Templates), not ids the model lacks.
                     let overlays = model.document.expandingOverlayBlocks()
+                    let editableImages = Set(model.document.imageOverlays.map(\.uid))
+                    let editableTexts = Set(model.document.textOverlays.map(\.uid))
                     ForEach(overlays.imageOverlays.filter {
                         $0.startTime <= time && time < $0.endTime
                     }) { overlay in
-                        ImageOverlayLayer(overlay: overlay, frame: frame)
+                        ImageOverlayLayer(overlay: overlay, frame: frame,
+                                          editable: editableImages.contains(overlay.uid))
                     }
                     let boundText = overlays.textOverlays.flatMap {
                         StrikeStatSourceBinding.mapped($0, clips: overlays.videoTrack, scenes: store.scenes, videos: store.videos)
@@ -60,7 +65,8 @@ struct PreviewPane: View {
                     ForEach(Array(boundText.filter {
                         $0.startTime <= time && time < $0.endTime
                     }.enumerated()), id: \.offset) { _, overlay in
-                        TextOverlayLayer(overlay: overlay, frame: frame)
+                        TextOverlayLayer(overlay: overlay, frame: frame,
+                                         editable: editableTexts.contains(overlay.uid))
                     }
                     if case .clip(let uid) = model.selection,
                        let selected = active.first(where: { $0.uid == uid }),
@@ -124,6 +130,30 @@ struct PreviewPane: View {
     /// Fraction of the frame the chrome-avoiding drag keeps overlays inside.
     static func safeArea(for document: TimelineDocument) -> PlatformSafeArea? {
         PlatformSafeArea.resolve(document.renderSettings)
+    }
+
+    /// A cutaway set to cover every area: drawn over the whole canvas with
+    /// no area mask, on any track (the render's `fillCanvas`).
+    nonisolated static func coversAll(_ clip: TimelineClip) -> Bool {
+        clip.isCutaway && clip.coverAllAreas
+    }
+
+    /// Draw layer, matching `MultitrackRenderer.placementLayer`: a track's
+    /// main clips, then that track's cutaways, then cover-all cutaways above
+    /// every track.
+    nonisolated static func drawLayer(_ clip: TimelineClip) -> Int {
+        if coversAll(clip) { return TimelineDocument.maxTracks * 2 + 1 }
+        return clip.track * 2 + (clip.isCutaway ? 1 : 0)
+    }
+
+    /// Clips active at `time`, bottom to top. With a crop layout, a track
+    /// past its area count shows nothing unless the clip covers all areas.
+    nonisolated static func drawOrder(_ clips: [TimelineClip], at time: Double,
+                                      areaCount: Int?) -> [TimelineClip] {
+        clips
+            .filter { $0.startTime <= time + 0.001 && time < $0.startTime + $0.duration }
+            .filter { areaCount == nil || $0.track < (areaCount ?? 1) || coversAll($0) }
+            .sorted { (drawLayer($0), $0.startTime) < (drawLayer($1), $1.startTime) }
     }
 
     private func sampledTime(for clip: TimelineClip, at time: Double) -> Double {
@@ -446,6 +476,8 @@ private struct ImageOverlayLayer: View {
     @Environment(AppStore.self) private var store
     let overlay: ImageOverlayItem
     let frame: CGSize
+    /// False for items expanded from an overlay block: no id to edit.
+    var editable = true
 
     @State private var image: NSImage?
     @State private var dragStart: CGPoint?
@@ -492,7 +524,8 @@ private struct ImageOverlayLayer: View {
                 }
                 .onEnded { _ in dragStart = nil }
         )
-        .focusable()
+        .allowsHitTesting(editable)
+        .focusable(editable)
         .focused($isFocused)
         .onMoveCommand { direction in
             switch direction {
@@ -516,6 +549,7 @@ private struct ImageOverlayLayer: View {
     }
 
     private func nudge(x: CGFloat, y: CGFloat) {
+        guard editable else { return }
         store.builder.selection = .image(overlay.uid)
         store.builder.updateImage(overlay.uid) {
             $0.xFrac = min(max($0.xFrac + x, 0), 1)
@@ -530,6 +564,8 @@ private struct TextOverlayLayer: View {
     @Environment(AppStore.self) private var store
     let overlay: TextOverlayItem
     let frame: CGSize
+    /// False for items expanded from an overlay block: no id to edit.
+    var editable = true
 
     /// Fractional position at the moment the drag started; nil when idle.
     @State private var dragStart: CGPoint?
@@ -583,7 +619,8 @@ private struct TextOverlayLayer: View {
                     }
                     .onEnded { _ in dragStart = nil }
             )
-            .focusable()
+            .allowsHitTesting(editable)
+            .focusable(editable)
             .focused($isFocused)
             .onMoveCommand { direction in
                 switch direction {
@@ -609,6 +646,7 @@ private struct TextOverlayLayer: View {
     }
 
     private func nudge(x: CGFloat, y: CGFloat) {
+        guard editable else { return }
         store.builder.selection = .text(overlay.uid)
         store.builder.updateText(overlay.uid) {
             $0.xFrac = min(max(($0.xFrac ?? 0.5) + x, 0), 1)

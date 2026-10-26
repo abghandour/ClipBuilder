@@ -260,7 +260,7 @@ nonisolated struct AIConfig: Codable, Sendable {
     }
 }
 
-nonisolated struct AIProviderSettings: Codable, Sendable {
+nonisolated struct AIProviderSettings: Codable, Sendable, Equatable {
     var bin: String?
     var model: String?
 }

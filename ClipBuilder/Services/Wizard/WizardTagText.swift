@@ -81,7 +81,8 @@ extension WizardEngine {
                 for person in pending {
                     guard let value = answers[person.key] else { continue }
                     try Task.checkCancellation()
-                    try await database.savePersonTagField(personKey: person.key, field: field, value: value, provenance: reply.provenance)
+                    guard try await database.savePersonTagFieldIfMissing(personKey: person.key, field: field,
+                        value: value, provenance: reply.provenance) else { continue }
                     written.append(PersonTagField(personKey: person.key, field: field, value: value, provenance: reply.provenance))
                 }
             } catch is CancellationError { throw CancellationError() }

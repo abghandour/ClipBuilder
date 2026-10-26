@@ -228,11 +228,29 @@ actor DriveMediaStore {
         _ media: DriveMedia, folder: String,
         progress: @escaping @Sendable (Double) async -> Void = { _ in }
     ) async throws -> DriveFile {
+        // A resumed or re-queued upload whose media already has a Drive copy
+        // must not upload again: that would duplicate the file on Drive.
+        if let existing = try await existingDriveCopy(of: media) {
+            try? FileManager.default.removeItem(at: uploadCheckpoint(for: media))
+            await progress(1)
+            return existing
+        }
         let url = try await ensure(media, progress: progress)
         let checkpoint = uploadCheckpoint(for: media)
         let file = try await client.upload(file: url, folder: folder, checkpoint: checkpoint, progress: progress)
         try await database.setDriveCopy(media, file: file)
         try? FileManager.default.removeItem(at: checkpoint)
         return file
+    }
+
+    /// The Drive copy the database already records for this exact media
+    /// record, read fresh (the job's `DriveMedia` is a snapshot from enqueue).
+    private func existingDriveCopy(of media: DriveMedia) async throws -> DriveFile? {
+        guard !media.path.isEmpty,
+              let current = try await database.driveMedia(path: media.path),
+              current.kind == media.kind, current.recordID == media.recordID,
+              let fileID = current.fileID else { return nil }
+        return DriveFile(id: fileID, name: URL(fileURLWithPath: media.path).lastPathComponent,
+                         webViewLink: current.link, shared: current.shared)
     }
 }

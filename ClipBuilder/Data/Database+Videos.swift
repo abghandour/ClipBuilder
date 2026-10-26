@@ -361,6 +361,32 @@ extension Database {
                   .integer(id)])
     }
 
+    /// Saved timelines that name a renamed source by path follow it. The
+    /// revision is left alone: an open Builder relinks its own copy.
+    @discardableResult
+    func relinkTimelineVideoFile(from oldPath: String, to newPath: String) throws -> Int {
+        // Cheap prefilter on the file name (however the path's slashes were
+        // escaped); decoding decides.
+        let rows = try connection.query("SELECT id, document_json FROM timelines WHERE instr(document_json, ?) > 0",
+                                        [.text((oldPath as NSString).lastPathComponent)])
+        var changed = 0
+        try connection.transaction {
+            for row in rows {
+                guard let id = row["id"]?.intValue,
+                      let data = row["document_json"]?.stringValue?.data(using: .utf8),
+                      var document = try? JSONDecoder().decode(TimelineDocument.self, from: data),
+                      document.videoTrack.contains(where: { $0.videoFile == oldPath }) else { continue }
+                for index in document.videoTrack.indices where document.videoTrack[index].videoFile == oldPath {
+                    document.videoTrack[index].videoFile = newPath
+                }
+                guard let json = String(data: try JSONEncoder().encode(document), encoding: .utf8) else { continue }
+                try connection.execute("UPDATE timelines SET document_json = ? WHERE id = ?", [.text(json), .integer(id)])
+                changed += 1
+            }
+        }
+        return changed
+    }
+
     /// Resolve only missing dates once per open, off the main actor. Each saved
     /// value makes the backfill restartable if the app closes partway through.
     func backfillCreatedDates() async throws {

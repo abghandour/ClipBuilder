@@ -28,9 +28,17 @@ nonisolated struct TimelineRecord: Identifiable, Sendable, Hashable {
             .flatMap { try? JSONDecoder().decode(TimelineDocument.self, from: $0) }
     }
 
-    var duration: Double {
+    var duration: Double { duration(sceneSpans: [:]) }
+
+    /// `sceneSpans` (scene id → source seconds) sizes untrimmed scene clips,
+    /// which are stored as just their scene id.
+    func duration(sceneSpans: [Int64: Double]) -> Double {
         guard let document else { return 0 }
-        let clipEnd = document.videoTrack.map { $0.startTime + $0.duration }.max() ?? 0
+        let clipEnd = document.videoTrack.map { clip in
+            var length = clip.duration
+            if length <= 0, let id = clip.sceneID, let span = sceneSpans[id] { length = span / clip.effectiveSpeed }
+            return clip.startTime + length
+        }.max() ?? 0
         let soundEnd = document.soundTrack.map { $0.startTime + $0.duration }.max() ?? 0
         let textEnd = document.textOverlays.map(\.endTime).max() ?? 0
         let imageEnd = document.imageOverlays.map(\.endTime).max() ?? 0

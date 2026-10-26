@@ -60,7 +60,18 @@ final class GoogleDriveTransfers {
 
     func attach(profile: BrandProfile, database: Database, client suppliedClient: GoogleDriveClient? = nil) async {
         let name = profile.profileName
-        if contexts[name]?.database.path == database.path { return }
+        if var context = contexts[name], context.database.path == database.path {
+            // Same profile database, but Settings may have edited the profile in
+            // place (Input folder): new transfers must use the current folder.
+            // Running transfers keep the store they started with.
+            if context.profile.sourceFolderURL.standardizedFileURL != profile.sourceFolderURL.standardizedFileURL {
+                context.media = DriveMediaStore(database: context.database, client: context.client,
+                                                inputFolder: profile.sourceFolderURL)
+            }
+            context.profile = profile
+            contexts[name] = context
+            return
+        }
         let client = suppliedClient ?? GoogleDriveClient(auth: auth, profile: name)
         let media = DriveMediaStore(database: database, client: client, inputFolder: profile.sourceFolderURL)
         contexts[name] = Context(database: database, client: client, media: media, profile: profile)
@@ -84,6 +95,7 @@ final class GoogleDriveTransfers {
     }
 
     func client(profile: String) -> GoogleDriveClient? { contexts[profile]?.client }
+    func mediaStore(profile: String) -> DriveMediaStore? { contexts[profile]?.media }
     func refreshState(profile: String) async { states[profile] = await auth.state(profile: profile) }
 
     func refreshAllStates(including activeProfile: String? = nil) async {
@@ -119,7 +131,9 @@ final class GoogleDriveTransfers {
         }
     }
     func disconnect(profile: String) {
-        for job in jobs where job.profile == profile { stop(job.id) }
+        // Completed jobs stay complete: marking them stopped would offer
+        // Resume, and resuming an upload would duplicate the file on Drive.
+        for job in jobs where job.profile == profile && job.status != .complete { stop(job.id) }
         Task {
             do { try await auth.disconnect(profile: profile) } catch {
                 connectionError = GoogleDriveError.message(for: error)
@@ -241,7 +255,7 @@ final class GoogleDriveTransfers {
 
     func resume(_ id: UUID) {
         // Asset groups are replanned by manual Refresh; stale actions must never resume alone.
-        guard jobs.first(where: { $0.id == id })?.isAsset != true else { return }
+        guard let job = jobs.first(where: { $0.id == id }), !job.isAsset, job.status != .complete else { return }
         offlineRetries.removeValue(forKey: id)?.cancel()
         if tasks[id] == nil { start(id) }
     }

@@ -276,13 +276,14 @@ extension AppStore {
     /// Settings opens, so a panel used straight after launch writes them now.
     func generateMiniVideosRecordingPicks(settings: MiniWizardSettings, flow: MiniWizardFlow, batchID: String) {
         guard let run = miniRun, run.batchID == batchID, !isWizardRunning else { return }
-        let kept = run.candidates.filter { $0.kept && !$0.take.plan.clips.isEmpty }
         let generate: @MainActor () -> Void = { [weak self] in
             guard let self, self.miniRun?.batchID == batchID else { return }
             self.generateMiniVideos(settings: settings, flow: flow, batchID: batchID)
         }
+        // Picks are saved again on every Generate: edits made in Footage after
+        // Settings opened would otherwise render the earlier ranges.
         if run.keptCount > 0 && (run.footageKind == .qa || run.footageKind == .transcript
-            || (run.footageKind == .fightMetrics && kept.isEmpty)) {
+            || run.footageKind == .fightMetrics) {
             switch run.footageKind {
             case .qa: recordMiniQASelections(then: generate)
             case .transcript: recordMiniTranscriptSelections(then: generate)

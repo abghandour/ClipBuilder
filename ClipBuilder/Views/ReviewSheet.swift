@@ -15,8 +15,10 @@ struct ReviewSheet: View {
     @State private var clipReasons: [Int: Set<String>] = [:]
     @State private var note = ""
     @State private var player: AVPlayer?
+    /// The scenes behind whole-scene clips, which the stored timeline names by id only.
+    @State private var scenes: [Int64: SceneRecord] = [:]
 
-    private var clips: [ReviewableClip] { video.reviewableClips }
+    private var clips: [ReviewableClip] { video.reviewableClips(scenes: scenes) }
 
     private static let dimensionLabels: [(key: String, label: String)] = [
         ("hook", "Hook"), ("pacing", "Pacing"), ("music", "Music"), ("scenes", "Scene choice"),
@@ -92,11 +94,13 @@ struct ReviewSheet: View {
         .frame(width: 720)
         .onDisappear { player?.pause(); player = nil }
         .task {
-            guard await DrivePlayback.prepare(video.url) else { return }
-            guard let asset = try? await DriveLocalAsset.make(video.url) else { return }
-            let player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
-            self.player = player
-            if let existing = await store.loadReview(for: video) {
+            let ids = Set(video.reviewableClips.compactMap(\.sceneID))
+            if !ids.isEmpty, let rows = try? await store.database?.fetchScenes(ids: ids) {
+                scenes = Dictionary(rows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+            }
+            // The saved review loads even when the media can't play, so a
+            // save never overwrites it with blanks; edits made meanwhile win.
+            if let existing = await store.loadReview(for: video), !hasContent {
                 verdict = existing.review.verdict
                 dimensions = existing.review.dimensions
                 note = existing.review.note
@@ -105,6 +109,9 @@ struct ReviewSheet: View {
                     clipReasons[clip.clipIndex] = Set(clip.reasons)
                 }
             }
+            guard await DrivePlayback.prepare(video.url) else { return }
+            guard let asset = try? await DriveLocalAsset.make(video.url) else { return }
+            self.player = AVPlayer(playerItem: AVPlayerItem(asset: asset))
         }
     }
 
@@ -124,7 +131,7 @@ struct ReviewSheet: View {
         VStack(spacing: 6) {
             Button {
                 // Jump the player to this clip's start within the reel.
-                let offset = clips.prefix(clip.index).reduce(0) { $0 + $1.duration }
+                let offset = clip.timelineStart ?? clips.prefix(clip.index).reduce(0) { $0 + $1.duration }
                 player?.seek(to: CMTime(seconds: offset, preferredTimescale: 600))
                 player?.play()
             } label: {

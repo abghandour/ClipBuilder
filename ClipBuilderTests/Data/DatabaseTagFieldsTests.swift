@@ -21,6 +21,20 @@ struct DatabaseTagFieldsTests {
         #expect(edited.provenance == nil)
     }
 
+    @Test("Generated tag text never replaces a value the user saved meanwhile")
+    func generatedTextOnlyFillsMissing() async throws {
+        let temp = try TempDatabase()
+        let person = try await temp.database.createPerson(name: "Coach Person")
+        let provenance = AIProvenance(provider: "claude", task: "tag_text", at: Date(timeIntervalSince1970: 1_800_000_000))
+        try await temp.database.savePersonTagField(personKey: person.key, field: "Role", value: "Coach", provenance: nil)
+        #expect(try await !temp.database.savePersonTagFieldIfMissing(personKey: person.key, field: "Role",
+                                                                     value: "Fighter", provenance: provenance))
+        #expect(try await temp.database.personTagFields(personKey: person.key).first?.value == "Coach")
+        #expect(try await temp.database.savePersonTagFieldIfMissing(personKey: person.key, field: "Team",
+                                                                    value: "Alpha", provenance: provenance))
+        #expect(try await temp.database.personTagFields(personKey: person.key).contains { $0.value == "Alpha" })
+    }
+
     @Test("Version 29 databases migrate existing tag fields without losing their values")
     func existingRowsMigrate() async throws {
         let temp = try TempDatabase()

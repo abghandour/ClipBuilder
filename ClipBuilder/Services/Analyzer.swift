@@ -1416,6 +1416,8 @@ actor Analyzer {
             var roundRanges: [FightRoundRange] = []
             var failedWindows = 0
             var emptyWindows = 0
+            // Windows that produced nothing usable keep the events saved before.
+            var unscored: [ClosedRange<Double>] = []
             // The model that answered the (last) scoring window — stamped on
             // every event row.
             var scoringProvenance: AIProvenance?
@@ -1425,7 +1427,7 @@ actor Analyzer {
                            index + 1, windows.count, window.start, window.end))
                 let frames = await extractFrames(url: video.url, start: window.start,
                                                  end: window.end, interval: 1.0, log: log)
-                guard !frames.isEmpty else { emptyWindows += 1; continue }
+                guard !frames.isEmpty else { emptyWindows += 1; unscored.append(window.start...window.end); continue }
                 let prompt = Self.fightScorePrompt(domain: profile.effectiveDomain,
                                                    windowStart: window.start, windowEnd: window.end,
                                                    roster: roster, hasReferences: !referenceFrames.isEmpty)
@@ -1439,6 +1441,7 @@ actor Analyzer {
                           let raw = object["events"] as? [[String: Any]] else {
                         log("Scoring window returned no usable events JSON — continuing")
                         failedWindows += 1
+                        unscored.append(window.start...window.end)
                         continue
                     }
                     let parsed = raw.compactMap {
@@ -1454,6 +1457,7 @@ actor Analyzer {
                     throw CancellationError()
                 } catch {
                     failedWindows += 1
+                    unscored.append(window.start...window.end)
                     log("Fight scoring window failed (\(error)) — continuing")
                 }
             }
@@ -1463,17 +1467,28 @@ actor Analyzer {
                 events[index].model = scoringProvenance?.model
             }
             try Task.checkCancellation()
+            let summary = "\(windows.count) window(s), \(events.count) event(s)"
+                + (failedWindows > 0 ? ", \(failedWindows) failed" : "")
+                + (emptyWindows > 0 ? ", \(emptyWindows) without frames" : "")
+            // Every window failing is a failed pass, not a completed pass with
+            // no action: the saved events stay as they were.
+            if failedWindows + emptyWindows >= windows.count {
+                try await database.finishAnalysisPass(pass, status: .failed, note: summary)
+                log("\(video.filename): fight scoring failed in every window — the earlier events are kept")
+                return 0
+            }
+            if !unscored.isEmpty {
+                let earlier = try await database.fetchFightEvents().filter { event in
+                    event.videoID == video.id && unscored.contains { $0.contains(event.time) }
+                }
+                events = (events + earlier).sorted { $0.time < $1.time }
+            }
             guard try await database.replaceFightEventRecords(videoID: video.id, events: events,
                                                               expectedGeneration: generation,
                                                               roundRanges: StrikeStatsScope.merged(roundRanges)) else {
                 throw CancellationError()
             }
-            let summary = "\(windows.count) window(s), \(events.count) event(s)"
-                + (failedWindows > 0 ? ", \(failedWindows) failed" : "")
-                + (emptyWindows > 0 ? ", \(emptyWindows) without frames" : "")
-            // Every window failing is a failed pass, not a completed pass with no action.
-            try await database.finishAnalysisPass(pass, status: failedWindows + emptyWindows >= windows.count ? .failed : .completed,
-                                                  note: summary)
+            try await database.finishAnalysisPass(pass, status: .completed, note: summary)
             let attributed = events.count { !$0.fighterKey.isEmpty }
             let share = events.isEmpty ? 0 : Int(Double(attributed) / Double(events.count) * 100)
             log("\(video.filename): fight action scored — \(events.count) event(s), "

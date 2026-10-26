@@ -212,8 +212,18 @@ struct OverlayTemplatesView: View {
     /// pause is plenty (and keeps the folder watcher from thrashing).
     private func scheduleSave() {
         guard let selectedName,
-              let current = templates.first(where: { $0.name == selectedName }),
-              current.composition != composition else { return }
+              let current = templates.first(where: { $0.name == selectedName }) else { return }
+        guard current.composition != composition else {
+            // Back to the saved value: drop any queued intermediate edit
+            // instead of letting the debounce write it.
+            if pendingSave?.name == selectedName {
+                saveTask?.cancel()
+                saveTask = nil
+                pendingSave = nil
+                isSaving = false
+            }
+            return
+        }
         let snapshot = OverlayTemplate(name: selectedName, composition: composition)
         saveTask?.cancel()
         pendingSave = snapshot

@@ -24,6 +24,8 @@ nonisolated enum TranscriptQATrim {
         var start: Double
         var end: Double
         var label: String
+        /// The recording the span belongs to; nil applies to any recording.
+        var videoID: Int64? = nil
     }
 
     struct Transcript: Equatable, Sendable {
@@ -40,11 +42,12 @@ nonisolated enum TranscriptQATrim {
             // Consecutive rows of the same speaker read as one block, broken
             // only where the other person talks. Rows nobody is known to
             // speak stay their own lines.
+            let spans = input.speakerSpans.filter { $0.videoID == nil || $0.videoID == input.videoID }
             for row in rows {
                 let tokens = TranscriptQATrim.words(for: row, startingAt: words.count)
                 guard !tokens.isEmpty else { continue }
                 for run in TranscriptQATrim.speakerRuns(row: row, words: tokens, label: input.labels[row.id],
-                                                        spans: input.speakerSpans) {
+                                                        spans: spans) {
                     if let index = lines.indices.last, let label = run.label, label == lines[index].speaker {
                         lines[index].end = max(lines[index].end, run.end)
                         lines[index].words.append(contentsOf: run.words)

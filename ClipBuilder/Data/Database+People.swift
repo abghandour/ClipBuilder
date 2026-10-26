@@ -14,6 +14,19 @@ nonisolated struct PeopleMergeSnapshot: Sendable {
     var markerIDs: [Int64: Int64]
     var voiceProfiles: [SQLRow]
     var survivorVoiceProfiles: [SQLRow]
+    /// Fight events and outcomes that named a source, per row and column.
+    var fightKeys: [FightKey] = []
+
+    struct FightKey: Sendable {
+        var table: String
+        var column: String
+        var id: Int64
+        var key: String
+    }
+
+    /// Person-key columns in the fight tables; merges re-point them too.
+    static let fightKeyColumns = [("fight_events", "fighter_key"), ("fight_events", "target_key"),
+                                  ("fight_outcomes", "winner_key"), ("fight_outcomes", "loser_key")]
 }
 
 extension Database {
@@ -185,6 +198,11 @@ extension Database {
                                [.text(target.key), .text(source.key)])
         try connection.execute("UPDATE transcripts SET speaker_key = ? WHERE speaker_key = ?",
                                [.text(target.key), .text(source.key)])
+        // Scored actions and results follow the person, or they would name a deleted key.
+        for (table, column) in PeopleMergeSnapshot.fightKeyColumns {
+            try connection.execute("UPDATE \(table) SET \(column) = ? WHERE \(column) = ?",
+                                   [.text(target.key), .text(source.key)])
+        }
         // The target's own voice from a file wins over the source's.
         try connection.execute("UPDATE OR IGNORE voice_profiles SET person_key = ? WHERE person_key = ?",
                                [.text(target.key), .text(source.key)])
@@ -247,6 +265,13 @@ extension Database {
                 if let id = row["id"]?.intValue { snapshot.markerIDs[id] = source.id }
             }
             snapshot.voiceProfiles += try connection.query("SELECT * FROM voice_profiles WHERE person_key = ?", [.text(source.key)])
+            for (table, column) in PeopleMergeSnapshot.fightKeyColumns {
+                for row in try connection.query("SELECT id FROM \(table) WHERE \(column) = ?", [.text(source.key)]) {
+                    if let id = row["id"]?.intValue {
+                        snapshot.fightKeys.append(.init(table: table, column: column, id: id, key: source.key))
+                    }
+                }
+            }
         }
         let affectedScenes = Set(snapshot.sceneTags.map(\.sceneID))
         snapshot.survivorSceneTags.removeAll { !affectedScenes.contains($0["scene_id"]?.intValue ?? -1) }
@@ -309,6 +334,10 @@ extension Database {
             }
             for (id, personID) in snapshot.markerIDs {
                 try connection.execute("UPDATE person_markers SET person_id = ? WHERE id = ?", [.integer(personID), .integer(id)])
+            }
+            for entry in snapshot.fightKeys {
+                try connection.execute("UPDATE \(entry.table) SET \(entry.column) = ? WHERE id = ?",
+                                       [.text(entry.key), .integer(entry.id)])
             }
         }
     }

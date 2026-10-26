@@ -136,7 +136,7 @@ struct DispatchPlanSheet: View {
     /// Framing only applies to footage that isn't already 9:16 — vertical
     /// video needs no crop window.
     private var framingApplies: Bool {
-        guard let video = videos.first, video.width > 0, video.height > 0 else { return false }
+        guard let video = panelVideo, video.width > 0, video.height > 0 else { return false }
         let aspect = Double(video.width) / Double(video.height)
         let vertical = 9.0 / 16.0
         return abs(aspect - vertical) / vertical > 0.02
@@ -144,7 +144,7 @@ struct DispatchPlanSheet: View {
 
     /// Framing operates on detected scenes — tag detection must have run.
     private var framingScenes: [SceneRecord] {
-        guard let video = videos.first else { return [] }
+        guard let video = panelVideo else { return [] }
         return store.scenes.filter { $0.videoID == video.id && !$0.excluded }
     }
 
@@ -558,7 +558,7 @@ struct DispatchPlanSheet: View {
                 Button("Close") { dismiss() }
                 Button(framingScenes.contains(where: { $0.centerStagePathJSON != nil })
                        ? "Refresh Center Stage" : "Create Center Stage") {
-                    guard let video = videos.first else { return }
+                    guard let video = panelVideo else { return }
                     let camera = framingCamera
                     let tagPeople = framingTagPeople
                     Task {
@@ -1024,6 +1024,10 @@ private struct VideoNotesPanel: View {
     @State private var suggestionDraft: CGRect?
     @State private var focusPortraits: [Data] = []
     @State private var avoidPortraits: [Data] = []
+    /// The video the panel last loaded; roster checks reset only when the
+    /// panel switches away from it, never on first load (which would wipe
+    /// people restored from a saved request or prompt).
+    @State private var loadedVideoID: VideoRecord.ID?
 
     private var video: VideoRecord {
         videos[min(selectedIndex, videos.count - 1)]
@@ -1470,6 +1474,10 @@ private struct VideoNotesPanel: View {
         .padding()
         .onChange(of: trimJob?.result, initial: true) { applyTrimSuggestion() }
         .task(id: video.id) {
+            if let previous = loadedVideoID, previous != video.id {
+                selectedPeopleKeys = []
+            }
+            loadedVideoID = video.id
             if let timeObserver, let player {
                 player.removeTimeObserver(timeObserver)
                 self.timeObserver = nil
@@ -1490,7 +1498,6 @@ private struct VideoNotesPanel: View {
             notes = await store.videoNotes(for: video.id)
             markers = await store.personMarkers(for: video.id)
             videoPeople = await store.videoPeople(for: video.id)
-            selectedPeopleKeys = []
             framingHints = await store.centerStageHints(for: video.id)
             await reloadFramingPortraits()
         }

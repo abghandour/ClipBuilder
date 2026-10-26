@@ -4052,7 +4052,8 @@ actor WizardEngine {
            let track = music.first(where: { $0.name == musicName }) {
             emit("Adding music (\(musicName))...")
             try await WizardTiming.measure("music", emit: emit) {
-                try await render.overlayMusic(video: assembled, music: track.url, output: outputURL)
+                try await render.overlayMusic(video: assembled, music: track.url, output: outputURL,
+                                              volume: plan.musicVolume)
             }
         } else {
             try FileManager.default.copyItemReplacing(at: assembled, to: outputURL)

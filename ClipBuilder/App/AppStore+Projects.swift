@@ -50,6 +50,7 @@ extension AppStore {
         // runs keep their generation and still deliver their follow-ups.
         isLoadingProject = true
         defer { isLoadingProject = false }
+        let generation = profileGeneration
         timelineViewStates = [:]
         activeProjectID = id
         isShowingProjectsHome = false
@@ -71,9 +72,13 @@ extension AppStore {
         do {
             try await database.touchProject(id: id)
             let snapshot = try await database.fetchLibrarySnapshot(projectID: id)
-            timelines = try await database.fetchTimelines(projectID: id)
-            projects = try await database.fetchProjects()
-            applyLibrarySnapshot(snapshot, generation: profileGeneration)
+            let loadedTimelines = try await database.fetchTimelines(projectID: id)
+            let loadedProjects = try await database.fetchProjects()
+            // A profile switch or another project load meanwhile owns the lists now.
+            guard generation == profileGeneration, activeProjectID == id else { return }
+            timelines = loadedTimelines
+            projects = loadedProjects
+            applyLibrarySnapshot(snapshot, generation: generation)
             let state = projectState(for: activeProject)
             if SidebarSection(rawValue: state.section) == .wizardMini {
                 wizardMode = .express
@@ -388,7 +393,8 @@ extension AppStore {
                 profiles[index] = activeProfile
             }
             ProfileStore.ensureFolders(for: activeProfile)
-            watcher?.watch(activeProfile.sourceFolderURL)
+            watcher?.watch(activeProfile.sourceFolderURL, recursive: true,
+                           ignoring: [activeProfile.outputFolderURL])
             return syncTask
         } catch {
             presentError("Could not save the profile", error)

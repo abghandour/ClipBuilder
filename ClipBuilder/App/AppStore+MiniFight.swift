@@ -137,7 +137,14 @@ extension AppStore {
         let generation = profileGeneration
         beginWizardSelectionWork(projectID: run.projectID, stage: "Saving fight picks", options: run.options)
         wizardTask = Task {
-            defer { finishWizardSelectionWork(generation: generation) }
+            var saved = false
+            // `then` runs after the busy flag clears, as Q&A and Transcript do:
+            // Generate refuses to start while selection work is running.
+            defer {
+                finishWizardSelectionWork(generation: generation)
+                if saved, !Task.isCancelled, generation == profileGeneration,
+                   activeProjectID == run.projectID, miniRun?.batchID == run.batchID { then() }
+            }
             do {
                 _ = try? await fightPickSaveTask?.value
                 try Task.checkCancellation()
@@ -151,7 +158,7 @@ extension AppStore {
                 miniRun?.candidates = candidates
                 miniRun?.selectedSelectionID = candidates.first?.id
                 miniRun?.requestedCard = candidates.isEmpty ? .footage : .settings
-                if !candidates.isEmpty { then() }
+                saved = !candidates.isEmpty
                 appendLog(\.wizardLog, ["Express: saved \(candidates.count) fight picks as selections."])
                 // The picks' scenes are new library rows.
                 await refreshAllNow()

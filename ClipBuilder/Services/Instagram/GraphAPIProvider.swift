@@ -301,6 +301,9 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
                              igUserID: account.id, followers: account.followers)
     }
 
+    /// Pages of /media scanned for videos before giving up.
+    static let reelPageLimit = 5
+
     func fetchReels(username: String, limit: Int,
                     log: @escaping @Sendable (String) -> Void) async throws -> [IGMediaItem] {
         let userID: String
@@ -310,13 +313,26 @@ nonisolated struct GraphAPIProvider: InstagramProvider {
             userID = try await resolveAccount(matching: username).id
         }
         log("Fetching @\(username) via the Graph API...")
-        let object = try await getJSON("\(userID)/media", query: [
+        var object = try await getJSON("\(userID)/media", query: [
             "fields": "id,caption,media_type,media_product_type,media_url,thumbnail_url,"
                 + "permalink,timestamp,like_count,comments_count",
             "limit": String(limit),
         ])
-        let entries = (object["data"] as? [[String: Any]] ?? [])
-            .filter { $0["media_type"] as? String == "VIDEO" }
+        // /media mixes photos and carousels with videos; keep paging until
+        // enough videos turn up so a run of photo posts doesn't fail the fetch.
+        var entries: [[String: Any]] = []
+        var pages = 0
+        while true {
+            pages += 1
+            entries += (object["data"] as? [[String: Any]] ?? [])
+                .filter { $0["media_type"] as? String == "VIDEO" }
+            guard entries.count < limit, pages < Self.reelPageLimit,
+                  let next = (object["paging"] as? [String: Any])?["next"] as? String,
+                  let url = URL(string: next) else { break }
+            try Task.checkCancellation()
+            object = try await getJSON(url: url, label: "\(userID)/media (page \(pages + 1))")
+        }
+        if limit > 0, entries.count > limit { entries = Array(entries.prefix(limit)) }
         guard !entries.isEmpty else {
             throw InstagramError.fetchFailed("No videos found on @\(username) via the Graph API")
         }
@@ -769,8 +785,19 @@ extension GraphAPIProvider {
             for node in object["data"] as? [[String: Any]] ?? [] {
                 guard let comment = Self.comment(from: node, parentID: nil) else { continue }
                 comments.append(comment)
-                for reply in ((node["replies"] as? [String: Any])?["data"] as? [[String: Any]]) ?? [] {
-                    if let record = Self.comment(from: reply, parentID: comment.id) { comments.append(record) }
+                // The inline replies{} expansion returns only the first page.
+                var replies = node["replies"] as? [String: Any]
+                var replyPages = 0
+                while let page = replies {
+                    replyPages += 1
+                    for reply in page["data"] as? [[String: Any]] ?? [] {
+                        if let record = Self.comment(from: reply, parentID: comment.id) { comments.append(record) }
+                    }
+                    guard replyPages < 10,
+                          let next = (page["paging"] as? [String: Any])?["next"] as? String,
+                          let url = URL(string: next) else { break }
+                    try Task.checkCancellation()
+                    replies = try await getJSON(url: url, label: "\(comment.id)/replies (page \(replyPages + 1))")
                 }
             }
             guard pages < 10,

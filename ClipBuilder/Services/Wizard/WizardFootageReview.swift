@@ -118,7 +118,11 @@ nonisolated enum WizardFootageReview {
     /// best take changes, with the new value.
     static func bestTakeChanges(from kept: Set<Int64>, in selections: [WizardSelectionSummary]) -> [(selectionID: Int64, takeID: Int64?)] {
         selections.compactMap { summary in
-            let chosen = summary.takes.filter { kept.contains($0.id) }.max { $0.ordinal < $1.ordinal }?.id
+            let keptTakes = summary.takes.filter { kept.contains($0.id) }
+            // A take the user just checked replaces the current best one, even
+            // an older take; otherwise the best take stays while it is kept.
+            let newlyKept = keptTakes.filter { $0.id != summary.selection.bestTakeID }
+            let chosen = (newlyKept.isEmpty ? keptTakes : newlyKept).max { $0.ordinal < $1.ordinal }?.id
             return chosen == summary.selection.bestTakeID ? nil : (summary.id, chosen)
         }
     }

@@ -665,6 +665,54 @@ struct MultitrackRenderTests {
         #expect(warm.encodes == 0)
     }
 
+    @Test("across crossfades the final pass lands overlays on the same footage as fused overlays")
+    func finalPassOverlaysFollowCrossfadeClock() async throws {
+        let temp = try TempDatabase()
+        let (source, scene) = try await seedScene(in: temp, hash: "overlay-crossfade-clock")
+        var clips: [TimelineClip] = []
+        for index in 0..<3 {
+            var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 3, startTime: Double(index * 3))
+            clip.videoFile = source.path
+            if index > 0 { clip.transIn = "fade" }
+            clips.append(clip)
+        }
+        var document = Fixtures.timelineDocument(clips: clips)
+        document.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+        // Fused overlays ride each segment's clock, which crossfades move
+        // with the footage; the final pass must map its timeline times the
+        // same way or every overlay after a join lands an overlap late.
+        var title = TextOverlayItem(text: "Across every join", startTime: 0.495, endTime: 8.395)
+        title.transIn = "none"
+        title.transOut = "none"
+        var late = TextOverlayItem(text: "Second clip", startTime: 4.495, endTime: 5.495)
+        late.transIn = "none"
+        late.transOut = "none"
+        var last = TextOverlayItem(text: "Third clip", startTime: 7.495, endTime: 8.195)
+        last.transIn = "none"
+        last.transOut = "none"
+        document.textOverlays = [title, late, last]
+        var outputs: [URL] = []
+        defer { for url in outputs { try? FileManager.default.removeItem(at: url) } }
+        let fused = try await renderCounting(MultitrackRenderer(render: RenderEngine(),
+            segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("fused"))),
+            document: document, scene: scene, database: temp.database)
+        outputs.append(fused.result.url)
+        let finalPass = try await renderCounting(MultitrackRenderer(render: RenderEngine(),
+            segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("final")),
+            overlayFusionEnabled: false), document: document, scene: scene, database: temp.database)
+        outputs.append(finalPass.result.url)
+        #expect(fused.lines.contains("Spanning overlays fused into segments: 3"))
+        #expect(finalPass.lines.filter { $0.hasPrefix("Burning 3 overlay") }.count == 1)
+        #expect(finalPass.lines.contains { $0.hasPrefix("Transitions shortened the timeline by") })
+        // The re-encoded final pass carries its own frame timestamps over the
+        // crossfaded assembly, so compare pixels frame by frame. An overlay
+        // left on the timeline clock measured a minimum SSIM of 0.9939 here;
+        // mapped, every frame stays above 0.9995.
+        let comparison = try await Self.compareDecoded(fused.result.url, finalPass.result.url, trailingFramesAllowed: 1)
+        #expect(comparison.minimumSSIM >= 0.998, Comment(rawValue: "minimum per-frame SSIM \(comparison.minimumSSIM)"))
+        #expect(abs(fused.result.duration - finalPass.result.duration) < 0.05)
+    }
+
     @Test("regression: wide masked clip and delayed faded text render successfully")
     func maskedWideClipAndDelayedText() async throws {
         let temp = try TempDatabase()

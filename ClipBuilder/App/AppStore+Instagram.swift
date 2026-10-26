@@ -329,11 +329,15 @@ extension AppStore {
             || settings.instagram.connection(for: username) != nil
         let kind = isOwn ? "own" : "public"
         guard let database else { return }
+        let generation = profileGeneration
         Task {
             do {
                 let id = try await database.upsertIGAccount(username: username, kind: kind,
                                                             displayName: nil, igUserID: nil, followers: nil)
-                igAccounts = try await database.fetchIGAccounts()
+                let accounts = try await database.fetchIGAccounts()
+                // Account ids collide across profiles: never show another profile's list.
+                guard generation == profileGeneration else { return }
+                igAccounts = accounts
                 igSelectedAccountID = id
                 igMedia = []
                 refreshInstagram(username: username)
@@ -345,9 +349,12 @@ extension AppStore {
 
     func removeInstagramAccount(_ account: IGAccountRecord) {
         guard let database else { return }
+        let generation = profileGeneration
         Task {
             try? await database.deleteIGAccount(id: account.id)
-            igAccounts = (try? await database.fetchIGAccounts()) ?? []
+            let accounts = (try? await database.fetchIGAccounts()) ?? []
+            guard generation == profileGeneration else { return }
+            igAccounts = accounts
             if igSelectedAccountID == account.id {
                 igSelectedAccountID = igAccounts.first?.id
                 igReport = nil
@@ -416,13 +423,17 @@ extension AppStore {
         let account = igAccounts.first { $0.username.caseInsensitiveCompare(username) == .orderedSame }
         let kind = account?.kind ?? "public"
         let instagram = instagram
+        let generation = profileGeneration
         igFetchTask = Task {
             do {
                 try await autoImportPeaceGrapplerIfNeeded(username: username, database: database)
                 try await instagram.refreshAccount(username: username, kind: kind,
                                                    database: database, settings: settings,
                                                    limit: settings.fetchLimit, log: igLogSink())
-                igAccounts = try await database.fetchIGAccounts()
+                let accounts = try await database.fetchIGAccounts()
+                // The profile changed while this ran: its lists are not ours to set.
+                guard generation == profileGeneration else { throw CancellationError() }
+                igAccounts = accounts
                 try await reloadIGMedia()
                 await reloadIGReport()
                 await reloadIGBenchmarks()

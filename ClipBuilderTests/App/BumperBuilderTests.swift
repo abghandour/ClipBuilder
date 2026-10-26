@@ -423,6 +423,29 @@ struct BumperBuilderTests {
         #expect(original.videoTrack.map(\.duration).reduce(0, +) == document.videoTrack.map(\.duration).reduce(0, +))
     }
 
+    @Test("a gap moves dubbed speech with its footage and continues the split clip's camera path")
+    func insertGapMovesDubsAndCameraPath() throws {
+        var clip = Fixtures.timelineClip(duration: 10)
+        clip.cameraPath = [CameraPathKeyframe(t: 0, x: 0, y: 0, w: 0.5, h: 1),
+                           CameraPathKeyframe(t: 10, x: 0.5, y: 0, w: 0.5, h: 1)]
+        var document = Fixtures.timelineDocument(clips: [clip])
+        let line = DubLine(clipUID: clip.uid, speakerKey: "ana", voice: "v", text: "Later",
+                           sourceStart: 6, sourceEnd: 7, start: 6, duration: 1)
+        let early = DubLine(clipUID: clip.uid, speakerKey: "ana", voice: "v", text: "Early",
+                            sourceStart: 1, sourceEnd: 2, start: 1, duration: 1)
+        document.dubLines = [early, line]
+        BumperPlanner.insertGap(in: &document, at: 4, duration: 2)
+        let tail = try #require(document.videoTrack.first { $0.startTime == 6 })
+        let lines = try #require(document.dubLines)
+        #expect(lines.map(\.start) == [1, 8])
+        #expect(lines[0].clipUID == clip.uid && lines[1].clipUID == tail.uid)
+        let path = try #require(tail.cameraPath)
+        #expect(path.first?.t == 0 && abs((path.first?.x ?? 0) - 0.2) < 0.0001)
+        #expect(path.last?.t == 6 && abs((path.last?.x ?? 0) - 0.5) < 0.0001)
+        BumperPlanner.removeGap(in: &document, at: 4, duration: 2)
+        #expect(document.dubLines?.map(\.start) == [1, 6])
+    }
+
     @Test("fast preview chooses bumper above other tracks and maps speed")
     func fastPreview() throws {
         let scope = try DataFolderOverride()

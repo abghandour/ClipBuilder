@@ -310,6 +310,15 @@ extension TranscriptQATrimTests {
         #expect(transcript.lines[0].start == 0 && transcript.lines[0].end == 1.6)
         #expect(transcript.lines[1].start == 2.0 && transcript.lines[1].end == 6)
         #expect(transcript.words.map(\.id) == Array(0..<transcript.words.count))
+        // Another recording's turns never split this one's lines.
+        let foreign = spans.map { span -> TranscriptQATrim.SpeakerSpan in
+            var copy = span
+            copy.videoID = 2
+            return copy
+        }
+        let scoped = TranscriptQATrim.Transcript(.init(rows: [crossing], labels: [1: "Marcello"], videoID: 1,
+                                                       speakerSpans: foreign))
+        #expect(scoped.lines.map(\.speaker) == ["Marcello"])
         // A row the user attributed by hand keeps its one label.
         var attributed = crossing
         attributed.speaker = .person(key: "marcello")

@@ -289,16 +289,18 @@ struct ProposedCutsEditor: View {
 
     private func approvedPlan() -> WizardPlan {
         var approved = plan
-        approved.clips = plan.clips.enumerated().compactMap { index, clip in
+        let kept: [(index: Int, clip: WizardPlanClip)] = plan.clips.enumerated().compactMap { index, clip in
             guard !rejected.contains(index), let scene = sceneMap[clip.sceneID] else { return nil }
             var clip = clip
             clip.start = min(scene.endTime, max(scene.startTime, clip.start))
             clip.end = min(scene.endTime, max(clip.start + 0.5, clip.end))
-            return clip.end > clip.start ? clip : nil
+            return clip.end > clip.start ? (index, clip) : nil
         }
-        approved.transitions = Array(plan.transitions.prefix(max(0, approved.clips.count - 1)))
-        while approved.transitions.count < max(0, approved.clips.count - 1) {
-            approved.transitions.append("cut")
+        approved.clips = kept.map(\.clip)
+        // A transition stays with the two clips it joined; where a dropped
+        // clip sat between two survivors, they meet with a cut.
+        approved.transitions = zip(kept, kept.dropFirst()).map { previous, next in
+            next.index == previous.index + 1 ? (plan.transitions[safe: previous.index] ?? "cut") : "cut"
         }
         return approved
     }

@@ -61,6 +61,31 @@ struct ReportBuilderTests {
         #expect(activity.first?.total == 2)
     }
 
+    @Test("Content published Yesterday is the previous UTC calendar day, not the last 24 hours")
+    func publishedYesterdayIsACalendarDay() throws {
+        // 2026-10-25 09:00 UTC.
+        let now = Date(timeIntervalSince1970: 1_792_918_800)
+        let calendar = ReportPeriod.utcCalendar
+        let startOfToday = calendar.startOfDay(for: now)
+        func row(_ id: Int64, _ posted: Date) -> IGReportMediaRow {
+            IGReportMediaRow(id: id, accountID: 1, mediaID: "\(id)", shortcode: "s\(id)", mediaType: "VIDEO",
+                             productType: "REELS", caption: "", captionTruncated: false, permalink: nil,
+                             postedAt: posted, likeCount: nil, commentsCount: nil, thumbnailURL: nil,
+                             thumbnailPath: nil, source: "graph")
+        }
+        var inputs = IGReportInputs(account: IGAccountRecord(id: 1, username: "own", kind: "own"))
+        inputs.media = [
+            row(1, now.addingTimeInterval(-3600)),                  // today
+            row(5, now.addingTimeInterval(-7200)),                  // today
+            row(2, startOfToday.addingTimeInterval(-3600)),         // yesterday 23:00
+            row(3, startOfToday.addingTimeInterval(-23 * 3600)),    // yesterday 01:00
+            row(4, startOfToday.addingTimeInterval(-25 * 3600)),    // two days ago
+        ]
+        let report = InstagramReportBuilder.build(inputs, period: .last30, now: now)
+        let yesterday = try #require(report.overview.contentPublished.first { $0.label == "Yesterday" })
+        #expect(yesterday.total == 2)
+    }
+
     private func fixture(_ name: String, extension ext: String) throws -> String {
         let url = try #require(Bundle(for: BundleToken.self).url(forResource: name, withExtension: ext))
         return try String(contentsOf: url, encoding: .utf8)

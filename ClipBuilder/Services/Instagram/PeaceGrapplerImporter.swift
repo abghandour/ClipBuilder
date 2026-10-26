@@ -422,7 +422,11 @@ nonisolated enum ReportHTML {
         guard let text else { return nil }
         let cleaned = text.replacingOccurrences(of: ",", with: "").replacingOccurrences(of: "+", with: "")
             .trimmingCharacters(in: .whitespacesAndNewlines)
-        return Int(cleaned) ?? Double(cleaned).map { Int($0) }
+        if let exact = Int(cleaned) { return exact }
+        // Int(Double) traps on nan, infinity, and values outside Int's range.
+        guard let value = Double(cleaned), value.isFinite,
+              value >= -9.2e18, value <= 9.2e18 else { return nil }
+        return Int(value)
     }
 
     static func json(_ literal: String?) -> Any? {

@@ -52,6 +52,17 @@ struct PreviewWindowTests {
         #expect(window.videoTrack[0].duration == 2)
     }
 
+    @Test("a window into a moving-camera clip continues its camera path")
+    func cameraPathFollowsTheWindow() throws {
+        var clip = Fixtures.timelineClip(sceneID: nil, sourceStart: 10, duration: 10, startTime: 0)
+        clip.cameraPath = [CameraPathKeyframe(t: 0, x: 0, y: 0, w: 0.5, h: 1),
+                           CameraPathKeyframe(t: 10, x: 0.5, y: 0, w: 0.5, h: 1)]
+        let window = MultitrackRenderer.windowed(Fixtures.timelineDocument(clips: [clip]), from: 5, to: 9)
+        let path = try #require(window.videoTrack.first?.cameraPath)
+        #expect(path.first?.t == 0 && abs((path.first?.x ?? 0) - 0.25) < 0.0001)
+        #expect(path.last?.t == 4)
+    }
+
     @Test("bumpers keep the overlapping part of their span")
     func bumpers() {
         var bumper = Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 2, startTime: 5)

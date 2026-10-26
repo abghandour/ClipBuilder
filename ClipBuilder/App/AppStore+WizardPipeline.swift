@@ -129,7 +129,10 @@ extension AppStore {
                             _ = try await transcription.transcribeForVideo(video: video, database: database,
                                                                    languageCode: language, log: relay)
                         } catch {
+                            // Not marked done: Resume transcribes it again.
+                            if Task.isCancelled || error is CancellationError { break }
                             log("\(video.filename): transcription failed — \(error.userMessage)")
+                            continue
                         }
                     } else {
                         log("\(video.filename): transcript already exists")

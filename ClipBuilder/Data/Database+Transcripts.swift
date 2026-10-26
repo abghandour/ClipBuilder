@@ -605,9 +605,16 @@ extension Database {
     }
 
     func moveBumperMetadata(from source: URL, to destination: URL) throws {
+        try moveAssetMetadata(kind: .bumpers, from: source, to: destination)
+    }
+
+    /// Re-key library metadata (B-roll flag, subjects, tags, bumper names)
+    /// after a file or folder in a library moves or is renamed. A folder move
+    /// carries every row under its subtree.
+    func moveAssetMetadata(kind: AssetKind, from source: URL, to destination: URL) throws {
         guard source != destination else { return }
         let old = source.path
-        for var row in try fetchAssetMetadata(kind: AssetKind.bumpers.rawValue)
+        for var row in try fetchAssetMetadata(kind: kind.rawValue)
         where row.path == old || row.path.hasPrefix(old + "/") {
             let previous = row.path
             row.path = destination.path + String(previous.dropFirst(old.count))

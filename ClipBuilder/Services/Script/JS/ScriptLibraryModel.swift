@@ -183,7 +183,18 @@ final class ScriptLibraryModel {
     func save() async throws -> BuilderScriptRecord {
         _ = try ScriptHeader.parse(source)
         guard let database else { throw ScriptError.invalid("Profile database is unavailable.") }
-        let record = try await database.saveBuilderScript(source: source, id: editingID ?? UUID(), origin: origin)
+        // Claim the id before the first await: a second Save while this one
+        // writes must update the same script, not create a copy.
+        let previous = editingID
+        let id = previous ?? UUID()
+        editingID = id
+        let record: BuilderScriptRecord
+        do {
+            record = try await database.saveBuilderScript(source: source, id: id, origin: origin)
+        } catch {
+            if editingID == id { editingID = previous }
+            throw error
+        }
         editingID = record.id; selectedID = record.id
         await refresh()
         message = "Saved."

@@ -282,6 +282,18 @@ extension Database {
         }
     }
 
+    /// Set only the overall verdict (a thumbs tap): a detailed review's
+    /// dimensions, note and clip verdicts stay as they are.
+    func saveReviewVerdict(generatedVideoID: Int64, verdict: Int) throws {
+        try connection.execute("""
+            INSERT INTO generation_reviews (generated_video_id, verdict, dimensions_json, note)
+            VALUES (?, ?, '{}', '')
+            ON CONFLICT(generated_video_id) DO UPDATE SET
+                verdict=excluded.verdict,
+                created_at=datetime('now')
+            """, [.integer(generatedVideoID), .integer(Int64(verdict))])
+    }
+
     func fetchReview(generatedVideoID: Int64) throws -> (review: GenerationReview, clips: [ClipReview])? {
         guard let row = try connection.query(
             "SELECT * FROM generation_reviews WHERE generated_video_id = ?",

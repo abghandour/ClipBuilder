@@ -23,6 +23,8 @@ nonisolated enum PodcastHighlightRenderKey {
         var id: Int64; var videoID: Int64; var videoPath: String; var startTime: Double; var endTime: Double
         var tags: [String]; var score: Double?; var narrative: String?; var excluded: Bool; var ignored: Bool
         var cropXFrac: Double?; var freeCropsJSON: String?; var centerStagePathJSON: String?; var wide: Bool
+        /// B-roll from another recording: that file's bytes, so a replaced file re-renders.
+        var fileFingerprint: String?
     }
     private struct Member: Encodable {
         var key: String; var name: String; var portraitAt: Double; var portraitBox: VideoPersonRecord.PortraitBox?
@@ -55,6 +57,11 @@ nonisolated enum PodcastHighlightRenderKey {
                      sourceFingerprint: String? = nil) async throws -> String {
         let video = request.video
         let fingerprint = try sourceFingerprint ?? SourceIdentityCache.shared.fingerprint(of: video.url)
+        var otherFiles: [String: String] = [:]
+        for scene in request.scenes where scene.videoID != video.id && otherFiles[scene.videoPath] == nil {
+            otherFiles[scene.videoPath] = (try? SourceIdentityCache.shared.fingerprint(
+                of: URL(fileURLWithPath: scene.videoPath))) ?? ""
+        }
         let style = profile.tagStyle(id: request.options.nameTagStyleID)
         let images = style.images.map { image in
             let path = (image.path as NSString).expandingTildeInPath
@@ -76,7 +83,8 @@ nonisolated enum PodcastHighlightRenderKey {
             scenes: request.scenes.sorted { $0.id < $1.id }.map {
                 Scene(id: $0.id, videoID: $0.videoID, videoPath: $0.videoPath, startTime: $0.startTime, endTime: $0.endTime,
                       tags: $0.tags.sorted(), score: $0.score, narrative: $0.narrative, excluded: $0.excluded, ignored: $0.ignored,
-                      cropXFrac: $0.cropXFrac, freeCropsJSON: $0.freeCropsJSON, centerStagePathJSON: $0.centerStagePathJSON, wide: $0.wide)
+                      cropXFrac: $0.cropXFrac, freeCropsJSON: $0.freeCropsJSON, centerStagePathJSON: $0.centerStagePathJSON, wide: $0.wide,
+                      fileFingerprint: otherFiles[$0.videoPath])
             },
             segments: request.segments,
             turns: request.turns,

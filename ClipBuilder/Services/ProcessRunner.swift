@@ -275,8 +275,13 @@ nonisolated enum ProcessRunner {
         process.arguments = ["-lc", "printf %s \"$PATH\""]
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        // Never a Pipe nobody drains: chatty dotfiles would fill it and block.
+        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
         guard (try? process.run()) != nil else { return nil }
+        // A dotfile that waits on something (a prompt, a network mount)
+        // must not hang the caller: give up after 10 seconds.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10) { ProcessRunner.terminate(process) }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0,
@@ -364,8 +369,13 @@ nonisolated enum ProcessRunner {
         process.arguments = ["-lc", "command -v \(tool)"]
         let pipe = Pipe()
         process.standardOutput = pipe
-        process.standardError = Pipe()
+        // Never a Pipe nobody drains: chatty dotfiles would fill it and block.
+        process.standardError = FileHandle.nullDevice
+        process.standardInput = FileHandle.nullDevice
         guard (try? process.run()) != nil else { return nil }
+        // A dotfile that waits on something (a prompt, a network mount)
+        // must not hang the caller: give up after 10 seconds.
+        DispatchQueue.global().asyncAfter(deadline: .now() + 10) { ProcessRunner.terminate(process) }
         let data = pipe.fileHandleForReading.readDataToEndOfFile()
         process.waitUntilExit()
         guard process.terminationStatus == 0,

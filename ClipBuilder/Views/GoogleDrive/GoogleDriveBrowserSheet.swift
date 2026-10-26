@@ -395,6 +395,8 @@ struct GoogleDriveBrowserSheet: View {
     private func open(_ folder: DriveFile) {
         breadcrumbs.append(folder)
         selection = []
+        // A search lists matches from anywhere; opening a folder browses it.
+        search = ""
         reload()
     }
     private func reload() { Task { await load() } }
@@ -407,8 +409,15 @@ struct GoogleDriveBrowserSheet: View {
         defer { if requestID == token { loading = false } }
         do {
             if isUpload && !uploadFolderLoaded {
-                breadcrumbs = [try await store.googleDrive.uploadFolder(profile: profile, project: projectName)]
+                // Once per sheet, success or not: a remembered folder that was
+                // deleted or unshared must not fail every later load.
                 uploadFolderLoaded = true
+                let before = breadcrumbs.map(\.id)
+                let start = await initialUploadFolder(client: client)
+                // The user may have opened a folder while this resolved.
+                if requestID == token, breadcrumbs.map(\.id) == before, let start {
+                    breadcrumbs = [start]
+                }
             }
             if location == "Shared drives", breadcrumbs.isEmpty {
                 let page = try await client.sharedDrives(pageToken: append ? nextPage : nil)
@@ -433,6 +442,20 @@ struct GoogleDriveBrowserSheet: View {
             offline = error as? GoogleDriveError == .offline
             self.error = GoogleDriveError.message(for: error)
             await store.googleDrive.refreshState(profile: profile)
+        }
+    }
+    /// The remembered upload folder, else the default
+    /// Clip Builder › <profile> › <project>, else nil (My Drive's root).
+    private func initialUploadFolder(client: GoogleDriveClient) async -> DriveFile? {
+        if let remembered = try? await store.googleDrive.uploadFolder(profile: profile, project: projectName) {
+            return remembered
+        }
+        do {
+            let root = try await client.findOrCreateFolder(name: "Clip Builder", parent: "root")
+            let brand = try await client.findOrCreateFolder(name: profile, parent: root.id)
+            return try await client.findOrCreateFolder(name: projectName, parent: brand.id)
+        } catch {
+            return nil
         }
     }
     private func createFolder() async {

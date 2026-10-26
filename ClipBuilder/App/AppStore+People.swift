@@ -465,9 +465,12 @@ extension AppStore {
             let profile = activeProfile.profileName
             Task {
                 do {
-                    _ = try await googleDrive.fetch(video.driveMedia, profile: profile)
+                    let local = try await googleDrive.fetch(video.driveMedia, profile: profile)
                     guard generation == profileGeneration else { return }
-                    renameVideo(video, to: rawName, provenance: provenance)
+                    // Retry with the downloaded file: the record passed in still has no path.
+                    var fetched = video
+                    fetched.path = local.path
+                    renameVideo(fetched, to: rawName, provenance: provenance)
                 } catch { presentError("Could not fetch the video to rename", error) }
             }
             return
@@ -491,10 +494,13 @@ extension AppStore {
             presentError("Could not rename the video", error)
             return
         }
+        // Timelines naming the file by path (whole-file clips) follow it.
+        builder.relinkVideoFile(from: video.url.path, to: destination.path)
         Task {
             do {
                 try await database.renameVideo(id: video.id, filename: name, path: destination.path,
                                                provenance: provenance)
+                try await database.relinkTimelineVideoFile(from: video.url.path, to: destination.path)
                 await renameAnalysisBatches(for: video, newFilename: name)
                 await refreshAllNow()
             } catch {

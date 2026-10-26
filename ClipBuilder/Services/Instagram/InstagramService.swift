@@ -264,16 +264,25 @@ actor InstagramService {
     /// snapshot, insight, and comment; refresh/import paths pass
     /// `reuse: false` to pick up their writes.
     private var reportInputsCache: [Int64: IGReportInputs] = [:]
+    /// Bumped on every invalidation. A read that was in flight across an
+    /// invalidation (the actor re-enters at the database await) must not
+    /// write its result back: account ids collide across profiles, so it
+    /// would serve the previous profile's rows to the new one.
+    private var reportInputsEpoch = 0
 
     private func reportInputs(account: IGAccountRecord, database: Database,
                               reuse: Bool) async throws -> IGReportInputs {
         if reuse, let cached = reportInputsCache[account.id] { return cached }
+        let epoch = reportInputsEpoch
         let inputs = try await database.fetchIGReportInputs(account: account)
-        reportInputsCache[account.id] = inputs
+        if epoch == reportInputsEpoch {
+            reportInputsCache[account.id] = inputs
+        }
         return inputs
     }
 
     func invalidateReportInputs() {
+        reportInputsEpoch += 1
         reportInputsCache = [:]
     }
 

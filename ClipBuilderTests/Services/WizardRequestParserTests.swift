@@ -35,6 +35,14 @@ struct WizardRequestParserTests {
         #expect(!WizardRequestParser.parse("quick recap, punchy, dark mood", tags: [], templates: []).confident)
         #expect(WizardRequestParser.parse("fight footage only", tags: ["fight", "fight-footage"], templates: []).request.contentTags == ["fight", "fight-footage"])
     }
+    @Test(arguments: ["15 seconds, no subtitles", "without subtitles", "sem legendas"])
+    func negatedSubtitlesTurnCaptionsOff(_ text: String) {
+        #expect(WizardRequestParser.parse(text, tags: [], templates: []).request.addCaptions == false)
+    }
+    @Test func hugeDurationDoesNotOverflow() {
+        #expect(WizardRequestParser.parse("9223372036854775807 minutes", tags: [], templates: []).request.targetDurationSeconds == 180)
+        #expect(WizardRequestParser.parse("999999999999999999 minutes", tags: [], templates: []).request.targetDurationSeconds == 180)
+    }
 }
 
 extension WizardRequestParserTests {

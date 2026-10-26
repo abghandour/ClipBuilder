@@ -189,10 +189,8 @@ nonisolated enum ReelModelEvaluator {
         baseline = Double(baselineAgreed) / Double(test.count)
         passed = (metrics["agreement"] ?? 0) > baseline
       } else {
-        let top = test.indices.sorted {
-          (predictions[$0]["keep"] ?? 0) > (predictions[$1]["keep"] ?? 0)
-        }.prefix(10)
-        let precision = Double(top.filter { truth[$0] }.count) / Double(top.count)
+        let precision = topPrecision(scores: predictions.map { $0["keep"] ?? 0 }, truth: truth)
+        // Key kept for stored reports and onDeviceAgreement; k is topK(holdout:).
         metrics["topTenPrecision"] = precision
         baseline = Double(truth.filter { $0 }.count) / Double(truth.count)
         passed = precision > baseline
@@ -213,6 +211,21 @@ nonisolated enum ReelModelEvaluator {
       localEvaluation: true)
     try store.save(report)
     return report
+  }
+
+  /// How many top-scored holdout rows the taste precision looks at: a
+  /// quarter of the holdout, at most ten. Taking ten of a holdout of ten or
+  /// fewer would be the whole holdout, whose precision always equals the
+  /// base rate, so the model could never beat the baseline.
+  static func topK(holdout: Int) -> Int {
+    min(10, max(1, holdout / 4))
+  }
+
+  /// Precision of the `topK` highest-scored rows.
+  static func topPrecision(scores: [Double], truth: [Bool]) -> Double {
+    guard scores.count == truth.count, !scores.isEmpty else { return 0 }
+    let top = scores.indices.sorted { scores[$0] > scores[$1] }.prefix(topK(holdout: scores.count))
+    return Double(top.filter { truth[$0] }.count) / Double(top.count)
   }
 
   static func recordAgreement(_ report: ReelModelEvaluation, config: inout AIConfig) {

@@ -38,7 +38,7 @@ struct WizardPresetStoreTests {
         let settings: [String: JSONSetting] = [
             "formatPreset": .string("podcast"), "selectedRunIDs": .array([.number(3)]), "sourcePeople": .array([.string("a")]),
             "projectID": .number(9), "templateJSON": .string("{}"), "aiInstructions": .string("brief"),
-            "lookPreset": .string("vintage"), "musicTrack": .null,
+            "lookPreset": .string("vintage"), "musicTrack": .null, "captionStyleID": .null,
         ]
         let presets = WizardPresetStore.upsert(name: "Podcast", settings: settings, savedAt: Date(timeIntervalSince1970: 100), into: [])
         let kept = try #require(presets.first?.settings)
@@ -46,6 +46,8 @@ struct WizardPresetStoreTests {
         for field in ["selectedRunIDs", "sourcePeople", "projectID", "templateJSON", "aiInstructions", "musicTrack"] {
             #expect(kept[field] == nil, "\(field) must not be saved")
         }
+        // The default caption style is a choice: loading the preset restores it.
+        #expect(kept["captionStyleID"] == .null)
         var profile = Fixtures.brand(name: "First")
         #expect(profile.wizardPresets == nil)
         profile.wizardPresets = presets

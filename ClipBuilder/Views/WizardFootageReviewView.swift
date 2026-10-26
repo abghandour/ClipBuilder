@@ -161,7 +161,12 @@ struct WizardFootageReviewView: View {
                 guard generation == store.profileGeneration else { return }
                 loadedRows.append(contentsOf: videoRows)
                 loadedLabels.merge(videoLabels, uniquingKeysWith: { first, _ in first })
-                loadedSpans += TranscriptSpeakers.spans(turns: speakers.turns, roster: speakers.roster)
+                // Spans carry their recording: another video's turns must not split this one's lines.
+                loadedSpans += TranscriptSpeakers.spans(turns: speakers.turns, roster: speakers.roster).map {
+                    var span = $0
+                    span.videoID = id
+                    return span
+                }
             }
             rows = loadedRows
             labels = loadedLabels

@@ -234,8 +234,12 @@ extension Database {
                                        ELSE ig_report_media.caption_truncated END,
                 permalink=COALESCE(excluded.permalink, ig_report_media.permalink),
                 posted_at=COALESCE(excluded.posted_at, ig_report_media.posted_at),
-                like_count=COALESCE(excluded.like_count, ig_report_media.like_count),
-                comments_count=COALESCE(excluded.comments_count, ig_report_media.comments_count),
+                like_count=CASE WHEN ig_report_media.source = 'graph' AND excluded.source <> 'graph'
+                                THEN COALESCE(ig_report_media.like_count, excluded.like_count)
+                                ELSE COALESCE(excluded.like_count, ig_report_media.like_count) END,
+                comments_count=CASE WHEN ig_report_media.source = 'graph' AND excluded.source <> 'graph'
+                                    THEN COALESCE(ig_report_media.comments_count, excluded.comments_count)
+                                    ELSE COALESCE(excluded.comments_count, ig_report_media.comments_count) END,
                 thumbnail_url=COALESCE(excluded.thumbnail_url, ig_report_media.thumbnail_url),
                 source=CASE WHEN excluded.source = 'graph' THEN 'graph' ELSE ig_report_media.source END,
                 fetched_at=datetime('now')

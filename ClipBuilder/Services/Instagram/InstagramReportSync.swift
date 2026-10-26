@@ -102,11 +102,15 @@ nonisolated struct InstagramReportSync {
                     throw CancellationError()
                 } catch {
                     // Older posts lack some metrics; keep the public counts.
+                    // Stored as `fallbackInsightSource`, not "graph", so the
+                    // post still counts as missing insights and is retried.
                     return [
                         IGMediaInsightSnapshot(reportMediaID: rowID, metric: "likes",
-                                               value: Double(node.likeCount ?? 0), fetchedAt: fetchedAt),
+                                               value: Double(node.likeCount ?? 0), fetchedAt: fetchedAt,
+                                               source: Self.fallbackInsightSource),
                         IGMediaInsightSnapshot(reportMediaID: rowID, metric: "comments",
-                                               value: Double(node.commentsCount ?? 0), fetchedAt: fetchedAt),
+                                               value: Double(node.commentsCount ?? 0), fetchedAt: fetchedAt,
+                                               source: Self.fallbackInsightSource),
                     ]
                 }
             }
@@ -131,7 +135,7 @@ nonisolated struct InstagramReportSync {
                 do {
                     let comments = try await provider.fetchComments(mediaID: node.id)
                     let parents = Dictionary(comments.map { ($0.id, $0.timestamp) }, uniquingKeysWith: { a, _ in a })
-                    return comments.compactMap { comment -> IGCommentRecord? in
+                    let records = comments.compactMap { comment -> IGCommentRecord? in
                         guard let timestamp = comment.timestamp else { return nil }
                         let ref = comment.parentID.flatMap { parents[$0] ?? nil } ?? node.timestamp
                         return IGCommentRecord(id: comment.id, reportMediaID: rowID,
@@ -139,16 +143,21 @@ nonisolated struct InstagramReportSync {
                                                text: comment.text, likeCount: comment.likeCount,
                                                hidden: comment.hidden, timestamp: timestamp, refTimestamp: ref)
                     }
+                    return (records: records, failedPostedAt: Date?.none)
                 } catch is CancellationError {
                     throw CancellationError()
                 } catch {
                     log("Comments unavailable for \(node.shortcode ?? node.id): \(error)")
-                    return []
+                    return (records: [IGCommentRecord](), failedPostedAt: node.timestamp)
                 }
             }
-            let records = fetched.flatMap { $0 }
+            let records = fetched.flatMap(\.records)
             try await database.upsertIGComments(accountID: accountID, records)
-            try await database.setIGSyncState(accountID: accountID, key: "comments_synced_at", value: Self.iso(now))
+            if let checkpoint = Self.commentsCheckpoint(previous: commentsSyncedAt, now: now,
+                                                        failedPostDates: fetched.compactMap(\.failedPostedAt)) {
+                try await database.setIGSyncState(accountID: accountID, key: "comments_synced_at",
+                                                  value: Self.iso(checkpoint))
+            }
             log("Stored \(records.count) comments")
         }
         try Task.checkCancellation()
@@ -166,7 +175,14 @@ nonisolated struct InstagramReportSync {
             try Task.checkCancellation()
             log("IGPROGRESS:\(0.6 + 0.2 * Double(days) / Double(totalDays)):Account insights — \(Self.dayKey(day))")
             let next = Self.calendar.date(byAdding: .day, value: 1, to: day) ?? day
-            let rows = try await fetchDailyInsights(userID: igUserID, since: day, until: next, log: log)
+            let fetched = try await fetchDailyInsights(userID: igUserID, since: day, until: next, log: log)
+            guard fetched.anySucceeded else {
+                // Every request failed (rate limit, permission, network): keep
+                // the checkpoint here so the next Refresh retries this day.
+                log("Account insights unavailable for \(Self.dayKey(day)); the next Refresh retries from there")
+                break
+            }
+            let rows = fetched.values
                 .map { IGAccountInsightRow(metric: $0.metric, period: "day", dimension: $0.dimension,
                                            breakdown: $0.breakdown, value: $0.value,
                                            endTime: Self.iso(day), source: "graph") }
@@ -197,7 +213,7 @@ nonisolated struct InstagramReportSync {
         // 7. Rolling 28-day totals (Instagram de-duplicates reach across days).
         log("IGPROGRESS:0.86:Rolling 28-day totals")
         let since28 = Self.calendar.date(byAdding: .day, value: -28, to: now) ?? now
-        let rolling = try await fetchDailyInsights(userID: igUserID, since: since28, until: now, log: log)
+        let rolling = try await fetchDailyInsights(userID: igUserID, since: since28, until: now, log: log).values
         try await database.upsertIGAccountInsights(accountID: accountID, rolling.map {
             IGAccountInsightRow(metric: $0.metric, period: "days_28", dimension: $0.dimension,
                                 breakdown: $0.breakdown, value: $0.value, endTime: Self.iso(today), source: "graph")
@@ -238,13 +254,31 @@ nonisolated struct InstagramReportSync {
         log("Report data updated")
     }
 
+    /// Where the comments checkpoint goes after a pass: `now` when every
+    /// fetch succeeded, otherwise just before the oldest failed post so it is
+    /// retried (never earlier than the previous checkpoint, since posts in the
+    /// recent window are refetched anyway). nil leaves the checkpoint as is.
+    static func commentsCheckpoint(previous: Date?, now: Date, failedPostDates: [Date]) -> Date? {
+        guard let oldestFailed = failedPostDates.min() else { return now }
+        let candidate = min(now, oldestFailed.addingTimeInterval(-1))
+        if let previous, candidate <= previous { return nil }
+        return candidate
+    }
+
+    /// Source of the public-count rows stored when a post's insights request
+    /// fails. Not "graph", so fetchIGReportMediaInsightDates keeps treating
+    /// the post as missing insights and a later Refresh retries it.
+    static let fallbackInsightSource = "public"
+
     /// The four batched account-insight calls for one window; a batch that
     /// Instagram rejects as a whole is retried metric by metric so one
-    /// unsupported metric doesn't blank the day.
+    /// unsupported metric doesn't blank the day. `anySucceeded` is false when
+    /// every request failed, which is distinct from a day with no data.
     private func fetchDailyInsights(userID: String, since: Date, until: Date,
                                     log: @escaping @Sendable (String) -> Void) async throws
-        -> [IGGraphInsightValue] {
+        -> (values: [IGGraphInsightValue], anySucceeded: Bool) {
         var values: [IGGraphInsightValue] = []
+        var anySucceeded = false
         let batches: [(metrics: [String], breakdown: String?)] = [
             (Self.simpleMetrics, nil),
             (Self.productTypeMetrics, "media_product_type"),
@@ -256,6 +290,7 @@ nonisolated struct InstagramReportSync {
                 values += try await provider.fetchAccountInsights(userID: userID, metrics: batch.metrics,
                                                                   since: since, until: until,
                                                                   breakdown: batch.breakdown)
+                anySucceeded = true
             } catch is CancellationError {
                 throw CancellationError()
             } catch {
@@ -268,6 +303,7 @@ nonisolated struct InstagramReportSync {
                         values += try await provider.fetchAccountInsights(userID: userID, metrics: [metric],
                                                                           since: since, until: until,
                                                                           breakdown: batch.breakdown)
+                        anySucceeded = true
                     } catch is CancellationError {
                         throw CancellationError()
                     } catch {
@@ -276,6 +312,6 @@ nonisolated struct InstagramReportSync {
                 }
             }
         }
-        return values
+        return (values, anySucceeded)
     }
 }

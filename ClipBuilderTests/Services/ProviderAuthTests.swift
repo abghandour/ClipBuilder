@@ -108,4 +108,10 @@ struct ProviderAuthTests {
         #expect(environment["FOO"] == "bar")
         #expect(environment["PATH"]?.isEmpty == false)
     }
+
+    @Test func signInScriptAvoidsZshReadOnlyStatus() throws {
+        let script = try #require(ProviderAuth.signInScript(provider: "claude", label: "Claude", binary: nil))
+        #expect(!script.contains("status="))
+        #expect(script.contains("exit $result"))
+    }
 }

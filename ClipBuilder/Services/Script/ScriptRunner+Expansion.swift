@@ -206,7 +206,7 @@ extension ScriptRunner {
                   start + duration * speed <= ceiling + 1e-9 else {
                 throw BuilderCommandFailure.bounds("Rounded speed duration exceeds the available source or timing limits.")
             }
-            model.updateClip(item.uid) { $0.speed = speed == 1 ? nil : speed; $0.duration = duration }
+            model.updateClip(item.uid, repack: true) { $0.speed = speed == 1 ? nil : speed; $0.duration = duration }
         case .setClipFades(let reference, let a, let b):
             let item = try clip(reference)
             guard item.isCutaway else { throw BuilderCommandFailure.invalid("Clip fades require B-roll.") }

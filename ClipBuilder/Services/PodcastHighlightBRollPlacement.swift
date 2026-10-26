@@ -36,6 +36,12 @@ nonisolated enum PodcastHighlightBRollPlacement {
                 let placements = try await request(sentences: sentences, turns: turns, names: names, scenes: offered, sources: sources,
                     reactionKeys: Set(tiles.compactMap(\.personKey)), range: candidate.sourceStart...candidate.sourceEnd,
                     options: options, ai: ai, vipWindows: vipWindows ?? [], log: log)
+                // The prompt allows an empty answer: nothing offered fits the
+                // instructions, so the reel gets no B-roll rather than a guess.
+                if placements.isEmpty {
+                    log("B-roll · \(candidate.title): AI placed no B-roll; nothing fits the instructions.")
+                    return []
+                }
                 let cuts = PodcastHighlightBRollPlanner.validated(placements: placements, candidate: candidate,
                     sentences: sentences, sources: sources, turns: turns, tiles: tiles, scenes: offered, instructions: instructions, vipWindows: vipWindows)
                 if !cuts.isEmpty {

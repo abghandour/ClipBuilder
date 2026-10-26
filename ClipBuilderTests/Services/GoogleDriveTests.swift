@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 
 @testable import Clip_Builder
@@ -239,6 +240,31 @@ struct GoogleDriveTests {
         let result = try #require(try await temp.database.fetchGeneratedVideos().first)
         #expect(result.driveFileID == "uploaded")
         #expect(result.driveLink == file.webViewLink)
+    }
+
+    @Test("Re-running an upload whose media already has a Drive copy uploads nothing")
+    func uploadAlreadyCopiedIsNoOp() async throws {
+        let temp = try TempDatabase()
+        let url = temp.directory.url.appendingPathComponent("output.mp4")
+        try Data("fixture".utf8).write(to: url)
+        let id = try await temp.database.insertGeneratedVideo(
+            path: url.path, duration: 1, timelineJSON: "[]", wizardProvider: nil, wizardModel: nil)
+        // The queued job's snapshot has no file id; the database already does.
+        let snapshot = DriveMedia(kind: .output, recordID: id, path: url.path)
+        try await temp.database.setDriveCopy(
+            snapshot, file: DriveFile(id: "already", name: "output.mp4", webViewLink: "https://example.com/already"))
+        let uploads = Mutex(0)
+        let transport = FakeDriveTransport { request, _ in
+            if request.url?.path == "/token" { return (Self.token, 200, [:]) }
+            uploads.withLock { $0 += 1 }
+            return (Data(), 500, [:])
+        }
+        let client = GoogleDriveClient(auth: try auth(transport), profile: profile, transport: transport)
+        let media = DriveMediaStore(database: temp.database, client: client, inputFolder: temp.directory.url)
+        let file = try await media.upload(snapshot, folder: "folder")
+        #expect(file.id == "already")
+        #expect(uploads.withLock { $0 } == 0)
+        #expect(try await temp.database.fetchGeneratedVideos().first?.driveFileID == "already")
     }
 
     @Test("Drive errors distinguish quota, missing media, and missing scopes")

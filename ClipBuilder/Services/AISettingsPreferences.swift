@@ -224,7 +224,9 @@ import Foundation
                 defaults.set(list("sourcePeople"), forKey: "wizard.sourcePeople")
             }
             guard scopes.contains(.options) else { return }
-            if let seconds = result["targetDurationSeconds"]?.number {
+            // A pasted value outside any sane length (or not finite) must not trap Int().
+            if let seconds = result["targetDurationSeconds"]?.number, seconds.isFinite,
+               seconds > 0, seconds <= 24 * 3600 {
                 defaults.set("custom", forKey: WizardDefaults.durationModeKey)
                 defaults.set(Int(seconds), forKey: WizardDefaults.customDurationKey)
             } else {

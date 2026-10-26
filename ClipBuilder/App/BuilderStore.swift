@@ -901,6 +901,7 @@ final class BuilderTimelineModel {
         }
         scenes.append(contentsOf: changedScenes.filter { !foundIDs.contains($0.id) })
         for scene in changedScenes { scenesByID[scene.id] = scene }
+        cameraPathMemo.removeAll()
 
         let changedIDs = Set(changedByID.keys)
         if rehydrateClips,
@@ -926,6 +927,16 @@ final class BuilderTimelineModel {
         }
     }
 
+    /// A source file was renamed on disk: clips that name it by path follow
+    /// it (not an undo step; the old path no longer exists).
+    func relinkVideoFile(from oldPath: String, to newPath: String) {
+        guard document.videoTrack.contains(where: { $0.videoFile == oldPath }) else { return }
+        for index in document.videoTrack.indices where document.videoTrack[index].videoFile == oldPath {
+            document.videoTrack[index].videoFile = newPath
+        }
+        documentDidChange()
+    }
+
     /// One scene changed: refresh its cache entry and only re-hydrate when
     /// a clip on the timeline actually references it.
     func updateScene(_ scene: SceneRecord, rehydrateClips: Bool = true) {
@@ -935,6 +946,8 @@ final class BuilderTimelineModel {
             scenes.append(scene)
         }
         scenesByID[scene.id] = scene
+        // A re-tracked scene keeps its range, so the memo key would not notice.
+        cameraPathMemo.removeAll()
         if rehydrateClips, document.videoTrack.contains(where: { $0.sceneID == scene.id }) {
             hydrateClips()
         }
@@ -1394,8 +1407,11 @@ final class BuilderTimelineModel {
         var clip = TimelineClip()
         clip.videoFile = video.path
         clip.sourceStart = 0
-        clip.sourceEnd = video.duration
-        clip.duration = (video.duration * 10).rounded() / 10
+        // Rounded down, and the source end with it: a span past the file's
+        // end fails the bounds check on every later split.
+        let rounded = (video.duration * 10).rounded(.down) / 10
+        clip.duration = rounded > 0 ? rounded : video.duration
+        clip.sourceEnd = clip.duration
         clip.sceneFullDuration = clip.duration
         clip.wide = video.wide
         let targetTrack = min(max(0, track), document.trackCount - 1)
@@ -1758,7 +1774,9 @@ final class BuilderTimelineModel {
         documentDidChange()
     }
 
-    func updateClip(_ uid: UUID, _ mutate: (inout TimelineClip) -> Void) {
+    /// `repack`: the edit may change the clip's screen duration (a speed
+    /// change), so a sequential track packs again afterwards, like a trim.
+    func updateClip(_ uid: UUID, repack: Bool = false, _ mutate: (inout TimelineClip) -> Void) {
         guard let index = clipIndex(uid) else { return }
         registerUndo("Edit Clip", coalescing: "clip-\(uid)")
         let before = document.videoTrack[index]
@@ -1774,6 +1792,8 @@ final class BuilderTimelineModel {
                 document.videoTrack[bumperIndex].startTime = before.startTime
                 moveBumper(at: bumperIndex, to: after.startTime)
             }
+        } else if repack, let after = clip(uid), abs(after.duration - before.duration) > 0.001 {
+            resolveLayout(track: after.track)
         }
         documentDidChange()
     }
@@ -1963,6 +1983,8 @@ final class BuilderTimelineModel {
         let at = Self.snap(time ?? playhead)
         guard let block = document.cropBlock(at: at),
               at > block.startTime + 0.499, at < block.endTime - 0.499,
+              // Full Screen halves merge straight back: no split, no undo step.
+              !block.layout.isFullScreen,
               let index = cropBlockIndex(block.uid) else { return }
         registerUndo("Split Crop")
         var tail = block

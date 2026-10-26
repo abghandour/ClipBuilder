@@ -92,8 +92,14 @@ nonisolated enum TransitionRecipes {
             guard let head = headPiece else { throw CocoaError(.featureUnsupported) }
             _ = addInput(head)
             // Decaying jitter crop inside a 10% oversized frame — the hit lands.
-            filters.append("[0:v]scale=1188:2112,"
-                           + "crop=\(w):\(h):x='54+46*exp(-10*t)*sin(62*t)':y='96+46*exp(-9*t)*cos(47*t)'[vout]")
+            // Margins and amplitude scale with the output size.
+            let bigW = Int((Double(w) * 1.1 / 2).rounded()) * 2
+            let bigH = Int((Double(h) * 1.1 / 2).rounded()) * 2
+            let marginX = (bigW - w) / 2, marginY = (bigH - h) / 2
+            let amp = max(1, min(marginX, marginY) * 46 / 54)
+            filters.append("[0:v]scale=\(bigW):\(bigH),"
+                           + "crop=\(w):\(h):x='\(marginX)+\(amp)*exp(-10*t)*sin(62*t)'"
+                           + ":y='\(marginY)+\(amp)*exp(-9*t)*cos(47*t)'[vout]")
             filters.append("[0:a]anull[cat]")
 
         case "glitch":

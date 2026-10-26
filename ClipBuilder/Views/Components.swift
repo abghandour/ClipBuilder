@@ -180,7 +180,7 @@ struct PersonFaceAvatar: View {
     /// Reload key: person plus their avatar override, so a fresh pick
     /// re-renders in place.
     private var avatarKey: String {
-        "\(person.id)|\(person.avatarVideoID ?? -1)|\(person.avatarTime ?? -1)|\(store.personPortraitVersions[person.id, default: 0])"
+        "\(person.id)|\(person.avatarVideoID ?? -1)|\(person.avatarTime ?? -1)|\(person.avatarBoxJSON ?? "")|\(store.personPortraitVersions[person.id, default: 0])"
     }
 
     var body: some View {
@@ -483,13 +483,17 @@ struct PlayerSheet: View {
                                                       roster: speakers.roster, people: store.people)
         }
         .task(id: url) {
-            guard await DrivePlayback.prepare(url) else { return }
-            guard let asset = try? await DriveLocalAsset.make(url) else { return }
+            // Each await can outlive the view (dismissed while Drive fetches):
+            // stop before building a player or registering observers nobody
+            // will remove.
+            guard await DrivePlayback.prepare(url), !Task.isCancelled else { return }
+            guard let asset = try? await DriveLocalAsset.make(url), !Task.isCancelled else { return }
             if let track = try? await asset.loadTracks(withMediaType: .video).first,
                let (natural, transform) = try? await track.load(.naturalSize, .preferredTransform) {
                 let size = natural.applying(transform)
                 videoSize = CGSize(width: abs(size.width), height: abs(size.height))
             }
+            guard !Task.isCancelled else { return }
             let item = AVPlayerItem(asset: asset)
             if let endTime, endTime > startTime {
                 item.forwardPlaybackEndTime = CMTime(seconds: endTime, preferredTimescale: 600)
@@ -536,6 +540,7 @@ struct PlayerSheet: View {
             if let endObserver {
                 NotificationCenter.default.removeObserver(endObserver)
             }
+            endObserver = nil
         }
     }
 

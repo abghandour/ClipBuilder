@@ -57,13 +57,16 @@ nonisolated enum WizardRequestParser {
         let words = (numbers + portuguese + ["uma", "três"]).joined(separator: "|")
         consume("\\b(\\d+|" + words + ")[-\\s]*(seconds?|sec|s|minutes?|min|m|segundos?|minutos?)\\b") { match, source in
             let token = LocalTextMatcher.tokens(source.substring(with: match.range(at: 1))).joined()
-            let value = Int(token) ?? numbers.firstIndex(of: token).map { $0 + 1 } ?? portuguese.firstIndex(of: token).map { $0 + 1 } ?? 1
+            let parsed = Int(token) ?? numbers.firstIndex(of: token).map { $0 + 1 } ?? portuguese.firstIndex(of: token).map { $0 + 1 } ?? 1
+            // Capped before the minutes multiply: a huge number would overflow it.
+            let value = min(parsed, 10_000)
             let unit = source.substring(with: match.range(at: 2)).lowercased()
             request.targetDurationSeconds = min(180, max(3, value * (unit.hasPrefix("m") ? 60 : 1)))
         }
         consume(#"\b(?:no music|without music|sem m[uú]sica)\b"#) { _, _ in request.useMusic = false }
         consume(#"\b(?:music|m[uú]sica)\b"#) { _, _ in if request.useMusic == nil { request.useMusic = true } }
-        consume(#"\b(?:subtitles|closed captions|spoken captions|legendas)\b"#) { _, _ in request.addCaptions = true }
+        consume(#"\b(?:no|without|sem)\s+(?:subtitles|closed captions|spoken captions|captions|legendas)\b"#) { _, _ in request.addCaptions = false }
+        consume(#"\b(?:subtitles|closed captions|spoken captions|legendas)\b"#) { _, _ in if request.addCaptions == nil { request.addCaptions = true } }
         consume(#"\b(?:on-screen text|overlay|texto na tela)\b"#) { _, _ in request.enableTextOverlays = true }
         let normalized = LocalTextMatcher.tokens(residual)
         for template in templates {

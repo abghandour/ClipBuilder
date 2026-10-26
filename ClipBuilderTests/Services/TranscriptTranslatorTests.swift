@@ -61,8 +61,30 @@ struct TranscriptTranslatorTests {
         #expect(stub.calls().map(\.texts) == [originals.map(\.text), ["Original 1", "Original 3"], ["Original 4"]])
         let stored = try await temp.database.fetchTranscripts(videoID: id).filter(\.isTranslation)
         #expect(stored.map(\.text) == ["Answer zero", "Answer one", "Answer two", "Original 3", "Stored unanswered", "Outside cut"])
+        // A source-language fallback is never labelled as a translation.
+        #expect(stored.first { $0.text == "Original 3" }?.provider == "original")
+        #expect(stored.first { $0.text == "Answer zero" }?.provider != "original")
         #expect(stub.logs().contains { $0.contains("could not translate 2 lines") })
         #expect(try await temp.database.fetchTranscripts(videoID: id).filter { !$0.isTranslation } == originals)
+    }
+
+
+    @Test func translatingOneLineKeepsHandSetSpeakersOnTheOthers() async throws {
+        let temp = try TempDatabase()
+        let (id, originals) = try await seed(temp, count: 3)
+        try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "en",
+            isTranslation: true, segments: originals.map {
+                .init(start: $0.startTime, end: $0.endTime, text: "Old \($0.text)", words: nil)
+            }, provider: "fixture", model: nil)
+        let translated = try await temp.database.fetchTranscripts(videoID: id).filter(\.isTranslation)
+        try await temp.database.setTranscriptSpeaker(ids: [translated[0].id], speaker: .person(key: "coach"))
+        let stub = CaptionTranslationStub()
+        _ = try await TranscriptTranslator.translateBatched(videoID: id, originals: [originals[2]], target: "en",
+            ai: stub.service(), database: temp.database, onDevice: { _, _ in [:] })
+        let stored = try await temp.database.fetchTranscripts(videoID: id).filter(\.isTranslation)
+        #expect(stored.first { $0.startTime == 0 }?.speakerKey == "coach")
+        #expect(stored.first { $0.startTime == 0 }?.provider == "fixture")
+        #expect(stored.first { $0.startTime == 4 }?.text == "English Original 2")
     }
 
     @Test func completelyUnansweredChunkIsRetriedInSmallerBatches() async throws {

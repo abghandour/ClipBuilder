@@ -52,14 +52,24 @@ nonisolated enum WizardPresetStore {
         return Loaded(name: name, settings: settings)
     }
 
-    /// The preset shape of a settings dictionary: run and source fields removed.
+    /// Caption choices whose unset value is itself a choice (the profile's
+    /// default style or position): a preset keeps them as null so loading it
+    /// replaces a custom style picked since.
+    static let nullableFields: Set<String> = ["captionStyleID", "captionPosition", "speakerCaptionPositions"]
+
+    /// The preset shape of a settings dictionary: run and source fields and
+    /// other unset values removed.
     static func presetFields(_ settings: [String: JSONSetting]) -> [String: JSONSetting] {
-        settings.filter { !excludedFields.contains($0.key) && $0.value != .null }
+        settings.filter { !excludedFields.contains($0.key) && ($0.value != .null || nullableFields.contains($0.key)) }
     }
 
     static func cardTitle(loaded: Loaded?, current: [String: JSONSetting]) -> String {
-        NamedPresets.cardTitle(loadedName: loaded?.name,
-                               modified: loaded.map { presetFields($0.settings) != presetFields(current) } ?? false)
+        // Presets saved before nulls were kept simply lack those keys.
+        func compared(_ settings: [String: JSONSetting]) -> [String: JSONSetting] {
+            presetFields(settings).filter { $0.value != .null }
+        }
+        return NamedPresets.cardTitle(loadedName: loaded?.name,
+                                      modified: loaded.map { compared($0.settings) != compared(current) } ?? false)
     }
 
     /// A one-line description for the Load sheet.

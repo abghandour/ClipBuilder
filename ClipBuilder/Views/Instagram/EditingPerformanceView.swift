@@ -101,16 +101,22 @@ struct EditingPerformanceView: View {
                 ProgressView("Calculating editing performance…")
             }
         }
-        .task { await load() }
+        // A new report period or profile recomputes the insights.
+        .task(id: "\(store.profileGeneration)|\(store.igReport?.periodLabel ?? "")") { await load() }
     }
 
     private func load() async {
         guard let database = store.database else { return }
+        // Inputs belong to the profile that started the load; a switch
+        // during the await must not put profile A's results into profile B.
+        let generation = store.profileGeneration
+        let videos = store.generatedVideos
+        let people = store.people
+        let followers = store.igReport?.overview.newFollowersTotal ?? 0
         let traits = (try? await database.fetchGeneratedTraits()) ?? [:]
+        guard !Task.isCancelled, generation == store.profileGeneration else { return }
         let result = PerformanceAnalytics.build(
-            videos: store.generatedVideos, traits: traits,
-            people: store.people,
-            followersGained: store.igReport?.overview.newFollowersTotal ?? 0)
+            videos: videos, traits: traits, people: people, followersGained: followers)
         insights = result
         if store.activeProfile.useLearnedEditingDefaults { store.applyLearnedEditingDefaults(result) }
     }

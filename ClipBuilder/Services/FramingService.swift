@@ -115,6 +115,14 @@ nonisolated enum FramingService {
             guard let path,
                   let data = try? JSONEncoder().encode(path),
                   let json = String(data: data, encoding: .utf8) else {
+                // A rerun that finds nobody to frame drops the earlier path
+                // and its framed: tags, so renders letterbox as reported.
+                if scene.centerStagePathJSON != nil {
+                    try? await database.setSceneCenterStagePath(scene.id, json: nil)
+                    if tagFramedPeople {
+                        try? await database.removeSceneTags(sceneID: scene.id, withPrefix: "framed:")
+                    }
+                }
                 summary.skipped += 1
                 continue
             }

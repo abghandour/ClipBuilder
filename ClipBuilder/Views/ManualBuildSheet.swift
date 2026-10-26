@@ -14,7 +14,9 @@ struct ManualBuildSheet: View {
     @State private var playbackFetchTask: Task<Void, Never>?
     @State private var model: ManualBuildModel
     @State private var player: AVPlayer?
-    @State private var loopObserver: Any?
+    /// The periodic observer and the player that registered it; removal must
+    /// go to that same player, never to a later replacement.
+    @State private var loopObserver: (player: AVPlayer, token: Any)?
     @State private var isScrubbing = false
     @State private var scrubResumeTask: Task<Void, Never>?
     // Pause/mute for the proposal/overlay preview player — persists across
@@ -1496,17 +1498,24 @@ struct ManualBuildSheet: View {
         teardownPlayer()
         guard let scene = model.previewScene, let range = model.currentLoopRange else { return }
         playbackFetchTask = Task {
-            guard await DrivePlayback.prepare(scene.videoURL) else { return }
-            guard let asset = try? await DriveLocalAsset.make(scene.videoURL) else { return }
+            guard await DrivePlayback.prepare(scene.videoURL), !Task.isCancelled else { return }
+            guard let asset = try? await DriveLocalAsset.make(scene.videoURL),
+                  !Task.isCancelled else { return }
             let newPlayer = AVPlayer(playerItem: AVPlayerItem(asset: asset))
             newPlayer.isMuted = previewMuted
             player = newPlayer
             await newPlayer.seek(to: CMTime(seconds: range.lowerBound, preferredTimescale: 600),
                            toleranceBefore: .zero, toleranceAfter: .zero)
+            // A newer syncPlayer/teardown ran during the seek: this player is
+            // no longer ours, so don't start it or hang an observer on it.
+            guard !Task.isCancelled, self.player === newPlayer else {
+                newPlayer.pause()
+                return
+            }
             if previewPlaying { newPlayer.rate = previewRate }
             // The observer reads the CURRENT bounds each tick, so dragging the
             // trim handles immediately re-scopes the loop.
-            loopObserver = newPlayer.addPeriodicTimeObserver(
+            let token = newPlayer.addPeriodicTimeObserver(
                 forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main) { time in
                 Task { @MainActor in
                     guard let player = self.player, !self.isScrubbing,
@@ -1522,6 +1531,7 @@ struct ManualBuildSheet: View {
                     }
                 }
             }
+            loopObserver = (newPlayer, token)
         }
     }
 
@@ -1540,8 +1550,8 @@ struct ManualBuildSheet: View {
         scrubResumeTask?.cancel()
         scrubResumeTask = nil
         isScrubbing = false
-        if let loopObserver, let player {
-            player.removeTimeObserver(loopObserver)
+        if let loopObserver {
+            loopObserver.player.removeTimeObserver(loopObserver.token)
         }
         loopObserver = nil
         player?.pause()

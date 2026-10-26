@@ -88,8 +88,10 @@ struct SoundbiteReviewSheet: View {
     }
     private func save(_ picked: [SoundbiteFinder.Soundbite]) {
         isSaving = true
+        let generation = store.profileGeneration
         Task {
-            for soundbite in picked {
+            // Notes belong to this profile's video: stop if the profile changes.
+            for soundbite in picked where generation == store.profileGeneration {
                 var note = "Soundbite: “\(soundbite.quote)”"
                 if !soundbite.overlayLine.isEmpty {
                     note += " — overlay: “\(soundbite.overlayLine)”"

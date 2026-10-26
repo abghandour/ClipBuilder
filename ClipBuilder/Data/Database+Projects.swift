@@ -495,13 +495,36 @@ extension Database {
                     UNIQUE(video_id, run_id, start_time, end_time)
                 )
                 """)
+            // Every other column the old table has (descriptions, tags,
+            // provenance, curation added by earlier steps) comes along;
+            // dropping them would leave later migrations and queries
+            // pointing at columns that no longer exist.
+            let base = ["id", "video_id", "start_time", "end_time", "excluded", "ignored", "favorite",
+                        "crop_x_frac", "free_crops", "center_stage_path"]
+            var carried: [String] = []
+            for column in try connection.query("PRAGMA table_info(scenes)") {
+                guard let name = column["name"]?.stringValue, !base.contains(name), name != "run_id" else { continue }
+                let quoted = "\"" + name.replacingOccurrences(of: "\"", with: "\"\"") + "\""
+                var definition = "\(quoted) \(column["type"]?.stringValue ?? "")"
+                // ADD COLUMN accepts only constant defaults; the copied rows
+                // carry their own values either way.
+                if let value = column["dflt_value"]?.stringValue,
+                   value.first.map({ $0.isNumber || $0 == "-" || $0 == "'" }) == true
+                    || ["NULL", "TRUE", "FALSE"].contains(value.uppercased()) {
+                    definition += " DEFAULT \(value)"
+                }
+                try connection.execute("ALTER TABLE scenes_new ADD COLUMN \(definition)")
+                carried.append(quoted)
+            }
+            let extraTargets = carried.map { ", \($0)" }.joined()
+            let extraSources = carried.map { ", s.\($0)" }.joined()
             try connection.execute("""
                 INSERT INTO scenes_new (id, video_id, run_id, start_time, end_time,
                                         excluded, ignored, favorite, crop_x_frac, free_crops,
-                                        center_stage_path)
+                                        center_stage_path\(extraTargets))
                 SELECT s.id, s.video_id, r.id, s.start_time, s.end_time,
                        s.excluded, s.ignored, s.favorite, s.crop_x_frac, s.free_crops,
-                       s.center_stage_path
+                       s.center_stage_path\(extraSources)
                 FROM scenes s
                 LEFT JOIN analysis_runs r ON r.video_id = s.video_id
                 """)

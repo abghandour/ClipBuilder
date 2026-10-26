@@ -455,14 +455,9 @@ struct WizardResultsSheet: View {
         feedbackDrafts[video.id] = ""
     }
 
-    /// A thumbs tap is a review with just the overall verdict — the full
-    /// ReviewSheet loads and extends it if the user goes deeper.
+    /// A thumbs tap sets just the overall verdict — the full ReviewSheet
+    /// loads and extends it, and a detailed review keeps its details.
     private func saveQuickVerdict(_ verdict: Int, for video: GeneratedVideoRecord) {
-        store.saveReview(GenerationReview(generatedVideoID: video.id,
-                                          verdict: verdict,
-                                          dimensions: [:],
-                                          note: "",
-                                          createdAt: nil),
-                         clips: [])
+        store.saveReviewVerdict(verdict, for: video)
     }
 }

@@ -59,10 +59,19 @@ struct AutoTranslationRunner: ViewModifier {
 
     private func run(_ session: TranslationSession) async {
         guard let job = current else { return }
-        defer {
-            current = nil
-            configuration = nil
-        }
+        await translate(job, session: session)
+        // Release the slot BEFORE looking for more work: startNext() is a
+        // no-op while `current` is set, and queue changes that arrived during
+        // this job were dropped by that same guard. Clearing `configuration`
+        // ends this translation task, so the next claim runs in its own
+        // task rather than inherit the cancellation.
+        current = nil
+        configuration = nil
+        store.finishAutoTranslation(videoID: job.videoID)
+        Task { await startNext() }
+    }
+
+    private func translate(_ job: Job, session: TranslationSession) async {
         // The profile changed while the session was coming up: the ids no
         // longer mean these videos, and the store dropped the queue.
         guard job.generation == store.profileGeneration else { return }
@@ -89,7 +98,5 @@ struct AutoTranslationRunner: ViewModifier {
         } catch {
             store.appendLog(\.analysisLog, ["\(name): automatic translation failed — \(error.userMessage)"])
         }
-        store.finishAutoTranslation(videoID: job.videoID)
-        await startNext()
     }
 }

@@ -12,4 +12,18 @@ struct PeaceGrapplerHistoryOwnerTests {
     func others(username: String) {
         #expect(!PeaceGrapplerImporter.historyBelongs(to: username))
     }
+
+    @Test("Report counts parse plain, grouped, and decimal values")
+    func reportIntParses() {
+        #expect(ReportHTML.int("1,234") == 1234)
+        #expect(ReportHTML.int("+56") == 56)
+        #expect(ReportHTML.int("12.7") == 12)
+        #expect(ReportHTML.int(nil) == nil)
+    }
+
+    @Test("Non-finite and out-of-range report counts return nil instead of trapping",
+          arguments: ["nan", "inf", "-inf", "1e100", "-1e100", "infinity"])
+    func reportIntRejects(text: String) {
+        #expect(ReportHTML.int(text) == nil)
+    }
 }

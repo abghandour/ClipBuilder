@@ -295,6 +295,9 @@ nonisolated enum ResourceBundle {
                 // Image references leave as bundle-relative markers; images
                 // outside the library ride along in `_images`.
                 let bundledImages = folder.appendingPathComponent("_images", isDirectory: true)
+                // One bundled copy per source file; two different files with
+                // the same name get distinct names.
+                var bundledNames: [String: String] = [:]
                 var count = 0
                 for template in OverlayTemplateStore.list() {
                     try Task.checkCancellation()
@@ -307,10 +310,16 @@ nonisolated enum ResourceBundle {
                             composition.images[index].path = imageMarker + String(expanded.dropFirst(imagesRoot.path.count + 1))
                         } else if FileManager.default.fileExists(atPath: expanded) {
                             try FileManager.default.createDirectory(at: bundledImages, withIntermediateDirectories: true)
-                            let name = (expanded as NSString).lastPathComponent
-                            let target = bundledImages.appendingPathComponent(name)
-                            if !FileManager.default.fileExists(atPath: target.path) {
-                                try FileManager.default.copyItem(at: URL(fileURLWithPath: expanded), to: target)
+                            let source = URL(fileURLWithPath: expanded).standardizedFileURL.path
+                            let name: String
+                            if let existing = bundledNames[source] {
+                                name = existing
+                            } else {
+                                name = uniqueName((expanded as NSString).lastPathComponent,
+                                                  taken: Set(bundledNames.values))
+                                try FileManager.default.copyItem(at: URL(fileURLWithPath: expanded),
+                                                                 to: bundledImages.appendingPathComponent(name))
+                                bundledNames[source] = name
                             }
                             composition.images[index].path = bundledImageMarker + name
                         }
@@ -452,6 +461,11 @@ nonisolated enum ResourceBundle {
                              progress: @escaping @Sendable (String) -> Void) throws -> ResourceImportSummary {
         var summary = ResourceImportSummary()
         let imagesRoot = AssetKind.images.rootURL
+        // Where each bundled library image landed (a Keep Both rename), so
+        // overlays imported after it point at the right file.
+        var placedImages: [String: String] = [:]
+        // Bundled overlay images already resolved in this import.
+        var placedBundledImages: [String: String] = [:]
         categoriesLoop: for category in preview.manifest.categories where categories.contains(category) {
             if Task.isCancelled { summary.stopped = true; break }
             progress("Importing \(category.title.lowercased())…")
@@ -479,6 +493,7 @@ nonisolated enum ResourceBundle {
                     let target = local.appendingPathComponent(item.relativePath)
                     let final = resolvedTarget(for: target, policy: policy)
                     try place(source, at: target, policy: policy, summary: &summary)
+                    if category == .images, let final { placedImages[item.relativePath] = final.path }
                     if category == .bumpers, let final {
                         let data = try? Data(contentsOf: folder.appendingPathComponent("_metadata.json"))
                         let rows = data.flatMap { try? JSONDecoder().decode([LibraryAssetMetadata].self, from: $0) } ?? []
@@ -502,16 +517,40 @@ nonisolated enum ResourceBundle {
                     for index in composition.images.indices {
                         let path = composition.images[index].path
                         if path.hasPrefix(imageMarker) {
-                            composition.images[index].path = imagesRoot.appendingPathComponent(String(path.dropFirst(imageMarker.count))).path
+                            let relative = String(path.dropFirst(imageMarker.count))
+                            composition.images[index].path = placedImages[relative]
+                                ?? imagesRoot.appendingPathComponent(relative).path
                         } else if path.hasPrefix(bundledImageMarker) {
                             let name = String(path.dropFirst(bundledImageMarker.count))
+                            if let placed = placedBundledImages[name] {
+                                composition.images[index].path = placed
+                                continue
+                            }
+                            let source = bundledImages.appendingPathComponent(name)
                             let target = imagesRoot.appendingPathComponent("Imported").appendingPathComponent(name)
                             try FileManager.default.createDirectory(at: target.deletingLastPathComponent(),
                                                                     withIntermediateDirectories: true)
+                            var landed = target
                             if !FileManager.default.fileExists(atPath: target.path) {
-                                try? FileManager.default.copyItem(at: bundledImages.appendingPathComponent(name), to: target)
+                                try? FileManager.default.copyItem(at: source, to: target)
+                            } else if !FileManager.default.contentsEqual(atPath: source.path, andPath: target.path) {
+                                // A different image under the same name follows the policy;
+                                // Skip keeps the existing file.
+                                switch policy {
+                                case .skip:
+                                    break
+                                case .replace:
+                                    var ignored = ResourceImportSummary()
+                                    try place(source, at: target, policy: .replace, summary: &ignored)
+                                case .keepBoth:
+                                    if let renamed = resolvedTarget(for: target, policy: .keepBoth) {
+                                        try FileManager.default.copyItem(at: source, to: renamed)
+                                        landed = renamed
+                                    }
+                                }
                             }
-                            composition.images[index].path = target.path
+                            placedBundledImages[name] = landed.path
+                            composition.images[index].path = landed.path
                         }
                     }
                     let encoder = JSONEncoder()
@@ -571,6 +610,19 @@ nonisolated enum ResourceBundle {
         return summary
     }
 
+    /// `name`, or "name 2.ext", "name 3.ext"… when it is already taken.
+    static func uniqueName(_ name: String, taken: Set<String>) -> String {
+        guard taken.contains(name) else { return name }
+        let base = (name as NSString).deletingPathExtension
+        let ext = (name as NSString).pathExtension
+        var counter = 2
+        while true {
+            let candidate = "\(base) \(counter)" + (ext.isEmpty ? "" : ".\(ext)")
+            if !taken.contains(candidate) { return candidate }
+            counter += 1
+        }
+    }
+
     /// Where a file lands under the policy: nil = skip it.
     private static func resolvedTarget(for target: URL, policy: ResourceImportPolicy) -> URL? {
         guard FileManager.default.fileExists(atPath: target.path) else { return target }
@@ -599,9 +651,19 @@ nonisolated enum ResourceBundle {
         }
         try FileManager.default.createDirectory(at: final.deletingLastPathComponent(), withIntermediateDirectories: true)
         if FileManager.default.fileExists(atPath: final.path) {
-            try FileManager.default.removeItem(at: final)
+            // Copy beside it first: a failed copy must leave the original in place.
+            let staging = final.deletingLastPathComponent()
+                .appendingPathComponent(".importing-\(UUID().uuidString)-\(final.lastPathComponent)")
+            try FileManager.default.copyItem(at: source, to: staging)
+            do {
+                _ = try FileManager.default.replaceItemAt(final, withItemAt: staging)
+            } catch {
+                try? FileManager.default.removeItem(at: staging)
+                throw error
+            }
+        } else {
+            try FileManager.default.copyItem(at: source, to: final)
         }
-        try FileManager.default.copyItem(at: source, to: final)
         if !existed {
             summary.imported += 1
         } else if final == target {

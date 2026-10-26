@@ -932,6 +932,9 @@ nonisolated struct ReviewableClip: Identifiable, Sendable, Hashable {
     var end: Double
     /// Playback speed (0.5 = slow-motion replay); screen time stretches.
     var speed: Double = 1
+    /// Where the clip starts in the reel, when the timeline says (Builder
+    /// documents); flat wizard timelines play their clips back to back.
+    var timelineStart: Double? = nil
 
     var id: Int { index }
     var duration: Double { (end - start) / speed }
@@ -941,7 +944,11 @@ nonisolated struct ReviewableClip: Identifiable, Sendable, Hashable {
 extension GeneratedVideoRecord {
     /// Clips from either stored timeline format: the wizard's flat array
     /// ([{"type": "clip", ...}]) or the Builder's TimelineDocument object.
-    var reviewableClips: [ReviewableClip] {
+    var reviewableClips: [ReviewableClip] { reviewableClips(scenes: [:]) }
+
+    /// Scene-backed clips stored whole carry only their scene id; `scenes`
+    /// supplies their file and range.
+    func reviewableClips(scenes: [Int64: SceneRecord]) -> [ReviewableClip] {
         guard let data = timelineJSON.data(using: .utf8) else { return [] }
         if let flat = try? JSONSerialization.jsonObject(with: data) as? [[String: Any]] {
             return flat.filter { $0["type"] as? String == "clip" }.enumerated().map { index, clip in
@@ -954,12 +961,16 @@ extension GeneratedVideoRecord {
         }
         guard let document = try? JSONDecoder().decode(TimelineDocument.self, from: data) else { return [] }
         return document.videoTrack.sorted { $0.startTime < $1.startTime }.enumerated().map { index, clip in
-            ReviewableClip(index: index,
-                           sceneID: clip.sceneID,
-                           videoFile: clip.videoFile ?? "",
-                           start: clip.sourceStart ?? 0,
-                           end: clip.sourceEnd ?? (clip.sourceStart ?? 0) + clip.sourceSpan,
-                           speed: clip.effectiveSpeed)
+            let scene = clip.sceneID.flatMap { scenes[$0] }
+            let start = clip.sourceStart ?? scene?.startTime ?? 0
+            let span = clip.sourceSpan > 0 ? clip.sourceSpan : (scene.map { $0.endTime - $0.startTime } ?? 0)
+            return ReviewableClip(index: index,
+                                  sceneID: clip.sceneID,
+                                  videoFile: clip.videoFile ?? scene?.videoPath ?? "",
+                                  start: start,
+                                  end: clip.sourceEnd ?? start + span,
+                                  speed: clip.effectiveSpeed,
+                                  timelineStart: clip.startTime)
         }
     }
 }

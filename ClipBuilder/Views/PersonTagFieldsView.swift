@@ -113,7 +113,12 @@ struct PersonTagFieldsView: View {
             } catch is CancellationError {
             } catch { self.error = error.localizedDescription }
         }
-        .onChange(of: fields) { _, _ in drafts = [:] }
+        // A reload keeps unsaved edits of the other fields; a draft goes
+        // once it matches what is saved, or its field is gone.
+        .onChange(of: fields) { _, newFields in
+            let saved = Dictionary(newFields.map { ($0.id, $0.value) }, uniquingKeysWith: { first, _ in first })
+            drafts = drafts.filter { id, draft in saved[id].map { $0 != draft.value } ?? false }
+        }
     }
 
     /// Saved rows plus all seven profile fields and any custom style fields.

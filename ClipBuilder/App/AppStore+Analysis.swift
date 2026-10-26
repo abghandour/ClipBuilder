@@ -716,6 +716,10 @@ extension AppStore {
         case .video: name = video.filename
         case .scene(let scene): name = "\(video.filename) \(scene.startTime.timecode)–\(scene.endTime.timecode)"; range = scene.startTime...scene.endTime
         }
+        // Face sampling can take a while; the clips go only into the timeline
+        // that was open when Compose was chosen.
+        let generation = profileGeneration
+        let timelineID = openTimelineID
         Task {
             do {
                 let turns = try await database.fetchSpeakerTurns(videoID: video.id)
@@ -736,6 +740,10 @@ extension AppStore {
                     roster = await InterviewFaceSampling.refinedRoster(video: video, roster: roster,
                         range: range ?? 0...video.duration, turns: turns,
                         punchIn: recipe.interviewPunchIn, cuts: recipe.interviewCuts, log: logSink(\.analysisLog))
+                }
+                guard generation == profileGeneration, openTimelineID == timelineID else {
+                    appendLog(\.analysisLog, ["Compose \(name) skipped: another timeline was opened meanwhile."])
+                    return
                 }
                 let plan = try CropRecipePlanner.plan(recipe, video: video, range: range, turns: turns, roster: roster,
                                                       layouts: ScreenCropStore.all(),
@@ -885,9 +893,12 @@ extension AppStore {
     func detectPeople(in videos: [VideoRecord], provider: String? = nil, model: String? = nil) {
         guard !videos.isEmpty, !isDetectingPeople else { return }
         isDetectingPeople = true
+        let generation = profileGeneration
         Task {
             defer { isDetectingPeople = false; peopleDetectionStage = nil }
             for (index, video) in videos.enumerated() {
+                // The videos belong to the profile that started the batch.
+                guard generation == profileGeneration else { return }
                 peopleDetectionStage = videos.count > 1 ? "Detecting people \(index + 1) of \(videos.count)" : nil
                 _ = await runPeopleDetection(video, provider: provider, model: model, refreshLibrary: true)
             }

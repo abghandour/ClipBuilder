@@ -81,6 +81,12 @@ struct TranscriptSheet: View {
     @State private var player: AVPlayer?
     @State private var boundaryObserver: Any?
     @State private var endObserver: NSObjectProtocol?
+    /// The player being opened, shared by every request that arrives meanwhile.
+    @State private var preparing: Task<AVPlayer?, Never>?
+    /// Bumped by each play request and on release: a stale request stops.
+    @State private var playToken = 0
+    /// Bumped when the player is released (sheet closed).
+    @State private var playerEpoch = 0
     /// The file is not on this Mac (a Drive copy not downloaded), so the
     /// play buttons stay off.
     @State private var playbackUnavailable = false
@@ -1107,10 +1113,14 @@ struct TranscriptSheet: View {
     /// Seek the panel's player to a range and play it; a boundary observer
     /// stops it at `end` (nil plays on to the end of the file).
     private func play(start: Double, end: Double?, label: String, rowID: Int64?) async {
-        guard let player = await preparedPlayer() else { return }
+        playToken &+= 1
+        let token = playToken
+        guard let player = await preparedPlayer(), token == playToken else { return }
         stopPlayback(releasePlayer: false)
         await player.seek(to: CMTime(seconds: start, preferredTimescale: 600),
                           toleranceBefore: .zero, toleranceAfter: .zero)
+        // A newer request or a closed sheet wins.
+        guard token == playToken, player === self.player else { return }
         // A pending preview must not start behind the Q&A player.
         guard !showsQA else { stopPlayback(releasePlayer: true); return }
         if let end {
@@ -1133,23 +1143,39 @@ struct TranscriptSheet: View {
     /// the first play waits for readiness).
     private func preparedPlayer() async -> AVPlayer? {
         if let player { return player }
-        guard await DrivePlayback.prepare(video.url),
-              let asset = try? await DriveLocalAsset.make(video.url) else {
-            playbackUnavailable = true
-            return nil
+        // Two clicks while the file opens share one player; a second player
+        // would own observers the first one's cleanup then removes.
+        if let preparing { return await preparing.value }
+        let epoch = playerEpoch
+        let url = video.url
+        let task = Task<AVPlayer?, Never> { @MainActor in
+            guard await DrivePlayback.prepare(url),
+                  let asset = try? await DriveLocalAsset.make(url) else {
+                if epoch == playerEpoch { playbackUnavailable = true }
+                return nil
+            }
+            let item = AVPlayerItem(asset: asset)
+            let player = AVPlayer(playerItem: item)
+            for _ in 0..<100 where item.status != .readyToPlay {
+                if item.status == .failed {
+                    if epoch == playerEpoch { playbackUnavailable = true }
+                    return nil
+                }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            // The sheet closed while the file opened.
+            guard epoch == playerEpoch else { return nil }
+            // A line that runs to the end of the file stops with the file.
+            endObserver = NotificationCenter.default.addObserver(
+                forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main) { _ in
+                Task { @MainActor in stopPlayback(releasePlayer: false) }
+            }
+            self.player = player
+            return player
         }
-        let item = AVPlayerItem(asset: asset)
-        let player = AVPlayer(playerItem: item)
-        for _ in 0..<100 where item.status != .readyToPlay {
-            if item.status == .failed { playbackUnavailable = true; return nil }
-            try? await Task.sleep(for: .milliseconds(50))
-        }
-        // A line that runs to the end of the file stops with the file.
-        endObserver = NotificationCenter.default.addObserver(
-            forName: AVPlayerItem.didPlayToEndTimeNotification, object: item, queue: .main) { _ in
-            Task { @MainActor in stopPlayback(releasePlayer: false) }
-        }
-        self.player = player
+        preparing = task
+        let player = await task.value
+        if epoch == playerEpoch { preparing = nil }
         return player
     }
 
@@ -1165,6 +1191,9 @@ struct TranscriptSheet: View {
             if let endObserver { NotificationCenter.default.removeObserver(endObserver) }
             endObserver = nil
             player = nil
+            preparing = nil
+            playerEpoch &+= 1
+            playToken &+= 1
         }
     }
 

@@ -16,6 +16,9 @@ final class PodcastHighlightTrimPlayback {
     private var timeObserver: Any?
     private var endObserver: NSObjectProtocol?
     private var loadTask: Task<Void, Never>?
+    /// Bumped each time playback reaches the range's end (not on a pause or
+    /// scrub), so Play All advances only on a finished cut.
+    private(set) var endCount = 0
 
     func load(url: URL, range: ClosedRange<Double>, autoplay: Bool, muted: Bool = false) {
         tearDown()
@@ -25,7 +28,6 @@ final class PodcastHighlightTrimPlayback {
             guard await DrivePlayback.prepare(url), let self else { return }
             guard let asset = try? await DriveLocalAsset.make(url) else { return }
             let item = AVPlayerItem(asset: asset)
-            item.forwardPlaybackEndTime = CMTime(seconds: range.upperBound, preferredTimescale: 600)
             // Speech keeps its pitch at slow and fast speeds.
             item.audioTimePitchAlgorithm = .timeDomain
             let player = AVPlayer(playerItem: item)
@@ -35,6 +37,9 @@ final class PodcastHighlightTrimPlayback {
                 try? await Task.sleep(for: .milliseconds(50))
             }
             guard !Task.isCancelled, item.status == .readyToPlay else { return }
+            // The range may have moved while the file opened: use the current one.
+            let range = self.range
+            item.forwardPlaybackEndTime = CMTime(seconds: range.upperBound, preferredTimescale: 600)
             _ = await player.seek(to: CMTime(seconds: range.lowerBound, preferredTimescale: 600),
                                   toleranceBefore: .zero, toleranceAfter: .zero)
             guard !Task.isCancelled else { return }
@@ -53,6 +58,7 @@ final class PodcastHighlightTrimPlayback {
 
     private func reachedEnd() {
         isPlaying = false
+        endCount &+= 1
         seek(to: range.lowerBound)
     }
 

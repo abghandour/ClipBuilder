@@ -3,13 +3,20 @@ import Foundation
 nonisolated enum ReelTraitRecording {
   @TaskLocal static var detectorCacheEnabled = true
 
+  /// Track-0 clips the render plays with sound: the renderer mutes a clip
+  /// when either the clip or its track is muted (MultitrackRenderer).
+  static func audibleClips(_ document: TimelineDocument) -> [TimelineClip] {
+    if document.trackSettings[safe: 0]?.muted == true { return [] }
+    return document.videoTrack.filter { $0.track == 0 && !$0.bumper && !$0.muted }
+  }
+
   /// Project the audible source transcript onto output time, for both proxy and final files.
   static func transcript(document: TimelineDocument, scenes: [SceneRecord], database: Database)
     async throws -> [TranscriptSegment]?
   {
     var result: [TranscriptSegment] = []
     var hasTranscript = false
-    let audible = document.videoTrack.filter { $0.track == 0 && !$0.bumper && !$0.muted }
+    let audible = audibleClips(document)
     if audible.isEmpty { return [] }
     for clip in audible {
       guard let scene = scenes.first(where: { $0.videoPath == clip.videoFile }) else { continue }

@@ -36,6 +36,18 @@ extension Database {
                   source.map(SQLValue.text) ?? .null])
     }
 
+    /// Store a generated value only when the person still has none: a value
+    /// the user saved while the AI was writing wins. True when stored.
+    func savePersonTagFieldIfMissing(personKey: String, field: String, value: String,
+                                     provenance: AIProvenance?) throws -> Bool {
+        let json = try provenance.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
+        try connection.execute("""
+            INSERT INTO person_tag_fields (person_key, field, value, provenance) VALUES (?, ?, ?, ?)
+            ON CONFLICT(person_key, field) DO NOTHING
+            """, [.text(personKey), .text(TagTextWriter.fieldKey(field)), .text(value), json.map(SQLValue.text) ?? .null])
+        return (try connection.query("SELECT changes() AS count").first?["count"]?.intValue ?? 0) > 0
+    }
+
     func clearPersonTagField(personKey: String, field: String) throws {
         try connection.execute("DELETE FROM person_tag_fields WHERE person_key = ? AND field = ?",
                                [.text(personKey), .text(TagTextWriter.fieldKey(field))])

@@ -485,6 +485,8 @@ nonisolated struct InstagramReport: Sendable {
         var comments: Int = 0
         var saves: Int = 0
         var shares: Int = 0
+        /// Posts published that day.
+        var count: Int = 0
         var id: Date { date }
     }
 

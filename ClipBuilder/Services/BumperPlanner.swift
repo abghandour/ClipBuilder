@@ -76,6 +76,11 @@ nonisolated struct BumperPlanner {
                 document.videoTrack[i].startTime = gap.lowerBound
             }
         }
+        // Dubbed speech moves back with its footage.
+        if var lines = document.dubLines {
+            for i in lines.indices where lines[i].start >= gap.upperBound { lines[i].start -= duration }
+            document.dubLines = lines
+        }
         document.soundTrack = document.soundTrack.compactMap { item in
             guard let range = closed(item.startTime, item.startTime + item.duration) else { return nil }
             var item = item
@@ -120,6 +125,7 @@ nonisolated struct BumperPlanner {
     /// compositor during the inserted bumper.
     static func insertGap(in document: inout TimelineDocument, at time: Double, duration: Double) {
         var clips: [TimelineClip] = []
+        var tails: [UUID: UUID] = [:]
         for var clip in document.videoTrack {
             if clip.startTime >= time {
                 clip.startTime += duration
@@ -131,6 +137,14 @@ nonisolated struct BumperPlanner {
                 tail.startTime = time + duration
                 tail.duration -= consumed
                 tail.transIn = nil
+                // The camera path runs from the clip's source start: the tail
+                // continues it from the split instead of replaying it.
+                if let path = clip.cameraPath {
+                    let sliced = CenterStageService.slice(path, from: consumed * clip.effectiveSpeed,
+                                                          duration: tail.duration * clip.effectiveSpeed)
+                    tail.cameraPath = sliced.count >= 2 ? sliced : nil
+                }
+                tails[clip.uid] = tail.uid
                 // One dissolve, not two: the head keeps the way in, the
                 // tail keeps the way out.
                 tail.fadeIn = 0
@@ -143,6 +157,15 @@ nonisolated struct BumperPlanner {
             clips.append(clip)
         }
         document.videoTrack = clips
+        // Dubbed speech after the insertion moves with its footage (and the
+        // split clip's tail owns it); a line already playing continues.
+        if var lines = document.dubLines {
+            for i in lines.indices where lines[i].start >= time {
+                lines[i].start += duration
+                if let tail = tails[lines[i].clipUID] { lines[i].clipUID = tail }
+            }
+            document.dubLines = lines
+        }
         for i in document.soundTrack.indices {
             if document.soundTrack[i].startTime >= time { document.soundTrack[i].startTime += duration }
             else if document.soundTrack[i].startTime + document.soundTrack[i].duration > time {

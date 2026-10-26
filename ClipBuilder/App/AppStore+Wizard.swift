@@ -83,6 +83,17 @@ extension AppStore {
         }
     }
 
+    func saveReviewVerdict(_ verdict: Int, for video: GeneratedVideoRecord) {
+        guard let database else { return }
+        Task {
+            do {
+                try await database.saveReviewVerdict(generatedVideoID: video.id, verdict: verdict)
+            } catch {
+                presentError("Could not save the review", error)
+            }
+        }
+    }
+
     /// Record the A/B pick for the presented batch (winner vs. every other
     /// variation), then surface the next queued batch if any.
     func resolveComparison(_ batch: ComparisonBatch, winner: GeneratedVideoRecord?) {
@@ -129,10 +140,13 @@ extension AppStore {
         isDistillingHouseStyle = true
         let wizard = wizard
         let existing = activeProfile.houseStyle
+        let generation = profileGeneration
         Task {
             do {
                 let style = try await wizard.distillHouseStyle(database: database,
                                                                existing: existing, emit: logSink(\.wizardLog))
+                // The style belongs to the profile that asked for it.
+                guard generation == profileGeneration else { isDistillingHouseStyle = false; return }
                 activeProfile.houseStyle = style.value
                 activeProfile.houseStyleProvenance = style.provenance
                 saveActiveProfile()

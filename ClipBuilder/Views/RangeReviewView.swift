@@ -228,8 +228,10 @@ struct RangeReviewView<Footer: View>: View {
                 }
             }
         }
-        .onChange(of: playback.isPlaying) { _, playing in
-            guard playingAll, !playing, !advancingPlayAll else { return }
+        // Only a cut that played to its end advances: a pause from scrubbing
+        // or dragging a trim handle keeps the cut and its draft.
+        .onChange(of: playback.endCount) { _, _ in
+            guard playingAll, !advancingPlayAll else { return }
             advancePlayAll()
         }
         .onChange(of: items.flatMap { [$0.id] + $0.children.map(\.id) }) { _, _ in reconcileSelection() }

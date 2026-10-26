@@ -67,6 +67,9 @@ actor AIService {
     }
 
     func updateConfig(_ config: AIConfig) {
+        // A refused account stays skipped across routine refreshes; changing
+        // that provider's settings (another binary, model or account) retries it.
+        unavailableProviders = unavailableProviders.filter { self.config.providers[$0] == config.providers[$0] }
         self.config = config
         // Changing providers, models or binaries is the user acting on the
         // failure; start fresh rather than keep skipping the fixed provider.
@@ -80,7 +83,10 @@ actor AIService {
     }
 
     /// Ends a provider's cooldown, e.g. after the user signs in again.
-    func clearCooldown(provider: String) { cooldowns[provider] = nil }
+    func clearCooldown(provider: String) {
+        cooldowns[provider] = nil
+        unavailableProviders.remove(provider)
+    }
 
     private func startCooldown(provider: String, reason: String) {
         let minutes = config.providerCooldownMinutes

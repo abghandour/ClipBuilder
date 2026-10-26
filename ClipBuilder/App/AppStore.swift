@@ -959,7 +959,8 @@ final class AppStore {
             presentError("Could not open the profile database", error)
         }
         refreshBumpers()
-        watcher?.watch(activeProfile.sourceFolderURL)
+        watcher?.watch(activeProfile.sourceFolderURL, recursive: true,
+                           ignoring: [activeProfile.outputFolderURL])
         builder.load(profileName: activeProfile.profileName,
                      defaultRenderSettings: activeProfile.defaultRenderSettings)
         Task { await initializeProjectWorkspace() }
@@ -1033,6 +1034,15 @@ final class AppStore {
         podcastResultsAfterDismissal = nil
         wizardResults = nil
         wizardTask?.cancel()
+        // Work that belongs to the old profile stops here: each task binds that
+        // profile's database or writes through `activeProfile`, so letting it
+        // finish would land its results in the new profile.
+        isWizardRunning = false
+        analysisTask?.cancel()
+        pipelineTask?.cancel()
+        pipelineOptions = nil
+        pipelineTargets = []
+        igFetchTask?.cancel()
         lastWizardOptions = nil
         wizardFailureMessage = nil
         timelineViewStates = [:]
@@ -1312,9 +1322,16 @@ final class AppStore {
         do {
             let snapshot = try await database.fetchLibrarySnapshot(projectID: activeProjectID,
                 referencedSceneIDs: Set(builder.document.videoTrack.compactMap(\.sceneID)))
+            // A project opened meanwhile (same profile generation) must not
+            // show this project's lists.
+            guard self.activeProjectID == activeProjectID else { return }
             applyLibrarySnapshot(snapshot, generation: generation)
-            timelines = (try? await database.fetchTimelines(projectID: activeProjectID)) ?? timelines
-            projects = (try? await database.fetchProjects()) ?? projects
+            let loadedTimelines = try? await database.fetchTimelines(projectID: activeProjectID)
+            guard generation == profileGeneration, self.activeProjectID == activeProjectID else { return }
+            timelines = loadedTimelines ?? timelines
+            let loadedProjects = try? await database.fetchProjects()
+            guard generation == profileGeneration else { return }
+            projects = loadedProjects ?? projects
         } catch {
             presentError("Could not load the library", error)
         }

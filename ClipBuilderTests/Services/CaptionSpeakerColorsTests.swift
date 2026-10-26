@@ -27,6 +27,9 @@ struct CaptionSpeakerColorsTests {
                                 startTime: 0, endTime: 1, text: "Hello", speakerKey: "bob")
         #expect(CaptionSpeakerColors.color(for: segment, turns: turns, rows: [row]) == CaptionSpeakerColors.palette[1])
         #expect(CaptionSpeakerColors.speakerKey(for: segment, turns: turns, rows: [row]) == "person:bob")
+        // A hand attribution needs no diarized turns.
+        #expect(CaptionSpeakerColors.speakerKey(for: segment, turns: [], rows: [row]) == "person:bob")
+        #expect(CaptionSpeakerColors.color(for: segment, turns: [], rows: [row]) == CaptionSpeakerColors.palette[0])
         row.speakerKey = ""
         #expect(CaptionSpeakerColors.color(for: segment, turns: turns, rows: [row]) == nil)
         #expect(CaptionSpeakerColors.speakerKey(for: segment, turns: turns, rows: [row]) == nil)

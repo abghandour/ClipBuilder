@@ -112,4 +112,30 @@ import Testing
     #expect(traits.hookWords == 1)
     #expect(traits.questionWords == 2)
   }
+
+  @Test @MainActor func mutedTrackHasNoAudibleClips() {
+    var muted = Fixtures.timelineClip(startTime: 4)
+    muted.muted = true
+    var document = Fixtures.timelineDocument(clips: [
+      Fixtures.timelineClip(), muted, Fixtures.timelineClip(track: 1),
+    ])
+    #expect(ReelTraitRecording.audibleClips(document).count == 1)
+    document.trackSettings[0].muted = true
+    #expect(ReelTraitRecording.audibleClips(document).isEmpty)
+  }
+
+  @Test func sceneTraitsComputedBeforeTranscriptionGoStale() {
+    let withoutTranscript = ReelTraitExtractor.assemble(
+      duration: 10, width: 1080, height: 1920,
+      detectors: VideoDetectors(black: [], frozen: [], cuts: []), frames: [],
+      caption: nil, transcript: nil)
+    let withTranscript = ReelTraitExtractor.assemble(
+      duration: 10, width: 1080, height: 1920,
+      detectors: VideoDetectors(black: [], frozen: [], cuts: []), frames: [],
+      caption: nil, transcript: [])
+    #expect(SceneTraitExtractor.isCurrent(withoutTranscript, transcriptExists: false))
+    #expect(!SceneTraitExtractor.isCurrent(withoutTranscript, transcriptExists: true))
+    // An empty overlap still counts as transcribed, so it never recomputes again.
+    #expect(SceneTraitExtractor.isCurrent(withTranscript, transcriptExists: true))
+  }
 }

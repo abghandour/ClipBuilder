@@ -399,7 +399,7 @@ struct ClipInspector: View {
                     Picker("Speed", selection: Binding(
                         get: { clip.speed ?? 1 },
                         set: { value in
-                            model.updateClip(clip.uid) { updated in
+                            model.updateClip(clip.uid, repack: true) { updated in
                                 let span = updated.duration * (updated.speed ?? 1)
                                 updated.speed = value == 1 ? nil : value
                                 updated.duration = ((span / value) * 10).rounded() / 10

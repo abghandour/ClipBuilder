@@ -132,16 +132,16 @@ nonisolated enum ProviderAuth {
         echo "Follow the prompts below (a browser window may open)."
         echo
         \(resolved)
-        status=$?
+        result=$?
         echo
-        if [ $status -eq 0 ]; then
+        if [ $result -eq 0 ]; then
             echo "Done. You can close this window and go back to Clip Builder."
         else
-            echo "The sign-in command exited with status $status. Check the messages above, then try again."
+            echo "The sign-in command exited with status $result. Check the messages above, then try again."
         fi
         echo
         read -k1 "?Press any key to close this window."
-        exit $status
+        exit $result
 
         """
     }

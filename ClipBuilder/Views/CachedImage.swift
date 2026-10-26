@@ -126,10 +126,13 @@ struct CachedImage<Placeholder: View>: View {
             image = nil
             loadedKey = nil
             guard let url else { return }
-            if let loaded = await ImageCache.image(for: url, maxPixel: maxPixel) {
-                image = loaded
-                loadedKey = key
-            }
+            let requested = key
+            let loaded = await ImageCache.image(for: url, maxPixel: maxPixel)
+            // A newer key's load may already have run: a stale decode must
+            // not replace it.
+            guard let loaded, !Task.isCancelled, requested == key else { return }
+            image = loaded
+            loadedKey = requested
         }
     }
 }

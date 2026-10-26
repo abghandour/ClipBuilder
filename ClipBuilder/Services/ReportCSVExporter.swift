@@ -68,7 +68,7 @@ nonisolated enum ReportCSVExporter {
                 format: "%04d-W%02d", components.yearForWeekOfYear ?? 0,
                 components.weekOfYear ?? 0)
             var row = weekly[key] ?? (0, 0, 0, 0, 0, 0, 0)
-            row.posts += 1
+            row.posts += point.count
             row.reach += point.reach
             row.views += point.views
             row.likes += point.likes

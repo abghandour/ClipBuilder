@@ -15,14 +15,14 @@ nonisolated enum CaptionSpeakerColors {
     /// translations retain the same colours. Explicit line attribution wins;
     /// a line crossing speakers uses the first overlapping turn, not the longest.
     static func speakerKey(for segment: TranscriptSegment, turns: [SpeakerTurn], rows: [TranscriptRow]) -> String? {
-        guard !turns.isEmpty else { return nil }
-        let ordered = turns.sorted { $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start }
         let originals = rows.filter { !$0.isTranslation }.sorted { $0.startTime < $1.startTime }
         let line = originals.first { $0.endTime > segment.start && $0.startTime < segment.end }
+        // A hand attribution counts even without diarized turns.
+        if let line, case .person(let person) = line.speaker { return "person:" + person }
+        guard !turns.isEmpty else { return nil }
+        let ordered = turns.sorted { $0.start == $1.start ? $0.id < $1.id : $0.start < $1.start }
         let selected: String?
-        if let line, case .person(let person) = line.speaker {
-            selected = "person:" + person
-        } else if let line, case .unknown = line.speaker {
+        if let line, case .unknown = line.speaker {
             selected = nil
         } else {
             let start = line?.startTime ?? segment.start

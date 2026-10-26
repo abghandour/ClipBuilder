@@ -298,7 +298,7 @@ struct BuilderView: View {
             PlayerSheet(url: model.sourceURL(for: clip) ?? URL(fileURLWithPath: "/"),
                         title: model.scene(for: clip)?.videoFilename ?? "Clip",
                         startTime: clip.sourceStart ?? 0,
-                        endTime: (clip.sourceStart ?? 0) + clip.duration)
+                        endTime: (clip.sourceStart ?? 0) + clip.sourceSpan)
         }
         .sheet(isPresented: $showScenePicker) {
             BuilderScenePickerSheet()

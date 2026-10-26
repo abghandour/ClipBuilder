@@ -475,8 +475,8 @@ struct AssetBrowserView: View {
                     let isFolder = (try? url.resourceValues(forKeys: [.isDirectoryKey]).isDirectory) ?? false
                     let item = AssetItem(url: url, isFolder: isFolder)
                     let destination = try AssetStore.move(item, into: folder)
-                    if kind == .bumpers, !isFolder, destination != url {
-                        try await store.database?.moveBumperMetadata(from: url, to: destination)
+                    if destination != url {
+                        try await store.database?.moveAssetMetadata(kind: kind, from: url, to: destination)
                     }
                 }
             } catch { operationError = error.localizedDescription }
@@ -540,27 +540,29 @@ struct AssetBrowserView: View {
 
     private func analyzeVisibleImages() {
         let pending = filteredItems.filter { !$0.isFolder && !analyzingPaths.contains($0.url.path) }
-        guard !pending.isEmpty else { return }
+        // One database for the whole batch: a profile switch mid-run must not
+        // write later images' tags into the new profile.
+        guard !pending.isEmpty, let database = store.database else { return }
         let useLocal = OnDevicePolicy.isEnabled(item: "image-tagging", config: store.settings.ai)
         for item in pending { analyzingPaths.insert(item.url.path) }
         Task {
             await withTaskGroup(of: Void.self) { group in
                 var iterator = pending.makeIterator()
                 for _ in 0..<Self.imageTaggingConcurrency {
-                    if let item = iterator.next() { group.addTask { await self.tagImage(item, useLocal: useLocal) } }
+                    if let item = iterator.next() { group.addTask { await self.tagImage(item, useLocal: useLocal, database: database) } }
                 }
                 for await _ in group {
-                    if let item = iterator.next() { group.addTask { await self.tagImage(item, useLocal: useLocal) } }
+                    if let item = iterator.next() { group.addTask { await self.tagImage(item, useLocal: useLocal, database: database) } }
                 }
             }
         }
     }
 
     private func analyzeImage(_ item: AssetItem) {
-        guard !analyzingPaths.contains(item.url.path) else { return }
+        guard !analyzingPaths.contains(item.url.path), let database = store.database else { return }
         analyzingPaths.insert(item.url.path)
         let useLocal = OnDevicePolicy.isEnabled(item: "image-tagging", config: store.settings.ai)
-        Task { await tagImage(item, useLocal: useLocal) }
+        Task { await tagImage(item, useLocal: useLocal, database: database) }
     }
 
     /// Downsampled JPEG for the tagger, decoded away from the main actor: a
@@ -582,9 +584,8 @@ struct AssetBrowserView: View {
     }
 
     /// Tag one image; the caller has already marked it in `analyzingPaths`.
-    private func tagImage(_ item: AssetItem, useLocal: Bool) async {
+    private func tagImage(_ item: AssetItem, useLocal: Bool, database: Database) async {
         defer { analyzingPaths.remove(item.url.path) }
-        guard let database = store.database else { return }
         let knownPeople = store.people.filter { !$0.name.isEmpty }.map(\.name)
         do {
             guard let jpeg = await Self.taggingPayload(for: item.url) else {
@@ -646,9 +647,7 @@ struct AssetBrowserView: View {
         Task {
             do {
                 let destination = try AssetStore.rename(item, to: name)
-                if kind == .bumpers {
-                    try await store.database?.moveBumperMetadata(from: item.url, to: destination)
-                }
+                try await store.database?.moveAssetMetadata(kind: kind, from: item.url, to: destination)
             } catch { operationError = error.localizedDescription }
             refresh()
         }

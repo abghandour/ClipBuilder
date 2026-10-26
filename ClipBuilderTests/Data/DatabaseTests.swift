@@ -207,6 +207,64 @@ struct DatabaseTests {
         #expect(try await database.fetchVideos().isEmpty)
     }
 
+    @Test("merging people moves scored fight actions and results to the survivor, and undo moves them back")
+    func mergeMovesFightKeys() async throws {
+        let temp = try TempDatabase()
+        let db = temp.database
+        let video = try await temp.seedVideo()
+        let source = try await db.createPerson(name: "Fighter Copy")
+        let survivor = try await db.createPerson(name: "Fighter")
+        let rival = try await db.createPerson(name: "Rival")
+        let raw = try SQLiteConnection(path: temp.path.path)
+        try raw.execute("INSERT INTO fight_events (video_id, at_time, fighter_key, target_key, action) VALUES (?, 1, ?, ?, 'jab')",
+                        [.integer(video), .text(source.key), .text(rival.key)])
+        try raw.execute("INSERT INTO fight_events (video_id, at_time, fighter_key, target_key, action) VALUES (?, 2, ?, ?, 'kick')",
+                        [.integer(video), .text(rival.key), .text(source.key)])
+        func keys() throws -> [String] {
+            try raw.query("SELECT fighter_key, target_key FROM fight_events ORDER BY at_time").flatMap {
+                [$0["fighter_key"]?.stringValue ?? "", $0["target_key"]?.stringValue ?? ""]
+            }
+        }
+        let snapshot = try await db.mergePeople(sources: [source], into: survivor, renamingTo: nil)
+        #expect(try keys() == [survivor.key, rival.key, rival.key, survivor.key])
+        try await db.restorePeopleMerge(snapshot)
+        #expect(try keys() == [source.key, rival.key, rival.key, source.key])
+    }
+
+    @Test("a database from before analysis batches (no scenes.run_id) opens and gains the column and its index")
+    func preBatchDatabaseOpens() async throws {
+        let fixture = try #require(Bundle(for: DatabaseBundleToken.self)
+            .url(forResource: "legacy-v0", withExtension: "db"))
+        let temp = try TempDirectory(prefix: "ClipBuilderPreBatchDB")
+        let copy = temp.url.appendingPathComponent("prebatch.db")
+        try FileManager.default.copyItem(at: fixture, to: copy)
+        let before: Set<String>
+        do {
+            let raw = try SQLiteConnection(path: copy.path)
+            before = try raw.columnNames(of: "scenes")
+            let columns = try raw.columnNames(of: "scenes").filter { $0 != "run_id" }
+                .map { "\"\($0)\"" }.joined(separator: ", ")
+            try raw.executeScript("""
+                PRAGMA foreign_keys=OFF;
+                DROP INDEX IF EXISTS idx_scenes_run;
+                CREATE TABLE scenes_prebatch AS SELECT \(columns) FROM scenes;
+                DROP TABLE scenes;
+                ALTER TABLE scenes_prebatch RENAME TO scenes;
+                PRAGMA user_version = 0;
+                """)
+            #expect(try !raw.columnNames(of: "scenes").contains("run_id"))
+        }
+
+        let database = try Database(path: copy)
+        let raw = try SQLiteConnection(path: copy.path)
+        #expect(try raw.columnNames(of: "scenes").contains("run_id"))
+        // The rebuild that adds run_id keeps every column the scenes had.
+        #expect(before.isSubset(of: try raw.columnNames(of: "scenes")))
+        let index = try raw.query("SELECT name FROM sqlite_master WHERE type='index' AND name='idx_scenes_run'")
+        #expect(index.count == 1)
+        #expect(try await database.fetchVideos().isEmpty)
+    }
+
     @Test("the library snapshot counts the people pass's roster per video, distinct by person")
     func snapshotCountsVideoPeople() async throws {
         let temp = try TempDatabase()
@@ -836,6 +894,20 @@ struct DatabaseTests {
         #expect(inputs.media.first?.views == 20)
     }
 
+    @Test("an imported report never overwrites live Graph counts")
+    func importKeepsLiveCounts() async throws {
+        let temp = try TempDatabase()
+        let accountID = try await temp.database.upsertIGAccount(username: "fixture", kind: "own", displayName: nil,
+                                                                igUserID: "ig-1", followers: 100)
+        _ = try await temp.database.upsertIGReportMedia(IGReportMediaUpsert(
+            accountID: accountID, shortcode: "ABC123", mediaID: "media-1", likeCount: 1000, commentsCount: 40))
+        _ = try await temp.database.upsertIGReportMedia(IGReportMediaUpsert(
+            accountID: accountID, shortcode: "ABC123", likeCount: 50, commentsCount: 2, source: "import"))
+        let account = try #require(try await temp.database.fetchIGAccounts().first)
+        let media = try #require(try await temp.database.fetchIGReportInputs(account: account).media.first)
+        #expect(media.likes == 1000 && media.comments == 40)
+    }
+
     @Test("project migration creates an implicit permanent Home and supports shared membership")
     func projectMigrationAndMembership() async throws {
         let temp = try TempDatabase()
@@ -1213,5 +1285,41 @@ extension DatabaseTests {
         #expect(try await temp.database.personTagFields(personKey: source.key).isEmpty)
         try await temp.database.deletePerson(target)
         #expect(try await temp.database.personTagFields().isEmpty)
+    }
+
+    @Test func quickVerdictKeepsADetailedReview() async throws {
+        let temp = try TempDatabase()
+        let db = temp.database
+        let video = try await db.insertGeneratedVideo(path: "/tmp/reel.mp4", duration: 4, timelineJSON: "{}",
+                                                      wizardProvider: "fixture", wizardModel: nil)
+        try await db.saveReview(GenerationReview(generatedVideoID: video, verdict: 1, dimensions: ["hook": 1],
+                                                 note: "Strong open", createdAt: nil),
+                                clips: [ClipReview(clipIndex: 0, sceneID: nil, verdict: -1, reasons: ["too long"])])
+        try await db.saveReviewVerdict(generatedVideoID: video, verdict: -1)
+        let saved = try #require(try await db.fetchReview(generatedVideoID: video))
+        #expect(saved.review.verdict == -1)
+        #expect(saved.review.dimensions == ["hook": 1] && saved.review.note == "Strong open")
+        #expect(saved.clips.map(\.reasons) == [["too long"]])
+        // With no review yet, a thumbs tap creates one.
+        let other = try await db.insertGeneratedVideo(path: "/tmp/other.mp4", duration: 4, timelineJSON: "{}",
+                                                      wizardProvider: "fixture", wizardModel: nil)
+        try await db.saveReviewVerdict(generatedVideoID: other, verdict: 1)
+        #expect(try await db.fetchReview(generatedVideoID: other)?.review.verdict == 1)
+    }
+
+    @Test func renamedSourceRelinksSavedTimelines() async throws {
+        let temp = try TempDatabase()
+        let db = temp.database
+        let project = try await db.createProject(profileName: "One", name: "P", videoIDs: [])
+        var clip = Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 5)
+        clip.videoFile = "/footage/Old name.mp4"
+        var other = Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 5, startTime: 5)
+        other.videoFile = "/footage/Another.mp4"
+        let json = String(decoding: try JSONEncoder().encode(Fixtures.timelineDocument(clips: [clip, other])), as: UTF8.self)
+        let id = try await db.createTimeline(projectID: project, name: "T", documentJSON: json)
+        #expect(try await db.relinkTimelineVideoFile(from: "/footage/Old name.mp4", to: "/footage/New name.mp4") == 1)
+        let files = try #require(try await db.fetchTimeline(id: id)?.document).videoTrack.map(\.videoFile)
+        #expect(files == ["/footage/New name.mp4", "/footage/Another.mp4"])
+        #expect(try await db.relinkTimelineVideoFile(from: "/footage/Old name.mp4", to: "/x.mp4") == 0)
     }
 }

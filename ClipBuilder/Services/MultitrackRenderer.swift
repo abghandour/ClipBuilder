@@ -682,6 +682,8 @@ actor MultitrackRenderer {
             dub: document.dub, dubLines: document.dub == nil ? nil : document.dubLines) : nil
         var assembled = scratch.appendingPathComponent("assembled.mp4")
         var rangeArtifacts: [RenderSegmentCache.Entry] = []
+        let joinOverlaps = JoinOverlaps()
+        var clock = RenderClock.identity
         let finishingWasCached: Bool
         if let key = finishingKey {
             finishingWasCached = await segmentCache.restore(key: key, to: assembled)
@@ -691,26 +693,40 @@ actor MultitrackRenderer {
         if finishingWasCached {
             emit("Finishing cache hit; assembly and overlay encodes=0")
             PerfSignpost.event("FinishingCacheHit")
+            // Deferred burn-ins still map onto the assembled clock. A cached
+            // finishing pass only ever holds plain crossfades, so the same
+            // clamping predicts every overlap exactly.
+            clock = await Self.predictedClock(paths: clipPaths, segments: fullSegments,
+                                              transitions: transitions, transitionDuration: transitionDuration)
         } else {
             emit("Assembling \(clipPaths.count) segment(s)…")
             if clipPaths.count == 1 {
                 assembled = clipPaths[0]
             } else if !bumperSpans.isEmpty {
                 bumperSpans = try await concatenateWithBumpers(paths: clipPaths, segments: fullSegments,
-                    transitions: transitions, scratch: scratch, output: assembled)
+                    transitions: transitions, scratch: scratch, output: assembled, overlaps: joinOverlaps)
             } else {
                 let fellBack = Mutex(false)
                 try await render.concatenate(clips: clipPaths, transitions: transitions, output: assembled,
                     transitionDuration: transitionDuration, assemblyCache: assemblyCache,
+                    overlaps: joinOverlaps,
                     onFallback: { fellBack.withLock { $0 = true } }, onGroups: onGroups)
                 if fellBack.withLock({ $0 }) { finishingKey = nil }
             }
 
             let videoDuration = await FFmpeg.duration(of: assembled)
+            // Joins overlap segments: work on the assembled video maps its
+            // timeline times onto the shorter clock.
+            clock = RenderClock(segmentStarts: fullSegments.map(\.start), overlaps: joinOverlaps.all)
+            if !clock.isIdentity {
+                emit(String(format: "Transitions shortened the timeline by %.2fs; dub, music and overlays follow",
+                            totalDuration - clock.map(totalDuration, end: true)))
+            }
 
             // Dub the assembled source before music, so the speech duck never
             // lowers the music bed. Fail the render if reviewed speech is missing.
-            if hasDub, let settings = document.dub, let lines = document.dubLines {
+            if hasDub, let settings = document.dub, let timelineLines = document.dubLines {
+                let lines = clock.map(timelineLines)
                 emit("Mixing \(lines.count) dubbed line(s)…")
                 let track = scratch.appendingPathComponent("dub_track.caf")
                 try await DubMixer.buildTrack(lines: lines, duration: videoDuration, output: track,
@@ -728,7 +744,10 @@ actor MultitrackRenderer {
                 var blocks: [(start: Double, duration: Double, music: URL?, volume: Int, offset: Double)] = []
                 for item in document.soundTrack.sorted(by: { $0.startTime < $1.startTime }) {
                     guard let url = musicLookup[item.name], item.duration > 0 else { continue }
-                    blocks.append((item.startTime, item.duration, url, item.volume, item.sourceOffset))
+                    let start = clock.map(item.startTime)
+                    let end = clock.map(item.startTime + item.duration, end: true)
+                    guard end > start else { continue }
+                    blocks.append((start, end - start, url, item.volume, item.sourceOffset))
                 }
                 // A bumper owns the sound as well as the picture: cut every
                 // music block around the measured bumper spans. Each remaining
@@ -769,7 +788,8 @@ actor MultitrackRenderer {
 
             let remainingOverlays = overlayPlan.remaining.compactMap { overlay -> TimedOverlayPNG? in
                 var overlay = overlay
-                overlay.endTime = min(overlay.endTime, videoDuration)
+                overlay.startTime = clock.map(overlay.startTime)
+                overlay.endTime = min(clock.map(overlay.endTime, end: true), videoDuration)
                 return overlay.endTime > overlay.startTime ? overlay : nil
             }
             if !remainingOverlays.isEmpty {
@@ -808,8 +828,15 @@ actor MultitrackRenderer {
 
         if deferExtract {
             emit("Express finishing: decode/encode whole-frame look after document overlays, then burn-ins")
-            try await render.extractClip(source: assembled, start: 0, duration: totalDuration,
-                overlays: burnIns, effect: compositeEffect, mute: muteSource, intermediateSource: true, output: outputURL)
+            // Burn-ins were timed on the timeline; the assembled video may be shorter.
+            let mappedBurnIns = burnIns.map { overlay -> RenderEngine.ClipOverlay in
+                var overlay = overlay
+                overlay.start = overlay.start.map { clock.map($0) }
+                overlay.end = overlay.end.map { clock.map($0, end: true) }
+                return overlay
+            }
+            try await render.extractClip(source: assembled, start: 0, duration: clock.map(totalDuration, end: true),
+                overlays: mappedBurnIns, effect: compositeEffect, mute: muteSource, intermediateSource: true, output: outputURL)
         } else {
             try FileManager.default.copyItemReplacing(at: assembled, to: outputURL)
         }
@@ -853,12 +880,51 @@ actor MultitrackRenderer {
         return RenderResult(url: outputURL, duration: finalDuration)
     }
 
+    /// The clock plain crossfades produce, from the segment files' lengths
+    /// and RenderEngine's own clamping; a run that cannot crossfade joins
+    /// with hard cuts.
+    nonisolated static func predictedClock(paths: [URL], segments: [Segment], transitions: [String?],
+                                           transitionDuration: Double) async -> RenderClock {
+        let names = transitions.map { $0 == "cut" ? nil : $0 }
+        guard names.contains(where: { $0 != nil }), paths.count == segments.count else { return .identity }
+        let durations = (try? await BoundedConcurrency.map(paths, limit: FFmpeg.jobLimit) { _, path in
+            await FFmpeg.duration(of: path)
+        }) ?? []
+        guard durations.count == paths.count else { return .identity }
+        return RenderClock(segmentStarts: segments.map(\.start),
+                           overlaps: crossfadeOverlaps(durations: durations, transitions: names,
+                                                       transitionDuration: transitionDuration))
+    }
+
+    /// Overlap per gap for runs of crossfaded segments (hard cuts are 0).
+    nonisolated static func crossfadeOverlaps(durations: [Double], transitions: [String?],
+                                              transitionDuration: Double) -> [Int: Double] {
+        var overlaps: [Int: Double] = [:]
+        var runStart = 0
+        func close(_ end: Int) {
+            // Clips runStart...end joined by crossfades at gaps runStart..<end.
+            guard end > runStart else { return }
+            let names = (runStart..<end).map { transitions[safe: $0].flatMap { $0 } ?? "fade" }
+            let used = (try? RenderEngine.resolvedGaps(durations: Array(durations[runStart...end]), transitions: names,
+                                                       configured: transitionDuration, maximumOverlap: nil))?
+                .map(\.duration)
+            for (offset, gap) in (runStart..<end).enumerated() { overlaps[gap] = used?[offset] ?? 0 }
+        }
+        for gap in 0..<max(0, durations.count - 1) where (transitions[safe: gap] ?? nil) == nil {
+            close(gap)
+            runStart = gap + 1
+        }
+        close(durations.count - 1)
+        return overlaps
+    }
+
     /// Join ordinary runs normally, then join each bumper boundary while
     /// measuring the resulting clock. This accounts for recipe bridges and
     /// hard-cut fallbacks as well as successful crossfades; final overlays
     /// must never use an estimated, pre-transition bumper position.
     private func concatenateWithBumpers(paths: [URL], segments: [Segment], transitions: [String?],
-                                        scratch: URL, output: URL) async throws -> [Range<Double>] {
+                                        scratch: URL, output: URL,
+                                        overlaps: JoinOverlaps? = nil) async throws -> [Range<Double>] {
         var runs: [Range<Int>] = []
         var start = 0
         for index in 1..<segments.count {
@@ -878,7 +944,8 @@ actor MultitrackRenderer {
         for (index, run) in runs.enumerated() {
             let part = scratch.appendingPathComponent("bumper_run_\(index).mp4")
             try await render.concatenate(clips: Array(paths[run]),
-                transitions: run.count > 1 ? Array(transitions[run.lowerBound..<(run.upperBound - 1)]) : [], output: part)
+                transitions: run.count > 1 ? Array(transitions[run.lowerBound..<(run.upperBound - 1)]) : [], output: part,
+                overlaps: overlaps, gapOffset: run.lowerBound)
             let duration = await FFmpeg.duration(of: part)
             let isBumper = segments[run.lowerBound].clips.first?.bumper == true
             if let previous = assembled {
@@ -896,6 +963,7 @@ actor MultitrackRenderer {
                     maximumOverlap: min(outgoingDuration, incomingDuration) * 0.4)
                 let measured = await FFmpeg.duration(of: joined)
                 let overlap = max(0, elapsed + duration - measured)
+                overlaps?.record(run.lowerBound - 1, overlap)
                 let pieces = transition.map { TransitionRecipes.pieces(for: $0) } ?? (0.0, 0.0)
                 if isBumper { spans.append(max(0, elapsed - max(overlap, pieces.0))..<measured) }
                 if segments[run.lowerBound - 1].clips.first?.bumper == true, let last = spans.indices.last,
@@ -966,7 +1034,15 @@ actor MultitrackRenderer {
             let stop = min(upper, item.startTime + item.duration)
             guard stop > start else { return nil }
             var clip = item
-            clip.sourceStart = (item.sourceStart ?? 0) + (start - item.startTime) * item.effectiveSpeed
+            let skipped = (start - item.startTime) * item.effectiveSpeed
+            clip.sourceStart = (item.sourceStart ?? 0) + skipped
+            // The explicit camera path runs from the clip's source start:
+            // move it with the window instead of replaying its opening.
+            if skipped > 0, let path = item.cameraPath {
+                let sliced = CenterStageService.slice(path, from: skipped,
+                                                      duration: (stop - start) * item.effectiveSpeed)
+                clip.cameraPath = sliced.count >= 2 ? sliced : nil
+            }
             clip.startTime = start - lower
             clip.duration = stop - start
             return clip

@@ -180,6 +180,22 @@ struct BuilderTimelineModelTests {
         #expect(model.document.videoTrack.count == 3)
     }
 
+    @Test("a whole file whose length is not a tenth of a second can still be split against the file's length")
+    func wholeFileWithOddLengthSplits() throws {
+        let scope = try DataFolderOverride()
+        _ = scope
+        let model = BuilderTimelineModel()
+        model.load(profileName: "Files")
+        var video = Fixtures.video()
+        video.duration = 10.06
+        model.addVideo(video)
+        let clip = try #require(model.document.videoTrack.first)
+        #expect(clip.duration == 10 && clip.sourceEnd == 10)
+        let split = model.splitClip(clip.uid, at: 5, sourceDuration: video.duration)
+        #expect((try? split.get()) != nil)
+        #expect(model.document.videoTrack.count == 2)
+    }
+
     @Test("a drop on a sequential track inserts at the pointer: before the clip whose middle is to the right")
     func dropInsertsAtPointer() throws {
         let scope = try DataFolderOverride()

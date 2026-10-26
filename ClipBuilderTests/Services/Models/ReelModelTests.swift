@@ -97,6 +97,22 @@ import Testing
     }
   }
 
+  @Test func tasteTopKIsAFractionOfSmallHoldouts() {
+    #expect(ReelModelEvaluator.topK(holdout: 1) == 1)
+    #expect(ReelModelEvaluator.topK(holdout: 10) == 2)
+    #expect(ReelModelEvaluator.topK(holdout: 20) == 5)
+    #expect(ReelModelEvaluator.topK(holdout: 40) == 10)
+    #expect(ReelModelEvaluator.topK(holdout: 400) == 10)
+    // Ten held-out rows, three kept: a model that ranks two keeps first beats
+    // the 0.3 base rate, which prefix(10) of ten rows never could.
+    let truth = [true, true, true] + Array(repeating: false, count: 7)
+    let scores = [0.9, 0.8, 0.1] + Array(repeating: 0.2, count: 7)
+    let precision = ReelModelEvaluator.topPrecision(scores: scores, truth: truth)
+    #expect(precision == 1)
+    #expect(precision > 0.3)
+    #expect(ReelModelEvaluator.topPrecision(scores: [], truth: []) == 0)
+  }
+
   @Test func referencesNeverTrain() {
     var traits = ReelTraits()
     traits.duration = 3

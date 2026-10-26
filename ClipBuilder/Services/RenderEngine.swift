@@ -496,9 +496,15 @@ actor RenderEngine {
         var transitions: [String]
     }
 
+    /// `overlaps` receives the seconds each join actually took out of the
+    /// clock (keyed by gap index + `gapOffset`): a crossfade's clamped
+    /// overlap, what a recipe bridge consumed, 0 for a hard cut or a
+    /// crossfade that fell back to one. Timeline-clock work done after
+    /// assembly maps through it (`RenderClock`).
     func concatenate(clips: [URL], transitions: [String?], output: URL,
                      maximumOverlap: Double? = nil, transitionDuration: Double? = nil,
                      assemblyCache: AssemblyCache? = nil,
+                     overlaps: JoinOverlaps? = nil, gapOffset: Int = 0,
                      onFallback: (@Sendable () -> Void)? = nil,
                      onGroups: (@Sendable ([AssemblyGroup]) async -> Void)? = nil) async throws {
         let timing = PerfSignpost.begin("Assembly", metadata: "clips=\(clips.count)")
@@ -511,6 +517,9 @@ actor RenderEngine {
         var padded = transitions.map { $0 == "cut" ? nil : $0 }
         while padded.count < clips.count - 1 { padded.append(nil) }
         padded = Array(padded.prefix(clips.count - 1))
+        for gap in padded.indices { overlaps?.record(gap + gapOffset, 0) }
+        // The original gap each (possibly recipe-expanded) gap stands for.
+        var origins: [Int?] = Array(padded.indices)
 
         // Recipe gaps produce intermediate files that must live until the
         // final concat below, so their scratch is cleaned at function exit.
@@ -520,8 +529,15 @@ actor RenderEngine {
         if padded.contains(where: { TransitionRecipes.isRecipe($0) }) {
             let scratch = try makeScratchDirectory()
             recipeScratch = scratch
-            (clips, padded) = try await resolveRecipeGaps(clips: clips, transitions: padded,
-                                                          scratch: scratch)
+            let resolved = try await resolveRecipeGaps(clips: clips, transitions: padded, scratch: scratch)
+            (clips, padded, origins) = (resolved.clips, resolved.transitions, resolved.origins)
+            for (gap, consumed) in resolved.consumed { overlaps?.record(gap + gapOffset, consumed) }
+        }
+        // Record a crossfaded run's clamped overlaps against the original gaps.
+        let recordRun: @Sendable ([Int?], [Double]) -> Void = { runOrigins, used in
+            for (origin, overlap) in zip(runOrigins, used) {
+                if let origin { overlaps?.record(origin + gapOffset, overlap) }
+            }
         }
 
         if padded.allSatisfy({ $0 == nil }) {
@@ -531,9 +547,10 @@ actor RenderEngine {
         }
         if padded.allSatisfy({ $0 != nil }) {
             do {
-                try await cachedXfade(clips: clips, transitions: padded.compactMap { $0 }, output: output,
-                                      maximumOverlap: maximumOverlap, transitionDuration: transitionDuration,
-                                      cache: assemblyCache)
+                let used = try await cachedXfade(clips: clips, transitions: padded.compactMap { $0 }, output: output,
+                                                 maximumOverlap: maximumOverlap, transitionDuration: transitionDuration,
+                                                 cache: assemblyCache)
+                recordRun(origins, used)
             } catch {
                 try Task.checkCancellation()
                 onFallback?()
@@ -543,20 +560,23 @@ actor RenderEngine {
         }
 
         // Mixed: group runs of transition-joined clips.
-        var groups: [(clips: [URL], transitions: [String])] = []
+        var groups: [(clips: [URL], transitions: [String], origins: [Int?])] = []
         var currentClips = [clips[0]]
         var currentTransitions: [String] = []
+        var currentOrigins: [Int?] = []
         for index in 1..<clips.count {
             if let name = padded[index - 1] {
                 currentClips.append(clips[index])
                 currentTransitions.append(name)
+                currentOrigins.append(origins[index - 1])
             } else {
-                groups.append((currentClips, currentTransitions))
+                groups.append((currentClips, currentTransitions, currentOrigins))
                 currentClips = [clips[index]]
                 currentTransitions = []
+                currentOrigins = []
             }
         }
-        groups.append((currentClips, currentTransitions))
+        groups.append((currentClips, currentTransitions, currentOrigins))
 
         let scratch = try makeScratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
@@ -567,9 +587,10 @@ actor RenderEngine {
             } else {
                 let groupOutput = scratch.appendingPathComponent("group_\(index).mp4")
                 do {
-                    try await cachedXfade(clips: group.clips, transitions: group.transitions, output: groupOutput,
-                                          maximumOverlap: maximumOverlap, transitionDuration: transitionDuration,
-                                          cache: assemblyCache)
+                    let used = try await cachedXfade(clips: group.clips, transitions: group.transitions,
+                                                     output: groupOutput, maximumOverlap: maximumOverlap,
+                                                     transitionDuration: transitionDuration, cache: assemblyCache)
+                    recordRun(group.origins, used)
                 } catch {
                     try Task.checkCancellation()
                     onFallback?()
@@ -588,9 +609,11 @@ actor RenderEngine {
         }
     }
 
+    /// Returns each gap's crossfade length.
+    @discardableResult
     private func cachedXfade(clips: [URL], transitions: [String], output: URL,
                              maximumOverlap: Double?, transitionDuration: Double?,
-                             cache: AssemblyCache?) async throws {
+                             cache: AssemblyCache?) async throws -> [Double] {
         let duration = transitionDuration ?? RenderContext.transitions.xfadeDuration
         let key: String?
         if cache != nil {
@@ -607,10 +630,16 @@ actor RenderEngine {
             cache.hit()
             PerfSignpost.event("AssemblyCacheHit", metadata: "clips=\(clips.count)")
             try Task.checkCancellation()
-            return
+            // The cached run was made by the same clamping from the same inputs.
+            let durations = try await BoundedConcurrency.map(clips, limit: FFmpeg.jobLimit) { _, clip in
+                await FFmpeg.duration(of: clip)
+            }
+            return (try? Self.resolvedGaps(durations: durations, transitions: transitions,
+                                           configured: duration, maximumOverlap: maximumOverlap))?
+                .map(\.duration) ?? []
         }
-        try await xfadeAll(clips: clips, transitions: transitions, output: output,
-                           maximumOverlap: maximumOverlap, transitionDuration: duration)
+        let used = try await xfadeAll(clips: clips, transitions: transitions, output: output,
+                                      maximumOverlap: maximumOverlap, transitionDuration: duration)
         try Task.checkCancellation()
         if let cache, let key {
             let staged = cache.stagingDirectory.appendingPathComponent("assembly-\(UUID().uuidString).mp4")
@@ -620,6 +649,7 @@ actor RenderEngine {
                 cache.record(.init(key: key, source: staged))
             }
         }
+        return used
     }
 
     // MARK: - Action recipe bridges
@@ -629,7 +659,7 @@ actor RenderEngine {
     /// incoming clip minus its head — all hard-cut. Gaps whose clips are too
     /// short, and bridges that fail to render, degrade to plain hard cuts.
     private func resolveRecipeGaps(clips: [URL], transitions: [String?], scratch: URL)
-        async throws -> (clips: [URL], transitions: [String?]) {
+        async throws -> (clips: [URL], transitions: [String?], origins: [Int?], consumed: [Int: Double]) {
         let durations = try await BoundedConcurrency.map(clips, limit: FFmpeg.jobLimit) { _, clip in
             await FFmpeg.duration(of: clip)
         }
@@ -715,17 +745,25 @@ actor RenderEngine {
 
         var outClips: [URL] = [trimmed[0]]
         var outTransitions: [String?] = []
+        var outOrigins: [Int?] = []
+        var consumed: [Int: Double] = [:]
         for gap in transitions.indices {
             if recipe[gap] != nil, let bridge = bridgeByGap[gap] ?? nil {
                 outTransitions.append(nil)
                 outClips.append(bridge)
                 outTransitions.append(nil)
+                outOrigins += [nil, nil]
+                // The bridge replaces the tail and head; whatever it is
+                // shorter by is the time this join took out of the clock.
+                let bridgeDuration = await FFmpeg.duration(of: bridge)
+                consumed[gap] = max(0, tailTrim[gap] + headTrim[gap + 1] - bridgeDuration)
             } else {
                 outTransitions.append(TransitionRecipes.isRecipe(transitions[gap]) ? nil : transitions[gap])
+                outOrigins.append(gap)
             }
             outClips.append(trimmed[gap + 1])
         }
-        return (outClips, outTransitions)
+        return (outClips, outTransitions, outOrigins, consumed)
     }
 
     /// Frame-accurate re-encoded sub-clip of a normalized intermediate.
@@ -741,18 +779,13 @@ actor RenderEngine {
     /// cuts run 0.12s, regular crossfades the configured duration); throws
     /// when durations can't support the crossfades so callers can fall back
     /// to a plain concat.
-    private func xfadeAll(clips: [URL], transitions: [String], output: URL,
-                          maximumOverlap: Double? = nil, transitionDuration: Double? = nil) async throws {
-        let durations = try await BoundedConcurrency.map(clips, limit: FFmpeg.jobLimit) { _, clip in
-            await FFmpeg.duration(of: clip)
-        }
-        let configured = transitionDuration ?? RenderContext.transitions.xfadeDuration
-
-        // Resolve each gap to (xfade name, requested duration), then clamp to
-        // what the adjoining clips can afford. Any gap that can't fit even a
-        // minimal crossfade sinks the whole pass to plain concat.
+    /// Each gap's (xfade name, duration): the requested duration clamped to
+    /// what the adjoining clips can afford. Any gap that can't fit even a
+    /// minimal crossfade sinks the whole pass to plain concat (throws).
+    nonisolated static func resolvedGaps(durations: [Double], transitions: [String], configured: Double,
+                                         maximumOverlap: Double?) throws -> [(name: String, duration: Double)] {
         var resolved: [(name: String, duration: Double)] = []
-        for index in 0..<(clips.count - 1) {
+        for index in 0..<max(0, durations.count - 1) {
             let raw = transitions[safe: index] ?? "fade"
             let (name, requested) = Self.xfadeAliases[raw]
                 ?? (Self.transitions.contains(raw) ? raw : "fade", configured)
@@ -761,6 +794,18 @@ actor RenderEngine {
             guard actual >= 0.05 else { throw CocoaError(.featureUnsupported) }
             resolved.append((name, actual))
         }
+        return resolved
+    }
+
+    @discardableResult
+    private func xfadeAll(clips: [URL], transitions: [String], output: URL,
+                          maximumOverlap: Double? = nil, transitionDuration: Double? = nil) async throws -> [Double] {
+        let durations = try await BoundedConcurrency.map(clips, limit: FFmpeg.jobLimit) { _, clip in
+            await FFmpeg.duration(of: clip)
+        }
+        let configured = transitionDuration ?? RenderContext.transitions.xfadeDuration
+        let resolved = try Self.resolvedGaps(durations: durations, transitions: transitions,
+                                             configured: configured, maximumOverlap: maximumOverlap)
 
         var arguments = ["-y"]
         for clip in clips {
@@ -791,6 +836,7 @@ actor RenderEngine {
             "-filter_complex", filterParts.joined(separator: ";"),
             "-map", "[vout]", "-map", "[aout]",
         ] + FFmpeg.encodeArgs + [output.path], timeout: 1800, capture: .boundedStderrTail(), purpose: "transition compositor")
+        return resolved.map(\.duration)
     }
 
     /// Every input is one of our own normalized intermediates (identical
@@ -816,20 +862,29 @@ actor RenderEngine {
 
     /// Mix a music bed under the video: music at 0.18 (0.25 when the video
     /// is silent), with a 2s fade-out at the end. Port of overlay_music().
-    func overlayMusic(video: URL, music: URL, output: URL) async throws {
+    /// `volume` is the plan's 1–5 music level; 3 (and nil) keeps the
+    /// classic gain, the others scale it proportionally.
+    nonisolated static func musicGain(base: Double, volume: Int?) -> Double {
+        guard let volume else { return base }
+        return base * Double(min(5, max(1, volume))) / 3.0
+    }
+
+    func overlayMusic(video: URL, music: URL, output: URL, volume: Int? = nil) async throws {
         let duration = await FFmpeg.duration(of: video)
         let fadeStart = max(0, duration - 2.0)
         let hasAudio = await FFmpeg.hasAudioStream(video)
         if hasAudio {
-            let filter = String(format: "[1:a]volume=0.18,afade=t=out:st=%.2f:d=2.0[music];" +
-                                "[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[aout]", fadeStart)
+            let filter = String(format: "[1:a]volume=%.3f,afade=t=out:st=%.2f:d=2.0[music];" +
+                                "[0:a][music]amix=inputs=2:duration=first:dropout_transition=2[aout]",
+                                Self.musicGain(base: 0.18, volume: volume), fadeStart)
             try await FFmpeg.run(["-y", "-i", video.path, "-stream_loop", "-1", "-i", music.path,
                                   "-filter_complex", filter,
                                   "-map", "0:v", "-map", "[aout]",
                                   "-c:v", "copy", "-c:a", "aac", "-ar", "44100", "-ac", "2", "-b:a", "192k",
                                   "-shortest", output.path], timeout: 1200, capture: .boundedStderrTail(), purpose: "music mix; video stream copy")
         } else {
-            let filter = String(format: "[1:a]volume=0.25,afade=t=out:st=%.2f:d=2.0[aout]", fadeStart)
+            let filter = String(format: "[1:a]volume=%.3f,afade=t=out:st=%.2f:d=2.0[aout]",
+                                Self.musicGain(base: 0.25, volume: volume), fadeStart)
             try await FFmpeg.run(["-y", "-i", video.path, "-stream_loop", "-1", "-i", music.path,
                                   "-filter_complex", filter,
                                   "-map", "0:v", "-map", "[aout]",

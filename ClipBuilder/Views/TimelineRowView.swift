@@ -2,6 +2,8 @@ import SwiftUI
 
 struct TimelineRowView: View {
     let timeline: TimelineRecord
+    /// Scene id → source seconds, for clips stored as just their scene.
+    var sceneSpans: [Int64: Double] = [:]
     let onOpen: () -> Void
     let onRename: () -> Void
     let onDuplicate: () -> Void
@@ -41,7 +43,7 @@ struct TimelineRowView: View {
 
             Spacer()
 
-            Text(timeline.duration.timecode)
+            Text(timeline.duration(sceneSpans: sceneSpans).timecode)
                 .monospacedDigit()
                 .foregroundStyle(.secondary)
                 .frame(width: 60)

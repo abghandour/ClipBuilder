@@ -78,9 +78,12 @@ struct TimelinesView: View {
                     Button("New from Wizard…", systemImage: "wand.and.stars", action: openWizard)
                 }
             } else {
+                let spans = Dictionary(store.historyScenes.map { ($0.id, $0.endTime - $0.startTime) },
+                                       uniquingKeysWith: { first, _ in first })
                 List(store.timelines) { timeline in
                     TimelineRowView(
                         timeline: timeline,
+                        sceneSpans: spans,
                         onOpen: { open(timeline) },
                         onRename: { beginRename(timeline) },
                         onDuplicate: { store.duplicateTimeline(timeline) },

@@ -242,7 +242,8 @@ struct GraphAPIProviderTests {
                                                breakdown: "age", timeframe: "last_30_days")
         let comments = try await graph.fetchComments(mediaID: "media-1")
         #expect(comments.first?.text == "Hello")
-        #expect(transport.requests.count == 12)
+        // fetchReels follows /media paging too while it has fewer videos than the limit.
+        #expect(transport.requests.count == 13)
         #expect(transport.requests.allSatisfy { $0.url?.host == host })
     }
 
@@ -336,6 +337,37 @@ struct GraphAPIProviderTests {
     func noPagesAlternative(missing: [String]) {
         #expect(GraphAPIProvider.noVisiblePagesMessage(missing: missing)
             .contains("Or generate an Instagram Login token for the account instead (no Facebook Page needed)"))
+    }
+
+    @Test("Reels fetch pages past a run of photo posts")
+    func reelsPagePastPhotos() async throws {
+        let photos = (1...3).map { #"{"id":"photo-\#($0)","media_type":"IMAGE"}"# }.joined(separator: ",")
+        let transport = InstagramTestTransport([
+            "ig-123/media": .json(#"{"data":[\#(photos)],"paging":{"next":"https://graph.facebook.com/v23.0/media-page-2"}}"#),
+            "media-page-2": .json(#"{"data":[{"id":"photo-4","media_type":"CAROUSEL_ALBUM"},{"id":"reel-1","media_type":"VIDEO"},{"id":"reel-2","media_type":"VIDEO"}],"paging":{"next":"https://graph.facebook.com/v23.0/media-page-3"}}"#),
+            "media-page-3": .json(#"{"data":[{"id":"reel-3","media_type":"VIDEO"}]}"#),
+            "reel-1/insights": .json(#"{"data":[]}"#),
+            "reel-2/insights": .json(#"{"data":[]}"#),
+        ])
+        let graph = transport.provider()
+        defer { transport.finish(graph) }
+        let reels = try await graph.fetchReels(username: "peacegrappler", limit: 2, log: { _ in })
+        #expect(reels.map(\.mediaID) == ["reel-1", "reel-2"])
+        // Enough videos after page 2: page 3 is never requested.
+        #expect(!transport.requests.contains { $0.url?.path.hasSuffix("media-page-3") == true })
+    }
+
+    @Test("Comment replies follow their own paging cursor")
+    func repliesPaging() async throws {
+        let transport = InstagramTestTransport([
+            "media-1/comments": .json(#"{"data":[{"id":"c1","text":"Top","replies":{"data":[{"id":"r1","text":"one"}],"paging":{"next":"https://graph.facebook.com/v23.0/c1-replies-2"}}}]}"#),
+            "c1-replies-2": .json(#"{"data":[{"id":"r2","text":"two"}]}"#),
+        ])
+        let graph = transport.provider()
+        defer { transport.finish(graph) }
+        let comments = try await graph.fetchComments(mediaID: "media-1")
+        #expect(comments.map(\.id) == ["c1", "r1", "r2"])
+        #expect(comments.filter { $0.parentID == "c1" }.count == 2)
     }
 
     private func fields(_ request: URLRequest?) -> String? {

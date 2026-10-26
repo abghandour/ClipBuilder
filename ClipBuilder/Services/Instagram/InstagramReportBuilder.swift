@@ -98,7 +98,9 @@ nonisolated enum InstagramReportBuilder {
         }
 
         // Content published.
-        let yesterday = calendar.date(byAdding: .day, value: -1, to: now) ?? now
+        // "Yesterday" is the previous calendar day (report days are UTC), not the last 24 hours.
+        let startOfToday = calendar.startOfDay(for: now)
+        let startOfYesterday = calendar.date(byAdding: .day, value: -1, to: startOfToday) ?? startOfToday
         let week = calendar.date(byAdding: .day, value: -7, to: now) ?? now
         func published(_ label: String, _ rows: [IGReportMediaRow]) -> InstagramReport.PublishedRow {
             InstagramReport.PublishedRow(label: label, total: rows.count, reels: rows.filter(\.isReel).count,
@@ -107,7 +109,10 @@ nonisolated enum InstagramReportBuilder {
         }
         if period.isRolling || period == .allTime || period == .monthToDate {
             overview.contentPublished = [
-                published("Yesterday", media.filter { ($0.postedAt ?? .distantPast) >= yesterday }),
+                published("Yesterday", media.filter {
+                    guard let posted = $0.postedAt else { return false }
+                    return posted >= startOfYesterday && posted < startOfToday
+                }),
                 published("Last 7 Days", media.filter { ($0.postedAt ?? .distantPast) >= week }),
                 published(period == .last7 ? "Last 30 Days" : period.label,
                           period == .last7 ? media.filter { ReportPeriod.last30.contains($0.postedAt, now: now) } : inPeriod),
@@ -412,6 +417,7 @@ nonisolated enum InstagramReportBuilder {
                 point.reach += row.reach ?? 0; point.views += row.views ?? 0
                 point.likes += row.likes ?? 0; point.comments += row.comments ?? 0
                 point.saves += row.saves ?? 0; point.shares += row.shares ?? 0
+                point.count += 1
                 points[dayKey(date)] = point
             }
             return points.values.sorted { $0.date < $1.date }

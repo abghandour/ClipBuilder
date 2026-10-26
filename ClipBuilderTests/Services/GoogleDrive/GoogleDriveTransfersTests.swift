@@ -39,4 +39,40 @@ struct GoogleDriveTransfersTests {
         if case .success = result { Issue.record("Reconnect waiter survived Stop") }
         #expect(fixture.transfers.jobs.first?.status == .stopped)
     }
+
+    @Test func reattachWithChangedInputFolderUsesTheNewFolder() async throws {
+        let fixture = try AssetSyncFixture { _, _ in throw GoogleDriveError.invalidResponse }
+        await fixture.attach()
+        let name = fixture.profile.profileName
+        let original = try #require(fixture.transfers.mediaStore(profile: name))
+        #expect(await original.inputFolder.standardizedFileURL == fixture.profile.sourceFolderURL.standardizedFileURL)
+
+        await fixture.transfers.attach(profile: fixture.profile, database: fixture.database, client: fixture.client)
+        #expect(fixture.transfers.mediaStore(profile: name) === original)
+
+        var edited = fixture.profile
+        edited.sourceFolder = fixture.directory.url.appendingPathComponent("moved-input").path
+        await fixture.transfers.attach(profile: edited, database: fixture.database, client: fixture.client)
+        let updated = try #require(fixture.transfers.mediaStore(profile: name))
+        #expect(await updated.inputFolder.standardizedFileURL == edited.sourceFolderURL.standardizedFileURL)
+    }
+
+    @Test func disconnectLeavesCompletedJobsComplete() async throws {
+        let fixture = try AssetSyncFixture { _, _ in throw GoogleDriveError.invalidResponse }
+        await fixture.attach()
+        let name = fixture.profile.profileName
+        var done = DriveTransfer(profile: name, projectName: "Project", operation: .upload,
+                                 media: DriveMedia(kind: .output, recordID: 1, path: "/tmp/done.mp4"), folder: "f")
+        done.status = .complete
+        var paused = DriveTransfer(profile: name, projectName: "Project", operation: .upload,
+                                   media: DriveMedia(kind: .output, recordID: 2, path: "/tmp/paused.mp4"), folder: "f")
+        paused.status = .reconnect
+        fixture.transfers.jobs = [done, paused]
+        fixture.transfers.disconnect(profile: name)
+        #expect(fixture.transfers.jobs.first { $0.id == done.id }?.status == .complete)
+        #expect(fixture.transfers.jobs.first { $0.id == paused.id }?.status == .stopped)
+        // Resume never restarts a finished job.
+        fixture.transfers.resume(done.id)
+        #expect(fixture.transfers.jobs.first { $0.id == done.id }?.status == .complete)
+    }
 }
