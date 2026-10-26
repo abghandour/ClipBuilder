@@ -218,18 +218,14 @@ struct MiniSettingsCard: View {
                      bumper: $settings.introBumper)
         bumperToggle("Outro video", placement: .outro, value: $settings.outroVideo,
                      bumper: $settings.outroBumper)
-        MiniRow("Output") {
-            Picker("Output", selection: $settings.outputMode) {
-                ForEach(MiniWizardFlow.OutputMode.allCases, id: \.self) { mode in
-                    Text(mode.label).lineLimit(1).fixedSize().tag(mode)
-                }
+        if flow.isPodcastOrInterview {
+            MiniRow("Include B-roll") {
+                Toggle("Include B-roll", isOn: $settings.includesBRoll)
+                    .labelsHidden().toggleStyle(.checkbox)
+                    .lineLimit(1).fixedSize()
             }
-            .pickerStyle(.segmented)
-            .accessibilityLabel("Output")
         }
-        FormCaption(settings.outputMode == .oneReel
-            ? "Every kept pick is cut into one video, in list order."
-            : "Each kept pick becomes its own video.")
+        FormCaption("Every kept pick is cut into one video, in list order.")
     }
 
     /// Overlay: a saved template over the finished video, from a chosen

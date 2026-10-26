@@ -21,7 +21,7 @@ import Foundation
 
 nonisolated struct WizardOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
-        case dubLanguage
+        case dubLanguage, manualBRoll
         case strikeStats, strikeUnits, strikeSpeedCallouts, strikeGrapplingCard, strikeRoundCard
         case safeAreaOnly = "safe_area_only"
         case safeAreaPlatforms = "safe_area_platforms"
@@ -122,6 +122,7 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var interviewZoomMoves: Bool? = nil
     var interviewCuts: Bool? = nil
     var interviewPunchIn: String? = nil
+    var manualBRoll: Bool?
     var useBRoll = true
     var brollInstructions = ""
     var podcastFraming: PodcastFramingMode = .followSpeaker
@@ -296,6 +297,9 @@ nonisolated struct WizardPlanClip: Codable, Sendable {
     var speakerIntroductions: [TextOverlayItem] = []
     var leftSpeakerName: String? = nil
     var rightSpeakerName: String? = nil
+    /// Manual Express cutaways on the source recording clock.
+    var brollCuts: [BRollCut]? = nil
+    var miniPickID: Int64? = nil
 }
 
 /// One extra scene inside a layout block, in the named area.
@@ -3463,7 +3467,7 @@ actor WizardEngine {
                     // Pieces of one cut on the main track (VIP feed changes)
                     // share the cut's origin, so assembly pairs the cut's one
                     // extracted file with all of them.
-                    if area.track == 0 { area.originKey = timelineClip.originKey }
+                    if area.track == 0, !area.isCutaway { area.originKey = timelineClip.originKey }
                     document.videoTrack.append(area)
                 }
                 for var overlay in podcastCut.textOverlays {
@@ -3745,10 +3749,40 @@ actor WizardEngine {
         let people = options.usesNameTags ? try await database.fetchPeople() : []
         let tagText = options.usesNameTags
             ? try await database.tagText(field: profile.tagStyle(id: options.nameTagStyleID).description.field) : [:]
-        let podcastCuts = try await WizardTiming.measure("podcast layouts", emit: emit, minimumSeconds: 0.05) {
+        var preparedPodcastCuts = try await WizardTiming.measure("podcast layouts", emit: emit, minimumSeconds: 0.05) {
             try await WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: sceneMap,
                 options: options, database: database, profile: profile, captionStyle: captionStyle, log: emit)
         }
+        if options.manualBRoll == true, plan.clips.contains(where: { !($0.brollCuts ?? []).isEmpty }) {
+            let ids = Set(plan.clips.flatMap { ($0.brollCuts ?? []).map(\.sceneID) })
+            let brollScenes = try await database.fetchScenes(ids: ids)
+            for (index, clip) in plan.clips.enumerated() {
+                var single = plan
+                single.clips = [clip]
+                single.transitions = []
+                var original = preparedPodcastCuts[index] ?? Self.timelineDocument(from: single, sceneMap: sceneMap,
+                    renderSettings: options.renderSettings, pacing: options.pacing,
+                    podcastFraming: options.podcastFraming)
+                if preparedPodcastCuts[index] == nil {
+                    // Every kept piece keeps the speech clock, including pieces
+                    // before the first cutaway and when Include B-roll is off.
+                    for index in original.videoTrack.indices {
+                        original.videoTrack[index].precision = .speech
+                        original.videoTrack[index].duration = clip.end - clip.start
+                    }
+                    for index in original.cropBlocks.indices { original.cropBlocks[index].duration = clip.end - clip.start }
+                }
+                if preparedPodcastCuts[index] == nil, options.usesNameTags, let scene = sceneMap[clip.sceneID] {
+                    let aspects = await TextOverlayRenderer.tagImageAspects(profile.tagStyle(id: options.nameTagStyleID))
+                    original.textOverlays += WizardNameTags.ordinary(scene: scene, duration: clip.end - clip.start,
+                        people: people, tagText: tagText, options: options, captionStyle: captionStyle,
+                        profile: profile, imageAspects: aspects)
+                }
+                preparedPodcastCuts[index] = MiniBRollTimeline.adding(to: original, clip: clip,
+                    scenes: brollScenes, enabled: options.useBRoll)
+            }
+        }
+        let podcastCuts = preparedPodcastCuts
         let overlayTemplates = OverlayTemplateStore.list()
         var batchWatermark: [RenderEngine.ClipOverlay] = []
         if ExpressBatchWatermark.canFold(options: options, plan: plan,
@@ -3805,7 +3839,7 @@ actor WizardEngine {
         }
         for index in document.videoTrack.indices {
             document.videoTrack[index].muted = options.muteSource || document.videoTrack[index].muted
-            document.videoTrack[index].captions = options.addCaptions && document.videoTrack[index].track == 0
+            document.videoTrack[index].captions = options.addCaptions && !document.videoTrack[index].isCutaway && document.videoTrack[index].track == 0
                 ? (options.captionPositionOverride ?? captionStyle.position) : "none"
         }
         // Brand cards must outlive scratch cleanup so Builder can reopen them.
@@ -3859,7 +3893,10 @@ actor WizardEngine {
         if brollOptions.highlightFraming == nil { brollOptions.highlightFraming = plan.framing }
         // The VIP focuses are B-roll by definition; they do not wait for the B-roll switch or instructions.
         let vipFraming = brollOptions.highlightFraming == .vip || brollOptions.highlightFraming == .vipBRoll
-        if vipFraming || (options.useBRoll && !options.brollInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
+        if options.manualBRoll == true {
+            // Manual cutaways already live in each extraction document, below
+            // captions/name tags. Never invoke Full Wizard's planner here.
+        } else if vipFraming || (options.useBRoll && !options.brollInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty) {
             document = try await WizardTiming.measure("b-roll", emit: emit) {
                 try await WizardPodcastBRoll.adding(to: document, options: brollOptions, database: database,
                                                     ai: ai, cache: &brollCache, log: emit)
@@ -3989,6 +4026,7 @@ actor WizardEngine {
             // Bumpers, cutaways and the whole-video overlays are added here, using the
             // same exclusive compositor as Builder. The editable document retains originals.
             var prepared = Self.preparedDocument(from: document, clipURLs: clipURLs, transitions: clipTransitions)
+            if options.manualBRoll == true { prepared.videoTrack.removeAll(where: \.isCutaway) }
             // These blocks carry exactPlacement, so the compositor keeps them
             // where the Overlays editor shows them, in this pass and in Builder.
             if !finalOverlayBlocks.isEmpty { prepared.overlayBlocks = finalOverlayBlocks }

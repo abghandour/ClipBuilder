@@ -26,8 +26,11 @@ extension AppStore {
         options.highlightMaxSeconds = flow.length.seconds.map(Double.init) ?? editingDefaults.podcast.highlightMaxSeconds
         options.highlightMaxCount = 3
         options.aiInstructions = activeProfile.miniInstructions ?? ""
+        options.useBRoll = flow.isPodcastOrInterview && MiniWizardSettings.remembered(profile: activeProfile).includesBRoll
+        options.manualBRoll = true
         options.critiqueLoop = false
         options.workflow = .automatic
+        let previousPlans: [WizardPlan] = miniRun.flatMap { $0.video.id == video.id && $0.footageKind == .highlights ? $0.candidates.map { $0.take.plan } : nil } ?? []
         let profile = activeProfile
         let generation = profileGeneration
         let podcastSettings = podcastEditingSettings
@@ -44,6 +47,7 @@ extension AppStore {
                             database: database, profile: profile, emit: wizardSelectionLogSink(),
                             requestText: options.aiInstructions, interpretRequest: false)
                         let plans = WizardEngine.miniHighlightPlans(review.candidates, videoID: video.id, scenes: review.scenes)
+                            .map { MiniBRollRules.preservingCuts(in: $0, from: previousPlans) }
                         guard !plans.isEmpty else {
                             throw AIError.unusableResponse("No podcast highlights fit this length. Try another length or instructions.")
                         }
@@ -66,6 +70,8 @@ extension AppStore {
                     }
                     try Task.checkCancellation()
                     guard generation == profileGeneration, activeProjectID == projectID else { return }
+                    UserDefaults.standard.set(batch, forKey: MiniWizardMemory.batchKey(profileName: profile.profileName,
+                        projectID: projectID, videoID: video.id, kind: .highlights, length: flow.length))
                     miniRun = MiniWizardRun(projectID: projectID, video: video, footageKind: .highlights,
                         length: flow.length, batchID: batch, candidates: candidates, options: options,
                         selectedSelectionID: candidates.first?.id)
@@ -109,6 +115,7 @@ extension AppStore {
                     let take: WizardSelectionTake
                     if run.options.formatPreset == ReelRecipe.podcastHighlights.id {
                         var options = run.options
+                        options.useBRoll = MiniWizardSettings.remembered(profile: profile).includesBRoll
                         options.highlightMaxCount = 1
                         let request = [options.aiInstructions, feedback].filter { !$0.isEmpty }.joined(separator: "\n\n")
                         let review = try await wizard.findPodcastHighlights(options: options, settings: podcastSettings,
@@ -119,9 +126,11 @@ extension AppStore {
                               WizardPlanRules.avoidsRanges(plan, ranges: ranges) else {
                             throw AIError.unusableResponse("No replacement avoids the other kept candidates. Try another note or unkeep a candidate.")
                         }
+                        let reviewed = MiniBRollRules.preservingCuts(in: plan,
+                            from: run.candidates.filter { $0.id == selectionID }.map { $0.take.plan })
                         try Task.checkCancellation()
                         take = try await database.recordWizardTake(projectID: run.projectID, selectionID: selectionID,
-                            options: run.options.step1, plan: plan, note: feedback)
+                            options: run.options.step1, plan: reviewed, note: feedback)
                     } else {
                         take = try await wizard.findMoments(options: run.options, note: feedback,
                             previousTakes: previous, avoidingRanges: ranges, profile: profile,
@@ -166,6 +175,8 @@ extension AppStore {
         options.sourceVideoPaths = [video.path ?? ""]
         options.sourcesRestricted = true
         options.formatPreset = "podcast"
+        options.useBRoll = flow.isPodcastOrInterview && MiniWizardSettings.remembered(profile: activeProfile).includesBRoll
+        options.manualBRoll = true
         options.critiqueLoop = false
         options.workflow = .automatic
         beginWizardSelectionWork(projectID: projectID, stage: "Loading Q&A exchanges", options: options)
@@ -193,8 +204,12 @@ extension AppStore {
                 let qa = MiniWizardQA(sections: sections, rows: rows, labels: labels,
                                       turns: speakers.turns, kept: remembered.intersection(Set(sections.map(\.id))),
                                       speakerSpans: TranscriptSpeakers.spans(turns: namedTurns, roster: speakers.roster))
+                let batch = MiniWizardMemory.batchID(profileName: activeProfile.profileName,
+                    projectID: projectID, videoID: video.id, kind: .qa)
+                let saved = try await database.miniSavedCandidates(projectID: projectID, miniBatch: batch)
+                guard !Task.isCancelled, generation == profileGeneration, activeProjectID == projectID else { return }
                 miniRun = MiniWizardRun(projectID: projectID, video: video, footageKind: .qa,
-                    length: .automatic, batchID: UUID().uuidString, candidates: [], options: options, qa: qa)
+                    length: .automatic, batchID: batch, candidates: saved, options: options, qa: qa)
                 appendLog(\.wizardLog, ["Express: \(sections.count) Q&A exchanges ready to review."])
             } catch is CancellationError {
                 if generation == profileGeneration { appendLog(\.wizardLog, ["Loading Q&A stopped."]) }
@@ -214,16 +229,22 @@ extension AppStore {
         miniRun?.qa = qa
     }
 
-    /// Moving to Settings creates saved takes without planning or rendering anything.
-    func recordMiniQASelections(then: @escaping @MainActor () -> Void = {}) {
+    /// Save the chosen ranges, preserving manual source-clock cutaways.
+    func recordMiniQASelections(opening card: MiniWizardFlow.Card = .settings, then: @escaping @MainActor () -> Void = {}) {
         guard let run = miniRun, run.projectID == activeProjectID, run.footageKind == .qa,
               let qa = run.qa, run.keptCount > 0, let database, !isWizardRunning else { return }
         let generation = profileGeneration
         beginWizardSelectionWork(projectID: run.projectID, stage: "Saving Q&A selections", options: run.options)
         wizardTask = Task {
-            defer { finishWizardSelectionWork(generation: generation) }
+            var saved = false
+            defer {
+                finishWizardSelectionWork(generation: generation)
+                if saved, !Task.isCancelled, generation == profileGeneration,
+                   activeProjectID == run.projectID, miniRun?.batchID == run.batchID { then() }
+            }
             do {
                 try await sceneEditSaveTask?.value
+                try await wizardSelectionSaveTask?.value
                 try Task.checkCancellation()
                 guard generation == profileGeneration, activeProjectID == run.projectID,
                       miniRun?.batchID == run.batchID else { return }
@@ -235,8 +256,8 @@ extension AppStore {
                 miniRun?.candidates = candidates
                 miniRun?.selectedSelectionID = candidates.first?.id
                 refreshMiniQASections()
-                miniRun?.requestedCard = candidates.isEmpty ? .footage : .settings
-                if !candidates.isEmpty { then() }
+                miniRun?.requestedCard = candidates.isEmpty ? .footage : card
+                saved = !candidates.isEmpty
                 appendLog(\.wizardLog, ["Express: saved \(candidates.count) Q&A selections."])
                 await refreshWizardSelections()
             } catch is CancellationError {
@@ -260,7 +281,8 @@ extension AppStore {
             guard let self, self.miniRun?.batchID == batchID else { return }
             self.generateMiniVideos(settings: settings, flow: flow, batchID: batchID)
         }
-        if run.footageKind != .highlights, kept.isEmpty, run.keptCount > 0 {
+        if run.keptCount > 0 && (run.footageKind == .qa || run.footageKind == .transcript
+            || (run.footageKind == .fightMetrics && kept.isEmpty)) {
             switch run.footageKind {
             case .qa: recordMiniQASelections(then: generate)
             case .transcript: recordMiniTranscriptSelections(then: generate)
@@ -286,6 +308,7 @@ extension AppStore {
         let generation = profileGeneration
         let wizard = wizard
         var base = run.options
+        base.manualBRoll = true
         base.pacing = profile.defaultPacing
         base.critiqueLoop = false
         base.accountBenchmarks = igBenchmarks
@@ -305,9 +328,9 @@ extension AppStore {
         let footageKind = run.footageKind
         let selectionIDs = candidates.map { ($0.id, $0.take.id) }
         let combinedName = candidates[0].selection.name
-        generateWizardBatch(projectID: run.projectID, options: options, oneReel: chosen.outputMode == .oneReel,
+        generateWizardBatch(projectID: run.projectID, options: options, oneReel: true,
                             cameraFocus: flow.showsCameraFocus, formatName: run.options.formatPreset,
-                            stopMessage: "Express rendering stopped.", failureTitle: "Could not generate Express videos",
+                            stopMessage: "Express rendering stopped.", failureTitle: "Could not generate Express reel",
                             gatherTakes: { database in
             var takes: [WizardSelectionTake] = []
             for (selectionID, takeID) in selectionIDs {

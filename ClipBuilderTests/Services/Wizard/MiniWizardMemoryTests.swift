@@ -5,7 +5,7 @@ import Testing
 @Suite("Mini Wizard memory")
 struct MiniWizardMemoryTests {
     @Test func everyAnswerHasAStableDistinctProfileKey() {
-        let names: Set<String> = ["videoPath", "footageKind", "length", "quality", "preset", "cameraFocus", "interviewZoom",
+        let names: Set<String> = ["broll", "includeBRoll", "videoPath", "footageKind", "length", "quality", "preset", "cameraFocus", "interviewZoom",
             "interviewZoomMoves", "interviewCuts", "interviewPunchIn", "captions", "englishCaptions", "captionPosition", "speakerCaptionPositions", "captionStyleID", "introVideo", "outroVideo", "nameTags", "nameTagContent", "nameTagStyle", "nameTagStyleID", "nameTagPosition", "watermark", "outputMode",
             "overlay", "overlayTemplate", "overlayStart", "overlayDuration", "overlayTexts", "overlayPosition", "introBumper", "outroBumper", "watermarkOverlay", "watermarkOpacity", "transition", "look",
                                   "muteSourceAudio", "music", "musicTrack", "settingsTab", "safeAreaOnly", "safeAreaPlatforms",
@@ -64,6 +64,7 @@ struct MiniWizardMemoryTests {
         first.interviewZoomMoves = true
         first.interviewCuts = true
         first.interviewPunchIn = "interviewer"
+        first.includeBRoll = false
         first.captions = true
         first.speakerCaptionPositions = ["speaker1": "top", "speaker2": "custom:0.5000,0.2500"]
         first.englishCaptions = true
@@ -98,7 +99,7 @@ struct MiniWizardMemoryTests {
                          forKey: MiniWizardMemory.key(for: .footageKind, profileName: name))
             defaults.set(MiniWizardFlow.Length.fifteen.rawValue,
                          forKey: MiniWizardMemory.key(for: .length, profileName: name))
-            for field in MiniWizardMemory.Field.allCases where ![.interviewPunchIn, .captionPosition, .speakerCaptionPositions, .captionStyleID, .nameTagContent, .nameTagStyle, .nameTagStyleID, .nameTagPosition, .overlayTemplate, .overlayDuration, .overlayPosition, .introBumper, .outroBumper, .watermarkOverlay, .watermarkOpacity, .musicTrack, .settingsTab, .safeAreaPlatforms, .dubLanguage].contains(field) {
+            for field in MiniWizardMemory.Field.allCases where ![.broll, .includeBRoll, .interviewPunchIn, .captionPosition, .speakerCaptionPositions, .captionStyleID, .nameTagContent, .nameTagStyle, .nameTagStyleID, .nameTagPosition, .overlayTemplate, .overlayDuration, .overlayPosition, .introBumper, .outroBumper, .watermarkOverlay, .watermarkOpacity, .musicTrack, .settingsTab, .safeAreaPlatforms, .dubLanguage].contains(field) {
                 #expect(defaults.object(forKey: MiniWizardMemory.key(for: field, profileName: name)) != nil)
             }
         }
@@ -109,5 +110,19 @@ struct MiniWizardMemoryTests {
             #expect(defaults.string(forKey: MiniWizardMemory.key(for: .footageKind, profileName: name)) == "qa")
             #expect(defaults.string(forKey: MiniWizardMemory.key(for: .length, profileName: name)) == "15")
         }
+    }
+}
+
+extension MiniWizardMemoryTests {
+    @Test func brollBatchIdentitySurvivesRelaunchAndIsScopedToItsRun() throws {
+        let suite = "MiniBRollMemoryTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let first = MiniWizardMemory.batchID(profileName: "A", projectID: 1, videoID: 2, kind: .qa, defaults: defaults)
+        let reopened = try #require(UserDefaults(suiteName: suite))
+        #expect(MiniWizardMemory.batchID(profileName: "A", projectID: 1, videoID: 2, kind: .qa, defaults: reopened) == first)
+        #expect(MiniWizardMemory.batchID(profileName: "B", projectID: 1, videoID: 2, kind: .qa, defaults: defaults) != first)
+        #expect(MiniWizardMemory.batchID(profileName: "A", projectID: 3, videoID: 2, kind: .qa, defaults: defaults) != first)
+        #expect(MiniWizardMemory.batchID(profileName: "A", projectID: 1, videoID: 2, kind: .transcript, defaults: defaults) != first)
     }
 }

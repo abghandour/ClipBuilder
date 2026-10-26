@@ -3,11 +3,17 @@ import Foundation
 /// Hash the highlight inputs after tag text is resolved, so an unchanged
 /// request reuses the reel instead of planning and encoding it again.
 nonisolated enum PodcastHighlightRenderKey {
-    static let version = "podcast-highlight-render-v2"
+    static let version = "podcast-highlight-render-v3"
 
     private struct Candidate: Encodable {
         var sourceStart: Double; var sourceEnd: Double; var framing: String; var kind: String
         var speakerKeys: [String]; var includesQuestion: Bool
+        var brollCuts: [BRoll]?
+    }
+    /// Card identity changes on a new find; only the saved cut's contents affect reuse.
+    private struct BRoll: Encodable {
+        var start: Double; var end: Double; var sceneID: Int64; var sceneOffset: Double
+        var reason: String; var origin: BRollCut.Origin
     }
     private struct Video: Encodable {
         var path: String; var fingerprint: String; var duration: Double; var width: Int; var height: Int
@@ -59,7 +65,11 @@ nonisolated enum PodcastHighlightRenderKey {
         let evidence = Evidence(
             candidate: Candidate(sourceStart: candidate.sourceStart, sourceEnd: candidate.sourceEnd,
                                  framing: candidate.framing.rawValue, kind: candidate.kind.rawValue,
-                                 speakerKeys: candidate.speakerKeys.sorted(), includesQuestion: candidate.includesQuestion),
+                                 speakerKeys: candidate.speakerKeys.sorted(), includesQuestion: candidate.includesQuestion,
+                                 brollCuts: candidate.brollCuts?.map {
+                                     BRoll(start: $0.start, end: $0.end, sceneID: $0.sceneID,
+                                           sceneOffset: $0.sceneOffset, reason: $0.reason, origin: $0.origin)
+                                 }),
             video: Video(path: video.path ?? "", fingerprint: fingerprint, duration: video.duration, width: video.width,
                          height: video.height, videoType: video.videoType, podcastLayout: video.podcastLayout,
                          podcastSeamX: video.podcastSeamX, podcastTilesJSON: video.podcastTilesJSON),

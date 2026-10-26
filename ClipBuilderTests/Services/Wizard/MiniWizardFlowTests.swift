@@ -249,20 +249,20 @@ extension MiniWizardFlowTests {
     @Test func generateTitleAndSettingsSummary() {
         let separate = MiniWizardFlow(outputMode: .separateVideos)
         #expect(separate.generateButtonTitle(keptCount: 1) == "Generate Video")
-        #expect(separate.generateButtonTitle(keptCount: 3) == "Generate Videos")
+        #expect(separate.generateButtonTitle(keptCount: 3) == "Generate Video")
         #expect(MiniWizardFlow(outputMode: .oneReel).generateButtonTitle(keptCount: 3) == "Generate Video")
-        #expect(separate.outputCount(keptCount: 3) == 3)
+        #expect(separate.outputCount(keptCount: 3) == 1)
         #expect(MiniWizardFlow(outputMode: .oneReel).outputCount(keptCount: 3) == 1)
         #expect(MiniWizardFlow(outputMode: .oneReel).outputCount(keptCount: 0) == 0)
         var settings = MiniWizardSettings()
         settings.captions = true
-        #expect(separate.settingsSummary(settings) == "Balanced · 9:16 · 1080p · captions · watermark · separate videos")
+        #expect(separate.settingsSummary(settings) == "Balanced · 9:16 · 1080p · captions · watermark")
         settings.outputMode = .oneReel
         settings.captions = false
         settings.watermark = false
         settings.preset = .landscape4K
         settings.quality = .archival
-        #expect(separate.settingsSummary(settings) == "High · 16:9 · 4K · one reel")
+        #expect(separate.settingsSummary(settings) == "High · 16:9 · 4K")
     }
 }
 
@@ -282,9 +282,9 @@ extension MiniWizardFlowTests {
         settings.captions = true
         let flow = MiniWizardFlow(video: Fixtures.video(), length: .fifteen)
         #expect(flow.runSummary(candidates: candidates, exchangeCount: 0, settings: settings)
-            == "3 reels from Guard pass that ended it, Take 2 + 2 more · 15 s · Balanced · 9:16 · 1080p · captions · watermark")
+            == "One reel from Guard pass that ended it, Take 2 + 2 more · 15 s · Balanced · 9:16 · 1080p · captions · watermark")
         let single = [candidates[1]]
-        #expect(flow.runSummary(candidates: single, exchangeCount: 0, settings: settings).hasPrefix("1 reel from Guard pass that ended it, Take 2 · 15 s"))
+        #expect(flow.runSummary(candidates: single, exchangeCount: 0, settings: settings).hasPrefix("One reel from Guard pass that ended it, Take 2 · 15 s"))
         settings.outputMode = .oneReel
         #expect(flow.runSummary(candidates: candidates, exchangeCount: 0, settings: settings).hasPrefix("One reel from Guard pass that ended it, Take 2 + 2 more"))
         #expect(flow.runSummary(candidates: [candidates[0]], exchangeCount: 0, settings: settings) == "No kept footage")
@@ -298,7 +298,7 @@ extension MiniWizardFlowTests {
         #expect(card.sections.map(\.title) == ["Picture", "Overlays", "Package"], "no Audio row for an untyped video")
         #expect(card.sections[0].items == ["Balanced", "9:16 · 1080p", "Random transitions"])
         #expect(card.sections[1].items == ["Captions", "Watermark"])
-        #expect(card.sections[2].items == ["One reel"])
+        #expect(card.sections[2].items.isEmpty)
         var fight = Fixtures.video()
         fight.videoType = VideoType.fight.rawValue
         let fightCard = MiniWizardFlow(video: fight, length: .fifteen).runSummaryCard(candidates: candidates, exchangeCount: 0, settings: settings)
@@ -332,8 +332,8 @@ extension MiniWizardFlowTests {
         settings.outroVideo = true
         settings.nameTags = true
         #expect(flow.runSummary(candidates: [], exchangeCount: 1, settings: settings)
-            == "1 reel from 1 exchange · High · 16:9 · 1080p · intro video · outro video · name tags")
-        #expect(flow.runSummary(candidates: [], exchangeCount: 4, settings: settings).hasPrefix("4 reels from 4 exchanges"))
+            == "One reel from 1 exchange · High · 16:9 · 1080p · intro video · outro video · name tags")
+        #expect(flow.runSummary(candidates: [], exchangeCount: 4, settings: settings).hasPrefix("One reel from 4 exchanges"))
         #expect(flow.runSummary(candidates: [], exchangeCount: 0, settings: settings) == "No kept footage")
     }
 }

@@ -126,7 +126,7 @@ struct MiniWizardSettingsTests {
         settings.watermark = true
         settings.watermarkOverlay = " "
         #expect(settings.step2Options(base: WizardStep2Options()).watermarkOverlayTemplate == nil)
-        #expect(MiniWizardFlow().settingsSummary(settings).hasSuffix("watermark · separate videos"))
+        #expect(MiniWizardFlow().settingsSummary(settings).hasSuffix("watermark"))
         #expect(settings.effectiveWatermarkOpacity == BrandRenderer.logoWatermarkOpacity)
         settings.watermarkOverlay = "Main"
         #expect(settings.effectiveWatermarkOpacity == WizardFixedOverlay.watermarkOpacity)
@@ -276,7 +276,7 @@ extension MiniWizardSettingsTests {
         #expect(try await temp.database.originalTranscriptLanguage(videoID: video) == "pt")
     }
 
-    @Test func combinedSelectionKeepsOriginalsAndRecordsOneTakeInTheSameBatch() async throws {
+    @Test func combinedSelectionKeepsOriginalsOutOfTheRestorableBatch() async throws {
         let temp = try TempDatabase()
         let db = temp.database
         let video = try await temp.seedVideo()
@@ -292,11 +292,11 @@ extension MiniWizardSettingsTests {
         let combined = try await db.recordMiniCombinedTake(projectID: project, miniBatch: "mini", name: "Renamed question",
             takes: [second, first], options: options)
         let selection = try #require(try await db.wizardSelection(id: combined.selectionID))
-        #expect(selection.name == "Renamed question" && selection.recipe == "podcast" && selection.miniBatch == "mini")
+        #expect(selection.name == "Renamed question" && selection.recipe == "podcast" && selection.miniBatch == "mini:combined")
         #expect(selection.step1Options.targetDurationSeconds == nil)
         #expect(combined.ordinal == 1 && combined.provenance == nil && combined.plan.provenance == nil)
         #expect(combined.plan.clips.count == 2 && combined.plan.transitions == ["cut"])
-        #expect(try await db.fetchWizardSelections(projectID: project, miniBatch: "mini").count == 3)
+        #expect(try await db.fetchWizardSelections(projectID: project, miniBatch: "mini").count == 2)
         #expect(try await db.fetchWizardSelectionTakes(selectionID: first.selectionID).count == 1)
         #expect(try await db.fetchWizardSelectionTakes(selectionID: second.selectionID).count == 1)
     }
@@ -575,5 +575,44 @@ extension MiniWizardSettingsTests {
         settings.remember(profileName: "First", defaults: defaults)
         #expect(MiniWizardSettings.remembered(profile: Fixtures.brand(name: "First"), defaults: defaults)
             .speakerCaptionPositions == nil)
+    }
+}
+
+extension MiniWizardSettingsTests {
+    @Test func oldOutputModesDecodeButExpressAlwaysProducesOneReel() throws {
+        for mode in MiniWizardFlow.OutputMode.allCases {
+            let json = Data("{\"outputMode\":\"\(mode.rawValue)\"}".utf8)
+            var settings = try JSONDecoder().decode(MiniWizardSettings.self, from: json)
+            #expect(settings.outputMode == mode)
+            #expect(settings.includeBRoll == nil && !settings.includesBRoll)
+            let flow = MiniWizardFlow(outputMode: settings.outputMode)
+            #expect(flow.outputCount(keptCount: 4) == 1)
+            #expect(flow.generateButtonTitle(keptCount: 4) == "Generate Video")
+            #expect(!flow.settingsSummary(settings).contains("reel"))
+            settings.didEditBRoll()
+            #expect(settings.includesBRoll && settings.step2Options(base: .init()).useBRoll == true)
+            settings.includesBRoll = false
+            #expect(settings.step2Options(base: .init()).useBRoll == false)
+            settings.didEditBRoll()
+            #expect(settings.includesBRoll)
+            let restored = try JSONDecoder().decode(MiniWizardSettings.self, from: JSONEncoder().encode(settings))
+            #expect(restored.includeBRoll == true)
+        }
+    }
+
+    @Test func packageListsOnlyEnabledManualBRoll() {
+        var plan = Fixtures.plan()
+        plan.clips[0].brollCuts = [.init(start: 1, end: 2, sceneID: 2, sceneOffset: 0, reason: "word", origin: .user)]
+        let candidate = MiniWizardCandidate(selection: .init(id: 1, projectID: 1, name: "Kept", recipe: "podcast", step1Options: .init()),
+            take: .init(id: 1, selectionID: 1, ordinal: 1, plan: plan, sceneIDs: [1]))
+        let flow = MiniWizardFlow(video: Fixtures.video(), hasPodcastExchangeScenes: true)
+        var settings = MiniWizardSettings()
+        settings.didEditBRoll()
+        let included = flow.runSummaryCard(candidates: [candidate], exchangeCount: 0, settings: settings)
+        #expect(included.sections.first { $0.title == "Package" }?.items == ["B-roll (1)"])
+        settings.includesBRoll = false
+        let excluded = flow.runSummaryCard(candidates: [candidate], exchangeCount: 0, settings: settings)
+        #expect(excluded.sections.first { $0.title == "Package" }?.items.isEmpty == true)
+        #expect(candidate.take.plan.clips[0].brollCuts?.count == 1)
     }
 }

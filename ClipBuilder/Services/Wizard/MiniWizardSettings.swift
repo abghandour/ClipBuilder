@@ -12,6 +12,13 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var interviewCuts: Bool? = false
     var interviewPunchIn: String?
 
+    /// Manual cutaways are included only after an edit or an explicit opt-in.
+    var includeBRoll: Bool?
+    var includesBRoll: Bool {
+        get { includeBRoll ?? false }
+        set { includeBRoll = newValue }
+    }
+
     var captions = false
     var englishCaptions = false
     var captionPosition: String?
@@ -61,6 +68,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var dubLanguage: String?
     var outputMode: MiniWizardFlow.OutputMode = .separateVideos
 
+    mutating func didEditBRoll() { includeBRoll = true }
+
     var resolvedInterviewCuts: Bool {
         get { interviewCuts ?? false }
         set { interviewCuts = newValue }
@@ -74,6 +83,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     init() {}
 
     enum CodingKeys: String, CodingKey {
+        case includeBRoll
         case quality, preset, cameraFocus, interviewZoom, interviewZoomMoves, interviewCuts, interviewPunchIn, captions, englishCaptions, captionPosition, speakerCaptionPositions, captionStyleID
         case introVideo, outroVideo, introBumper, outroBumper
         case safeAreaOnly, safeAreaPlatforms
@@ -88,6 +98,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     init(from decoder: Decoder) throws {
         let c = try decoder.container(keyedBy: CodingKeys.self)
         let base = Self()
+        includeBRoll = try c.decodeIfPresent(Bool.self, forKey: .includeBRoll)
         quality = try c.decodeIfPresent(EncodeQuality.self, forKey: .quality) ?? base.quality
         preset = try c.decodeIfPresent(RenderPreset.self, forKey: .preset) ?? base.preset
         cameraFocus = try c.decodeIfPresent(String.self, forKey: .cameraFocus) ?? base.cameraFocus
@@ -141,6 +152,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
 
     func step2Options(base: WizardStep2Options) -> WizardStep2Options {
         var result = base
+        result.useBRoll = includesBRoll
         var render = base.renderSettings ?? RenderSettings()
         render.quality = quality
         render.preset = preset
@@ -223,6 +235,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     func effective(for flow: MiniWizardFlow, introAvailable: Bool, outroAvailable: Bool) -> Self {
         var result = self
         if !flow.showsCameraFocus { result.cameraFocus = "" }
+        if !flow.isPodcastOrInterview { result.includeBRoll = false }
         if !flow.showsNameTags { result.nameTags = false }
         if !flow.showsCaptionLanguage { result.englishCaptions = false }
         if !flow.showsAudioOptions {
@@ -257,6 +270,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
             ?? profile.defaultRenderSettings.preset
         if result.quality == .custom { result.quality = .balanced }
         if result.preset == .custom { result.preset = .portrait1080 }
+        if defaults.object(forKey: key(.includeBRoll)) != nil { result.includeBRoll = defaults.bool(forKey: key(.includeBRoll)) }
         result.captionPosition = defaults.string(forKey: key(.captionPosition))
         result.speakerCaptionPositions = defaults.dictionary(forKey: key(.speakerCaptionPositions)) as? [String: String]
         result.captionStyleID = defaults.string(forKey: key(.captionStyleID))
@@ -305,6 +319,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         func key(_ field: MiniWizardMemory.Field) -> String { MiniWizardMemory.key(for: field, profileName: profileName) }
         var changed = false
         func set(_ value: Any?, forKey key: String) { if defaults.setIfChanged(value, forKey: key) { changed = true } }
+        set(includeBRoll, forKey: key(.includeBRoll))
         set(quality.rawValue, forKey: key(.quality))
         set(preset.rawValue, forKey: key(.preset))
         set(captionPosition, forKey: key(.captionPosition))

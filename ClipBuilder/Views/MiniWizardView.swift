@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// The three Mini steps share the full Wizard’s saved selections and renderer.
+/// The Express cards share the full Wizard’s saved selections and renderer.
 struct MiniWizardView: View {
     @Environment(AppStore.self) private var store
     let profileName: String
@@ -25,6 +25,7 @@ struct MiniWizardView: View {
     @State private var settingsProfile: String?
     @State private var transcriptLanguage: String?
     @State private var hasTranscript = false
+    @State private var confirmRemoveBRoll = false
     @State private var collapsedCard: MiniWizardFlow.Card?
     /// Navigation before a run exists; a run carries its own requested card.
     @State private var pendingCard: MiniWizardFlow.Card = .source
@@ -121,6 +122,14 @@ struct MiniWizardView: View {
             }
         }
         .screenTitle("AI Wizard", subtitle: "Express")
+        .confirmationDialog("Remove all B-rolls?", isPresented: $confirmRemoveBRoll) {
+            Button("Remove all B-rolls", role: .destructive) {
+                guard let run = currentRun else { return }
+                store.removeAllMiniBRoll(batchID: run.batchID)
+                miniSettings.didEditBRoll()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: { Text("The kept footage will stay in the reel.") }
         .sheet(item: $presetSheet) { sheet in
             let lastUsed = UserDefaults.standard.string(forKey: MiniWizardPresetStore.lastUsedKey(profileName: profileName))
             switch sheet {
@@ -183,6 +192,10 @@ struct MiniWizardView: View {
         return AnyView(MiniGeneratePanel(settings: $miniSettings, flow: flow, run: run))
     }
 
+    private var brollCount: Int {
+        currentRun.map { MiniBRollRules.pieces($0).reduce(0) { $0 + $1.cuts.count } } ?? 0
+    }
+
     private var settingsColumn: some View {
         GeometryReader { page in
             ScrollView {
@@ -211,7 +224,26 @@ struct MiniWizardView: View {
                         }
                     }
                     .frame(maxWidth: .infinity)
-                    MiniCard(number: 3,
+                    if flow.isPodcastOrInterview {
+                        MiniCard(number: 3, title: "B-roll", summary: flow.summary(for: .broll),
+                            isOpen: flow.visibleCard == .broll, headerTap: headerTap(.broll),
+                            accessory: brollCount > 0 ? AnyView(Text(brollCount == 1 ? "1 B-roll" : "\(brollCount) B-rolls")
+                                .font(.caption.weight(.semibold)).lineLimit(1).fixedSize()
+                                .padding(.horizontal, 8).padding(.vertical, 4).background(.quaternary, in: .capsule)) : nil) {
+                            if flow.visibleCard == .broll {
+                                Button("Remove all B-rolls", role: .destructive) { confirmRemoveBRoll = true }
+                                    .lineLimit(1).fixedSize().disabled(brollCount == 0 || store.isWizardRunning)
+                                if let run = currentRun, flow.canExpand(.broll) {
+                                    MiniBRollPanel(run: run, settings: $miniSettings)
+                                        .id(run.batchID)
+                                } else {
+                                    FormCaption("Keep footage in 2 Footage first.")
+                                }
+                            }
+                        }
+                        .frame(maxWidth: .infinity)
+                    }
+                    MiniCard(number: flow.isPodcastOrInterview ? 4 : 3,
                         title: MiniWizardPresetStore.cardTitle(loaded: loadedPreset, current: miniSettings),
                         summary: flow.canExpand(.settings)
                             ? flow.settingsSummary(miniSettings.effective(for: flow,
@@ -252,18 +284,18 @@ struct MiniWizardView: View {
             if click.collapsed == nil {
                 pendingCard = click.requested
                 store.miniRun?.requestedCard = click.requested
-                if click.requested == .settings { keepFootageForSettings() }
+                if click.requested == .settings || click.requested == .broll { keepFootage(for: click.requested) }
             }
         }
     }
 
     /// Q&A and Transcript picks become kept footage when Settings opens (the
     /// step the old "Video Generation Settings" button performed).
-    private func keepFootageForSettings() {
+    private func keepFootage(for card: MiniWizardFlow.Card) {
         guard let run = currentRun, run.keptCount > 0, !store.isWizardRunning else { return }
         switch run.footageKind {
-        case .qa: store.recordMiniQASelections()
-        case .transcript: store.recordMiniTranscriptSelections()
+        case .qa: store.recordMiniQASelections(opening: card) { open(card) }
+        case .transcript: store.recordMiniTranscriptSelections(opening: card) { open(card) }
         case .fightMetrics: store.recordMiniFightSelections()
         case .highlights: break
         }
@@ -351,14 +383,15 @@ struct MiniWizardView: View {
     private var autoLoadKey: AutoLoadKey {
         let kind = flow.effectiveFootageKind
         return AutoLoadKey(videoID: selectedVideo?.id,
-                           kind: kind != .highlights ? kind : nil,
+                           kind: kind,
                            hasRun: currentRun != nil)
     }
 
     private func autoLoad(_ key: AutoLoadKey) {
         guard key.kind != nil, !key.hasRun, let selectedVideo, selectedVideo.isPresent,
               !store.isWizardRunning, !isLoading else { return }
-        store.generateMiniFootage(flow: flow)
+        if key.kind == .highlights { store.restoreMiniHighlights(flow: flow) }
+        else { store.generateMiniFootage(flow: flow) }
     }
 
     @ViewBuilder

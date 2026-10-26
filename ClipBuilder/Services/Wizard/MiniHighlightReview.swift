@@ -73,6 +73,7 @@ nonisolated enum MiniHighlightReview {
         let updated = ProposedCutTrim.clamp(start: range.lowerBound, end: range.upperBound,
                                            scene: scene.startTime...scene.endTime)
         guard updated.upperBound > updated.lowerBound else { return nil }
+        plan.clips[index].brollCuts = plan.clips[index].brollCuts.map { MiniBRollRules.retained($0, in: updated) }
         plan.clips[index].start = updated.lowerBound
         plan.clips[index].end = updated.upperBound
         return plan

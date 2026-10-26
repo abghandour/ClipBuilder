@@ -13,6 +13,8 @@ nonisolated struct HighlightCandidate: Identifiable, Sendable, Equatable {
     var speakerKeys: [String]
     var includesQuestion = false
     var standalone: Bool? = nil
+    /// nil = not planned; [] = planned without scene cutaways.
+    var brollCuts: [BRollCut]? = nil
     var duration: Double { sourceEnd - sourceStart }
     var sourceRange: ClosedRange<Double> { min(sourceStart, sourceEnd)...max(sourceStart, sourceEnd) }
 }

@@ -17,7 +17,7 @@ final class PodcastHighlightTrimPlayback {
     private var endObserver: NSObjectProtocol?
     private var loadTask: Task<Void, Never>?
 
-    func load(url: URL, range: ClosedRange<Double>, autoplay: Bool) {
+    func load(url: URL, range: ClosedRange<Double>, autoplay: Bool, muted: Bool = false) {
         tearDown()
         self.range = range
         time = range.lowerBound
@@ -29,6 +29,7 @@ final class PodcastHighlightTrimPlayback {
             // Speech keeps its pitch at slow and fast speeds.
             item.audioTimePitchAlgorithm = .timeDomain
             let player = AVPlayer(playerItem: item)
+            player.isMuted = muted
             for _ in 0..<100 where item.status != .readyToPlay {
                 if item.status == .failed || Task.isCancelled { return }
                 try? await Task.sleep(for: .milliseconds(50))
@@ -128,7 +129,7 @@ struct PodcastHighlightTrimView: View {
     @Binding var candidate: HighlightCandidate
     let original: HighlightCandidate
     let trim: PodcastHighlightTrim
-    var autoplay = true
+    var autoplay = false
 
     @State private var playback = PodcastHighlightTrimPlayback()
     /// Handle positions while a drag is in flight; committed (snapped) on release.
@@ -365,8 +366,7 @@ struct PodcastHighlightTrimView: View {
         .accessibilityAddTraits(inside ? .isSelected : [])
     }
 
-    /// Move the nearer end to the clicked word and play from the new cut so
-    /// the user hears what changed.
+    /// Move the nearer end and park the preview without starting playback.
     private func select(_ word: PodcastHighlightTrim.Word) {
         let edge = trim.edge(for: word, in: range)
         commit(trim.range(range, selecting: word), snap: false)
@@ -376,7 +376,7 @@ struct PodcastHighlightTrimView: View {
         case .end:
             playback.seek(to: max(candidate.sourceStart, candidate.sourceEnd - 3))
         }
-        playback.play()
+        playback.pause()
     }
 }
 

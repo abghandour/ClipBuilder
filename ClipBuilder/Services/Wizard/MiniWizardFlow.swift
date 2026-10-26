@@ -1,9 +1,9 @@
 import Foundation
 
-/// Pure visibility and navigation rules for the Mini Wizard's three cards.
+/// Pure visibility and navigation rules for Express's cards.
 nonisolated struct MiniWizardFlow: Sendable {
     enum Card: String, CaseIterable, Sendable {
-        case source, footage, settings
+        case source, footage, broll, settings
     }
 
     enum FootageKind: String, CaseIterable, Sendable {
@@ -97,6 +97,7 @@ nonisolated struct MiniWizardFlow: Sendable {
         // Footage is chosen (kind, length, instructions) and generated on its own card.
         case .footage: video != nil
         case .settings: video != nil && hasFootage && hasKeptFootage
+        case .broll: isPodcastOrInterview && hasKeptFootage
         }
     }
 
@@ -124,15 +125,15 @@ nonisolated struct MiniWizardFlow: Sendable {
     }
 
     func outputCount(keptCount: Int) -> Int {
-        keptCount > 0 && outputMode == .oneReel ? 1 : max(0, keptCount)
+        keptCount > 0 ? 1 : 0
     }
 
     func generateButtonTitle(keptCount: Int) -> String {
-        outputMode == .oneReel || keptCount == 1 ? "Generate Video" : "Generate Videos"
+        "Generate Video"
     }
 
     func settingsSummary(_ settings: MiniWizardSettings) -> String {
-        (presentationSummary(settings) + [settings.outputMode.label.lowercased()]).joined(separator: " · ")
+        presentationSummary(settings).joined(separator: " · ")
     }
 
     /// A short preview of the next render, based on the currently kept items and visible settings.
@@ -142,7 +143,7 @@ nonisolated struct MiniWizardFlow: Sendable {
         let picks = (effectiveFootageKind == .transcript || effectiveFootageKind == .fightMetrics) && kept.isEmpty
         let count = qa || picks ? exchangeCount : kept.count
         guard count > 0 else { return "No kept footage" }
-        let output = settings.outputMode == .oneReel ? "One reel" : count == 1 ? "1 reel" : "\(count) reels"
+        let output = "One reel"
         let source: String
         if qa {
             source = "\(count) \(count == 1 ? "exchange" : "exchanges")"
@@ -163,7 +164,7 @@ nonisolated struct MiniWizardFlow: Sendable {
     typealias RunSummary = WizardRunSummary
 
     func runSummaryCard(candidates: [MiniWizardCandidate], exchangeCount: Int, settings: MiniWizardSettings,
-                        profilePlatforms: [SocialPlatform] = SocialPlatform.allCases) -> RunSummary {
+                        profilePlatforms: [SocialPlatform] = SocialPlatform.allCases, brollCount: Int? = nil) -> RunSummary {
         let kept = candidates.filter { $0.kept && !$0.take.plan.clips.isEmpty }
         let qa = effectiveFootageKind == .qa
         // Picks become selections when Settings opens; until then the kept
@@ -173,7 +174,7 @@ nonisolated struct MiniWizardFlow: Sendable {
         guard count > 0 else {
             return RunSummary(headline: "No kept footage", length: nil, sections: [], hasFootage: false)
         }
-        let output = settings.outputMode == .oneReel ? "One reel" : count == 1 ? "1 reel" : "\(count) reels"
+        let output = "One reel"
         let source = qa ? "\(count) \(count == 1 ? "exchange" : "exchanges")"
             : picks ? "\(count) \(count == 1 ? "pick" : "picks")"
             : "\(kept[0].selection.name), Take \(kept[0].take.ordinal)" + (count > 1 ? " + \(count - 1) more" : "")
@@ -209,7 +210,10 @@ nonisolated struct MiniWizardFlow: Sendable {
         var package: [String] = []
         if settings.introVideo { package.append("Intro video") }
         if settings.outroVideo { package.append("Outro video") }
-        package.append(settings.outputMode.label)
+        let brollCount = brollCount ?? kept.flatMap { $0.take.plan.clips }.reduce(0) { $0 + ($1.brollCuts?.count ?? 0) }
+        if isPodcastOrInterview, settings.includesBRoll, brollCount > 0 {
+            package.append("B-roll (\(brollCount))")
+        }
         var sections = [RunSummary.Section(title: "Picture", items: picture)]
         if !audio.isEmpty { sections.append(.init(title: "Audio", items: audio)) }
         sections.append(.init(title: "Overlays", items: overlays.isEmpty ? ["None"] : overlays))
@@ -242,6 +246,7 @@ nonisolated struct MiniWizardFlow: Sendable {
         switch card {
         case .source: video?.filename ?? "Pick a source first"
         case .footage: video == nil ? "Pick a source first" : hasFootage ? "Review footage" : "Choose footage"
+        case .broll: hasKeptFootage ? "Select words and pick a scene" : "Keep footage in 2 Footage first."
         case .settings: canExpand(.settings) ? "Ready to generate" : "Choose footage first"
         }
     }

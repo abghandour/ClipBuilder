@@ -186,6 +186,7 @@ extension Database {
                                  kept: Set<Int64>, rows: [TranscriptRow], labels: [Int64: String],
                                  turns: [SpeakerTurn], options: WizardStep1Options) throws -> [MiniWizardCandidate] {
         try connection.transaction {
+            let reviewed = try miniReviewedBRoll(projectID: projectID, miniBatch: miniBatch)
             let scenes = try fetchScenes(projectID: projectID, scope: .history, includeExcluded: true).filter { $0.videoID == videoID }
             let sections = TranscriptQASections.sections(scenes: scenes, rows: rows, labels: labels)
             let plans = MiniWizardQARules.plans(sections: sections, kept: kept, rows: rows, turns: turns)
@@ -195,7 +196,13 @@ extension Database {
             step1.formatPreset = "podcast"
             step1.targetDurationSeconds = nil
             var candidates: [MiniWizardCandidate] = []
-            for plan in plans {
+            for var plan in plans {
+                for index in plan.clips.indices {
+                    let clip = plan.clips[index]
+                    plan.clips[index].brollCuts = reviewed[clip.sceneID].map {
+                        MiniBRollRules.retained($0, in: clip.start...clip.end)
+                    }
+                }
                 let id = try insertWizardSelection(projectID: projectID, name: plan.headline ?? "Exchange",
                     recipe: "podcast", step1Options: step1, miniBatch: miniBatch)
                 let take = try insertWizardSelectionTake(selectionID: id, plan: plan)
@@ -227,7 +234,7 @@ extension Database {
             var step1 = options
             step1.targetDurationSeconds = nil
             let id = try insertWizardSelection(projectID: projectID, name: name,
-                recipe: options.formatPreset ?? "custom", step1Options: step1, miniBatch: miniBatch)
+                recipe: options.formatPreset ?? "custom", step1Options: step1, miniBatch: miniBatch + ":combined")
             return try insertWizardSelectionTake(selectionID: id, plan: WizardPlanRules.combinedPlan(resolved))
         }
     }

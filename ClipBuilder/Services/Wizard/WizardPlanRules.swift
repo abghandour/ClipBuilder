@@ -82,6 +82,9 @@ nonisolated enum WizardPlanRules {
                 || reason.contains("payoff at end")
             if trimStart { result.clips[index].start += delta }
             else { result.clips[index].end -= delta }
+            result.clips[index].brollCuts = clip.brollCuts.map {
+                MiniBRollRules.retained($0, in: result.clips[index].start...result.clips[index].end)
+            }
             // All areas share the slot. Apply the same offset and never extend an area.
             for areaIndex in clip.areaClips.indices {
                 let area = clip.areaClips[areaIndex]

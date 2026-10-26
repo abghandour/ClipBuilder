@@ -56,8 +56,15 @@ extension Database {
     /// one take, in list order. Earlier selections of this Mini batch are replaced.
     func replaceMiniTranscriptSelections(projectID: Int64, videoID: Int64, miniBatch: String,
                                          picks: [TranscriptPick], rows: [TranscriptRow],
-                                         options: WizardStep1Options) throws -> [MiniWizardCandidate] {
+                                         options: WizardStep1Options,
+                                         reviewedCutsByPick: [Int64: [BRollCut]] = [:]) throws -> [MiniWizardCandidate] {
         try connection.transaction {
+            let savedByPick = try miniBRollByPick(projectID: projectID, miniBatch: miniBatch)
+            let reviewed = try miniReviewedBRoll(projectID: projectID, miniBatch: miniBatch)
+            let previousPicks = try fetchTranscriptPicks(videoID: videoID)
+            let previousSceneIDs = Dictionary(uniqueKeysWithValues: previousPicks.compactMap { pick in
+                pick.sceneID.map { (pick.id, $0) }
+            })
             let runID = try activeAnalysisRun(videoID: videoID).run?.id
             // Camera focus (grid, talker and rotation, ...) only frames scenes
             // tagged "podcast"; a pick from conversational footage must carry it
@@ -89,7 +96,16 @@ extension Database {
                 try connection.execute("UPDATE transcript_picks SET scene_id = ? WHERE id = ?",
                                        [.integer(sceneID), .integer(pick.id)])
                 let name = MiniWizardTranscriptRules.title(for: pick, rows: rows, number: index + 1)
-                let plan = MiniWizardTranscriptRules.plan(for: pick, sceneID: sceneID, name: name)
+                var plan = MiniWizardTranscriptRules.plan(for: pick, sceneID: sceneID, name: name)
+                for index in plan.clips.indices { plan.clips[index].miniPickID = pick.id }
+                let previousCuts = reviewedCutsByPick[pick.id] ?? savedByPick[pick.id]
+                    ?? previousSceneIDs[pick.id].flatMap { reviewed[$0] }
+                if let cuts = previousCuts {
+                    for index in plan.clips.indices {
+                        let clip = plan.clips[index]
+                        plan.clips[index].brollCuts = MiniBRollRules.retained(cuts, in: clip.start...clip.end)
+                    }
+                }
                 let id = try insertWizardSelection(projectID: projectID, name: name,
                     recipe: options.formatPreset ?? "custom", step1Options: step1, miniBatch: miniBatch)
                 let take = try insertWizardSelectionTake(selectionID: id, plan: plan)

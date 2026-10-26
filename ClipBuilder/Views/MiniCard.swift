@@ -19,15 +19,8 @@ struct MiniCard<Content: View>: View {
             HStack(spacing: Theme.spaceM) {
                 if let headerTap {
                     Button(action: headerTap) {
-                        HStack(spacing: Theme.spaceS) {
-                            heading
-                            Image(systemName: "chevron.right")
-                                .font(.caption.weight(.semibold))
-                                .foregroundStyle(.secondary)
-                                .rotationEffect(.degrees(isOpen ? 90 : 0))
-                                .accessibilityHidden(true)
-                        }
-                        .contentShape(Rectangle())
+                        heading
+                            .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
                     .accessibilityLabel("\(number) \(title)")
@@ -67,9 +60,19 @@ struct MiniCard<Content: View>: View {
     }
 
     private var heading: some View {
-        Text("\(number) \(title)")
-            .font(.headline)
-            .lineLimit(1).fixedSize()
-            .accessibilityAddTraits(.isHeader)
+        HStack(spacing: Theme.spaceS) {
+            Text("\(number)")
+                .font(.subheadline.weight(.bold)).monospacedDigit()
+                .foregroundStyle(.white)
+                .frame(width: 22, height: 22)
+                .background(Color.accentColor, in: .circle)
+                .accessibilityHidden(true)
+            Text(title)
+                .font(.headline)
+                .lineLimit(1).fixedSize()
+        }
+        .accessibilityElement(children: .ignore)
+        .accessibilityLabel("\(number) \(title)")
+        .accessibilityAddTraits(.isHeader)
     }
 }

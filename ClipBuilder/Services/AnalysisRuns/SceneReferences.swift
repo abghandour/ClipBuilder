@@ -25,7 +25,7 @@ nonisolated enum SceneReferences {
     }
 
     static func ids(in plan: WizardPlan) -> Set<Int64> {
-        Set(plan.clips.flatMap { [$0.sceneID] + $0.areaClips.map(\.sceneID) })
+        Set(plan.clips.flatMap { [$0.sceneID] + $0.areaClips.map(\.sceneID) + ($0.brollCuts ?? []).map(\.sceneID) })
     }
 
     static func combining(_ scenes: [SceneRecord], referenced: [SceneRecord]) -> [SceneRecord] {

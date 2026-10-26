@@ -13,6 +13,8 @@ extension AppStore {
         options.sourceVideoPaths = [video.path ?? ""]
         options.sourcesRestricted = true
         options.formatPreset = flow.isPodcastOrInterview ? "podcast" : "custom"
+        options.useBRoll = flow.isPodcastOrInterview && MiniWizardSettings.remembered(profile: activeProfile).includesBRoll
+        options.manualBRoll = true
         options.critiqueLoop = false
         options.workflow = .automatic
         beginWizardSelectionWork(projectID: projectID, stage: "Loading transcript", options: options)
@@ -32,8 +34,12 @@ extension AppStore {
                     labels[row.id] = TranscriptSpeakers.label(for: row, turns: namedTurns,
                                                              roster: speakers.roster, people: people)
                 }
+                let batch = MiniWizardMemory.batchID(profileName: activeProfile.profileName,
+                    projectID: projectID, videoID: video.id, kind: .transcript)
+                let saved = try await database.miniSavedCandidates(projectID: projectID, miniBatch: batch)
+                guard !Task.isCancelled, generation == profileGeneration, activeProjectID == projectID else { return }
                 miniRun = MiniWizardRun(projectID: projectID, video: video, footageKind: .transcript,
-                    length: .automatic, batchID: UUID().uuidString, candidates: [], options: options,
+                    length: .automatic, batchID: batch, candidates: saved, options: options,
                     transcript: MiniWizardTranscript(rows: rows, labels: labels, picks: picks,
                                                      speakerSpans: TranscriptSpeakers.spans(turns: namedTurns, roster: speakers.roster)))
                 appendLog(\.wizardLog, ["Express: transcript ready, \(picks.count) saved picks."])
@@ -138,28 +144,39 @@ extension AppStore {
     }
 
     /// Moving to Settings creates one selection per pick, in list order, without rendering.
-    func recordMiniTranscriptSelections(then: @escaping @MainActor () -> Void = {}) {
+    func recordMiniTranscriptSelections(opening card: MiniWizardFlow.Card = .settings, then: @escaping @MainActor () -> Void = {}) {
         guard let run = currentTranscriptRun(), let transcript = run.transcript,
               !transcript.picks.isEmpty, let database else { return }
         let generation = profileGeneration
         beginWizardSelectionWork(projectID: run.projectID, stage: "Saving transcript picks", options: run.options)
         wizardTask = Task {
-            defer { finishWizardSelectionWork(generation: generation) }
+            var saved = false
+            defer {
+                finishWizardSelectionWork(generation: generation)
+                if saved, !Task.isCancelled, generation == profileGeneration,
+                   activeProjectID == run.projectID, miniRun?.batchID == run.batchID { then() }
+            }
             do {
                 _ = try? await transcriptPickSaveTask?.value
                 try await sceneEditSaveTask?.value
+                try await wizardSelectionSaveTask?.value
                 try Task.checkCancellation()
                 guard generation == profileGeneration, activeProjectID == run.projectID,
                       miniRun?.batchID == run.batchID, let picks = miniRun?.transcript?.picks else { return }
+                let reviewedByPick = Dictionary(run.candidates.flatMap { $0.take.plan.clips }.compactMap { clip in
+                    clip.miniPickID.map { ($0, clip.brollCuts ?? []) }
+                }, uniquingKeysWith: { first, _ in first })
                 let candidates = try await database.replaceMiniTranscriptSelections(projectID: run.projectID,
                     videoID: run.video.id, miniBatch: run.batchID, picks: picks, rows: transcript.rows,
-                    options: run.options.step1)
+                    options: run.options.step1, reviewedCutsByPick: reviewedByPick)
+                let updatedPicks = try await database.fetchTranscriptPicks(videoID: run.video.id)
                 guard generation == profileGeneration, activeProjectID == run.projectID,
                       miniRun?.batchID == run.batchID else { return }
+                miniRun?.transcript?.picks = updatedPicks
                 miniRun?.candidates = candidates
                 miniRun?.selectedSelectionID = candidates.first?.id
-                miniRun?.requestedCard = candidates.isEmpty ? .footage : .settings
-                if !candidates.isEmpty { then() }
+                miniRun?.requestedCard = candidates.isEmpty ? .footage : card
+                saved = !candidates.isEmpty
                 appendLog(\.wizardLog, ["Express: saved \(candidates.count) transcript picks as selections."])
                 // The picks' scenes are new library rows.
                 await refreshAllNow()

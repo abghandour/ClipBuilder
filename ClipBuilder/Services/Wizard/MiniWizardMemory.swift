@@ -4,6 +4,7 @@ import Foundation
 nonisolated enum MiniWizardMemory {
     enum Field: String, CaseIterable, Sendable {
         case videoPath, footageKind, length
+        case broll, includeBRoll
         case quality, preset, cameraFocus, interviewZoom, interviewZoomMoves, interviewCuts, interviewPunchIn, captions, englishCaptions, captionPosition, speakerCaptionPositions, captionStyleID
         case safeAreaOnly, safeAreaPlatforms
         case nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
@@ -46,5 +47,21 @@ nonisolated enum MiniWizardMemory {
     /// An absent or no-longer-analyzed video clears the answer; never choose a replacement.
     static func validatedVideoPath(_ path: String, videos: [VideoRecord]) -> String {
         videos.contains { $0.path == path && $0.analyzedAt != nil } ? path : ""
+    }
+}
+
+extension MiniWizardMemory {
+    static func batchKey(profileName: String, projectID: Int64, videoID: Int64,
+                         kind: MiniWizardFlow.FootageKind, length: MiniWizardFlow.Length = .automatic) -> String {
+        "mini.\(profileName).batch.\(projectID).\(videoID).\(kind.rawValue).\(length.rawValue)"
+    }
+
+    static func batchID(profileName: String, projectID: Int64, videoID: Int64,
+                        kind: MiniWizardFlow.FootageKind, defaults: UserDefaults = .standard) -> String {
+        let key = batchKey(profileName: profileName, projectID: projectID, videoID: videoID, kind: kind)
+        if let saved = defaults.string(forKey: key) { return saved }
+        let id = UUID().uuidString
+        defaults.set(id, forKey: key)
+        return id
     }
 }
