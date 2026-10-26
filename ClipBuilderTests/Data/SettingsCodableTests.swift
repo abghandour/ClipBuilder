@@ -164,6 +164,8 @@ struct SettingsCodableTests {
         #expect(store.editingDefaults.transitions.xfadeDuration == 0.75)
         #expect(store.settings.podcast.deadAirSeconds == 3)
         #expect(!store.podcastEditingSettings.reviewCutsByDefault)
+        // Binding edits save once they settle; a switch or quit flushes them.
+        store.flushPendingProfileSave()
         #expect(ProfileStore.load(name: profile.profileName)?.editing == store.activeProfile.editing)
         store.activeProfile = BrandProfile(name: "Another profile")
         #expect(store.activeProfile.editing == nil)
