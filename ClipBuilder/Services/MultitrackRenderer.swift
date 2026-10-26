@@ -1644,7 +1644,7 @@ actor MultitrackRenderer {
             case .owner: owns = true
             case .shared(let url):
                 try FileManager.default.copyItemReplacing(at: url, to: gapPath)
-                emit("Segment \(index + 1): same as an earlier segment; encodes=0")
+                emit("Segment \(index + 1): same as another segment; encodes=0")
                 return SegmentArtifact(url: gapPath, key: nil, wasShared: true)
             case .ownerFailed: owns = false
             }
@@ -1802,7 +1802,7 @@ actor MultitrackRenderer {
             case .owner: ownedKey = key
             case .shared(let url):
                 try FileManager.default.copyItemReplacing(at: url, to: segmentPath)
-                emit("Segment \(index + 1): same as an earlier segment; encodes=0")
+                emit("Segment \(index + 1): same as another segment; encodes=0")
                 return SegmentArtifact(url: segmentPath, key: nil, wasShared: true)
             case .ownerFailed: ownedKey = nil
             }

@@ -42,9 +42,10 @@ struct MultitrackRenderTests {
             outputs.append(result.url)
             let segmentCommands = commands.withLock { $0.filter { $0.last?.contains("_layered.mp4") == true } }
             // Warm cache must not hide the enabled variant. The two clips are
-            // identical, so the second segment copies the first one's encode.
+            // identical, so one segment copies the other's encode; segments
+            // render in parallel, so either one can be the copy.
             #expect(segmentCommands.count == 1)
-            #expect(messages.withLock { $0.contains("Segment 2: same as an earlier segment; encodes=0") })
+            #expect(messages.withLock { $0.contains { $0.hasSuffix(": same as another segment; encodes=0") } })
             #expect(segmentCommands.allSatisfy { $0.contains("-hwaccel") == enabled })
             let overlay = try #require(commands.withLock { $0.first { $0.last?.hasSuffix("with_overlays.mp4") == true } })
             #expect(overlay.contains("-hwaccel") == enabled)
