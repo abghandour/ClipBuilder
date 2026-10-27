@@ -490,6 +490,71 @@ struct WizardPreviewCompositeTests {
         #expect(try changedPixels(plain, captioned, in: CGRect(x: 0, y: 0, width: 640, height: 120)) == 0)
     }
 
+    /// Bounding box of the pixels that differ between two same-size images, y down.
+    private func changedBounds(_ a: CGImage, _ b: CGImage) throws -> CGRect {
+        func pixels(_ image: CGImage) throws -> [UInt8] {
+            let context = try #require(CGContext(data: nil, width: image.width, height: image.height,
+                bitsPerComponent: 8, bytesPerRow: image.width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue))
+            context.draw(image, in: CGRect(x: 0, y: 0, width: image.width, height: image.height))
+            let data = try #require(context.data)
+            return Array(UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: image.width * image.height * 4))
+        }
+        let lhs = try pixels(a), rhs = try pixels(b)
+        var minX = a.width, minY = a.height, maxX = -1, maxY = -1
+        for y in 0..<a.height {
+            for x in 0..<a.width {
+                let offset = (y * a.width + x) * 4
+                if lhs[offset..<offset + 3] != rhs[offset..<offset + 3] {
+                    minX = min(minX, x); maxX = max(maxX, x); minY = min(minY, y); maxY = max(maxY, y)
+                }
+            }
+        }
+        return CGRect(x: minX, y: minY, width: maxX - minX + 1, height: maxY - minY + 1)
+    }
+
+    @Test func placedOverlayTextSelectorMatchesWhatThePreviewPaints() async throws {
+        // The saved Subject design: centre and size only, no box (legacy single line).
+        var subject = TextOverlayItem(text: "Subject asdasd sadasasd asdasda sda")
+        subject.fontsize = 194
+        subject.fontfamily = "Bebas Neue"
+        subject.xFrac = 0.4988
+        subject.yFrac = 0.7879
+        subject.boxOpacity = 0.5
+        subject.unbounded = true
+        subject.isDynamic = true
+        var input = try input()
+        input.options.renderSettings = RenderSettings(preset: .custom, customWidth: 540, customHeight: 960)
+        input.templates = [OverlayTemplate(name: "Subject", composition: OverlayComposition(texts: [subject]))]
+        input.options.fixedOverlayTemplate = "Subject"
+        let base = try await WizardPreviewComposite.prepareBase(input)
+        let plain = try WizardPreviewComposite.renderWithLayout(input, baseFrame: base.image)
+        let legacy = try #require(plain.layout.overlayComponents.first)
+        #expect(legacy.component == .text(0))
+        let legacyPaint = try changedBounds(base.image, plain.image)
+        #expect(abs(legacy.rect.minX - legacyPaint.minX) <= 1 && abs(legacy.rect.maxX - legacyPaint.maxX) <= 1, "legacy selector matches")
+        #expect(abs(legacy.rect.minY - legacyPaint.minY) <= 1 && abs(legacy.rect.maxY - legacyPaint.maxY) <= 1)
+
+        // Resized in the preview: the Express owner stores the box through the options.
+        var settings = MiniWizardSettings()
+        settings.overlay = true
+        settings.overlayTemplate = "Subject"
+        settings.overlayEdits.place(.text(0), at: CGRect(x: 0.42, y: 0.52, width: 0.48, height: 0.13))
+        let key = PreviewKey(options: settings.previewOptions(profile: input.profile), scene: Fixtures.scene(),
+                             profile: input.profile, contentRevision: 0, overlayTexts: [])
+        #expect(key.visual.overlayEdits == settings.overlayEdits, "the key carries the edits so the cache cannot serve the old picture")
+        input.options.fixedOverlayEdits = settings.previewOptions(profile: input.profile).fixedOverlayEdits
+        #expect(input.options.fixedOverlayEdits != nil)
+        let placed = try WizardPreviewComposite.renderWithLayout(input, baseFrame: base.image)
+        let selector = try #require(placed.layout.overlayComponents.first).rect
+        let paint = try changedBounds(base.image, placed.image)
+        #expect(abs(selector.minX - paint.minX) <= 1 && abs(selector.maxX - paint.maxX) <= 1, "placed selector shares the painted edges")
+        #expect(abs(selector.minY - paint.minY) <= 1 && abs(selector.maxY - paint.maxY) <= 1)
+        #expect(selector.width >= 0.48 * 540 - 1 && selector.midX > 0.3 * 540, "the placed width, widened only for a word that cannot fit")
+        #expect(selector.height > 0.13 * 960 && selector.minY < 0.6 * 960, "rows wrap below the placed box at the design size")
+        #expect(paint.minY < legacyPaint.minY - 100, "the text moved up into the placed box instead of staying on the legacy line")
+    }
+
     @Test func layoutReportsWhereTheDraggableElementsLanded() async throws {
         var input = try input()
         input.options.addCaptions = true

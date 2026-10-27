@@ -3,13 +3,12 @@ import SwiftUI
 /// An element the user can drag to a new place in the preview.
 enum PreviewElement: Hashable, Sendable {
     case caption(slot: String?)
-    case nameTag, overlay
+    case nameTag
 
     var label: String {
         switch self {
         case .caption: "caption"
         case .nameTag: "name tag"
-        case .overlay: "overlay"
         }
     }
 }
@@ -29,6 +28,11 @@ struct WizardPreviewColumn: View {
     /// Called when the user drops a dragged element; the owner stores the
     /// position in its settings and the preview re-renders from them.
     var onMove: ((PreviewElement, CustomPosition) -> Void)? = nil
+    /// Called when the user moves or resizes one component of the overlay
+    /// design to a box in design coordinates, as canvas fractions; the
+    /// owner stores it and the preview re-renders (text wraps to its width,
+    /// an image keeps its aspect).
+    var onPlaceOverlay: ((OverlayComponent, CGRect) -> Void)? = nil
     @State private var model: WizardPreviewModel
     @State private var reloadID = 0
     @State private var clipIndex = 0
@@ -42,7 +46,8 @@ struct WizardPreviewColumn: View {
 
     init(scenes: [SceneRecord], clips: [WizardPreviewClip] = [], options: WizardOptions, profile: BrandProfile,
          thumbnails: ThumbnailService, footer: AnyView? = nil, captionOrdinals: [String: Int]? = nil,
-         onMove: ((PreviewElement, CustomPosition) -> Void)? = nil) {
+         onMove: ((PreviewElement, CustomPosition) -> Void)? = nil,
+         onPlaceOverlay: ((OverlayComponent, CGRect) -> Void)? = nil) {
         self.scenes = scenes
         self.clips = clips
         self.options = options
@@ -50,6 +55,7 @@ struct WizardPreviewColumn: View {
         self.captionOrdinals = captionOrdinals
         self.footer = footer
         self.onMove = onMove
+        self.onPlaceOverlay = onPlaceOverlay
         _model = State(initialValue: WizardPreviewModel(thumbnails: thumbnails))
     }
 
@@ -157,7 +163,8 @@ struct WizardPreviewColumn: View {
                     Text((currentClip == nil
                         ? "One scene with the current Picture and Overlays settings. Position choices set to Auto are resolved for this scene."
                         : "Your kept footage with the current Picture and Overlays settings. Drag to any moment; position choices set to Auto are resolved for it.")
-                        + (onMove == nil ? "" : " Drag the caption, a name tag or the overlay to place it."))
+                        + (onMove == nil ? "" : " Drag the caption or a name tag to place it.")
+                        + (onPlaceOverlay == nil ? "" : " Drag any part of the overlay to move it, or its edges to resize it."))
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
@@ -356,7 +363,7 @@ struct WizardPreviewColumn: View {
                         PreviewHandlesLayer(layout: layout, canvas: CGSize(width: options.renderSettings.width,
                                                                            height: options.renderSettings.height),
                                             size: geometry.size, ordinals: resolvedOrdinals,
-                                            revealMarkers: markersRevealed, onMove: onMove)
+                                            revealMarkers: markersRevealed, onMove: onMove, onPlaceOverlay: onPlaceOverlay)
                     }
                 }
             }
@@ -391,6 +398,7 @@ private struct PreviewHandlesLayer: View {
     let ordinals: [String: Int]
     let revealMarkers: Bool
     let onMove: (PreviewElement, CustomPosition) -> Void
+    var onPlaceOverlay: ((OverlayComponent, CGRect) -> Void)? = nil
 
     private var scale: CGFloat {
         guard canvas.width > 0, canvas.height > 0 else { return 1 }
@@ -408,9 +416,6 @@ private struct PreviewHandlesLayer: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            if let rect = layout.overlay {
-                PreviewHandle(element: .overlay, rect: viewRect(rect), size: size, onMove: onMove)
-            }
             ForEach(Array(layout.tags.enumerated()), id: \.offset) { _, rect in
                 PreviewHandle(element: .nameTag, rect: viewRect(rect), size: size, onMove: onMove)
             }
@@ -419,8 +424,152 @@ private struct PreviewHandlesLayer: View {
                 PreviewHandle(element: .caption(slot: slot), rect: viewRect(caption.rect), size: size,
                               name: caption.name, isTalking: caption.isTalking, revealMarker: revealMarkers, onMove: onMove)
             }
+            if let onPlaceOverlay {
+                ForEach(layout.overlayComponents, id: \.component) { box in
+                    PreviewComponentHandle(component: box.component, rect: viewRect(box.rect), aspect: box.aspect, size: size) { placed in
+                        guard scale > 0, canvas.width > 0, canvas.height > 0 else { return }
+                        // Back to canvas pixels, minus the legacy whole-design drag, then to fractions.
+                        let canvasRect = CGRect(x: (placed.minX - origin.x) / scale - layout.overlayShift.x,
+                                                y: (placed.minY - origin.y) / scale - layout.overlayShift.y,
+                                                width: placed.width / scale, height: placed.height / scale)
+                        onPlaceOverlay(box.component, CGRect(x: canvasRect.minX / canvas.width, y: canvasRect.minY / canvas.height,
+                                                             width: canvasRect.width / canvas.width, height: canvasRect.height / canvas.height))
+                    }
+                }
+            }
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
+    }
+}
+
+/// One component of the overlay design: a drag inside the outline moves it,
+/// grips on the corners and edges resize it. Images keep their aspect.
+private struct PreviewComponentHandle: View {
+    let component: OverlayComponent
+    /// The component's rendered box in the preview view's coordinates.
+    let rect: CGRect
+    /// Height over width to keep while resizing; nil = free.
+    var aspect: CGFloat? = nil
+    /// The preview view's size; the box stays inside it.
+    let size: CGSize
+    /// The box the component was dropped at, in the preview view's coordinates.
+    let onPlace: (CGRect) -> Void
+    @State private var live: CGRect?
+    @State private var hovering = false
+    @State private var hoveredGrip: Grip?
+
+    static let minimumWidth: CGFloat = 24
+    static let minimumHeight: CGFloat = 12
+
+    enum Grip: CaseIterable, Hashable {
+        case topLeft, top, topRight, right, bottomRight, bottom, bottomLeft, left
+
+        var movesLeft: Bool { self == .topLeft || self == .left || self == .bottomLeft }
+        var movesRight: Bool { self == .topRight || self == .right || self == .bottomRight }
+        var movesTop: Bool { self == .topLeft || self == .top || self == .topRight }
+        var movesBottom: Bool { self == .bottomLeft || self == .bottom || self == .bottomRight }
+
+        func point(in rect: CGRect) -> CGPoint {
+            let x = movesLeft ? rect.minX : movesRight ? rect.maxX : rect.midX
+            let y = movesTop ? rect.minY : movesBottom ? rect.maxY : rect.midY
+            return CGPoint(x: x, y: y)
+        }
+
+        var cursor: NSCursor {
+            switch self {
+            case .left, .right: .resizeLeftRight
+            case .top, .bottom: .resizeUpDown
+            default: .crosshair
+            }
+        }
+
+        /// `rect` with the edges this grip holds moved by `translation`; the
+        /// opposite edges stay put, the box keeps a minimum size and stays
+        /// inside `bounds`. With an `aspect` the height follows the width
+        /// (or the width the height, for the top and bottom grips), anchored
+        /// on the edges that did not move.
+        func resized(_ rect: CGRect, by translation: CGSize, in bounds: CGSize, aspect: CGFloat?) -> CGRect {
+            var left = rect.minX, right = rect.maxX, top = rect.minY, bottom = rect.maxY
+            if movesLeft { left = min(right - PreviewComponentHandle.minimumWidth, max(0, left + translation.width)) }
+            if movesRight { right = max(left + PreviewComponentHandle.minimumWidth, min(bounds.width, right + translation.width)) }
+            if movesTop { top = min(bottom - PreviewComponentHandle.minimumHeight, max(0, top + translation.height)) }
+            if movesBottom { bottom = max(top + PreviewComponentHandle.minimumHeight, min(bounds.height, bottom + translation.height)) }
+            guard let aspect, aspect > 0 else {
+                return CGRect(x: left, y: top, width: right - left, height: bottom - top)
+            }
+            if movesLeft || movesRight {
+                let height = (right - left) * aspect
+                if movesTop { top = bottom - height } else if movesBottom { bottom = top + height } else {
+                    let mid = rect.midY
+                    top = mid - height / 2
+                    bottom = mid + height / 2
+                }
+            } else {
+                let width = (bottom - top) / aspect
+                let mid = rect.midX
+                left = mid - width / 2
+                right = mid + width / 2
+            }
+            return CGRect(x: left, y: top, width: right - left, height: bottom - top)
+        }
+    }
+
+    /// `rect` moved by `translation`, kept inside the preview.
+    private func moved(by translation: CGSize) -> CGRect {
+        let x = min(max(0, rect.minX + translation.width), max(0, size.width - rect.width))
+        let y = min(max(0, rect.minY + translation.height), max(0, size.height - rect.height))
+        return CGRect(x: x, y: y, width: rect.width, height: rect.height)
+    }
+
+    var body: some View {
+        let current = live ?? rect
+        let active = live != nil || hovering || hoveredGrip != nil
+        ZStack(alignment: .topLeading) {
+            Rectangle()
+                .strokeBorder(active ? Color.accentColor : Color.white.opacity(0.4), lineWidth: active ? 1.5 : 1)
+                .contentShape(Rectangle())
+                .frame(width: max(Self.minimumWidth, current.width), height: max(Self.minimumHeight, current.height))
+                .position(x: current.midX, y: current.midY)
+                .onHover { inside in
+                    hovering = inside
+                    if inside { NSCursor.openHand.push() } else { NSCursor.pop() }
+                }
+                .gesture(DragGesture(minimumDistance: 2)
+                    .onChanged { live = moved(by: $0.translation) }
+                    .onEnded { value in
+                        let final = moved(by: value.translation)
+                        live = nil
+                        onPlace(final)
+                    })
+                .help("Drag to move the \(component.label); drag an edge or corner to resize it.")
+                .accessibilityLabel("\(component.label.capitalized) position")
+            ForEach(Grip.allCases, id: \.self) { grip in
+                let point = grip.point(in: current)
+                Rectangle()
+                    .fill(active ? Color.accentColor : Color.white.opacity(0.7))
+                    .frame(width: 7, height: 7)
+                    .overlay(Rectangle().stroke(Color.black.opacity(0.6), lineWidth: 0.5))
+                    .contentShape(Rectangle().inset(by: -4))
+                    .position(point)
+                    .onHover { inside in
+                        if inside {
+                            hoveredGrip = grip
+                            grip.cursor.push()
+                        } else if hoveredGrip == grip {
+                            hoveredGrip = nil
+                            NSCursor.pop()
+                        }
+                    }
+                    .gesture(DragGesture(minimumDistance: 1)
+                        .onChanged { live = grip.resized(rect, by: $0.translation, in: size, aspect: aspect) }
+                        .onEnded { value in
+                            let final = grip.resized(rect, by: value.translation, in: size, aspect: aspect)
+                            live = nil
+                            onPlace(final)
+                        })
+                    .accessibilityLabel("\(component.label.capitalized) resize")
+            }
+        }
     }
 }
 

@@ -1270,8 +1270,12 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
     var alignment: String = "center"
     /// Never moved clear of platform chrome (set when an exact-placement block expands).
     var keepsPlacement: Bool = false
+    /// The box was sized by hand (Express resize): text that overflows wraps
+    /// at the box width instead of widening the box. nil = false.
+    var lockedWidth: Bool?
 
     var duration: Double { max(0, endTime - startTime) }
+    var resolvedLockedWidth: Bool { lockedWidth ?? false }
 
     static let alignmentChoices = ["left", "center", "right"]
     static let transitionChoices = ["fade", "slide_left", "slide_right", "slide_up", "slide_down", "pop", "cut"]
@@ -1300,6 +1304,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         case opacity, unbounded, alignment
         case keepsPlacement = "keeps_placement"
         case boxRadius = "box_radius"
+        case lockedWidth = "locked_width"
     }
 
     init(text: String = "", startTime: Double = 0, endTime: Double = 3) {
@@ -1345,6 +1350,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         unbounded = try container.decodeIfPresent(Bool.self, forKey: .unbounded) ?? false
         alignment = try container.decodeIfPresent(String.self, forKey: .alignment) ?? "center"
         keepsPlacement = try container.decodeIfPresent(Bool.self, forKey: .keepsPlacement) ?? false
+        lockedWidth = try container.decodeIfPresent(Bool.self, forKey: .lockedWidth)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -1390,6 +1396,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         if unbounded { try container.encode(true, forKey: .unbounded) }
         if alignment != "center" { try container.encode(alignment, forKey: .alignment) }
         if keepsPlacement { try container.encode(true, forKey: .keepsPlacement) }
+        if resolvedLockedWidth { try container.encode(true, forKey: .lockedWidth) }
     }
 
     static func == (lhs: TextOverlayItem, rhs: TextOverlayItem) -> Bool {
@@ -1409,6 +1416,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
             && lhs.opacity == rhs.opacity && lhs.boxRadius == rhs.boxRadius
             && lhs.unbounded == rhs.unbounded && lhs.alignment == rhs.alignment
             && lhs.keepsPlacement == rhs.keepsPlacement
+            && lhs.resolvedLockedWidth == rhs.resolvedLockedWidth
             // Resolved so nil and the default compare equal, as they render.
             && lhs.resolvedWordsPerLine == rhs.resolvedWordsPerLine
     }

@@ -409,6 +409,13 @@ extension WizardView {
 
     /// Express's fixed overlay: a saved design over the finished video from a
     /// chosen second, for a chosen length or to the end, with its texts editable.
+    /// Change one overlay text's edit in the stored JSON.
+    private func updateOverlayTextEdit(_ textIndex: Int, _ change: (inout OverlayTextEdit) -> Void) {
+        var edits = OverlayEdits.split(fixedOverlayEdits)
+        edits.text(textIndex, change)
+        fixedOverlayEdits = edits.joined
+    }
+
     @ViewBuilder var fixedOverlayRows: some View {
         let templates = savedOverlayTemplates
         WizardControlRow("Fixed overlay") { Toggle("Fixed overlay", isOn: $fixedOverlayOn) }
@@ -418,12 +425,16 @@ extension WizardView {
         } else if fixedOverlayOn {
             let selected = templates.first { $0.name.caseInsensitiveCompare(fixedOverlayTemplate) == .orderedSame }?.name
                 ?? templates.first?.name ?? ""
-            let texts = templates.first { $0.name == selected }.map { WizardFixedOverlay.dynamicTexts(in: $0.composition) } ?? []
+            let composition = templates.first { $0.name == selected }?.composition ?? OverlayComposition()
+            let textIndices = WizardFixedOverlay.dynamicTextIndices(in: composition)
+            let items = textIndices.map { composition.texts[$0] }
+            let texts = items.map(\.text)
             WizardControlRow("Overlay design") {
                 Picker("Overlay design", selection: Binding(get: { selected }, set: { name in
                     fixedOverlayTemplate = name
                     fixedOverlayTexts = WizardExpressExtras.joinedTexts(
                         templates.first { $0.name == name }.map { WizardFixedOverlay.dynamicTexts(in: $0.composition) } ?? [])
+                    fixedOverlayEdits = ""
                 })) {
                     ForEach(templates) { template in
                         Text(template.name).lineLimit(1).fixedSize().tag(template.name)
@@ -433,33 +444,57 @@ extension WizardView {
             }
             .formDependent()
             .onAppear { if selected != fixedOverlayTemplate { fixedOverlayTemplate = selected } }
-            ForEach(Array(texts.enumerated()), id: \.offset) { index, original in
+            ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+                let original = item.text
+                let textIndex = textIndices[index]
                 WizardControlRow(texts.count == 1 ? "Text" : "Text \(index + 1)") {
-                    TextField(original, text: Binding(
-                        get: { WizardExpressExtras.splitTexts(fixedOverlayTexts)[safe: index] ?? original },
-                        set: { value in
-                            var updated = WizardExpressExtras.splitTexts(fixedOverlayTexts)
-                            while updated.count < texts.count { updated.append(texts[updated.count]) }
-                            updated[index] = value
-                            fixedOverlayTexts = WizardExpressExtras.joinedTexts(updated)
-                        }))
-                        .textFieldStyle(.roundedBorder)
-                        .frame(maxWidth: 320)
-                        .accessibilityLabel("Overlay text \(index + 1)")
+                    HStack(spacing: Theme.spaceS) {
+                        TextField(original, text: Binding(
+                            get: { WizardExpressExtras.splitTexts(fixedOverlayTexts)[safe: index] ?? original },
+                            set: { value in
+                                var updated = WizardExpressExtras.splitTexts(fixedOverlayTexts)
+                                while updated.count < texts.count { updated.append(texts[updated.count]) }
+                                updated[index] = value
+                                fixedOverlayTexts = WizardExpressExtras.joinedTexts(updated)
+                            }))
+                            .textFieldStyle(.roundedBorder)
+                            .frame(maxWidth: 320)
+                            .accessibilityLabel("Overlay text \(index + 1)")
+                        OverlayTextAlignmentPicker(alignment: Binding(
+                            get: { OverlayEdits.split(fixedOverlayEdits).texts[safe: textIndex]?.alignment ?? item.alignment },
+                            set: { value in
+                                updateOverlayTextEdit(textIndex) { $0.alignment = value == item.alignment ? nil : value }
+                            }))
+                            .accessibilityLabel("Overlay text \(index + 1) alignment")
+                        if OverlayEdits.split(fixedOverlayEdits).texts[safe: textIndex]?.box != nil {
+                            Button("Reset placement", systemImage: "arrow.uturn.backward") {
+                                updateOverlayTextEdit(textIndex) { $0.box = nil }
+                            }
+                            .labelStyle(.iconOnly).controlSize(.small)
+                            .help("Put this text back where the design has it")
+                            .accessibilityLabel("Reset overlay text \(index + 1) placement")
+                        }
+                    }
                 }
                 .formDependent()
             }
-            WizardControlRow("Position") {
+            WizardControlRow("Layout") {
                 HStack(spacing: Theme.spaceS) {
-                    Text(CustomPosition.isCustom(fixedOverlayPosition) ? "Custom (dragged)" : "As designed")
+                    let edited = !OverlayEdits.split(fixedOverlayEdits).isEmpty || CustomPosition.isCustom(fixedOverlayPosition)
+                    Text(edited ? "Custom (dragged)" : "As designed")
                         .lineLimit(1).fixedSize()
-                    if CustomPosition.isCustom(fixedOverlayPosition) {
-                        Button("Reset") { fixedOverlayPosition = "" }
-                            .controlSize(.small).lineLimit(1).fixedSize()
+                    Button("Reset layout", systemImage: "arrow.uturn.backward") {
+                        fixedOverlayEdits = ""
+                        fixedOverlayPosition = ""
                     }
+                    .labelStyle(.iconOnly).controlSize(.small)
+                    .disabled(!edited)
+                    .help("Put every text and image back where the design has it")
                 }
             }
             .formDependent()
+            FormCaption("Each text and image of the design is its own object in the preview: drag it to move it, drag its edges to resize it.")
+                .formDependent()
             WizardControlRow("Starts at") {
                 HStack(spacing: Theme.spaceXS) {
                     TextField("Start", value: $fixedOverlayStart, format: .number.precision(.fractionLength(0...1)))

@@ -102,6 +102,7 @@ nonisolated extension WizardOptions {
         fixedOverlayDuration = try values.decodeIfPresent(Double.self, forKey: .fixedOverlayDuration)
         fixedOverlayTexts = try values.decodeIfPresent([String].self, forKey: .fixedOverlayTexts)
         fixedOverlayPosition = try values.decodeIfPresent(String.self, forKey: .fixedOverlayPosition)
+        fixedOverlayEdits = try values.decodeIfPresent(OverlayEdits.self, forKey: .fixedOverlayEdits)
         introBumperPath = try values.decodeIfPresent(String.self, forKey: .introBumperPath)
         outroBumperPath = try values.decodeIfPresent(String.self, forKey: .outroBumperPath)
         watermarkOverlayTemplate = try values.decodeIfPresent(String.self, forKey: .watermarkOverlayTemplate)

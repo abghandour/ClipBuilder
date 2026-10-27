@@ -197,13 +197,9 @@ nonisolated struct TextOverlayRenderer {
         case "tag":
             drawTag(in: context, item: item, words: words, visibleWords: visibleWords)
         default:
-            if let wFrac = item.wFrac, let hFrac = item.hFrac,
-               let xFrac = item.xFrac, let yFrac = item.yFrac, wFrac > 0, hFrac > 0 {
-                let center = clamped(centerX: Double(width) * xFrac, centerY: Double(height) * yFrac,
-                                     width: Double(width) * wFrac, height: Double(height) * hFrac)
+            if let box = fittedInput(item) {
                 drawFittedBox(in: context, item: item, words: words, visibleWords: visibleWords,
-                              boxWidth: Int(Double(width) * wFrac), boxHeight: Int(Double(height) * hFrac),
-                              centerX: Int(center.x), centerY: Int(center.y))
+                              boxWidth: box.width, boxHeight: box.height, centerX: box.centerX, centerY: box.centerY)
             } else {
                 drawLegacy(in: context, item: item, words: words, visibleWords: visibleWords)
             }
@@ -361,6 +357,83 @@ nonisolated struct TextOverlayRenderer {
                            totalHeight: total, maxWidth: maxLineWidth)
     }
 
+    /// Background box padding around a fitted or legacy line, in canvas pixels.
+    static let boxPadding = 5
+
+    /// The box the fitted path lays text out in, in canvas pixels: the
+    /// item's w/h fractions centred on its x/y (moved into the safe area).
+    /// A hand-placed box (`lockedWidth`) is the visible background box, so
+    /// the text box is inset by the background padding. nil when the item
+    /// has no box (legacy single line).
+    func fittedInput(_ item: TextOverlayItem) -> (width: Int, height: Int, centerX: Int, centerY: Int)? {
+        guard let wFrac = item.wFrac, let hFrac = item.hFrac,
+              let xFrac = item.xFrac, let yFrac = item.yFrac, wFrac > 0, hFrac > 0 else { return nil }
+        var placer = self
+        if item.keepsPlacement { placer.safeArea = nil }
+        let width = Double(videoWidth) * wFrac, height = Double(videoHeight) * hFrac
+        let center = placer.clamped(centerX: Double(videoWidth) * xFrac, centerY: Double(videoHeight) * yFrac,
+                                    width: width, height: height)
+        let inset = item.resolvedLockedWidth ? Double(Self.boxPadding * 2) : 0
+        return (max(1, Int(width - inset)), max(1, Int(height - inset)), Int(center.x), Int(center.y))
+    }
+
+    /// The footprint an item draws, in canvas pixels from the top left:
+    /// the background box of a fitted or legacy item (the text bounds when
+    /// it draws no box, except a hand-placed box, which is always the box),
+    /// the headline block plus kicker of a hero, the bar of a tag. nil for
+    /// designs that lay themselves out (name tags, strike stats).
+    func renderedBox(_ item: TextOverlayItem) -> CGRect? {
+        if item.keepsPlacement, safeArea != nil {
+            // Mirrors `render`: placed by hand, never nudged clear of platform chrome.
+            var exact = self
+            exact.safeArea = nil
+            return exact.renderedBox(item)
+        }
+        let words = Self.parseMarkup(item.text)
+        let pad = CGFloat(Self.boxPadding)
+        func padded(_ rect: CGRect) -> CGRect {
+            item.boxOpacity > 0 || item.resolvedLockedWidth ? rect.insetBy(dx: -pad, dy: -pad) : rect
+        }
+        switch item.design {
+        case "grapplingCard", "roundCard", "nameTag":
+            return nil
+        case "hero":
+            guard !words.isEmpty else { return nil }
+            let geometry = heroGeometry(item: item, words: words)
+            var rect = CGRect(x: geometry.centerX - Double(geometry.metrics.maxWidth) / 2,
+                              y: geometry.blockTop, width: Double(geometry.metrics.maxWidth), height: Double(geometry.metrics.totalHeight))
+            if let kicker = heroKicker(item: item, headlineSize: geometry.headlineSize) {
+                rect = rect.union(CGRect(x: geometry.centerX - Double(kicker.barWidth) / 2,
+                                         y: geometry.blockTop - Double(kicker.gap + kicker.barHeight),
+                                         width: Double(kicker.barWidth), height: Double(kicker.barHeight)))
+            }
+            return rect
+        case "tag":
+            guard !words.isEmpty else { return nil }
+            let geometry = tagGeometry(item: item, words: words)
+            let stripe = geometry.barHeight * 0.16
+            return CGRect(x: geometry.centerX - Double(geometry.barWidth) / 2 - Double(stripe) * 1.4,
+                          y: geometry.centerY - Double(geometry.barHeight) / 2,
+                          width: Double(geometry.barWidth) + Double(stripe) * 1.4, height: Double(geometry.barHeight))
+        default:
+            if let box = fittedInput(item) {
+                guard !words.isEmpty else {
+                    return padded(CGRect(x: box.centerX - box.width / 2, y: box.centerY - box.height / 2,
+                                         width: box.width, height: box.height))
+                }
+                let layout = Self.fittedLayout(item: item, words: words, boxWidth: box.width, boxHeight: box.height,
+                                               centerX: box.centerX, centerY: box.centerY,
+                                               videoWidth: videoWidth, videoHeight: videoHeight,
+                                               measure: { size, maxWidth in self.metrics(item: item, words: words, size: size, maxWidth: maxWidth) })
+                return padded(CGRect(x: layout.boxLeft, y: layout.boxTop, width: layout.boxWidth, height: layout.boxHeight))
+            }
+            guard !words.isEmpty else { return nil }
+            let line = legacyLayout(item: item, words: words)
+            return padded(CGRect(x: Int(line.x), y: Int(line.top),
+                                 width: Int(line.width.rounded(.up)), height: Int(line.height.rounded(.up))))
+        }
+    }
+
     /// The box a fitted item finally occupies, in pixels, plus its lines.
     struct FittedLayout {
         var boxLeft: Int
@@ -381,7 +454,10 @@ nonisolated struct TextOverlayRenderer {
     }
 
     /// Pure layout for the fitted box; `measure(size, maxWidth)` wraps and
-    /// measures the item's words at a font size.
+    /// measures the item's words at a font size. A hand-placed box
+    /// (`lockedWidth`) never changes the font: the words wrap at the box
+    /// width at the design size and the box grows downward to hold the
+    /// rows (an unbreakable token wider than the box just overflows it).
     static func fittedLayout(item: TextOverlayItem, words: [Word], boxWidth: Int, boxHeight: Int,
                              centerX: Int, centerY: Int, videoWidth: Int, videoHeight: Int,
                              measure: (CGFloat, CGFloat) -> LineMetrics) -> FittedLayout {
@@ -391,6 +467,33 @@ nonisolated struct TextOverlayRenderer {
         var boxHeight = boxHeight
         let margin = Int((Double(videoWidth) * 0.02).rounded())
         let designSize = max(6, (CGFloat(item.fontsize) * CGFloat(videoHeight) / 1920).rounded())
+
+        if item.resolvedLockedWidth {
+            let m = measure(designSize, CGFloat(boxWidth))
+            var grew = false
+            // A single word wider than the box: the box widens to hold it
+            // (away from the aligned edge) rather than the font shrinking.
+            let neededWidth = Int(m.maxWidth.rounded(.up))
+            if neededWidth > boxWidth {
+                grew = true
+                switch item.alignment {
+                case "left": break
+                case "right": boxLeft -= neededWidth - boxWidth
+                default: boxLeft -= (neededWidth - boxWidth) / 2
+                }
+                boxWidth = neededWidth
+            }
+            let neededHeight = Int(m.totalHeight.rounded(.up))
+            if neededHeight > boxHeight {
+                grew = true
+                let bottomLimit = videoHeight - margin
+                if boxTop + neededHeight > bottomLimit { boxTop = max(margin, bottomLimit - neededHeight) }
+                boxHeight = neededHeight
+            }
+            return FittedLayout(boxLeft: boxLeft, boxTop: boxTop, boxWidth: boxWidth, boxHeight: boxHeight,
+                                metrics: m, grew: grew)
+        }
+
         let single = measure(designSize, .greatestFiniteMagnitude)
         var grew = false
 
@@ -471,22 +574,51 @@ nonisolated struct TextOverlayRenderer {
     private func drawLegacy(in context: CGContext, item: TextOverlayItem,
                             words: [Word], visibleWords: Int?) {
         guard !words.isEmpty else { return }
+        let line = legacyLayout(item: item, words: words)
+        if item.boxOpacity > 0 {
+            fillRoundedBackground(in: context, item: item,
+                                  topLeft: (Int(line.x), Int(line.top)),
+                                  size: (Int(line.width.rounded(.up)), Int(line.height.rounded(.up))))
+        }
+        let m = line.metrics
+        var cursorTop = line.top
+        let ascent = CTFontGetAscent(m.font)
+        for lineWords in m.lines {
+            let width = lineWidth(Self.plainText(lineWords), font: m.font)
+            let x = Self.alignedX(boxLeft: line.x, boxWidth: line.width, lineWidth: width, alignment: item.alignment)
+            drawStyledLine(lineWords, font: m.font, item: item, visibleWords: visibleWords,
+                           in: context, x: x, baselineFromTop: cursorTop + ascent)
+            cursorTop += m.lineHeight + m.spacing
+        }
+    }
+
+    struct LegacyLayout {
+        var metrics: LineMetrics
+        var x: CGFloat
+        var top: CGFloat
+        var width: CGFloat
+        var height: CGFloat
+        var font: CTFont { metrics.font }
+    }
+
+    /// Where a legacy (box-less) text lands: the design size, wrapped at
+    /// the frame width when the words are too long for one line (the font
+    /// never changes for a longer text; only a single word wider than the
+    /// frame shrinks so it stays on screen), in a block that hugs the rows,
+    /// centred on the fractions or a named position, nudged inside the
+    /// margin and the safe area.
+    func legacyLayout(item: TextOverlayItem, words: [Word]) -> LegacyLayout {
         let margin = CGFloat(videoWidth) * 0.02
         let available = CGFloat(videoWidth) - margin * 2
         let designScale = CGFloat(videoHeight) / 1920
-        let requestedSize = CGFloat(item.fontsize) * designScale
-        var font = resolveFont(size: requestedSize, family: item.fontfamily,
-                               bold: item.bold, italic: item.italic)
-        let plain = Self.plainText(words)
-        var width = lineWidth(plain, font: font)
-        if width > available {
-            let scaled = max(6, requestedSize * available / width)
-            font = resolveFont(size: scaled, family: item.fontfamily,
-                               bold: item.bold, italic: item.italic)
-            width = lineWidth(plain, font: font)
+        let requestedSize = max(6, CGFloat(item.fontsize) * designScale)
+        var m = metrics(item: item, words: words, size: requestedSize, maxWidth: available)
+        if m.maxWidth > available {
+            let scaled = max(6, requestedSize * available / m.maxWidth)
+            m = metrics(item: item, words: words, size: scaled, maxWidth: available)
         }
-        let ascent = CTFontGetAscent(font)
-        let textHeight = ascent + CTFontGetDescent(font)
+        let width = m.maxWidth
+        let textHeight = m.totalHeight
 
         var x: CGFloat
         var top: CGFloat
@@ -509,14 +641,7 @@ nonisolated struct TextOverlayRenderer {
             x = center.x - width / 2
             top = center.y - textHeight / 2
         }
-
-        if item.boxOpacity > 0 {
-            fillRoundedBackground(in: context, item: item,
-                                  topLeft: (Int(x), Int(top)),
-                                  size: (Int(width.rounded(.up)), Int(textHeight.rounded(.up))))
-        }
-        drawStyledLine(words, font: font, item: item, visibleWords: visibleWords,
-                       in: context, x: x, baselineFromTop: top + ascent)
+        return LegacyLayout(metrics: m, x: x, top: top, width: width, height: textHeight)
     }
 
     /// Rounded background box with 5px padding; radius comes from the item
@@ -525,7 +650,7 @@ nonisolated struct TextOverlayRenderer {
     private func fillRoundedBackground(in context: CGContext, item: TextOverlayItem,
                                        topLeft: (x: Int, y: Int), size: (w: Int, h: Int)) {
         let (br, bg, bb) = Self.parseColor(item.bgcolor, fallback: (0, 0, 0))
-        let pad = 5
+        let pad = Self.boxPadding
         let rect = CGRect(x: CGFloat(topLeft.x - pad),
                           y: CGFloat(videoHeight - topLeft.y - size.h - pad),
                           width: CGFloat(size.w + pad * 2),
@@ -580,18 +705,32 @@ nonisolated struct TextOverlayRenderer {
     /// Hero lockup: small tracked-out kicker on a skewed accent bar above a
     /// huge auto-fit headline with outline, layered shadows, and a subtle
     /// vertical gradient — the fight-poster look.
-    private func drawHero(in context: CGContext, item: TextOverlayItem,
-                          words: [Word], visibleWords: Int?) {
-        guard !words.isEmpty else { return }
+    struct HeroGeometry {
+        var centerX: Double
+        var centerY: Double
+        var headlineSize: CGFloat
+        var blockTop: Double
+        var metrics: LineMetrics
+    }
+
+    struct HeroKicker {
+        var font: CTFont
+        var line: CTLine
+        var textWidth: CGFloat
+        var barWidth: CGFloat
+        var barHeight: CGFloat
+        var gap: CGFloat
+    }
+
+    /// The hero headline auto-fitted to its box exactly like the fitted-box
+    /// path (0.08em line spacing, Anton by default).
+    func heroGeometry(item: TextOverlayItem, words: [Word]) -> HeroGeometry {
         let boxWidth = Double(videoWidth) * (item.wFrac ?? 0.82)
         let boxHeight = Double(videoHeight) * (item.hFrac ?? 0.12)
         let (centerX, centerY) = clamped(centerX: Double(videoWidth) * (item.xFrac ?? 0.5),
                                          centerY: Double(videoHeight) * (item.yFrac ?? 0.2),
                                          width: boxWidth, height: boxHeight)
-
-        // Auto-fit the headline exactly like the fitted-box path.
-        func metrics(for size: CGFloat) -> (font: CTFont, lines: [[Word]], lineHeight: CGFloat,
-                                            spacing: CGFloat, totalHeight: CGFloat, maxWidth: CGFloat) {
+        func metrics(for size: CGFloat) -> LineMetrics {
             let font = resolveFont(size: size, family: item.fontfamily ?? "Anton",
                                    bold: item.bold, italic: item.italic)
             let lines = wrap(words, font: font, maxWidth: boxWidth, maxWords: item.resolvedWordsPerLine)
@@ -599,7 +738,8 @@ nonisolated struct TextOverlayRenderer {
             let spacing = (size * 0.08).rounded(.down)
             let total = lineHeight * CGFloat(lines.count) + spacing * CGFloat(max(0, lines.count - 1))
             let maxLineWidth = lines.map { lineWidth(Self.plainText($0), font: font) }.max() ?? 0
-            return (font, lines, lineHeight, spacing, total, maxLineWidth)
+            return LineMetrics(font: font, lines: lines, lineHeight: lineHeight, spacing: spacing,
+                               totalHeight: total, maxWidth: maxLineWidth)
         }
         var low = 6, high = Int(max(boxWidth, boxHeight)), best = 6
         while low <= high {
@@ -609,24 +749,40 @@ nonisolated struct TextOverlayRenderer {
             else { high = mid - 1 }
         }
         let m = metrics(for: CGFloat(best))
-        let headlineSize = CGFloat(best)
-        let blockTop = centerY - Double(m.totalHeight) / 2
+        return HeroGeometry(centerX: centerX, centerY: centerY, headlineSize: CGFloat(best),
+                            blockTop: centerY - Double(m.totalHeight) / 2, metrics: m)
+    }
+
+    /// The kicker bar above a hero headline; nil without a kicker.
+    func heroKicker(item: TextOverlayItem, headlineSize: CGFloat) -> HeroKicker? {
+        guard let kicker = item.kicker?.trimmingCharacters(in: .whitespacesAndNewlines), !kicker.isEmpty else { return nil }
+        let kickerFont = resolveFont(size: max(24, headlineSize * 0.2),
+                                     family: "Archivo Black", bold: false, italic: false)
+        let black = CGColor(red: 0.05, green: 0.05, blue: 0.06, alpha: 1)
+        let attributes = kernedAttributes(font: kickerFont, color: black, trackingEm: 0.14)
+        let kickerLine = CTLineCreateWithAttributedString(
+            NSAttributedString(string: kicker.uppercased(), attributes: attributes))
+        let textWidth = CGFloat(CTLineGetTypographicBounds(kickerLine, nil, nil, nil))
+        let barHeight = (CTFontGetAscent(kickerFont) + CTFontGetDescent(kickerFont)) * 1.55
+        return HeroKicker(font: kickerFont, line: kickerLine, textWidth: textWidth,
+                          barWidth: textWidth + barHeight * 1.1, barHeight: barHeight, gap: headlineSize * 0.24)
+    }
+
+    private func drawHero(in context: CGContext, item: TextOverlayItem,
+                          words: [Word], visibleWords: Int?) {
+        guard !words.isEmpty else { return }
+        let geometry = heroGeometry(item: item, words: words)
+        let centerX = geometry.centerX, m = geometry.metrics
+        let headlineSize = geometry.headlineSize
+        let blockTop = geometry.blockTop
 
         // Kicker on its angled accent bar, centered above the headline.
-        if let kicker = item.kicker?.trimmingCharacters(in: .whitespacesAndNewlines), !kicker.isEmpty {
-            let kickerFont = resolveFont(size: max(24, headlineSize * 0.2),
-                                         family: "Archivo Black", bold: false, italic: false)
+        if let kicker = heroKicker(item: item, headlineSize: headlineSize) {
+            let kickerFont = kicker.font, kickerLine = kicker.line, textWidth = kicker.textWidth
             let accent = Self.cgColor(item.accentColor, fallback: (1, 0.84, 0))
-            let black = CGColor(red: 0.05, green: 0.05, blue: 0.06, alpha: 1)
-            let attributes = kernedAttributes(font: kickerFont, color: black, trackingEm: 0.14)
-            let kickerLine = CTLineCreateWithAttributedString(
-                NSAttributedString(string: kicker.uppercased(), attributes: attributes))
-            let textWidth = CGFloat(CTLineGetTypographicBounds(kickerLine, nil, nil, nil))
             let ascent = CTFontGetAscent(kickerFont), descent = CTFontGetDescent(kickerFont)
-            let barHeight = (ascent + descent) * 1.55
-            let barWidth = textWidth + barHeight * 1.1
-            let gap = headlineSize * 0.24
-            let barCenterY = CGFloat(videoHeight) - CGFloat(blockTop) + gap + barHeight / 2
+            let barHeight = kicker.barHeight, barWidth = kicker.barWidth
+            let barCenterY = CGFloat(videoHeight) - CGFloat(blockTop) + kicker.gap + barHeight / 2
 
             context.saveGState()
             context.setShadow(offset: CGSize(width: 0, height: -4), blur: 14,
@@ -724,9 +880,20 @@ nonisolated struct TextOverlayRenderer {
 
     /// Tag chip: one bold line on a skewed dark bar with an accent stripe on
     /// the leading edge — lower-third name/stat plate.
-    private func drawTag(in context: CGContext, item: TextOverlayItem,
-                         words: [Word], visibleWords: Int?) {
-        guard !words.isEmpty else { return }
+    struct TagGeometry {
+        var centerX: Double
+        var centerY: Double
+        var font: CTFont
+        var line: CTLine
+        var attributes: [NSAttributedString.Key: Any]
+        var textWidth: CGFloat
+        var barWidth: CGFloat
+        var barHeight: CGFloat
+    }
+
+    /// The tag chip: the largest font whose line fits the box minus the
+    /// bar's padding, and the bar around it.
+    func tagGeometry(item: TextOverlayItem, words: [Word]) -> TagGeometry {
         let maxWidth = Double(videoWidth) * (item.wFrac ?? 0.8)
         let maxHeight = Double(videoHeight) * (item.hFrac ?? 0.06)
         let (centerX, centerY) = clamped(centerX: Double(videoWidth) * (item.xFrac ?? 0.5),
@@ -750,10 +917,19 @@ nonisolated struct TextOverlayRenderer {
         let tagLine = CTLineCreateWithAttributedString(
             NSAttributedString(string: plain, attributes: attributes))
         let textWidth = CGFloat(CTLineGetTypographicBounds(tagLine, nil, nil, nil))
+        let barHeight = (CTFontGetAscent(font) + CTFontGetDescent(font)) * 1.7
+        return TagGeometry(centerX: centerX, centerY: centerY, font: font, line: tagLine, attributes: attributes,
+                           textWidth: textWidth, barWidth: textWidth + barHeight * 1.2, barHeight: barHeight)
+    }
+
+    private func drawTag(in context: CGContext, item: TextOverlayItem,
+                         words: [Word], visibleWords: Int?) {
+        guard !words.isEmpty else { return }
+        let geometry = tagGeometry(item: item, words: words)
+        let font = geometry.font, tagLine = geometry.line, attributes = geometry.attributes
+        let textWidth = geometry.textWidth, barWidth = geometry.barWidth, barHeight = geometry.barHeight
         let ascent = CTFontGetAscent(font), descent = CTFontGetDescent(font)
-        let barHeight = (ascent + descent) * 1.7
-        let barWidth = textWidth + barHeight * 1.2
-        let center = CGPoint(x: centerX, y: CGFloat(videoHeight) - centerY)
+        let center = CGPoint(x: geometry.centerX, y: CGFloat(videoHeight) - geometry.centerY)
         let dark = Self.cgColor(item.bgcolor, fallback: (0.07, 0.07, 0.09))
         let accent = Self.cgColor(item.accentColor, fallback: (1, 0.84, 0))
 

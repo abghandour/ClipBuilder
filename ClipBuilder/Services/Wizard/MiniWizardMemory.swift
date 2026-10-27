@@ -9,7 +9,7 @@ nonisolated enum MiniWizardMemory {
         case safeAreaOnly, safeAreaPlatforms
         case nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case introVideo, outroVideo, nameTags, watermark, outputMode
-        case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, overlayPosition
+        case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, overlayPosition, overlayEdits
         case introBumper, outroBumper, watermarkOverlay, watermarkOpacity, transition, look
         case muteSourceAudio, music, musicTrack, settingsTab, dub, dubLanguage
     }

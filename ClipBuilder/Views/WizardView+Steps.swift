@@ -83,8 +83,12 @@ extension WizardView {
                             speakerPositionChoices.wrappedValue = positions
                         } else { captionChoice(\.captionPosition).wrappedValue = position.string }
                     case .nameTag: nameTagPosition = position.string
-                    case .overlay: fixedOverlayPosition = position.string
                     }
+                },
+                onPlaceOverlay: { component, box in
+                    var edits = OverlayEdits.split(fixedOverlayEdits)
+                    edits.place(component, at: box)
+                    fixedOverlayEdits = edits.joined
                 })
                 .id("\(store.profileGeneration):\(store.activeProjectID ?? 0)")
                 .rememberedPaneWidth("pane.wizard.preview", min: 240, initial: 320, max: 480)

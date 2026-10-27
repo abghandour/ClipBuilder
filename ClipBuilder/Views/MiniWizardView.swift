@@ -114,8 +114,10 @@ struct MiniWizardView: View {
                                 miniSettings.speakerCaptionPositions = positions
                             } else { miniSettings.captionPosition = position.string }
                         case .nameTag: miniSettings.nameTagPosition = position.string
-                        case .overlay: miniSettings.overlayPosition = position.string
                         }
+                    },
+                    onPlaceOverlay: { component, box in
+                        miniSettings.overlayEdits.place(component, at: box)
                     })
                     .id("\(store.profileGeneration):\(store.activeProjectID ?? 0):\(video.id)")
                     .rememberedPaneWidth("pane.express.preview", min: 240, initial: 320, max: 480)

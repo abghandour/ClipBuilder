@@ -16,6 +16,8 @@ nonisolated enum WizardExpressExtras {
     static let overlayTextsKey = "wizard.fixedOverlayTexts"
     /// Where the design was dragged in the preview (`custom:x,y`); empty = as designed.
     static let overlayPositionKey = "wizard.fixedOverlayPosition"
+    /// Hand placements of the design's components as one JSON string (`OverlayEdits.joined`).
+    static let overlayEditsKey = "wizard.fixedOverlayEdits"
     static let watermarkOverlayKey = "wizard.watermarkOverlay"
     static let watermarkOpacityKey = "wizard.watermarkOpacity"
     static let introBumperKey = "wizard.introBumper"
@@ -49,12 +51,14 @@ nonisolated enum WizardExpressExtras {
             let texts = splitTexts(defaults.string(forKey: overlayTextsKey))
             options.fixedOverlayTexts = texts.isEmpty ? nil : texts
             options.fixedOverlayPosition = defaults.string(forKey: overlayPositionKey).flatMap { CustomPosition.isCustom($0) ? $0 : nil }
+            options.fixedOverlayEdits = OverlayEdits.split(defaults.string(forKey: overlayEditsKey)).trimmed
         } else {
             options.fixedOverlayTemplate = nil
             options.fixedOverlayStart = nil
             options.fixedOverlayDuration = nil
             options.fixedOverlayTexts = nil
             options.fixedOverlayPosition = nil
+            options.fixedOverlayEdits = nil
         }
         let watermark = (defaults.string(forKey: watermarkOverlayKey) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         options.watermarkOverlayTemplate = options.includeWatermark && !watermark.isEmpty ? watermark : nil

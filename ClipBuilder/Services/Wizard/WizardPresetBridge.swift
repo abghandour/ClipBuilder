@@ -55,6 +55,7 @@ nonisolated enum WizardPresetBridge {
         fields["fixedOverlayDuration"] = settings.overlayDuration.map { .number($0) } ?? .null
         fields["fixedOverlayTextsJoined"] = settings.overlayTexts.isEmpty ? .null : .string(WizardExpressExtras.joinedTexts(settings.overlayTexts))
         fields["fixedOverlayPosition"] = settings.overlayPosition.flatMap { CustomPosition.isCustom($0) ? .string($0) : nil } ?? .null
+        fields["fixedOverlayEdits"] = settings.overlayEdits.trimmed.map { .string($0.joined) } ?? .null
         fields["transitionChoice"] = .string(settings.transition)
         fields["lookPreset"] = settings.lookName.map(JSONSetting.string) ?? .null
         fields["outputMode"] = .string(settings.outputMode.rawValue)
@@ -114,6 +115,7 @@ nonisolated enum WizardPresetBridge {
         if let value = fields["fixedOverlayDuration"] { settings.overlayDuration = value.number.map { max(0, $0) } }
         if let value = fields["fixedOverlayTextsJoined"] { settings.overlayTexts = WizardExpressExtras.splitTexts(value.string) }
         if let value = fields["fixedOverlayPosition"] { settings.overlayPosition = value.string.flatMap { CustomPosition.isCustom($0) ? $0 : nil } }
+        if let value = fields["fixedOverlayEdits"] { settings.overlayEdits = OverlayEdits.split(value.string) }
         if let transition = fields["transitionChoice"]?.string, !transition.isEmpty { settings.transition = transition }
         if let value = fields["lookPreset"] { settings.look = value.string ?? "" }
         if let mode = fields["outputMode"]?.string.flatMap(MiniWizardFlow.OutputMode.init(rawValue:)) { settings.outputMode = mode }

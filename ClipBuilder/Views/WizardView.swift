@@ -101,6 +101,7 @@ struct WizardView: View {
     @AppStorage(WizardExpressExtras.overlayDurationKey) var fixedOverlayDuration = 0.0
     @AppStorage(WizardExpressExtras.overlayTextsKey) var fixedOverlayTexts = ""
     @AppStorage(WizardExpressExtras.overlayPositionKey) var fixedOverlayPosition = ""
+    @AppStorage(WizardExpressExtras.overlayEditsKey) var fixedOverlayEdits = ""
     @AppStorage(WizardExpressExtras.watermarkOverlayKey) var watermarkOverlay = ""
     @AppStorage(WizardExpressExtras.watermarkOpacityKey) var watermarkOpacity = 0.0
     @AppStorage(WizardExpressExtras.introBumperKey) var introBumperLibraryPath = ""

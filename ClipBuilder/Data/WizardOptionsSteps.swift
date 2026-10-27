@@ -83,6 +83,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var fixedOverlayDuration: Double?
     var fixedOverlayTexts: [String]?
     var fixedOverlayPosition: String?
+    var fixedOverlayEdits: OverlayEdits?
     var introBumperPath: String?
     var outroBumperPath: String?
     var watermarkOverlayTemplate: String?
@@ -143,6 +144,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         case fixedOverlayDuration
         case fixedOverlayTexts
         case fixedOverlayPosition
+        case fixedOverlayEdits
         case introBumperPath
         case outroBumperPath
         case watermarkOverlayTemplate
@@ -239,6 +241,7 @@ nonisolated extension WizardOptions {
         result.fixedOverlayDuration = fixedOverlayDuration
         result.fixedOverlayTexts = fixedOverlayTexts
         result.fixedOverlayPosition = fixedOverlayPosition
+        result.fixedOverlayEdits = fixedOverlayEdits
         result.introBumperPath = introBumperPath
         result.outroBumperPath = outroBumperPath
         result.watermarkOverlayTemplate = watermarkOverlayTemplate
@@ -331,6 +334,7 @@ nonisolated extension WizardOptions {
         result.fixedOverlayDuration = step2.fixedOverlayDuration
         result.fixedOverlayTexts = step2.fixedOverlayTexts
         result.fixedOverlayPosition = step2.fixedOverlayPosition
+        result.fixedOverlayEdits = step2.fixedOverlayEdits
         result.introBumperPath = step2.introBumperPath
         result.outroBumperPath = step2.outroBumperPath
         result.watermarkOverlayTemplate = step2.watermarkOverlayTemplate

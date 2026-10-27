@@ -253,17 +253,21 @@ struct MiniSettingsCard: View {
                     .pickerStyle(.menu)
                 }
                 overlayTextRows(in: templates)
-                MiniRow("Position") {
+                MiniRow("Layout") {
                     HStack(spacing: Theme.spaceS) {
-                        Text(CustomPosition.isCustom(settings.overlayPosition) ? "Custom (dragged)" : "As designed")
+                        let edited = !settings.overlayEdits.isEmpty || CustomPosition.isCustom(settings.overlayPosition)
+                        Text(edited ? "Custom (dragged)" : "As designed")
                             .lineLimit(1).fixedSize()
-                        if CustomPosition.isCustom(settings.overlayPosition) {
-                            Button("Reset") { settings.overlayPosition = nil }
-                                .controlSize(.small).lineLimit(1).fixedSize()
+                        Button("Reset layout", systemImage: "arrow.uturn.backward") {
+                            settings.overlayEdits = OverlayEdits()
+                            settings.overlayPosition = nil
                         }
+                        .labelStyle(.iconOnly).controlSize(.small)
+                        .disabled(!edited)
+                        .help("Put every text and image back where the design has it")
                     }
                 }
-                FormCaption("Drag the overlay in the preview to move the whole design.")
+                FormCaption("Each text and image of the design is its own object in the preview: drag it to move it, drag its edges to resize it. Text wraps to its box.")
                 MiniRow("Starts at") {
                     HStack(spacing: Theme.spaceXS) {
                         TextField("Start", value: $settings.overlayStart, format: .number.precision(.fractionLength(0...1)))
@@ -314,24 +318,45 @@ struct MiniSettingsCard: View {
     /// with the template's own words so the user only edits what should change.
     @ViewBuilder
     private func overlayTextRows(in templates: [OverlayTemplate]) -> some View {
-        let texts = dynamicTexts(of: overlaySelection(in: templates), in: templates)
-        ForEach(Array(texts.enumerated()), id: \.offset) { index, original in
+        let composition = templates.first { $0.name == overlaySelection(in: templates) }?.composition ?? OverlayComposition()
+        let textIndices = WizardFixedOverlay.dynamicTextIndices(in: composition)
+        let items = textIndices.map { composition.texts[$0] }
+        let texts = items.map(\.text)
+        ForEach(Array(items.enumerated()), id: \.offset) { index, item in
+            let original = item.text
+            let textIndex = textIndices[index]
             MiniRow(texts.count == 1 ? "Text" : "Text \(index + 1)") {
-                TextField(original, text: Binding(
-                    get: { settings.overlayTexts[safe: index] ?? original },
-                    set: { value in
-                        var updated = settings.overlayTexts
-                        while updated.count < texts.count { updated.append(texts[updated.count]) }
-                        updated[index] = value
-                        settings.overlayTexts = updated
-                    }))
-                    .textFieldStyle(.roundedBorder)
-                    .frame(maxWidth: 320)
-                    .accessibilityLabel("Overlay text \(index + 1)")
+                HStack(spacing: Theme.spaceS) {
+                    TextField(original, text: Binding(
+                        get: { settings.overlayTexts[safe: index] ?? original },
+                        set: { value in
+                            var updated = settings.overlayTexts
+                            while updated.count < texts.count { updated.append(texts[updated.count]) }
+                            updated[index] = value
+                            settings.overlayTexts = updated
+                        }))
+                        .textFieldStyle(.roundedBorder)
+                        .frame(maxWidth: 320)
+                        .accessibilityLabel("Overlay text \(index + 1)")
+                    OverlayTextAlignmentPicker(alignment: Binding(
+                        get: { settings.overlayEdits.texts[safe: textIndex]?.alignment ?? item.alignment },
+                        set: { value in
+                            settings.overlayEdits.text(textIndex) { $0.alignment = value == item.alignment ? nil : value }
+                        }))
+                        .accessibilityLabel("Overlay text \(index + 1) alignment")
+                    if settings.overlayEdits.texts[safe: textIndex]?.box != nil {
+                        Button("Reset placement", systemImage: "arrow.uturn.backward") {
+                            settings.overlayEdits.text(textIndex) { $0.box = nil }
+                        }
+                        .labelStyle(.iconOnly).controlSize(.small)
+                        .help("Put this text back where the design has it")
+                        .accessibilityLabel("Reset overlay text \(index + 1) placement")
+                    }
+                }
             }
         }
         if !texts.isEmpty {
-            FormCaption("These are the texts the overlay lets the AI Wizard replace. Edit them here; the other items stay as designed.")
+            FormCaption("These are the texts the overlay lets the AI Wizard replace. Edit them here; the other items keep their words.")
                 .lineLimit(nil)
         }
     }
@@ -442,13 +467,19 @@ struct MiniSettingsCard: View {
     }
 
     private func dynamicTexts(of name: String, in templates: [OverlayTemplate]) -> [String] {
-        templates.first { $0.name == name }.map { WizardFixedOverlay.dynamicTexts(in: $0.composition) } ?? []
+        dynamicTextItems(of: name, in: templates).map(\.text)
     }
 
-    /// Choosing a design resets the text fields to that design's own words.
+    private func dynamicTextItems(of name: String, in templates: [OverlayTemplate]) -> [TextOverlayItem] {
+        templates.first { $0.name == name }.map { WizardFixedOverlay.dynamicTextItems(in: $0.composition) } ?? []
+    }
+
+    /// Choosing a design resets the text fields to that design's own words
+    /// and drops the previous design's alignments and resized boxes.
     private func selectOverlay(_ name: String, in templates: [OverlayTemplate]) {
         settings.overlayTemplate = name
         settings.overlayTexts = dynamicTexts(of: name, in: templates)
+        settings.overlayEdits = OverlayEdits()
     }
 
     /// The toggle, then (when on) a menu of the bumpers that allow this
@@ -481,5 +512,25 @@ struct MiniSettingsCard: View {
                 }
             }
         }
+    }
+}
+
+/// Left, centre, right for one of a fixed overlay's replaceable texts;
+/// shared by the Express card and the Wizard's Look step.
+struct OverlayTextAlignmentPicker: View {
+    @Binding var alignment: String
+
+    var body: some View {
+        Picker("Alignment", selection: $alignment) {
+            Label("Left", systemImage: "text.alignleft").tag("left")
+            Label("Center", systemImage: "text.aligncenter").tag("center")
+            Label("Right", systemImage: "text.alignright").tag("right")
+        }
+        .pickerStyle(.segmented)
+        .labelStyle(.iconOnly)
+        .labelsHidden()
+        .controlSize(.small)
+        .fixedSize()
+        .help("Where this text sits in its box.")
     }
 }

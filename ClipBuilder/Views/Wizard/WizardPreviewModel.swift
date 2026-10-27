@@ -55,6 +55,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
         visual.overlayDuration = options.fixedOverlayDuration
         visual.overlayTexts = overlayTexts
         visual.overlayPosition = options.fixedOverlayPosition
+        visual.overlayEdits = options.fixedOverlayEdits ?? OverlayEdits()
         visual.cameraFocus = options.podcastFraming == .original ? WizardCameraFocus.original
             : options.highlightFraming?.rawValue ?? ""
         visual.interviewZoom = options.interviewZoom ?? 0

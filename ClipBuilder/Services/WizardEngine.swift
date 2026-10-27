@@ -29,6 +29,7 @@ nonisolated struct WizardOptions: Codable, Sendable {
         case captionPosition, speakerCaptionPositions, captionStyleID, nameTagsOnly, workflow, critiqueTargetScore, critiqueMaxVersions, musicTrack, overlayStyle, overlayAnimation, overlayPlacement
         case highlightFraming, interviewZoom, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
         case fixedOverlayPosition
+        case fixedOverlayEdits
         case interviewZoomMoves
         case interviewCuts
         case interviewPunchIn
@@ -183,6 +184,9 @@ nonisolated struct WizardOptions: Codable, Sendable {
     /// Replacement text for the template's AI-replaceable text items, in
     /// template order; an empty entry keeps the template's own text.
     var fixedOverlayTexts: [String]?
+    /// Hand placements of the design's components from the preview (text
+    /// boxes and alignments, image positions and widths); nil keeps the design.
+    var fixedOverlayEdits: OverlayEdits?
     /// A saved overlay template used as the watermark instead of the brand
     /// logo (faded, no boxes or effects, over the whole video). Only applies
     /// when `includeWatermark` is on.

@@ -52,6 +52,9 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var overlayTexts: [String] = []
     /// Where the design was dragged in the preview (`custom:x,y`); nil = as designed.
     var overlayPosition: String?
+    /// Hand placements of the design's components from the preview; empty
+    /// keeps the design.
+    var overlayEdits = OverlayEdits()
     /// Effect at every cut: "random" or an effect name (TransitionEffect).
     var transition: String = WizardPlanRules.randomTransitionChoice
     /// A look from the Looks library (an EffectCatalog preset id such as
@@ -89,7 +92,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         case safeAreaOnly, safeAreaPlatforms
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case watermark, watermarkOverlay, watermarkOpacity
-        case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, overlayPosition, outputMode, transition, look
+        case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, overlayPosition, overlayEdits, outputMode, transition, look
         case muteSourceAudio, music, musicTrack, dub, dubLanguage
     }
 
@@ -131,6 +134,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         overlayDuration = try c.decodeIfPresent(Double.self, forKey: .overlayDuration)
         overlayTexts = try c.decodeIfPresent([String].self, forKey: .overlayTexts) ?? base.overlayTexts
         overlayPosition = try c.decodeIfPresent(String.self, forKey: .overlayPosition)
+        overlayEdits = try c.decodeIfPresent(OverlayEdits.self, forKey: .overlayEdits) ?? OverlayEdits()
         outputMode = try c.decodeIfPresent(MiniWizardFlow.OutputMode.self, forKey: .outputMode) ?? base.outputMode
         transition = try c.decodeIfPresent(String.self, forKey: .transition) ?? base.transition
         look = try c.decodeIfPresent(String.self, forKey: .look) ?? base.look
@@ -203,6 +207,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.fixedOverlayDuration = result.fixedOverlayTemplate == nil ? nil : overlayDuration.map { max(0, $0) }
         result.fixedOverlayTexts = result.fixedOverlayTemplate == nil || overlayTexts.isEmpty ? nil : overlayTexts
         result.fixedOverlayPosition = result.fixedOverlayTemplate == nil ? nil : overlayPosition.flatMap { CustomPosition.isCustom($0) ? $0 : nil }
+        result.fixedOverlayEdits = result.fixedOverlayTemplate == nil ? nil : overlayEdits.trimmed
         return result
     }
 
@@ -285,6 +290,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.overlayTemplate = defaults.string(forKey: key(.overlayTemplate))
         result.overlayTexts = defaults.stringArray(forKey: key(.overlayTexts)) ?? []
         result.overlayPosition = defaults.string(forKey: key(.overlayPosition))
+        result.overlayEdits = OverlayEdits.split(defaults.string(forKey: key(.overlayEdits)))
         result.watermarkOverlay = defaults.string(forKey: key(.watermarkOverlay))
         if defaults.object(forKey: key(.watermarkOpacity)) != nil {
             result.watermarkOpacity = min(1, max(0, defaults.double(forKey: key(.watermarkOpacity))))
@@ -336,6 +342,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         set(overlayTemplate, forKey: key(.overlayTemplate))
         set(overlayTexts, forKey: key(.overlayTexts))
         set(overlayPosition, forKey: key(.overlayPosition))
+        set(overlayEdits.trimmed?.joined, forKey: key(.overlayEdits))
         set(watermarkOverlay, forKey: key(.watermarkOverlay))
         set(watermarkOpacity, forKey: key(.watermarkOpacity))
         set(introBumper, forKey: key(.introBumper))

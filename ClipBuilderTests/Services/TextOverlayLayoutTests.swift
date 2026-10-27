@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreText
 import Foundation
 import ImageIO
 import UniformTypeIdentifiers
@@ -100,6 +101,139 @@ struct TextOverlayLayoutTests {
         // Near the bottom edge the extra rows grow upward instead.
         let low = try render(item(paragraph, alignment: "left", y: 0.97, fontsize: 40))
         #expect(low.maxY <= 1920 - 21 + 5 && low.minY < 1920 * 0.97 - 48 - 40)
+    }
+
+    @Test("A hand-placed box keeps the design font size: words wrap at its width and it grows downward")
+    func lockedWidthWrapsInsteadOfGrowing() throws {
+        let long = "This headline is far too long for its little box"
+        var locked = item(long, alignment: "left", fontsize: 40)
+        locked.lockedWidth = true
+        let rendered = try render(locked)
+        #expect(abs(rendered.minX - 378) <= 1 && abs(rendered.maxX - 702) <= 1, "the placed box is the painted box, both edges stay put")
+        #expect(rendered.height > 96 + 40, "the words wrapped onto more rows below the box")
+        let box = try #require(renderer.renderedBox(locked))
+        #expect(abs(box.minX - 378) <= 1 && abs(box.width - 324) <= 1, "renderedBox reports the placed box")
+        #expect(abs(box.height - rendered.height) <= 2, "and its grown height")
+        let grown = try #require(renderer.renderedBox(item(long, alignment: "left", fontsize: 40)))
+        #expect(grown.width > 324, "without the lock the box widens as before")
+        // A short word that fits keeps the design size instead of auto-fitting to fill the box.
+        var short = item("Hi", alignment: "left", fontsize: 40)
+        short.lockedWidth = true
+        let footprint = try #require(renderer.renderedBox(short))
+        #expect(abs(footprint.minX - 378) <= 1 && abs(footprint.width - 324) <= 1 && abs(footprint.height - 96) <= 1)
+        var red = short
+        red.boxOpacity = 0
+        let glyphs = try render(red)
+        #expect(glyphs.height < 45 && glyphs.height > 20, "40 pt at 1920 high stays 40 px tall, not grown to the 86 px box")
+        var bigger = red
+        bigger.wFrac = 0.6; bigger.hFrac = 0.2
+        #expect(abs(try render(bigger).height - glyphs.height) <= 1, "a larger box does not change the font")
+        // Round-trips in JSON and takes part in equality.
+        let data = try JSONEncoder().encode(locked)
+        let decoded = try JSONDecoder().decode(TextOverlayItem.self, from: data)
+        var same = decoded
+        same.uid = locked.uid
+        #expect(decoded.resolvedLockedWidth && same == locked)
+        let json = String(decoding: try JSONEncoder().encode(TextOverlayItem(text: "x")), as: UTF8.self)
+        #expect(!json.contains("locked_width"), "only written when set")
+    }
+
+    @Test("Placing the Subject template's legacy line gives a box the words wrap in, matching its selector")
+    func placedLegacyLineWrapsInsideItsSelector() throws {
+        // The saved Subject design: centre and size only, no box, drawn as one shrunk line.
+        var subject = TextOverlayItem(text: "Subject asdasd sadasasd asdasda sda")
+        subject.fontsize = 194
+        subject.fontfamily = "Bebas Neue"
+        subject.xFrac = 0.4988
+        subject.yFrac = 0.7879
+        subject.boxOpacity = 0.5
+        subject.isDynamic = true
+        let composition = OverlayComposition(texts: [subject])
+        let before = try #require(renderer.renderedBox(subject))
+        let beforePaint = try render(subject)
+        #expect(abs(before.minX - beforePaint.minX) <= 1 && abs(before.maxX - beforePaint.maxX) <= 1, "legacy footprint matches")
+        #expect(before.width <= 1080 - 21 + 5 && before.height > 2 * 194 * 0.9, "wrapped to rows inside the frame margin at the design size, not shrunk")
+        var oneWordBefore = subject
+        oneWordBefore.text = "Subject"
+        oneWordBefore.boxOpacity = 0
+        oneWordBefore.fontcolor = "#ff0000"
+        let legacyGlyphs = try render(oneWordBefore)
+
+        var edits = OverlayEdits()
+        edits.place(.text(0), at: CGRect(x: 0.42, y: 0.52, width: 0.48, height: 0.13))
+        let placed = WizardFixedOverlay.applyingEdits(in: composition, with: edits).texts[0]
+        #expect(placed.resolvedLockedWidth && abs((placed.wFrac ?? 0) - 0.48) < 0.0001)
+        let after = try #require(renderer.renderedBox(placed))
+        let paint = try render(placed)
+        #expect(abs(after.minX - paint.minX) <= 1 && abs(after.maxX - paint.maxX) <= 1, "selector and painted box share edges")
+        #expect(abs(after.minY - paint.minY) <= 1 && abs(after.maxY - paint.maxY) <= 1)
+        #expect(after.width >= 0.48 * 1080 - 1 && after.midX > 0.42 * 1080 && after.midX < 0.9 * 1080,
+                "the placed width is kept, widened only when one word at 194 pt cannot fit")
+        #expect(after.height > 0.13 * 1920, "rows wrapped below the placed height at the design size")
+        var narrowWords = placed
+        narrowWords.text = "Subject fits in a box"
+        let kept = try #require(renderer.renderedBox(narrowWords))
+        #expect(abs(kept.minX - 0.42 * 1080) <= 1 && abs(kept.width - 0.48 * 1080) <= 1, "words that fit keep the placed width exactly")
+        var bare = placed
+        bare.boxOpacity = 0
+        bare.fontcolor = "#ff0000"
+        let glyphs = try render(bare)
+        #expect(glyphs.maxX <= after.maxX + 1 && glyphs.minX >= after.minX - 1, "the words stay inside the box")
+        #expect(glyphs.height > 0.13 * 1920, "several rows at 194 pt")
+        // The same font before and after placing: row height is unchanged.
+        let rowsBefore = renderer.legacyLayout(item: subject, words: TextOverlayRenderer.parseMarkup(subject.text)).metrics
+        #expect(CTFontGetSize(rowsBefore.font) == 194 && rowsBefore.lines.count >= 2, "legacy rows at the design size")
+        var oneWordAfter = bare
+        oneWordAfter.text = "Subject"
+        let placedGlyphs = try render(oneWordAfter)
+        #expect(abs(placedGlyphs.height - legacyGlyphs.height) <= 1 && abs(placedGlyphs.width - legacyGlyphs.width) <= 1,
+                "the same word is the same size before and after placing: the font did not change")
+    }
+
+    @Test("renderedBox matches the painted footprint of every design")
+    func renderedBoxMatchesThePaintedFootprint() throws {
+        // Fitted box with a background: the box plus its 5 px padding.
+        let fitted = item("Hi", alignment: "center", fontsize: 40)
+        let fittedBox = try #require(renderer.renderedBox(fitted))
+        let fittedPaint = try render(fitted)
+        #expect(abs(fittedBox.minX - fittedPaint.minX) <= 1 && abs(fittedBox.maxX - fittedPaint.maxX) <= 1)
+        #expect(abs(fittedBox.minY - fittedPaint.minY) <= 1 && abs(fittedBox.maxY - fittedPaint.maxY) <= 1)
+        // Legacy single line (no fractions, like the Subject template).
+        var legacy = TextOverlayItem(text: "Subject")
+        legacy.fontsize = 194
+        legacy.xFrac = 0.5
+        legacy.yFrac = 0.79
+        legacy.boxOpacity = 0.5
+        legacy.bgcolor = "#000000"
+        let legacyBox = try #require(renderer.renderedBox(legacy))
+        let legacyPaint = try render(legacy)
+        #expect(abs(legacyBox.minX - legacyPaint.minX) <= 1 && abs(legacyBox.maxX - legacyPaint.maxX) <= 1)
+        #expect(abs(legacyBox.minY - legacyPaint.minY) <= 1 && abs(legacyBox.maxY - legacyPaint.maxY) <= 1)
+        #expect(legacyBox.width < 1080 * 0.6 - 20 || legacyBox.width > 1080 * 0.6 + 20, "not the default design box")
+        // Legacy with no background: the glyph bounds, within the line's metrics.
+        legacy.boxOpacity = 0
+        legacy.fontcolor = "#ff0000"
+        let bare = try #require(renderer.renderedBox(legacy))
+        let glyphs = try render(legacy)
+        #expect(bare.contains(glyphs.insetBy(dx: 2, dy: 2)) && bare.height < glyphs.height * 1.6)
+        // Hero and tag report the headline block and the bar; the paint stays inside with its shadows.
+        var hero = item("Fight Night", alignment: "center", w: 0.8, h: 0.12, fontsize: 60)
+        hero.design = "hero"
+        hero.kicker = "Main event"
+        let heroBox = try #require(renderer.renderedBox(hero))
+        let heroPaint = try render(hero)
+        #expect(abs(heroBox.midX - heroPaint.midX) <= 6 && heroBox.height > 0.12 * 1920 * 0.5)
+        #expect(heroBox.minY < heroPaint.minY + 10 && heroBox.maxY > heroPaint.maxY - 60, "block with kicker spans the paint, shadows aside")
+        var tag = item("Round 3", alignment: "center", w: 0.8, h: 0.06, fontsize: 40)
+        tag.design = "tag"
+        let tagBox = try #require(renderer.renderedBox(tag))
+        let tagPaint = try render(tag)
+        #expect(abs(tagBox.midY - tagPaint.midY) <= 12 && abs(tagBox.height - tagPaint.height) <= 40)
+        #expect(abs(tagBox.midX - tagPaint.midX) <= 20 && tagPaint.width >= tagBox.width - 4 && tagPaint.width <= tagBox.width + 120,
+                "bar vs bar plus its soft shadow and skew")
+        var card = TextOverlayItem(text: "x")
+        card.design = "nameTag"
+        #expect(renderer.renderedBox(card) == nil)
     }
 
     @Test("An unbreakable token wider than the frame shrinks instead of spilling past the edge")

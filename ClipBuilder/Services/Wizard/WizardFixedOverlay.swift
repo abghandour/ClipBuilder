@@ -23,7 +23,7 @@ nonisolated enum WizardFixedOverlay {
         guard duration >= minimumDuration else { return nil }
         var block = OverlayBlockItem()
         block.name = template.name
-        block.composition = replacingDynamicTexts(in: template.composition, with: options.fixedOverlayTexts ?? [])
+        block.composition = designComposition(options: options, template: template)
         if let custom = CustomPosition(options.fixedOverlayPosition) {
             block.composition = repositioned(block.composition, center: custom,
                                              canvasAspect: options.renderSettings.aspectRatio)
@@ -32,6 +32,23 @@ nonisolated enum WizardFixedOverlay {
         block.startTime = (start * 100).rounded() / 100
         block.duration = (duration * 100).rounded() / 100
         return block
+    }
+
+    /// The template with the user's words and hand placements applied,
+    /// before the whole design is moved to a (legacy) dragged position.
+    static func designComposition(options: WizardOptions, template: OverlayTemplate) -> OverlayComposition {
+        applyingEdits(in: replacingDynamicTexts(in: template.composition, with: options.fixedOverlayTexts ?? []),
+                      with: options.fixedOverlayEdits ?? OverlayEdits())
+    }
+
+    /// How far `repositioned` moves the design for `center`, as canvas
+    /// fractions; zero when nothing moves.
+    static func shift(of composition: OverlayComposition, center: CustomPosition, canvasAspect: Double) -> CGPoint {
+        guard let box = bounds(of: composition, canvasAspect: canvasAspect) else { return .zero }
+        let origin = center.origin(size: box.size, in: CGRect(x: 0, y: 0, width: 1, height: 1))
+        let dx = origin.x - box.minX, dy = origin.y - box.minY
+        guard abs(dx) > 0.00001 || abs(dy) > 0.00001 else { return .zero }
+        return CGPoint(x: dx, y: dy)
     }
 
     /// The design's bounding box as canvas fractions: texts from their
@@ -53,10 +70,9 @@ nonisolated enum WizardFixedOverlay {
     /// The design moved as one piece so its bounding box is centred on
     /// `center`, kept inside the frame.
     static func repositioned(_ composition: OverlayComposition, center: CustomPosition, canvasAspect: Double) -> OverlayComposition {
-        guard let box = bounds(of: composition, canvasAspect: canvasAspect) else { return composition }
-        let origin = center.origin(size: box.size, in: CGRect(x: 0, y: 0, width: 1, height: 1))
-        let dx = origin.x - box.minX, dy = origin.y - box.minY
-        guard abs(dx) > 0.00001 || abs(dy) > 0.00001 else { return composition }
+        let delta = shift(of: composition, center: center, canvasAspect: canvasAspect)
+        let dx = delta.x, dy = delta.y
+        guard dx != 0 || dy != 0 else { return composition }
         var result = composition
         result.texts = composition.texts.map { text in
             var item = text
@@ -133,7 +149,63 @@ nonisolated enum WizardFixedOverlay {
     /// The texts the AI Wizard may replace, in template order. These are
     /// the fields Express offers to override.
     static func dynamicTexts(in composition: OverlayComposition) -> [String] {
-        composition.texts.filter(\.isDynamic).map(\.text)
+        dynamicTextItems(in: composition).map(\.text)
+    }
+
+    /// The replaceable text items themselves, in template order.
+    static func dynamicTextItems(in composition: OverlayComposition) -> [TextOverlayItem] {
+        composition.texts.filter(\.isDynamic)
+    }
+
+    /// The positions of the replaceable texts among all of the design's
+    /// texts (what `OverlayEdits.texts` is indexed by).
+    static func dynamicTextIndices(in composition: OverlayComposition) -> [Int] {
+        composition.texts.indices.filter { composition.texts[$0].isDynamic }
+    }
+
+    /// A text's design box as canvas fractions (the defaults the renderer
+    /// and `bounds` assume when a fraction is unset).
+    static func designBox(of text: TextOverlayItem) -> CGRect {
+        let w = text.wFrac ?? 0.6, h = text.hFrac ?? 0.1
+        return CGRect(x: (text.xFrac ?? 0.5) - w / 2, y: (text.yFrac ?? 0.2) - h / 2, width: w, height: h)
+    }
+
+    /// An image's box as canvas fractions for `aspect` = height / width.
+    static func designBox(of image: ImageOverlayItem, aspect: Double) -> CGRect {
+        let w = image.wFrac, h = image.wFrac * max(0.01, aspect)
+        return CGRect(x: image.xFrac - w / 2, y: image.yFrac - h / 2, width: w, height: h)
+    }
+
+    /// Apply the user's hand placements to the design's components by
+    /// position; a missing or empty edit keeps the design. A placed text
+    /// box locks its width so overflowing words wrap inside it; a placed
+    /// image keeps its file's aspect.
+    static func applyingEdits(in composition: OverlayComposition, with edits: OverlayEdits) -> OverlayComposition {
+        guard !edits.isEmpty else { return composition }
+        let frame = CGRect(x: 0, y: 0, width: 1, height: 1)
+        var result = composition
+        for (index, edit) in edits.texts.enumerated() where index < result.texts.count {
+            if let alignment = edit.alignment, TextOverlayItem.alignmentChoices.contains(alignment) {
+                result.texts[index].alignment = alignment
+            }
+            if let box = edit.box {
+                let clamped = box.intersection(frame)
+                guard clamped.width > 0, clamped.height > 0 else { continue }
+                result.texts[index].xFrac = clamped.midX
+                result.texts[index].yFrac = clamped.midY
+                result.texts[index].wFrac = clamped.width
+                result.texts[index].hFrac = clamped.height
+                result.texts[index].lockedWidth = true
+            }
+        }
+        for (index, edit) in edits.images.enumerated() where index < result.images.count {
+            if let width = edit.width { result.images[index].wFrac = min(1, width) }
+            if let center = edit.center {
+                result.images[index].xFrac = min(1, max(0, center.x))
+                result.images[index].yFrac = min(1, max(0, center.y))
+            }
+        }
+        return result
     }
 
     /// Replace the replaceable texts in order; blank or missing entries keep

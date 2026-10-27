@@ -144,7 +144,7 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
                 "includeOutro",
                 "includeIntroBumper", "includeOutroBumper", "includeMiddleBumper", "lookPreset", "transitionChoice",
                 "lookIntensity", "fixedOverlayEnabled", "fixedOverlayTemplate", "fixedOverlayStart", "fixedOverlayDuration",
-                "fixedOverlayTextsJoined", "fixedOverlayPosition", "watermarkOverlayTemplate", "watermarkOpacity",
+                "fixedOverlayTextsJoined", "fixedOverlayPosition", "fixedOverlayEdits", "watermarkOverlayTemplate", "watermarkOpacity",
                 "introBumperLibraryPath", "outroBumperLibraryPath", "outputMode",
             ]
         }

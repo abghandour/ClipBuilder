@@ -7,7 +7,7 @@ struct MiniWizardMemoryTests {
     @Test func everyAnswerHasAStableDistinctProfileKey() {
         let names: Set<String> = ["broll", "includeBRoll", "videoPath", "footageKind", "length", "quality", "preset", "cameraFocus", "interviewZoom",
             "interviewZoomMoves", "interviewCuts", "interviewPunchIn", "captions", "englishCaptions", "captionPosition", "speakerCaptionPositions", "captionStyleID", "introVideo", "outroVideo", "nameTags", "nameTagContent", "nameTagStyle", "nameTagStyleID", "nameTagPosition", "watermark", "outputMode",
-            "overlay", "overlayTemplate", "overlayStart", "overlayDuration", "overlayTexts", "overlayPosition", "introBumper", "outroBumper", "watermarkOverlay", "watermarkOpacity", "transition", "look",
+            "overlay", "overlayTemplate", "overlayStart", "overlayDuration", "overlayTexts", "overlayPosition", "overlayEdits", "introBumper", "outroBumper", "watermarkOverlay", "watermarkOpacity", "transition", "look",
                                   "muteSourceAudio", "music", "musicTrack", "settingsTab", "safeAreaOnly", "safeAreaPlatforms",
                                   "dub", "dubLanguage"]
         #expect(Set(MiniWizardMemory.Field.allCases.map(\.rawValue)) == names)
@@ -83,6 +83,7 @@ struct MiniWizardMemoryTests {
         first.overlayDuration = 4
         first.overlayTexts = ["Watch the full fight", ""]
         first.overlayPosition = "custom:0.2000,0.9000"
+        first.overlayEdits.place(.text(0), at: CGRect(x: 0.1, y: 0.2, width: 0.5, height: 0.1))
         first.outputMode = .oneReel
         first.transition = "fade"
         first.muteSourceAudio = true
@@ -99,7 +100,7 @@ struct MiniWizardMemoryTests {
                          forKey: MiniWizardMemory.key(for: .footageKind, profileName: name))
             defaults.set(MiniWizardFlow.Length.fifteen.rawValue,
                          forKey: MiniWizardMemory.key(for: .length, profileName: name))
-            for field in MiniWizardMemory.Field.allCases where ![.broll, .includeBRoll, .interviewPunchIn, .captionPosition, .speakerCaptionPositions, .captionStyleID, .nameTagContent, .nameTagStyle, .nameTagStyleID, .nameTagPosition, .overlayTemplate, .overlayDuration, .overlayPosition, .introBumper, .outroBumper, .watermarkOverlay, .watermarkOpacity, .musicTrack, .settingsTab, .safeAreaPlatforms, .dubLanguage].contains(field) {
+            for field in MiniWizardMemory.Field.allCases where ![.broll, .includeBRoll, .interviewPunchIn, .captionPosition, .speakerCaptionPositions, .captionStyleID, .nameTagContent, .nameTagStyle, .nameTagStyleID, .nameTagPosition, .overlayTemplate, .overlayDuration, .overlayPosition, .overlayEdits, .introBumper, .outroBumper, .watermarkOverlay, .watermarkOpacity, .musicTrack, .settingsTab, .safeAreaPlatforms, .dubLanguage].contains(field) {
                 #expect(defaults.object(forKey: MiniWizardMemory.key(for: field, profileName: name)) != nil)
             }
         }

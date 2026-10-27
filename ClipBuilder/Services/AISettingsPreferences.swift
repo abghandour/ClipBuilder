@@ -49,6 +49,7 @@ import Foundation
         "fixedOverlayDuration": WizardExpressExtras.overlayDurationKey,
         "fixedOverlayTextsJoined": WizardExpressExtras.overlayTextsKey,
         "fixedOverlayPosition": WizardExpressExtras.overlayPositionKey,
+        "fixedOverlayEdits": WizardExpressExtras.overlayEditsKey,
         "watermarkOverlayTemplate": WizardExpressExtras.watermarkOverlayKey,
         "watermarkOpacity": WizardExpressExtras.watermarkOpacityKey,
         "introBumperLibraryPath": WizardExpressExtras.introBumperKey,

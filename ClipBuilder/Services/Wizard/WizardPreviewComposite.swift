@@ -93,6 +93,20 @@ nonisolated enum WizardPreviewComposite {
         var captions: [CaptionBox] = []
         var tags: [CGRect] = []
         var overlay: CGRect?
+        /// Every component of the overlay design (texts as the box they
+        /// rendered in, grown or wrapped; images at their file's aspect) so
+        /// the preview can offer each one to move and resize.
+        var overlayComponents: [ComponentBox] = []
+        /// How far a legacy dragged position moved the whole design, in
+        /// canvas pixels; a placed component is stored without this shift.
+        var overlayShift: CGPoint = .zero
+    }
+
+    struct ComponentBox: Sendable, Equatable {
+        var component: OverlayComponent
+        var rect: CGRect
+        /// Height over width for images, which keep their file's aspect.
+        var aspect: CGFloat?
     }
 
     struct CaptionBox: Sendable, Equatable {
@@ -164,6 +178,29 @@ nonisolated enum WizardPreviewComposite {
                 if let box = WizardFixedOverlay.bounds(of: block.composition, canvasAspect: settings.aspectRatio) {
                     layout.overlay = CGRect(x: box.minX * canvas.width, y: box.minY * canvas.height,
                                             width: box.width * canvas.width, height: box.height * canvas.height)
+                }
+                func pixels(_ box: CGRect) -> CGRect {
+                    CGRect(x: box.minX * canvas.width, y: box.minY * canvas.height,
+                           width: box.width * canvas.width, height: box.height * canvas.height)
+                }
+                // Indexed by template position (what OverlayEdits uses), with
+                // the block's exact placement applied as expansion does: it
+                // turns the safe-area nudge off, so the footprint must see it.
+                layout.overlayComponents = block.composition.texts.enumerated().map { index, template in
+                    var item = template
+                    item.keepsPlacement = item.keepsPlacement || block.exactPlacement
+                    return ComponentBox(component: .text(index),
+                                        rect: textRenderer.renderedBox(item) ?? pixels(WizardFixedOverlay.designBox(of: item)))
+                } + block.composition.images.enumerated().map { index, item in
+                    let aspect = imageAspect(item.url)
+                    return ComponentBox(component: .image(index),
+                                        rect: pixels(WizardFixedOverlay.designBox(of: item, aspect: aspect)), aspect: aspect)
+                }
+                if let custom = CustomPosition(options.fixedOverlayPosition),
+                   let template = input.templates.first(where: { $0.name.caseInsensitiveCompare(block.name) == .orderedSame }) {
+                    let shift = WizardFixedOverlay.shift(of: WizardFixedOverlay.designComposition(options: options, template: template),
+                                                         center: custom, canvasAspect: settings.aspectRatio)
+                    layout.overlayShift = CGPoint(x: shift.x * canvas.width, y: shift.y * canvas.height)
                 }
             }
             let style = input.profile.captionStyle(id: options.captionStyleID)
@@ -262,6 +299,17 @@ nonisolated enum WizardPreviewComposite {
     struct BaseFrame: Sendable {
         var image: CGImage
         var error: String? = nil
+    }
+
+    /// Height over width of an image file from its header; 1 (square, as
+    /// `WizardFixedOverlay.bounds` assumes) when it cannot be read.
+    static func imageAspect(_ url: URL) -> CGFloat {
+        guard let source = CGImageSourceCreateWithURL(url as CFURL, nil),
+              let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+              let width = properties[kCGImagePropertyPixelWidth] as? CGFloat,
+              let height = properties[kCGImagePropertyPixelHeight] as? CGFloat, width > 0, height > 0 else { return 1 }
+        let orientation = properties[kCGImagePropertyOrientation] as? UInt32 ?? 1
+        return orientation >= 5 ? width / height : height / width
     }
 
     /// Called on the render worker, before overlays. EffectCatalog owns LUT escaping

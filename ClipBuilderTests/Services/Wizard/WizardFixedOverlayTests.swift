@@ -158,4 +158,95 @@ struct WizardFixedOverlayTests {
         let dragged = try #require(WizardFixedOverlay.block(options: options, templates: templates, totalDuration: 10))
         #expect((dragged.composition.texts[0].yFrac ?? 0) > 0.6)
     }
+
+    @Test func editsPlaceEachComponentByPositionAndLockPlacedTextBoxes() throws {
+        var fixed = TextOverlayItem(text: "Fixed")
+        fixed.xFrac = 0.5; fixed.yFrac = 0.1; fixed.wFrac = 0.4; fixed.hFrac = 0.05
+        var first = TextOverlayItem(text: "Hook")
+        first.isDynamic = true
+        first.xFrac = 0.5; first.yFrac = 0.3; first.wFrac = 0.6; first.hFrac = 0.1
+        var second = TextOverlayItem(text: "Second")
+        second.isDynamic = true
+        second.alignment = "right"
+        var logo = ImageOverlayItem(path: "/tmp/logo.png")
+        logo.xFrac = 0.5; logo.yFrac = 0.8; logo.wFrac = 0.2
+        let composition = OverlayComposition(texts: [fixed, first, second], images: [logo])
+        #expect(WizardFixedOverlay.dynamicTextIndices(in: composition) == [1, 2])
+        let box = WizardFixedOverlay.designBox(of: first)
+        #expect(abs(box.minX - 0.2) < 0.0001 && abs(box.minY - 0.25) < 0.0001)
+        let defaulted = WizardFixedOverlay.designBox(of: second)
+        #expect(abs(defaulted.width - 0.6) < 0.0001 && abs(defaulted.height - 0.1) < 0.0001, "unset fractions use the defaults")
+        let image = WizardFixedOverlay.designBox(of: logo, aspect: 0.5)
+        #expect(abs(image.width - 0.2) < 0.0001 && abs(image.height - 0.1) < 0.0001 && abs(image.midY - 0.8) < 0.0001)
+
+        var edits = OverlayEdits()
+        edits.text(0) { $0.alignment = "left" }
+        edits.place(.text(1), at: CGRect(x: 0.1, y: 0.5, width: 0.3, height: 0.2))
+        edits.text(2) { $0.alignment = "sideways" }
+        edits.place(.image(0), at: CGRect(x: 0.6, y: 0.6, width: 0.3, height: 0.15))
+        let edited = WizardFixedOverlay.applyingEdits(in: composition, with: edits)
+        #expect(edited.texts[0].alignment == "left" && edited.texts[0].wFrac == 0.4, "any text can be aligned, not only replaceable ones")
+        let placed = edited.texts[1]
+        #expect(placed.resolvedLockedWidth && placed.alignment == "center")
+        #expect(abs((placed.xFrac ?? 0) - 0.25) < 0.0001 && abs((placed.yFrac ?? 0) - 0.6) < 0.0001)
+        #expect(abs((placed.wFrac ?? 0) - 0.3) < 0.0001 && abs((placed.hFrac ?? 0) - 0.2) < 0.0001)
+        #expect(edited.texts[2].alignment == "right" && !edited.texts[2].resolvedLockedWidth, "an unknown alignment is ignored")
+        #expect(abs(edited.images[0].xFrac - 0.75) < 0.0001 && abs(edited.images[0].yFrac - 0.675) < 0.0001)
+        #expect(abs(edited.images[0].wFrac - 0.3) < 0.0001, "an image takes its centre and width")
+        #expect(WizardFixedOverlay.applyingEdits(in: composition, with: OverlayEdits()) == composition)
+
+        // The block applies edits after the words and before a legacy drag.
+        var options = WizardOptions()
+        options.fixedOverlayTemplate = "Edited"
+        options.fixedOverlayTexts = ["New hook", ""]
+        options.fixedOverlayEdits = edits
+        let templates = [OverlayTemplate(name: "Edited", composition: composition)]
+        let block = try #require(WizardFixedOverlay.block(options: options, templates: templates, totalDuration: 10))
+        #expect(block.composition.texts[1].text == "New hook" && block.composition.texts[0].alignment == "left")
+        #expect(abs((block.composition.texts[1].wFrac ?? 0) - 0.3) < 0.0001)
+        options.fixedOverlayPosition = CustomPosition(x: 0.5, y: 0.8).string
+        let dragged = try #require(WizardFixedOverlay.block(options: options, templates: templates, totalDuration: 10))
+        let design = WizardFixedOverlay.designComposition(options: options, template: templates[0])
+        let shift = WizardFixedOverlay.shift(of: design, center: CustomPosition(x: 0.5, y: 0.8), canvasAspect: 9.0 / 16)
+        #expect(abs((dragged.composition.texts[1].yFrac ?? 0) - (0.6 + shift.y)) < 0.0001, "the placed box moves with the design")
+        #expect(abs((dragged.composition.texts[1].wFrac ?? 0) - 0.3) < 0.0001, "and keeps its size")
+        #expect(WizardFixedOverlay.shift(of: design, center: CustomPosition(x: 0, y: 0), canvasAspect: 9.0 / 16) != .zero)
+    }
+
+    @Test func editsRoundTripAsOneJSONStringAndDropUntouchedTails() throws {
+        #expect(OverlayEdits().joined == "" && OverlayEdits.split("").isEmpty && OverlayEdits.split(nil).isEmpty)
+        #expect(OverlayEdits(texts: [OverlayTextEdit(), OverlayTextEdit()]).trimmed == nil)
+        var edits = OverlayEdits()
+        edits.text(1) { $0.alignment = "right"; $0.box = CGRect(x: 0.12345678, y: 0.2, width: 0.5, height: 0.1) }
+        edits.text(2) { _ in }
+        edits.image(0) { $0 = OverlayImageEdit(center: CGPoint(x: 0.5, y: 0.25), width: 0.3) }
+        edits.image(1) { _ in }
+        let joined = edits.joined
+        let back = OverlayEdits.split(joined)
+        #expect(back.texts.count == 2 && back.images.count == 1, "untouched tails are dropped, untouched heads kept for their index")
+        #expect(back.texts[0].isEmpty && back.texts[1].alignment == "right")
+        let box = try #require(back.texts[1].box)
+        #expect(abs(box.minX - 0.1235) < 0.00001 && box.width == 0.5, "fractions keep four decimals")
+        #expect(back.images[0].center == CGPoint(x: 0.5, y: 0.25) && back.images[0].width == 0.3)
+        #expect(OverlayEdits.split("not json").isEmpty && OverlayEdits.split("{}").isEmpty)
+        var cleared = back.texts[1]
+        cleared.box = nil
+        #expect(cleared.box == nil && cleared.alignment == "right" && cleared.x == nil)
+        var degenerate = OverlayTextEdit()
+        degenerate.box = CGRect(x: 0, y: 0, width: 0, height: 0.1)
+        #expect(degenerate.isEmpty, "a box without area is no box")
+        #expect(OverlayImageEdit(width: 0).isEmpty)
+        // Express settings carry the edits through presets and UserDefaults.
+        var settings = MiniWizardSettings()
+        settings.overlay = true
+        settings.overlayTemplate = "Edited"
+        settings.overlayEdits = edits
+        let fields = WizardPresetBridge.wizardFields(from: settings)
+        #expect(fields["fixedOverlayEdits"] == .string(joined))
+        #expect(WizardPresetBridge.miniSettings(from: fields).overlayEdits == back)
+        #expect(settings.previewOptions(profile: Fixtures.brand(name: "P")).fixedOverlayEdits == back)
+        let defaults = UserDefaults(suiteName: "overlay-edits-\(UUID().uuidString)")!
+        settings.remember(profileName: "P", defaults: defaults)
+        #expect(MiniWizardSettings.remembered(profile: Fixtures.brand(name: "P"), defaults: defaults).overlayEdits == back)
+    }
 }
