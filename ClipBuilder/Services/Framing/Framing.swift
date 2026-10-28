@@ -17,6 +17,11 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
     var vips: [String]?
     var sourceRoles: [String: String]?
     var layout: String?
+    /// Speaker focus's shot: a recipe kind, or nil for the app's pick per scene.
+    var speakerShot: CropRecipe.Kind?
+
+    /// The shots Speaker focus can be told to use, in menu order.
+    static let speakerShots: [CropRecipe.Kind] = [.talker, .interview, .talkerAndRest, .talkerAndPrevious, .talkerAndRotation]
 
     enum Subject: String, Codable, CaseIterable, Hashable, Sendable {
         case auto, original, centerStage, vipFocus, speakerFocus, layout
@@ -72,12 +77,13 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
         case focusFrame = "focus_frame"
         case lockAspect = "lock_aspect"
         case sourceRoles = "source_roles"
+        case speakerShot = "speaker_shot"
     }
 
     init(subject: Subject = .auto, pullBack: Double = 0, moves: Moves = .smooth,
          fit: Fit = .fill, feather: Double = 0.08, blur: Double = 0.5,
          focusFrame: FreeCropRect? = nil, lockAspect: Bool? = nil, people: People? = nil, vips: [String]? = nil,
-         layout: String? = nil, sourceRoles: [String: String]? = nil) {
+         layout: String? = nil, sourceRoles: [String: String]? = nil, speakerShot: CropRecipe.Kind? = nil) {
         self.subject = subject
         self.pullBack = pullBack
         self.moves = moves
@@ -90,6 +96,7 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
         self.vips = vips
         self.layout = layout
         self.sourceRoles = sourceRoles
+        self.speakerShot = speakerShot
     }
 
     init(from decoder: Decoder) throws {
@@ -106,6 +113,7 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
         vips = try c.decodeIfPresent([String].self, forKey: .vips)
         sourceRoles = try c.decodeIfPresent([String: String].self, forKey: .sourceRoles)
         layout = try c.decodeIfPresent(String.self, forKey: .layout)
+        speakerShot = try c.decodeIfPresent(CropRecipe.Kind.self, forKey: .speakerShot)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -123,6 +131,7 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
         try c.encodeIfPresent(vips, forKey: .vips)
         try c.encodeIfPresent(sourceRoles, forKey: .sourceRoles)
         try c.encodeIfPresent(layout, forKey: .layout)
+        try c.encodeIfPresent(speakerShot, forKey: .speakerShot)
     }
 
     /// One scalar for AppStorage, Express memory and the shared preset catalog.

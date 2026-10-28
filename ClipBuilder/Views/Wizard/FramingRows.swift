@@ -11,6 +11,8 @@ struct FramingRows: View {
     /// The slider's value while it is being dragged; committed when the drag ends.
     @State private var zoomLive: Double?
     @State private var hasTurns = false
+    /// Recorded feeds per selected recording, for the Shot row's caption.
+    @State private var feedCounts: [Int] = []
     /// Everyone the selected recordings know, one entry per person key.
     @State private var roster: [(record: VideoPersonRecord, videoURL: URL)] = []
 
@@ -112,6 +114,21 @@ struct FramingRows: View {
             }
         }
         if framing.subject == .speakerFocus {
+            SettingsRow("Shot", detail: framing.speakerShot?.summary
+                ?? "Auto pairs one VIP with the talker, puts several VIPs beside the talker, else the talker full screen.") {
+                Picker("Shot", selection: Binding(get: { framing.speakerShot }, set: { framing.speakerShot = $0 })) {
+                    Text("Auto").lineLimit(1).fixedSize().tag(CropRecipe.Kind?.none)
+                    ForEach(Framing.speakerShots, id: \.self) { kind in
+                        Text(kind.name).lineLimit(1).fixedSize().tag(CropRecipe.Kind?.some(kind))
+                    }
+                }
+                .labelsHidden()
+                .accessibilityLabel("Shot")
+            }
+            if let shot = framing.speakerShot,
+               let reason = feedCounts.lazy.compactMap({ FramingPlanner.shotReason(shot, feeds: $0, hasVIP: hasVIP) }).first {
+                FormCaption("\(reason) Auto is used there.")
+            }
             SettingsRow("Moves") {
                 Picker("Moves", selection: $framing.moves) {
                     Text("Smooth").lineLimit(1).fixedSize().tag(Framing.Moves.smooth)
@@ -188,17 +205,21 @@ struct FramingRows: View {
         Color.clear.frame(height: 0)
             .task(id: "\(videoIDs)|\(store.videoPeopleVersion)|\(store.transcriptCountsVersion)") {
                 hasTurns = false
+                var feeds: [Int] = []
                 var people: [(record: VideoPersonRecord, videoURL: URL)] = []
                 for id in videoIDs {
                     let evidence = await store.speakerTurns(videoID: id)
                     guard !Task.isCancelled else { return }
                     hasTurns = hasTurns || !evidence.turns.isEmpty
-                    guard let url = store.videos.first(where: { $0.id == id })?.url else { continue }
+                    guard let video = store.videos.first(where: { $0.id == id }) else { continue }
+                    let url = video.url
+                    feeds.append(FramingPlanner.recordedFeedCount(video: video, roster: evidence.roster))
                     for person in evidence.roster where !people.contains(where: { $0.record.key == person.key }) {
                         people.append((person, url))
                     }
                 }
                 roster = people
+                feedCounts = feeds
             }
     }
 
