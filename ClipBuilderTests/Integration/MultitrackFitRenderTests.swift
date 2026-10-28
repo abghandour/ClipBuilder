@@ -72,7 +72,9 @@ extension MultitrackRenderTests {
 }
 
 extension MultitrackRenderTests {
-    @Test("fit graphs render aspect, feather and blur endpoints at two resolutions", arguments: 0..<6)
+    // Serialized: six concurrent ffmpeg graphs hold the encoding permits long enough to
+    // starve other suites' ffmpeg calls past their time limits when the whole suite runs.
+    @Test("fit graphs render aspect, feather and blur endpoints at two resolutions", .serialized, arguments: 0..<6)
     func fitGraphGeometryMatrix(_ index: Int) async throws {
         let directory = try TempDirectory()
         let source = directory.url.appendingPathComponent("source.png")
