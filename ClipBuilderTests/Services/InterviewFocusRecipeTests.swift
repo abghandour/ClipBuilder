@@ -140,8 +140,12 @@ struct InterviewFocusRecipeTests {
             #expect(plan.layout.name == "50-50 Horizontal")
             #expect(plan.slots.map(\.subject) == [.vip, .talker])
             #expect(plan.slots[0].region == FreeCropRect(xFrac: 0, yFrac: 0, wFrac: 0.5, hFrac: 1))
-            let bottom = try #require(plan.slots[1].path)
-            #expect(bottom.contains { $0.t == 15 && $0.x >= 0.5 })
+            // The VIP cell already shows the guest, so while the guest talks the
+            // talker cell holds the host: with two feeds that is a still host cell.
+            #expect(plan.slots[1].path == nil)
+            #expect(plan.slots[1].region == FreeCropRect(xFrac: 0.5, yFrac: 0, wFrac: 0.5, hFrac: 1))
+            // Only the host's own turn is outlined, not the stretches where the host stands in.
+            #expect(plan.slots[1].talking == [15...22])
         }
     }
 
@@ -261,5 +265,64 @@ extension InterviewFocusRecipeTests {
         #expect(changes.allSatisfy { CameraKeyframes.isCut(path, at: $0) })
         let question = try #require(CenterStageService.interpolated(path, at: 20))
         #expect(abs(question.x + question.w / 2 - 0.54) < 0.001)
+    }
+
+    /// The talker cell holds the previous talker while the VIP cell is on the
+    /// talker's feed, and swaps the moment the VIP cell moves.
+    @Test func talkerCellNeverRepeatsTheVIPCellsFeed() {
+        let segments = [
+            CropRecipePlanner.Segment(start: 0, end: 10, talker: 0, recent: [2, 1]),
+            CropRecipePlanner.Segment(start: 10, end: 15, talker: 1, recent: [0, 2]),
+            CropRecipePlanner.Segment(start: 15, end: 20, talker: 0, recent: [1, 2]),
+        ]
+        let plain = CropRecipePlanner.talkerEvents(segments: segments, avoiding: [], order: [0, 1, 2])
+        #expect(plain.map(\.time) == [0, 10, 15] && plain.map(\.tile) == [0, 1, 0])
+        let vipCell: [(time: Double, tile: Int?)] = [(0, 0), (6, 2), (12, 0)]
+        let events = CropRecipePlanner.talkerEvents(segments: segments, avoiding: vipCell, order: [0, 1, 2])
+        #expect(events.map(\.time) == [0, 6, 10, 12, 15])
+        // 0–6 the VIP cell shows the talker: previous talker 2. 6–10 it moved
+        // to 2, so the talker returns. 10–15 the host talks while the VIP cell
+        // is on 2 then 0: the host both times. From 15 the VIP cell is on the
+        // talker again: the previous talker, the host.
+        #expect(events.map(\.tile) == [2, 0, 1, 1, 1])
+        // Nobody spoke before and the VIP cell is on the talker: the first other feed.
+        let opening = CropRecipePlanner.talkerEvents(
+            segments: [CropRecipePlanner.Segment(start: 0, end: 5, talker: 0, recent: [])], avoiding: [(0, 0)], order: [0, 1, 2])
+        #expect(opening.map(\.tile) == [1])
+    }
+
+    @Test func gridWithTwoVIPsNeverShowsTheSameFeedTwice() throws {
+        var video = video()
+        video.podcastLayout = PodcastLayout.grid.rawValue
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 0.5, personKey: "guest"),
+                     PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 0.5, personKey: "host"),
+                     PodcastTile(index: 2, x: 0, y: 0.5, w: 0.5, h: 0.5, personKey: "guest2")]
+        video.podcastTilesJSON = String(decoding: try JSONEncoder().encode(tiles), as: UTF8.self)
+        var roster = roster()
+        roster.append(VideoPersonRecord(videoID: 1, personID: 3, key: "guest2", name: "Guest 2", descriptor: "", portraitAt: 0,
+            portraitBox: .init(x: 0.2, y: 0.7, w: 0.04, h: 0.1), vip: true))
+        let turns = [SpeakerTurn(videoID: 1, start: 0, end: 10, cluster: 0, confidence: 1, personKey: "guest", tile: 0),
+                     SpeakerTurn(videoID: 1, start: 10, end: 15, cluster: 1, confidence: 1, personKey: "host", tile: 1),
+                     SpeakerTurn(videoID: 1, start: 15, end: 20, cluster: 0, confidence: 1, personKey: "guest", tile: 0)]
+        let plan = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video, range: 0...20,
+            turns: turns, roster: roster, layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16)
+        #expect(plan.slots.map(\.subject) == [.vip, .talker])
+        func vipRegion(at t: Double) -> FreeCropRect? {
+            plan.slots[0].trackingSpans?.first { t >= $0.start && t < $0.end }?.region ?? plan.slots[0].region
+        }
+        func tile(containing rect: FreeCropRect) -> Int? {
+            let cx = rect.xFrac + rect.wFrac / 2, cy = rect.yFrac + rect.hFrac / 2
+            return tiles.first { cx >= $0.x && cx < $0.x + $0.w && cy >= $0.y && cy < $0.y + $0.h }?.index
+        }
+        let path = try #require(plan.slots[1].path)
+        var samples = 0
+        for t in stride(from: 0.25, to: 20, by: 0.5) {
+            let shot = try #require(CenterStageService.interpolated(path, at: t))
+            let vip = try #require(vipRegion(at: t))
+            let talkerTile = tile(containing: FreeCropRect(xFrac: shot.x, yFrac: shot.y, wFrac: shot.w, hFrac: shot.h))
+            #expect(talkerTile != nil && talkerTile != tile(containing: vip), "t=\(t)")
+            samples += 1
+        }
+        #expect(samples == 40)
     }
 }

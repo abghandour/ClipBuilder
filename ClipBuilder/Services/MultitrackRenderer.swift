@@ -313,28 +313,7 @@ actor MultitrackRenderer {
         var clips = Self.resolveClips(document: document, scenes: scenes, centerStageCamera: centerStageCamera)
         for index in clips.indices {
             guard let window = contentWindows[clips[index].sourcePath], !clips[index].bumper else { continue }
-            let contentBox = RenderEngine.ContentBox(x: window.xFrac, y: window.yFrac,
-                w: window.wFrac, h: window.hFrac, aspect: 1)
-            clips[index].freeCrops = clips[index].freeCrops?.map { crop in
-                var crop = crop
-                crop.src = FocusFrame.sourceWindow(crop.src, contentBox: contentBox)
-                return crop
-            }
-            clips[index].contentWindow = window
-            clips[index].areaWindow = clips[index].areaWindow.map { FitSpec.intersection($0, window) }
-            if clips[index].areaRegion != nil || clips[index].centerStage || clips[index].cameraPath != nil {
-                clips[index].areaRegion = FocusFrame.sourceWindow(clips[index].areaRegion ?? FreeCropRect(), contentBox: contentBox)
-            }
-            if let path = clips[index].cameraPath {
-                let focused = clips[index].framingPlan?.sourceWindow != nil
-                let bounds = clips[index].areaRegion ?? window
-                clips[index].cameraPath = path.map { key in
-                    let shot = FreeCropRect(xFrac: key.x, yFrac: key.y, wFrac: key.w, hFrac: key.h)
-                    let crop = focused ? FocusFrame.fitting(shot, inside: bounds)
-                        : FitSpec.intersection(shot, window)
-                    return CameraPathKeyframe(t: key.t, x: crop.xFrac, y: crop.yFrac, w: crop.wFrac, h: crop.hFrac)
-                }
-            }
+            Self.applyContentWindow(window, to: &clips[index])
         }
         var fighterRosters: [String: [VideoPersonRecord]] = [:]
         for index in clips.indices where clips[index].framingPlan?.recipe?.fighterFocus == true {
@@ -435,7 +414,12 @@ actor MultitrackRenderer {
                             sourceSize: CGSize(width: dimensions.width, height: dimensions.height), usedFallback: false)
                         emit("Framing: saved framing used; keyframes=\(saved.count)")
                     } else {
-                        let region = CenterStageService.validRegion(clip.areaRegion ?? FreeCropRect())
+                        // A saved path that no longer fits the cell is re-tracked
+                        // inside the feed it framed, never the whole picture.
+                        if let saved = clip.cameraPath, clip.areaRegion == nil {
+                            emit("Framing: saved framing rejected (keyframes=\(saved.count)); re-tracking inside its bounds")
+                        }
+                        let region = CenterStageService.validRegion(clip.areaRegion ?? Self.cellBounds(of: clip) ?? FreeCropRect())
                         let box = AreaFramer.pixelBounds(of: area)
                         let camera = clip.framingPlan?.sourceWindow == nil ? "conversation" : clip.framingPlan?.camera ?? "conversation"
                         let identity = try FeedPathCache.identity(source: source, region: region,
@@ -1202,6 +1186,67 @@ actor MultitrackRenderer {
 
     // MARK: - Clip resolution
 
+    /// Confine a clip's framing to the picture inside its letterbox bars
+    /// (`window`, source fractions). Regions are content-relative and map
+    /// into the window; path keyframes are source fractions. A recipe cell's
+    /// shots are fitted into the window with their aspect kept, so a shot
+    /// that leaves the bars does not change shape and get rejected as a saved
+    /// path, and the path's bounds become the cell's region, so a cell that
+    /// is re-tracked never widens past the feed its path framed.
+    nonisolated static func applyContentWindow(_ window: FreeCropRect, to clip: inout ResolvedClip) {
+        let contentBox = RenderEngine.ContentBox(x: window.xFrac, y: window.yFrac,
+            w: window.wFrac, h: window.hFrac, aspect: 1)
+        clip.freeCrops = clip.freeCrops?.map { crop in
+            var crop = crop
+            crop.src = FocusFrame.sourceWindow(crop.src, contentBox: contentBox)
+            return crop
+        }
+        clip.contentWindow = window
+        clip.areaWindow = clip.areaWindow.map { FitSpec.intersection($0, window) }
+        if let region = clip.areaRegion {
+            clip.areaRegion = FocusFrame.sourceWindow(region, contentBox: contentBox)
+        } else if let bounds = Self.cellBounds(of: clip) {
+            clip.areaRegion = FitSpec.intersection(bounds, window)
+        } else if clip.centerStage || clip.cameraPath != nil {
+            clip.areaRegion = FocusFrame.sourceWindow(FreeCropRect(), contentBox: contentBox)
+        }
+        if let path = clip.cameraPath {
+            // A focused plan or a recipe cell keeps each shot's shape; a scene
+            // path is clipped to the picture and re-tracked if that changes it.
+            let keepsShape = clip.framingPlan?.sourceWindow != nil || Self.cellBounds(of: clip) != nil
+            let bounds = clip.areaRegion ?? window
+            clip.cameraPath = path.map { key in
+                let shot = FreeCropRect(xFrac: key.x, yFrac: key.y, wFrac: key.w, hFrac: key.h)
+                let crop = keepsShape ? FocusFrame.fitting(shot, inside: bounds) : FitSpec.intersection(shot, window)
+                return CameraPathKeyframe(t: key.t, x: crop.xFrac, y: crop.yFrac, w: crop.wFrac, h: crop.hFrac)
+            }
+        }
+    }
+
+    /// The feed a recipe-planned cell's path frames, from the path itself. A
+    /// scene's Center Stage path or a fighter path is not a cell: those may be
+    /// re-tracked over the whole picture when the saved path no longer fits.
+    nonisolated static func cellBounds(of clip: ResolvedClip) -> FreeCropRect? {
+        guard let recipe = clip.framingPlan?.recipe, recipe.centerStage != true, recipe.fighterFocus != true,
+              let path = clip.cameraPath else { return nil }
+        return pathBounds(path)
+    }
+
+    /// The smallest source rectangle holding every keyframe of a path: the
+    /// feed a cell's path stays inside. Nil for an empty or degenerate path.
+    nonisolated static func pathBounds(_ path: [CameraPathKeyframe]) -> FreeCropRect? {
+        let frames = path.filter { $0.w > 0 && $0.h > 0 }
+        guard let first = frames.first else { return nil }
+        var minX = first.x, minY = first.y, maxX = first.x + first.w, maxY = first.y + first.h
+        for key in frames.dropFirst() {
+            minX = min(minX, key.x); minY = min(minY, key.y)
+            maxX = max(maxX, key.x + key.w); maxY = max(maxY, key.y + key.h)
+        }
+        let x = max(0, minX), y = max(0, minY), w = min(1, maxX) - x, h = min(1, maxY) - y
+        guard w > 0, h > 0 else { return nil }
+        return FreeCropRect(xFrac: x, yFrac: y, wFrac: w, hFrac: h)
+    }
+
     /// The camera path a clip renders with, on the clip's own clock (seconds
     /// from its source start): its explicit path, else its scene's stored
     /// path, else the file's analyzed scenes stitched together. Empty when
@@ -1723,7 +1768,7 @@ actor MultitrackRenderer {
         return try RenderSegmentCache.key(Input(source: clip.framingIdentity ?? clip.sourcePath,
             fingerprint: clip.framingIdentity ?? SourceIdentityCache.shared.fingerprint(of: URL(fileURLWithPath: clip.sourcePath)),
             start: clip.sourceStart, duration: clip.duration * clip.speed,
-            path: clip.cameraPath, area: area, region: area == nil ? nil : clip.areaRegion,
+            path: clip.cameraPath, area: area, region: area == nil ? nil : clip.areaRegion ?? Self.cellBounds(of: clip),
             focus: area != nil && clip.areaRegion != nil ? clip.areaFocus : nil,
             framingPlan: clip.framingPlan, contentWindow: clip.contentWindow, tuning: tuning, settings: settings, encoder: encoder), version: version)
     }

@@ -62,7 +62,9 @@ nonisolated enum FramingPlanner {
             recipe = CropRecipe(kind: context.hasBRoll && context.type != .fight ? .vipBRoll : .vip)
             if context.type == .fight { recipe.fighterFocus = true }
         case .speakerFocus:
-            recipe = CropRecipe(kind: context.vipIDs.isEmpty ? .talker : .interview)
+            // A chosen shot the recording cannot hold falls back to the automatic pick.
+            let shot = framing.speakerShot.flatMap { shotReason($0, context: context) == nil ? $0 : nil }
+            recipe = CropRecipe(kind: shot ?? speakerKind(context: context))
         case .layout:
             recipe = CropRecipe(kind: .grid)
             recipe.layout = framing.layout
@@ -76,6 +78,44 @@ nonisolated enum FramingPlanner {
         recipe.interviewPunchIn = .talker
         recipe.interviewCuts = framing.moves == .cuts
         return .tracked(recipe, region: frame, fit: framing.fit, feather: framing.feather, blur: framing.blur)
+    }
+
+    /// Speaker focus pairs one VIP with whoever talks. Several VIPs on a group
+    /// recording would put the rotating VIP cell and the talker cell on the
+    /// same feed, so that case shows the talker beside the rest instead; no
+    /// VIP keeps the full-screen talker. Only recorded feeds count: a single
+    /// camera with portrait columns keeps Interview's full-screen handling.
+    /// Above four feeds no "Talker + n" layout exists and the talker stays
+    /// full screen.
+    static func speakerKind(context: FramingContext) -> CropRecipe.Kind {
+        let vips = context.vipIDs.count
+        if vips == 0 { return .talker }
+        if vips == 1 { return .interview }
+        let feeds = recordedFeedCount(video: context.video, roster: context.roster)
+        if feeds < 2 { return .interview }
+        return feeds <= 4 ? .talkerAndRest : .talker
+    }
+
+    /// Separate recorded feeds; a single camera's portrait columns are not feeds.
+    static func recordedFeedCount(video: VideoRecord, roster: [VideoPersonRecord]) -> Int {
+        video.podcastLayout == PodcastLayout.singleCamera.rawValue
+            ? 1 : VIPRecipePlanning.recordedFeeds(video: video, roster: roster).count
+    }
+
+    /// Why an explicitly chosen Speaker focus shot cannot be planned on a
+    /// recording, or nil when it can. The same text the settings row shows.
+    static func shotReason(_ kind: CropRecipe.Kind, feeds: Int, hasVIP: Bool) -> String? {
+        switch kind {
+        case .interview: hasVIP ? nil : "Interview focus needs a VIP tagged in People."
+        case .talkerAndRest: feeds < 2 ? "\(kind.name) needs a recording with two or more feeds."
+            : feeds > 4 ? "\(kind.name) fits at most four feeds." : nil
+        case .talkerAndPrevious, .talkerAndRotation: feeds < 2 ? "\(kind.name) needs a recording with two or more feeds." : nil
+        case .talker, .vip, .vipBRoll, .grid: nil
+        }
+    }
+
+    static func shotReason(_ kind: CropRecipe.Kind, context: FramingContext) -> String? {
+        shotReason(kind, feeds: recordedFeedCount(video: context.video, roster: context.roster), hasVIP: !context.vipIDs.isEmpty)
     }
 
     /// "Everyone" and "VIPs" are grids sized per scene: one cell per feed, or per VIP feed.

@@ -164,4 +164,74 @@ struct FramingPlannerTests {
         let oldTake = Data(#""talker_and_previous""#.utf8)
         #expect(try JSONDecoder().decode(Framing.Subject.self, from: oldTake) == .speakerFocus)
     }
+
+    /// A group grid with several VIPs would land the VIP cell and the talker
+    /// cell on the same feed under Interview; it shows the talker beside the
+    /// rest instead. One VIP keeps Interview, none keeps the talker.
+    @Test(arguments: [(0, CropRecipe.Kind.talker), (1, .interview), (2, .talkerAndRest), (3, .talkerAndRest)])
+    func speakerFocusOnAGroupGridAvoidsInterviewUnlessOneVIP(vips: Int, kind: CropRecipe.Kind) throws {
+        var video = Fixtures.video()
+        video.videoType = VideoType.podcast.rawValue
+        video.podcastLayout = PodcastLayout.grid.rawValue
+        let keys = ["a", "b", "c", "d"]
+        let tiles = keys.enumerated().map { index, key in
+            PodcastTile(index: index, x: Double(index % 2) * 0.5, y: Double(index / 2) * 0.5, w: 0.5, h: 0.5, personKey: key)
+        }
+        video.podcastTilesJSON = String(decoding: try JSONEncoder().encode(tiles), as: UTF8.self)
+        let roster = keys.enumerated().map { index, key in
+            VideoPersonRecord(videoID: video.id, personID: Int64(index + 1), key: key, name: key.uppercased(),
+                descriptor: "", portraitAt: 0, portraitBox: .init(x: tiles[index].x + 0.2, y: tiles[index].y + 0.2, w: 0.1, h: 0.1),
+                vip: index < vips)
+        }
+        let context = FramingContext(video: video, range: 0...10, canvasAspect: 9.0 / 16, roster: roster,
+            turns: [SpeakerTurn(videoID: video.id, start: 0, end: 10, cluster: 0, confidence: 1, personKey: "a", tile: 0)],
+            layouts: ScreenCropStore.builtIn)
+        #expect(FramingPlanner.speakerKind(context: context) == kind)
+        let recipe = try #require(FramingPlanner.resolve(framing: Framing(subject: .speakerFocus), context: context).recipe)
+        #expect(recipe.kind == kind)
+        if kind == .talkerAndRest {
+            #expect(CropRecipePlanner.layoutName(kind: kind, people: 4) == "Talker + 3")
+        }
+    }
+
+    @Test func speakerFocusWithSeveralVIPsOnSixFeedsKeepsTheTalkerFullScreen() throws {
+        var video = Fixtures.video()
+        video.videoType = VideoType.podcast.rawValue
+        video.podcastLayout = PodcastLayout.grid.rawValue
+        let tiles = (0..<6).map { PodcastTile(index: $0, x: Double($0 % 3) / 3, y: Double($0 / 3) * 0.5, w: 1.0 / 3, h: 0.5, personKey: "p\($0)") }
+        video.podcastTilesJSON = String(decoding: try JSONEncoder().encode(tiles), as: UTF8.self)
+        let roster = (0..<6).map { VideoPersonRecord(videoID: video.id, personID: Int64($0 + 1), key: "p\($0)", name: "P\($0)",
+            descriptor: "", portraitAt: 0, portraitBox: .init(x: tiles[$0].x + 0.1, y: tiles[$0].y + 0.1, w: 0.1, h: 0.1), vip: $0 < 2) }
+        let context = FramingContext(video: video, range: 0...10, canvasAspect: 9.0 / 16, roster: roster, layouts: ScreenCropStore.builtIn)
+        #expect(FramingPlanner.speakerKind(context: context) == .talker)
+    }
+
+    @Test func speakerShotOverridesAutoAndRoundTrips() throws {
+        // Auto would pick Interview for one VIP; the chosen shot wins.
+        let request = Framing(subject: .speakerFocus, speakerShot: .talker)
+        let recipe = try #require(FramingPlanner.resolve(framing: request, context: context(vip: true)).recipe)
+        #expect(recipe.kind == .talker && recipe.interviewPunchIn == .talker)
+        let restored = try JSONDecoder().decode(Framing.self, from: JSONEncoder().encode(request))
+        #expect(restored == request)
+        let old = Data(#"{"subject":"speakerFocus"}"#.utf8)
+        #expect(try JSONDecoder().decode(Framing.self, from: old).speakerShot == nil)
+        // A shot the recording cannot hold falls back to the automatic pick, and the row says why.
+        let single = context(vip: false)
+        #expect(FramingPlanner.shotReason(.talkerAndRest, context: single) != nil)
+        #expect(FramingPlanner.shotReason(.interview, context: single) != nil)
+        #expect(FramingPlanner.shotReason(.talker, context: single) == nil)
+        #expect(FramingPlanner.shotReason(.talkerAndRest, feeds: 5, hasVIP: true) != nil)
+        #expect(FramingPlanner.shotReason(.talkerAndRotation, feeds: 2, hasVIP: false) == nil)
+        let fallback = Framing(subject: .speakerFocus, speakerShot: .talkerAndRest)
+        #expect(FramingPlanner.resolve(framing: fallback, context: single).recipe?.kind == .talker)
+    }
+
+    @Test func speakerFocusOnASingleCameraWithSeveralVIPsKeepsInterview() {
+        // Portrait columns are not recorded feeds; Interview handles one camera full screen.
+        var evidence = context(vip: true)
+        evidence.roster.append(VideoPersonRecord(videoID: evidence.video.id, personID: 2, key: "guest2", name: "Guest 2",
+            descriptor: "", portraitAt: 0, portraitBox: .init(x: 0.6, y: 0.2, w: 0.1, h: 0.2), vip: true))
+        #expect(evidence.vipIDs.count == 2)
+        #expect(FramingPlanner.speakerKind(context: evidence) == .interview)
+    }
 }

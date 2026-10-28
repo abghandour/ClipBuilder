@@ -717,4 +717,52 @@ extension MultitrackRendererPlanningTests {
         try Data().write(to: second)
         #expect(MultitrackRenderer.uniqueFile(named: "Poatan - 09-12-26", in: root).lastPathComponent == "Poatan - 09-12-26 3.mp4")
     }
+
+    @Test("a cell's path keeps its shape inside the content window and bounds any re-tracking to its feed")
+    func contentWindowKeepsCellPathShapeAndBoundsFallback() throws {
+        // A 2x2 grid feed at bottom right, framed by a recipe; the last shot
+        // reaches below the letterbox window's bottom edge (0.95).
+        let tile = [CameraPathKeyframe(t: 0, x: 0.1325, y: 0.5, w: 0.2848, h: 0.45),
+                    CameraPathKeyframe(t: 4, x: 0.1325, y: 0.5, w: 0.2848, h: 0.45),
+                    CameraPathKeyframe(t: 4.01, x: 0.5338, y: 0.5, w: 0.2988, h: 0.4722),
+                    CameraPathKeyframe(t: 8, x: 0.5338, y: 0.5, w: 0.2988, h: 0.4722)]
+        var clip = Fixtures.timelineClip(sceneID: nil, sourceStart: 2, duration: 8)
+        clip.wide = true
+        clip.cameraPath = tile
+        clip.cameraPathSource = "recipe"
+        clip.framingPlan = .tracked(CropRecipe(kind: .interview), region: nil, fit: .fill, feather: 0.2, blur: 0.5)
+        let document = Fixtures.timelineDocument(clips: [clip])
+        var resolved = try #require(MultitrackRenderer.resolveClips(document: document, scenes: []).first)
+        #expect(resolved.areaRegion == nil && resolved.cameraPath?.count == 4)
+        let window = FreeCropRect(xFrac: 0.05, yFrac: 0.03, wFrac: 0.94, hFrac: 0.92)
+        MultitrackRenderer.applyContentWindow(window, to: &resolved)
+        let path = try #require(resolved.cameraPath)
+        for (before, after) in zip(tile, path) {
+            #expect(abs(after.w / after.h - before.w / before.h) < 1e-6, "aspect kept at t=\(before.t)")
+            #expect(after.y + after.h <= window.yFrac + window.hFrac + 1e-9 && after.x + after.w <= window.xFrac + window.wFrac + 1e-9)
+        }
+        #expect(path[0].x == tile[0].x && path[0].y == tile[0].y && path[0].w == tile[0].w)
+        #expect(CenterStageService.pathMatchesCanvas(path, sourceSize: CGSize(width: 1920, height: 1080), canvasAspect: 1080.0 / 960))
+        // The fallback region is the feed the path framed, not the whole picture.
+        let region = try #require(resolved.areaRegion)
+        #expect(abs(region.xFrac - 0.1325) < 1e-9 && abs(region.yFrac - 0.5) < 1e-9)
+        #expect(abs(region.xFrac + region.wFrac - 0.8326) < 1e-9 && abs(region.yFrac + region.hFrac - 0.95) < 1e-9)
+        // A scene's Center Stage path is not a cell: its region stays the whole window.
+        var scenePath = try #require(MultitrackRenderer.resolveClips(document: document, scenes: []).first)
+        scenePath.framingPlan = nil
+        MultitrackRenderer.applyContentWindow(window, to: &scenePath)
+        #expect(scenePath.areaRegion == window)
+        #expect(MultitrackRenderer.cellBounds(of: scenePath) == nil)
+        #expect(MultitrackRenderer.pathBounds([]) == nil)
+        #expect(MultitrackRenderer.pathBounds([CameraPathKeyframe(t: 0, x: 1.2, y: 0, w: 0.3, h: 0.5)]) == nil)
+        // A scene path is still clipped to the picture, so a stale shape is rejected and re-tracked.
+        let clippedScene = try #require(scenePath.cameraPath?.last)
+        #expect(abs(clippedScene.y + clippedScene.h - 0.95) < 1e-9 && clippedScene.y == 0.5)
+        // The cell's bounds tell its framing cache entry apart from a whole-picture one.
+        var keyed = resolved; keyed.framingIdentity = "fixture"
+        var whole = keyed; whole.cameraPath = nil; whole.framingPlan = nil
+        let area = ScreenCropStore.builtIn[0].areas[0]
+        #expect(try MultitrackRenderer.prepassKey(keyed, area: area, tuning: "balanced")
+                != MultitrackRenderer.prepassKey(whole, area: area, tuning: "balanced"))
+    }
 }

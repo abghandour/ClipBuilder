@@ -348,6 +348,28 @@ nonisolated enum CropRecipePlanner {
 
     private static func round4(_ value: Double) -> Double { (value * 10000).rounded() / 10000 }
 
+    /// What a talker cell shows: the talker, except while another cell
+    /// (`avoiding`, a VIP cell's timeline) already shows that feed. Then it
+    /// holds the previous talker, or failing that the first other feed, like
+    /// a rotation cell never shows the talker. Boundaries come from both
+    /// timelines so the swap happens the moment the VIP cell moves.
+    static func talkerEvents(segments: [Segment], avoiding shown: [(time: Double, tile: Int?)],
+                             order: [Int]) -> [(time: Double, tile: Int?)] {
+        guard !shown.isEmpty else { return segments.map { ($0.start, $0.talker) } }
+        var events: [(time: Double, tile: Int?)] = []
+        for segment in segments {
+            let boundaries = [segment.start] + shown.map(\.time).filter { $0 > segment.start && $0 < segment.end }
+            for time in boundaries {
+                let avoided = shown.last(where: { $0.time <= time + 1e-9 })?.tile
+                let tile = segment.talker == avoided
+                    ? segment.recent.first { $0 != avoided } ?? order.first { $0 != avoided }
+                    : segment.talker
+                events.append((time, tile))
+            }
+        }
+        return events
+    }
+
     /// Touching spans joined, so a cell that keeps the talker across
     /// several turns is one stretch.
     static func merged(_ spans: [ClosedRange<Double>]) -> [ClosedRange<Double>] {
@@ -550,8 +572,21 @@ nonisolated enum CropRecipePlanner {
                     }
                 }
             case .talker:
-                events = segments.map { ($0.start, $0.talker) }
-                talking = segments.map { $0.start...$0.end }
+                // Beside a VIP cell the talker cell never repeats the feed the
+                // VIP cell is on.
+                let vipShown: [(time: Double, tile: Int?)] = subjects.contains(.vip) && !vipTiles.isEmpty
+                    ? VIPRecipePlanning.events(segments: segments, tiles: tiles, roster: roster,
+                                               turns: turns, start: span.lowerBound, end: span.upperBound)
+                    : []
+                events = talkerEvents(segments: segments, avoiding: vipShown, order: order)
+                // A stand-in for the talker is not speaking; only stretches
+                // where the cell shows the actual talker are outlined.
+                for (index, event) in events.enumerated() {
+                    let end = events[safe: index + 1]?.time ?? span.upperBound
+                    for segment in segments where segment.talker == event.tile && segment.end > event.time && segment.start < end {
+                        talking.append(max(segment.start, event.time)...min(segment.end, end))
+                    }
+                }
             case .recent(let n):
                 events = segments.map { ($0.start, $0.recent[safe: n - 1]) }
             case .others(let n):
