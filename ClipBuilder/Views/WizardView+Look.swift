@@ -419,7 +419,7 @@ extension WizardView {
                 let textIndex = textIndices[index]
                 WizardControlRow(texts.count == 1 ? "Text" : "Text \(index + 1)") {
                     HStack(spacing: Theme.spaceS) {
-                        TextField(original, text: Binding(
+                        NewlineTextField(prompt: original, text: Binding(
                             get: { WizardExpressExtras.splitTexts(fixedOverlayTexts)[safe: index] ?? original },
                             set: { value in
                                 var updated = WizardExpressExtras.splitTexts(fixedOverlayTexts)
@@ -429,6 +429,7 @@ extension WizardView {
                             }))
                             .textFieldStyle(.roundedBorder)
                             .frame(maxWidth: 320)
+                            .help("Return starts a new line in the overlay.")
                             .accessibilityLabel("Overlay text \(index + 1)")
                         OverlayTextAlignmentPicker(alignment: Binding(
                             get: { OverlayEdits.split(fixedOverlayEdits).texts[safe: textIndex]?.alignment ?? item.alignment },

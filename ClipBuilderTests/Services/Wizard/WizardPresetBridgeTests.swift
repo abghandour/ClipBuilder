@@ -73,7 +73,7 @@ struct WizardPresetBridgeTests {
         #expect(fields["addCaptions"] == .bool(true) && fields["captionLanguage"] == .string("en"))
         #expect(fields["podcastFraming"] == nil && fields["highlightFraming"] == nil)
         #expect(fields["transitionChoice"] == .string("fadeblack") && fields["lookPreset"] == .string("vintage"))
-        #expect(fields["fixedOverlayTextsJoined"] == .string("Hook\nSecond"))
+        #expect(fields["fixedOverlayTextsJoined"] == .string("Hook\u{1E}Second"))
         #expect(fields["outputMode"] == .string("oneReel"))
         #expect(Framing.split(fields["framing"]?.string) == express.framing)
         let back = WizardPresetBridge.miniSettings(from: fields)

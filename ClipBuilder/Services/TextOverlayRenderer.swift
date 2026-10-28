@@ -38,27 +38,34 @@ nonisolated struct TextOverlayRenderer {
         var text: String
         var highlighted: Bool
         var index: Int
+        /// A typed line break (Return in the editor) sits before this word.
+        var breaksLine = false
     }
 
     /// Split text into words, consuming `*...*` emphasis markup (a span may
-    /// cover several words). Stars are stripped from the rendered text.
+    /// cover several words). Stars are stripped from the rendered text. A
+    /// newline in the text is a hard line break that wrapping respects.
     static func parseMarkup(_ text: String) -> [Word] {
         var words: [Word] = []
         var highlighting = false
-        for token in text.split(separator: " ") {
-            var word = String(token)
-            var highlighted = highlighting
-            if word.hasPrefix("*") {
-                word.removeFirst()
-                highlighted = true
-                highlighting = true
+        for (lineIndex, line) in text.split(separator: "\n", omittingEmptySubsequences: false).enumerated() {
+            var firstOnLine = lineIndex > 0
+            for token in line.split(separator: " ") {
+                var word = String(token)
+                var highlighted = highlighting
+                if word.hasPrefix("*") {
+                    word.removeFirst()
+                    highlighted = true
+                    highlighting = true
+                }
+                if word.hasSuffix("*") {
+                    word.removeLast()
+                    highlighting = false
+                }
+                guard !word.isEmpty else { continue }
+                words.append(Word(text: word, highlighted: highlighted, index: words.count, breaksLine: firstOnLine))
+                firstOnLine = false
             }
-            if word.hasSuffix("*") {
-                word.removeLast()
-                highlighting = false
-            }
-            guard !word.isEmpty else { continue }
-            words.append(Word(text: word, highlighted: highlighted, index: words.count))
         }
         return words
     }
@@ -114,15 +121,19 @@ nonisolated struct TextOverlayRenderer {
     }
 
     /// Greedy line breaking: a word joins the current line while the line
-    /// still `fits` and stays under `maxWords` (nil = no word cap). Pure, so
-    /// the cap is testable without fonts.
+    /// still `fits` and stays under `maxWords` (nil = no word cap), and a
+    /// typed line break always starts a new line. Pure, so the cap is
+    /// testable without fonts.
     static func lines(_ words: [Word], maxWords: Int?, fits: ([Word]) -> Bool) -> [[Word]] {
         guard !words.isEmpty else { return [] }
         let cap = maxWords.map { max(1, $0) }
         var lines: [[Word]] = []
         var current = [words[0]]
         for word in words.dropFirst() {
-            if let cap, current.count >= cap {
+            if word.breaksLine {
+                lines.append(current)
+                current = [word]
+            } else if let cap, current.count >= cap {
                 lines.append(current)
                 current = [word]
             } else if fits(current + [word]) {

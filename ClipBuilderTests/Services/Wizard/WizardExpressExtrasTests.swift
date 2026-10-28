@@ -55,7 +55,7 @@ struct WizardExpressExtrasTests {
         WizardExpressExtras.apply(to: &options, defaults: d)
         #expect(options.transitionChoice == nil && options.lookPreset == nil && options.lookIntensity == nil)
         #expect(WizardExpressExtras.splitTexts(nil).isEmpty && WizardExpressExtras.splitTexts("") .isEmpty)
-        #expect(WizardExpressExtras.joinedTexts(["a", "b"]) == "a\nb")
+        #expect(WizardExpressExtras.joinedTexts(["a", "b"]) == "a\u{1E}b")
     }
 
     @Test func lookIntensitySurvivesTheOptionsRoundTrip() throws {
@@ -67,5 +67,11 @@ struct WizardExpressExtrasTests {
         let merged = WizardOptions.merge(step1: options.step1, step2: options.step2, base: WizardOptions())
         #expect(merged.lookIntensity == 0.5 && merged.lookPreset == "bw")
         #expect(try JSONDecoder().decode(WizardOptions.self, from: Data(#"{"lookPreset":"bw"}"#.utf8)).lookIntensity == nil)
+    }
+
+    @Test func overlayTextsKeepTypedLineBreaksAndReadLegacyValues() {
+        let joined = WizardExpressExtras.joinedTexts(["Two\nlines", "Second"])
+        #expect(WizardExpressExtras.splitTexts(joined) == ["Two\nlines", "Second"])
+        #expect(WizardExpressExtras.splitTexts("Hook\nSecond") == ["Hook", "Second"], "saved before the separator change")
     }
 }

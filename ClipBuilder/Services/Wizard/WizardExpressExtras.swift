@@ -24,10 +24,13 @@ nonisolated enum WizardExpressExtras {
     static let introBumperKey = "wizard.introBumper"
     static let outroBumperKey = "wizard.outroBumper"
 
-    static func joinedTexts(_ texts: [String]) -> String { texts.joined(separator: "\n") }
+    /// Texts can hold typed line breaks, so they are joined on a record
+    /// separator; values saved before that were joined on newlines.
+    static let textSeparator = "\u{1E}"
+    static func joinedTexts(_ texts: [String]) -> String { texts.joined(separator: textSeparator) }
     static func splitTexts(_ joined: String?) -> [String] {
         guard let joined, !joined.isEmpty else { return [] }
-        return joined.components(separatedBy: "\n")
+        return joined.components(separatedBy: joined.contains(textSeparator) ? textSeparator : "\n")
     }
 
     static func storedFraming(type: VideoType, defaults: UserDefaults = .standard) -> Framing {

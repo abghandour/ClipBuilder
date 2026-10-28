@@ -447,3 +447,19 @@ extension TextOverlayLayoutTests {
         #expect(TextOverlayPreviewImage.cropRect(box: .zero, width: 1080, height: 1920) == nil)
     }
 }
+
+extension TextOverlayLayoutTests {
+    @Test func typedLineBreaksAlwaysStartANewLine() {
+        let words = TextOverlayRenderer.parseMarkup("Big *bold* hook\nsecond line here")
+        #expect(words.map(\.text) == ["Big", "bold", "hook", "second", "line", "here"])
+        #expect(words.map(\.breaksLine) == [false, false, false, true, false, false])
+        #expect(words[1].highlighted && !words[3].highlighted)
+        let lines = TextOverlayRenderer.lines(words, maxWords: nil) { _ in true }
+        #expect(lines.map { $0.map(\.text).joined(separator: " ") } == ["Big bold hook", "second line here"])
+        // Wrapping still applies inside each typed line.
+        let narrow = TextOverlayRenderer.lines(words, maxWords: 2) { _ in true }
+        #expect(narrow.map { $0.count } == [2, 1, 2, 1])
+        #expect(TextOverlayRenderer.parseMarkup("one\n\ntwo").map(\.breaksLine) == [false, true])
+    }
+}
+
