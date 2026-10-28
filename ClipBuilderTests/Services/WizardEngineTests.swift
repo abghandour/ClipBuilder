@@ -227,7 +227,7 @@ struct WizardEngineTests {
 
     @Test("planning sees only the current project's scenes while Home sees every scene")
     func projectScope() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let firstVideoID = try await temp.seedVideo()
         _ = try await temp.seedVideo()
         try await temp.database.ensureDefaultProject(profileName: "Fixture", legacyTimelineJSON: nil)
@@ -404,7 +404,7 @@ extension WizardEngineTests {
     }
 
     @Test func automaticRecordsOneTakeBeforeRendering() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let projectID = try await temp.database.createProject(profileName: "Selection Test", name: "Project", videoIDs: [videoID])
         let scene = try #require(try await temp.database.fetchScenes(projectID: projectID).first)
@@ -457,7 +457,7 @@ extension WizardEngineTests {
     }
 
     @Test func makeReelRejectsMissingScenesWithoutCallingThePlanner() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let project = try await temp.database.createProject(profileName: "Test", name: "Project")
         var options = WizardOptions()
         options.projectID = project
@@ -509,7 +509,7 @@ extension WizardEngineTests {
     }
 
     private func exerciseTakeIteration(step1Only: Bool, scores: [Int], regenerate: [Bool]) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo()
         let projectID = try await database.createProject(profileName: "Take Loop", name: "Iteration", videoIDs: [videoID])
@@ -619,7 +619,7 @@ extension WizardEngineTests {
 
     @Test(arguments: [false, true], ["podcast", "podcast_highlights"])
     func renderingAcceptedTakeNeverReplansOrOverwritesItsContentScore(nameTagsOnly: Bool, recipe: String) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo()
         let projectID = try await database.createProject(profileName: "Review", name: "Review", videoIDs: [videoID])
@@ -691,7 +691,7 @@ nonisolated private final class WizardIterationLog: @unchecked Sendable {
 extension WizardEngineTests {
     @Test("A failed proxy or judge preserves the take; cancellation propagates", arguments: [false, true], [false, true])
     func proxyFailureAndCancellation(cancel: Bool, failBeforeReview: Bool) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo()
         let project = try await database.createProject(profileName: "Proxy failure", name: "Test", videoIDs: [videoID])
@@ -743,7 +743,7 @@ extension WizardEngineTests {
 extension WizardEngineTests {
     @Test("Mini uses one request for three validated alternatives", arguments: [false, true])
     func miniCandidatesSingleCallDropsInvalidAndOverlappingPlans(includeBadCandidates: Bool) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo(sceneCount: 3)
         let projectID = try await temp.database.createProject(profileName: "Mini Test", name: "Mini", videoIDs: [videoID])
         let scenes = try await temp.database.fetchScenes(projectID: projectID).sorted { $0.startTime < $1.startTime }
@@ -825,7 +825,7 @@ extension WizardEngineTests {
 
 extension WizardEngineTests {
     @Test func miniRegenerationIncludesAvoidRuleAndRefusesOverlapBeforeSaving() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo(sceneCount: 2)
         let projectID = try await temp.database.createProject(profileName: "Mini Regenerate", name: "Mini", videoIDs: [videoID])
         let scenes = try await temp.database.fetchScenes(projectID: projectID).sorted { $0.startTime < $1.startTime }
@@ -887,7 +887,7 @@ extension WizardEngineTests {
 extension WizardEngineTests {
     @Test(arguments: ["translated", "failure", "cancelled"])
     func captionTranslationIsPreparedBeforeRendering(outcome: String) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo()
         let projectID = try await database.createProject(profileName: "Captions", name: "Captions", videoIDs: [videoID])
@@ -956,7 +956,7 @@ extension WizardEngineTests {
     }
 
     @Test func captionsSkipTranslationWhenDisabledOrAlreadyInOriginalLanguage() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let scene = try #require(try await temp.database.fetchScenes().first)
         try await temp.database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
@@ -986,7 +986,7 @@ private nonisolated final class WizardCaptionTestLog: Sendable {
 extension WizardEngineTests {
     @Test(arguments: [false, true])
     func wizardUsesTheSharedTranslateAIRoute(batch: Bool) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let scene = try #require(try await temp.database.fetchScenes().first)
         try await temp.database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "pt", isTranslation: false,
@@ -1017,7 +1017,7 @@ extension WizardEngineTests {
     }
 
     @Test func fortySecondCutOnlyTranslatesOverlappingRowsOfLongTranscriptWithProgress() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let scene = try #require(try await temp.database.fetchScenes().first)
         let transcript = (0..<276).map {
@@ -1049,7 +1049,7 @@ extension WizardEngineTests {
     }
 
     @Test func captionRangesIncludeAreaClipsAndFillPartialTracksPerRow() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let firstID = try await temp.seedVideo()
         let secondID = try await temp.seedVideo()
         let scenes = try await temp.database.fetchScenes()
@@ -1082,7 +1082,7 @@ extension WizardEngineTests {
 
 extension WizardEngineTests {
     private func cameraFocusFixture() async throws -> (TempDatabase, WizardOptions, WizardSelectionTake) {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let database = temp.database
         let projectID = try await database.createProject(profileName: "Camera focus", name: "Podcast", videoIDs: [videoID])
@@ -1238,7 +1238,7 @@ extension WizardEngineTests {
 
 extension WizardEngineTests {
     private func tagTextFixture() async throws -> (TempDatabase, WizardOptions, WizardSelectionTake, [Int64: SceneRecord]) {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let database = temp.database
         let projectID = try await database.createProject(profileName: "Tags", name: "Tags", videoIDs: [videoID])

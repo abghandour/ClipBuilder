@@ -5,7 +5,7 @@ import Testing
 
 struct AssetSyncJournalTests {
     @Test func roundTripAndInvalidJournal() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         var journal = AssetSyncJournal(homeID: "home")
         journal.kindFolderIDs = ["music": "music-id"]
         journal.lastRefresh = Date(timeIntervalSince1970: 100)

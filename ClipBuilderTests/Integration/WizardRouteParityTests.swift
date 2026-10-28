@@ -27,7 +27,7 @@ struct WizardRouteParityTests {
     @Test("ordinary cuts match Builder for paths, retiming, captions, overlays and joins",
           arguments: ["saved-path", "speed", "captions", "overlay", "crossfade", "broll", "combined"])
     func builderParity(_ feature: String) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         var scene = try await fixture(temp)
         let combined = feature == "combined"
         let tracked = feature == "saved-path" || combined
@@ -116,7 +116,7 @@ struct WizardRouteParityTests {
 
     @Test("ordinary static segments skip tracking, reuse their cache and invalidate framing edits")
     func staticCache() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let scene = try await fixture(temp)
         let plan = FramingPlan.static(window: nil, fit: .fill, feather: 0.08, blur: 0.5)
         var document = WizardOrdinaryTimeline.cutDocument(clip: Fixtures.planClip(sceneID: scene.id, start: 0, end: 4),
@@ -143,7 +143,7 @@ struct WizardRouteParityTests {
 
     @Test("legacy ordinary crop-scale-pad and original focus use the shared extraction path", arguments: [false, true])
     func directCropReference(_ focus: Bool) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let scene = try await fixture(temp)
         var clip = Fixtures.planClip(sceneID: scene.id, start: 1, end: 4)
         clip.speed = 1.5

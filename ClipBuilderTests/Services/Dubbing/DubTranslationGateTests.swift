@@ -15,7 +15,7 @@ struct DubTranslationGateTests {
     }
 
     @Test func deviceFirstThenModelOnlyForMissingRowsWithinClips() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await seed(temp)
         let stub = CaptionTranslationStub()
         let rows = try await DubTranslationGate.ensure(videoID: id, file: "interview.mp4", ranges: [0..<5],
@@ -36,7 +36,7 @@ struct DubTranslationGateTests {
     }
 
     @Test func partialTranslationFailsWithExactMessageAndNeverStoresOriginalFallback() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await seed(temp)
         let stub = CaptionTranslationStub()
         await #expect(throws: ScriptError.invalid("No pt-BR translation for interview.mp4; translate the transcript first")) {
@@ -48,7 +48,7 @@ struct DubTranslationGateTests {
     }
 
     @Test func fillingMissingRangePreservesReviewedTranslationsAndSourceAttribution() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await seed(temp)
         try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "dub-test", language: "pt-BR",
             isTranslation: true, segments: [.init(start: 0, end: 2, text: "Um", words: [
@@ -71,7 +71,7 @@ struct DubTranslationGateTests {
     }
 
     @Test func installedFailureFallsBackAndCancellationNeverDoes() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await seed(temp)
         let stub = CaptionTranslationStub()
         let rows = try await DubTranslationGate.ensure(videoID: id, file: "source.mp4", ranges: [0..<2],
@@ -87,7 +87,7 @@ struct DubTranslationGateTests {
     }
 
     @Test func noTranscriptFailsInsteadOfSpeakingSourceText() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await temp.seedVideo()
         let stub = CaptionTranslationStub()
         await #expect(throws: ScriptError.invalid("No en-US translation for empty.mp4; translate the transcript first")) {

@@ -19,7 +19,7 @@ struct TimelineTerminationTests {
 
     @Test("Quitting after autosave does not reject the already persisted revision")
     func repeatedFlush() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         store.builder.addText()
         await store.flushForTermination()
@@ -34,7 +34,7 @@ struct TimelineTerminationTests {
 
     @Test("Overlapping flushes drain the same revision once and preserve subsequent edits")
     func overlappingFlushes() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         store.builder.addText()
         async let first: Void = store.flushForTermination()

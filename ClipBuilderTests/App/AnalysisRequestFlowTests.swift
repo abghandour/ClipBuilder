@@ -13,7 +13,7 @@ struct AnalysisRequestFlowTests {
     }
 
     @Test func reanalyzeBatchRestoresFullPortableRequest() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let video = try #require(try await temp.database.video(id: videoID))
         let store = store(temp)
@@ -62,7 +62,7 @@ struct AnalysisRequestFlowTests {
     }
 
     @Test func analyzeCapturesOneShotsBeforeResumingCheckpointAndBypassesDuplicateSheet() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let video = try #require(try await temp.database.video(id: videoID))
         let store = store(temp)
@@ -114,7 +114,7 @@ struct AnalysisRequestFlowTests {
     }
 
     @Test func batchSkipsEachSuccessfulMatchWithoutShowingASheet() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let firstID = try await temp.seedVideo()
         let url = temp.directory.url.appendingPathComponent("second.mp4")
         try Data("second source".utf8).write(to: url)
@@ -143,7 +143,7 @@ struct AnalysisRequestFlowTests {
     }
 
     @Test func legacyReanalysisKeepsPartialRestoreFallback() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await temp.seedVideo()
         let store = store(temp)
         store.videos = [try #require(try await temp.database.video(id: id))]

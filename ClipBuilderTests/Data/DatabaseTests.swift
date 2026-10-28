@@ -6,7 +6,7 @@ import Testing
 struct DatabaseTests {
     @Test("VIP is per video, nullable, and a user override survives detection and reassignment")
     func vipRoster() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let video = try await temp.seedVideo()
         let a = try await db.createPerson(name: "Guest")
@@ -42,7 +42,7 @@ struct DatabaseTests {
     }
 
     @Test func originalTranscriptAvailabilityReturnsDistinctVideoIDs() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         #expect(try await database.videoIDsWithOriginalTranscripts().isEmpty)
         let original = try await temp.seedVideo(sceneCount: 0)
@@ -73,7 +73,7 @@ struct DatabaseTests {
 
     @Test("voice profiles round-trip per video, leave the video being mapped out, and follow person merges and deletes")
     func voiceProfilesRoundTrip() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let first = try await temp.seedVideo()
         let second = try await temp.seedVideo()
@@ -115,7 +115,7 @@ struct DatabaseTests {
 
     @Test("legacy shortlist marks migrate once and preserve favorite provenance")
     func favoriteMigration() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo(sceneCount: 4)
         let original = try await temp.database.fetchScenes(videoID: videoID)
         let ids = original.map(\.id)
@@ -148,7 +148,7 @@ struct DatabaseTests {
 
     @Test("favorite provenance round-trips, clears for human picks, and clears on unfavorite")
     func favoriteProvenance() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo(sceneCount: 2)
         let ids = try await temp.database.fetchScenes(videoID: videoID).map(\.id)
         let stamp = AIProvenance(provider: "claude", model: "test-model", task: "curate")
@@ -168,7 +168,7 @@ struct DatabaseTests {
 
     @Test("regression: a fresh database creates its tables before their indexes and stamps the version")
     func freshSchema() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let connection = try SQLiteConnection(path: temp.path.path)
         let version = try connection.query("PRAGMA user_version").first?["user_version"]?.intValue
         #expect(version == Database.schemaVersion)
@@ -209,7 +209,7 @@ struct DatabaseTests {
 
     @Test("merging people moves scored fight actions and results to the survivor, and undo moves them back")
     func mergeMovesFightKeys() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let video = try await temp.seedVideo()
         let source = try await db.createPerson(name: "Fighter Copy")
@@ -267,7 +267,7 @@ struct DatabaseTests {
 
     @Test("the library snapshot counts the people pass's roster per video, distinct by person")
     func snapshotCountsVideoPeople() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let first = try await temp.seedVideo()
         let second = try await database.registerVideo(hash: "second", filename: "second.mp4", path: "/tmp/second.mp4",
@@ -289,7 +289,7 @@ struct DatabaseTests {
 
     @Test("a person's videos come from the people pass's roster, one row per video")
     func videoIDsForPerson() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let first = try await temp.seedVideo()
         let second = try await database.registerVideo(hash: "second", filename: "second.mp4", path: "/tmp/second.mp4",
@@ -314,7 +314,7 @@ struct DatabaseTests {
 
     @Test("who says a transcript line is stored per line: a person, Unknown, or back to automatic")
     func transcriptSpeakerAttribution() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo()
         try await database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
@@ -336,7 +336,7 @@ struct DatabaseTests {
 
     @Test("an unfinished analysis is kept per video until the run finishes or the user starts over")
     func analysisCheckpointRoundTrip() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo()
         var checkpoint = AnalysisCheckpoint(videoID: videoID, startedAt: .now, updatedAt: .now,
@@ -368,7 +368,7 @@ struct DatabaseTests {
 
     @Test("a re-cut replaces the original-language rows, keeps translations, and Undo restores the transcriber's rows")
     func transcriptRecutRoundTrip() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo()
         let words = [TranscriptWord(word: "one", start: 0, end: 1), TranscriptWord(word: " two", start: 3, end: 4)]
@@ -407,7 +407,7 @@ struct DatabaseTests {
 
     @Test("a person's category round-trips, clears with nil, and survives an unknown value")
     func personCategoryRoundTrip() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         try await temp.database.upsertPerson(key: "alpha", descriptor: "")
         let alpha = try #require(try await temp.database.fetchPeople().first)
         #expect(alpha.category == nil)
@@ -423,7 +423,7 @@ struct DatabaseTests {
 
     @Test("merging and deleting people follow the lines attributed to them by hand")
     func personMaintenanceKeepsSpeakerKeys() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo(sceneCount: 0)
         try await temp.database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
                                                    segments: [.init(start: 0, end: 4, text: "hi", words: nil)],
@@ -443,7 +443,7 @@ struct DatabaseTests {
 
     @Test("a re-cut keeps edit history on rows passed through, starts over from the backup only while nothing was corrected, and overwriting the same set drops its backup")
     func transcriptRecutKeepsCorrections() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo()
         try await database.replaceTranscripts(videoID: videoID, transcriptionKey: "test-transcription", language: "en", isTranslation: false,
@@ -483,7 +483,7 @@ struct DatabaseTests {
 
     @Test("a database stamped with the current version skips the column migrations")
     func stampedDatabaseSkipsMigration() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let raw = try SQLiteConnection(path: temp.path.path)
         // Knock a migrated column out while the stamp still says "current".
         try raw.execute("ALTER TABLE video_notes DROP COLUMN provider")
@@ -501,7 +501,7 @@ struct DatabaseTests {
 
     @Test("opens in WAL mode, and a locked folder fails cleanly instead of hanging or leaving debris")
     func journalModeAndLockedFolder() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         #expect(try await temp.database.journalMode() == "wal")
 
         // A directory that allows no new files can take neither WAL sidecars
@@ -520,7 +520,7 @@ struct DatabaseTests {
 
     @Test("video analysis CRUD preserves tags, grades, and favorite provenance")
     func analysisCRUD() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo(sceneCount: 2)
         var scenes = try await temp.database.fetchScenes(videoID: videoID)
         #expect(scenes.count == 2)
@@ -544,7 +544,7 @@ struct DatabaseTests {
 
     @Test("project-scoped scenes retain only their tags and grade aggregates")
     func projectSceneAggregates() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let firstVideo = try await temp.seedVideo(sceneCount: 2)
         let secondVideo = try await temp.seedVideo(sceneCount: 2)
         let firstProject = try await temp.database.createProject(
@@ -586,7 +586,7 @@ struct DatabaseTests {
 
     @Test("deleting an analysis run cascades its scenes and tags")
     func deleteAnalysisRunCascades() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo(sceneCount: 1)
         let scene = try #require(try await temp.database.fetchScenes(videoID: videoID).first)
         let runID = try #require(scene.runID)
@@ -600,7 +600,7 @@ struct DatabaseTests {
 
     @Test("renaming a video updates its row and records naming provenance")
     func renameVideo() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let newPath = temp.directory.url.appendingPathComponent("renamed.mp4").path
         try await temp.database.renameVideo(
@@ -619,7 +619,7 @@ struct DatabaseTests {
 
     @Test("merging people retags scenes, moves markers, and drops the source")
     func mergePeople() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo(sceneCount: 2)
         let scenes = try await temp.database.fetchScenes(videoID: videoID)
         try await temp.database.upsertPerson(key: "alpha", descriptor: "blue shorts")
@@ -650,7 +650,7 @@ struct DatabaseTests {
 
     @Test("Merging people keeps roster rows, unions ranges and only fills a missing avatar", arguments: [false, true])
     func mergePeoplePreservesRosterAndAvatar(existingAvatar: Bool) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let fixture = try await Fixtures.personCorrection(in: temp)
         let raw = try SQLiteConnection(path: temp.path.path)
         try raw.execute("""
@@ -689,7 +689,7 @@ struct DatabaseTests {
 
     @Test("Merge snapshots restore both sides of every relationship and their original row identities")
     func peopleMergeSnapshotRestoresAllRows() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         try await temp.database.bindSync(to: SyncScope(teamID: UUID(), profileID: UUID()))
         let fixture = try await Fixtures.personCorrection(in: temp)
         let extra = try await temp.database.createPerson(name: "Third Person")
@@ -753,7 +753,7 @@ struct DatabaseTests {
 
     @Test("Undoing a merge restores the survivor's name before the merge sheet rename")
     func peopleMergeRestoreSurvivorName() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await temp.database.createPerson(name: "Duplicate")
         let survivor = try await temp.database.createPerson(name: "Original Name")
         let snapshot = try await temp.database.mergePeople(sources: [source], into: survivor, renamingTo: "Merged Name")
@@ -776,7 +776,7 @@ struct DatabaseTests {
 
     @Test("video notes round trip in time order with provenance")
     func videoNotes() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         try await temp.database.addVideoNote(videoID: videoID, at: 5, note: "later")
         try await temp.database.addVideoNote(
@@ -794,7 +794,7 @@ struct DatabaseTests {
 
     @Test("person markers store their box, assignment, and ignore flag")
     func personMarkers() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         try await temp.database.addPersonMarker(videoID: videoID, at: 2.5, x: 0.25, y: 0.5, width: 0.1, height: 0.3)
         var marker = try #require(try await temp.database.personMarkers(videoID: videoID).first)
@@ -813,7 +813,7 @@ struct DatabaseTests {
 
     @Test("fetchOutcomes keeps only the latest outcome per video")
     func outcomesLatestPerVideo() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let runID = try #require(try await temp.database.fetchScenes(videoID: videoID).first?.runID)
         try await temp.database.saveFightOutcome(videoID: videoID, runID: runID, method: "decision",
@@ -829,7 +829,7 @@ struct DatabaseTests {
 
     @Test("regression: re-analyzing a transcript keeps the user's accepted and rejected cut decisions")
     func transcriptReanalysisKeepsDecisions() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         func proposal(_ kind: EditProposal.Kind, _ start: Double, _ end: Double) -> EditProposal {
             EditProposal(id: 0, videoID: videoID, kind: kind, startTime: start, endTime: end,
@@ -857,7 +857,7 @@ struct DatabaseTests {
 
     @Test("regression: an output whose project was deleted mid-render is recorded without an owner")
     func orphanedOutputStillRecorded() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         try await temp.database.ensureDefaultProject(profileName: "One", legacyTimelineJSON: nil)
         let projectID = try await temp.database.createProject(profileName: "One", name: "Gone")
         try await temp.database.deleteProject(id: projectID)
@@ -873,7 +873,7 @@ struct DatabaseTests {
 
     @Test("regression: Instagram report snapshot query has no ambiguous fetched_at column")
     func instagramReportInputs() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let accountID = try await temp.database.upsertIGAccount(
             username: "fixture", kind: "own", displayName: nil,
             igUserID: "ig-1", followers: 100
@@ -896,7 +896,7 @@ struct DatabaseTests {
 
     @Test("an imported report never overwrites live Graph counts")
     func importKeepsLiveCounts() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let accountID = try await temp.database.upsertIGAccount(username: "fixture", kind: "own", displayName: nil,
                                                                 igUserID: "ig-1", followers: 100)
         _ = try await temp.database.upsertIGReportMedia(IGReportMediaUpsert(
@@ -910,7 +910,7 @@ struct DatabaseTests {
 
     @Test("project migration creates an implicit permanent Home and supports shared membership")
     func projectMigrationAndMembership() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let firstVideoID = try await temp.seedVideo()
         let secondVideoID = try await temp.seedVideo()
 
@@ -967,7 +967,7 @@ struct DatabaseTests {
 
     @Test("deleting a project preserves media and outputs and can move its timelines to Home")
     func projectDeleteSemantics() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         try await temp.database.ensureDefaultProject(profileName: "Fixture", legacyTimelineJSON: nil)
         let home = try #require(try await temp.database.fetchProjects().first(where: \.isHome))
@@ -1021,7 +1021,7 @@ struct DatabaseTests {
 
     @Test("timelines and generated outputs remain inside their project")
     func projectTimelinesAndOutputs() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         _ = try await temp.seedVideo()
         try await temp.database.ensureDefaultProject(profileName: "Fixture",
                                                      legacyTimelineJSON: nil)
@@ -1113,7 +1113,7 @@ struct LearnedDatabaseMigrationTests {
 @Suite("On-device pass timing")
 struct OnDevicePassTimingTests {
     @Test func transcriptPeopleAndFramingKeepTheirDurations() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let videoID = try await database.registerVideo(hash: "h", filename: "a.mp4", path: "/tmp/a.mp4",
                                                        duration: 30, width: 1920, height: 1080, wide: true)
@@ -1154,8 +1154,8 @@ struct OnDevicePassTimingTests {
 
 @Suite("Schema version gate")
 struct SchemaVersionGateTests {
-    @Test func version13GainsPrerequisiteReceipts() throws {
-        let temp = try TempDatabase()
+    @Test func version13GainsPrerequisiteReceipts() async throws {
+        let temp = try await TempDatabase()
         let raw = try SQLiteConnection(path: temp.path.path)
         try raw.execute("DROP TABLE builder_prerequisites")
         try raw.execute("PRAGMA user_version = 13")
@@ -1165,8 +1165,8 @@ struct SchemaVersionGateTests {
         #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
     }
 
-    @Test func version12GainsBuilderRunTables() throws {
-        let temp = try TempDatabase()
+    @Test func version12GainsBuilderRunTables() async throws {
+        let temp = try await TempDatabase()
         let raw = try SQLiteConnection(path: temp.path.path)
         try raw.execute("DROP TABLE timeline_wizard_before")
         try raw.execute("DROP TABLE builder_runs")
@@ -1186,7 +1186,7 @@ struct SchemaVersionGateTests {
     /// to migrate() without bumping schemaVersion, so stamped databases never
     /// received them and every people/transcript save failed.
     @Test func previousVersionGainsTimingColumns() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let raw = try SQLiteConnection(path: temp.path.path)
         for column in ["people_seconds", "speech_seconds"] {
             try raw.execute("ALTER TABLE videos DROP COLUMN \(column)")
@@ -1210,7 +1210,7 @@ struct SchemaVersionGateTests {
 
 extension DatabaseTests {
     @Test func generatedVideoFavoriteMigratesAndRoundTrips() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let id = try await database.insertGeneratedVideo(path: "/tmp/favorite-output.mp4", duration: 10,
             timelineJSON: "{}", wizardProvider: nil, wizardModel: nil)
@@ -1232,7 +1232,7 @@ extension DatabaseTests {
 
 extension DatabaseTests {
     @Test func translationAvailabilityNeverFallsBackToOriginals() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let otherID = try await temp.seedVideo()
         let rows = [TranscriptSegment(start: 0, end: 2, text: "Hello", words: nil)]
@@ -1255,7 +1255,7 @@ extension DatabaseTests {
 
 extension DatabaseTests {
     @Test func version22GainsTagFieldsAndPersistsEditsAcrossReopen() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let raw = try SQLiteConnection(path: temp.path.path)
         try raw.execute("DROP TABLE person_tag_fields")
         try raw.execute("PRAGMA user_version = 22")
@@ -1272,7 +1272,7 @@ extension DatabaseTests {
     }
 
     @Test func mergingAndDeletingPeoplePreservesThenCleansTagFields() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await temp.database.createPerson(name: "Source")
         let target = try await temp.database.createPerson(name: "Target")
         try await temp.database.savePersonTagField(personKey: source.key, field: "Role", value: "Host", provenance: nil)
@@ -1288,7 +1288,7 @@ extension DatabaseTests {
     }
 
     @Test func quickVerdictKeepsADetailedReview() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let video = try await db.insertGeneratedVideo(path: "/tmp/reel.mp4", duration: 4, timelineJSON: "{}",
                                                       wizardProvider: "fixture", wizardModel: nil)
@@ -1308,7 +1308,7 @@ extension DatabaseTests {
     }
 
     @Test func renamedSourceRelinksSavedTimelines() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let project = try await db.createProject(profileName: "One", name: "P", videoIDs: [])
         var clip = Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 5)

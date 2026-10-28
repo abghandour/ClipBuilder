@@ -7,7 +7,7 @@ struct DatabasePeopleTests {
     @Test("Reassignment moves all references in one video and keeps portrait and person fields",
           arguments: [false, true])
     func reassignPerson(nobody: Bool) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let fixture = try await Fixtures.personCorrection(in: temp)
         let raw = try SQLiteConnection(path: temp.path.path)
         let otherBefore = try videoRows(raw, videoID: fixture.otherVideo.id)
@@ -59,7 +59,7 @@ struct DatabasePeopleTests {
 
     @Test("An existing target keeps its portrait and voice while roster ranges form a sorted union")
     func mergeExistingTarget() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let fixture = try await Fixtures.personCorrection(in: temp)
         let raw = try SQLiteConnection(path: temp.path.path)
         try raw.execute("""
@@ -91,7 +91,7 @@ struct DatabasePeopleTests {
 
     @Test("Corrections cover older transcription sets and leave unrelated topic JSON untouched")
     func transcriptionHistoryAndTopics() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let fixture = try await Fixtures.personCorrection(in: temp)
         let raw = try SQLiteConnection(path: temp.path.path)
         try raw.execute("""
@@ -126,7 +126,7 @@ struct DatabasePeopleTests {
 
     @Test("A late decode failure rolls back the whole move and its outbox writes")
     func rollback() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let fixture = try await Fixtures.personCorrection(in: temp)
         try await temp.database.bindSync(to: SyncScope(teamID: UUID(), profileID: UUID()))
         let raw = try SQLiteConnection(path: temp.path.path)
@@ -143,7 +143,7 @@ struct DatabasePeopleTests {
 
     @Test("Reassigning to self is a no-op; removing the last sighting keeps the person")
     func selfAndOrphan() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let fixture = try await Fixtures.personCorrection(in: temp)
         let raw = try SQLiteConnection(path: temp.path.path)
         let before = try videoRows(raw, videoID: fixture.video.id)
@@ -173,7 +173,7 @@ struct DatabasePeopleTests {
 
     @Test("The avatar portrait skips a whole-frame box when another video has a real one")
     func rosterPortraitPrefersARealFaceBox() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let fixture = try await Fixtures.personCorrection(in: temp)
         let raw = try SQLiteConnection(path: temp.path.path)
         // The portrait lookup requires the file on disk.

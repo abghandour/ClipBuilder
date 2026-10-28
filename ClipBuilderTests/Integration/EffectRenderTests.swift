@@ -45,7 +45,7 @@ struct EffectRenderTests {
     }
 
     @Test func blackAndWhiteAreaLeavesOtherAreaAlone() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await source(in: temp.directory.url)
         var doc = document(source: source, effect: .init(preset: "bw"))
         var second = doc.videoTrack[0]
@@ -62,7 +62,7 @@ struct EffectRenderTests {
     }
 
     @Test func invertPixel() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await source(in: temp.directory.url)
         let output = try await render(document(source: source, effect: .init(preset: "invert")), temp: temp)
         defer { try? FileManager.default.removeItem(at: output) }
@@ -74,7 +74,7 @@ struct EffectRenderTests {
     @Test func halfIntensityInvertLandsBetween() async throws {
         // Intensity < 1 takes the split/blend graph: red inverted at 0.5 is
         // the mean of red and cyan, a mid gray with no dominant channel.
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await source(in: temp.directory.url)
         let output = try await render(document(source: source, effect: .init(preset: "invert", intensity: 0.5)), temp: temp)
         defer { try? FileManager.default.removeItem(at: output) }
@@ -88,7 +88,7 @@ struct EffectRenderTests {
     }
 
     @Test func bundledMonochromeLUT() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await source(in: temp.directory.url)
         let output = try await render(document(source: source, effect: .init(preset: "lut:kodak_t-max_400")), temp: temp)
         defer { try? FileManager.default.removeItem(at: output) }
@@ -99,7 +99,7 @@ struct EffectRenderTests {
     }
 
     @Test func blurMixesBothSidesOfEdge() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await source(in: temp.directory.url, edge: true)
         let plain = try await render(document(source: source, effect: nil), temp: temp)
         defer { try? FileManager.default.removeItem(at: plain) }
@@ -112,7 +112,7 @@ struct EffectRenderTests {
     }
 
     @Test func explicitNoneOverridesTrack() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await source(in: temp.directory.url)
         let output = try await render(document(source: source, effect: .init(preset: "bw"), override: .init(preset: "none")), temp: temp)
         defer { try? FileManager.default.removeItem(at: output) }
@@ -121,7 +121,7 @@ struct EffectRenderTests {
     }
 
     @Test func noEffectPreservesSource() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await source(in: temp.directory.url)
         let output = try await render(document(source: source, effect: nil), temp: temp)
         defer { try? FileManager.default.removeItem(at: output) }

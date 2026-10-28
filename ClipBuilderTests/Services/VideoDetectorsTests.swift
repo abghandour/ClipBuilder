@@ -4,7 +4,7 @@ import Testing
 
 struct VideoDetectorsTests {
     @Test func cacheInvalidation() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let raw = try SQLiteConnection(path: temp.path.path)
         try raw.execute("INSERT INTO videos (id, hash, filename, path) VALUES (1, 'detectors', 'fixture.mp4', '/tmp/fixture.mp4')")
         let database = try Database(path: temp.path)

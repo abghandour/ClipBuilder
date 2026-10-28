@@ -37,7 +37,7 @@ struct WizardDubTests {
 
 extension WizardDubTests {
     @Test func enginePreparesCaptionTranslationInDubLanguage() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let scene = try #require(try await temp.database.fetchScenes(includeExcluded: true).first)
         try await temp.database.replaceTranscripts(videoID: videoID, transcriptionKey: "caption-dub", language: "en",

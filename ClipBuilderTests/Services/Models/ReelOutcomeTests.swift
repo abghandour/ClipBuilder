@@ -5,7 +5,7 @@ import Testing
 
 @Suite struct ReelOutcomeTests {
   @Test func postingMonthAndMissingMetrics() async throws {
-    let fixture = try TempDatabase()
+    let fixture = try await TempDatabase()
     let database = fixture.database
     let accountID = try await database.upsertIGAccount(
       username: "test", kind: "own", displayName: nil, igUserID: nil, followers: nil)
@@ -73,7 +73,7 @@ import Testing
   }
 
   @Test func versionInvalidatesCachedTraits() async throws {
-    let fixture = try TempDatabase()
+    let fixture = try await TempDatabase()
     let calls = Computations()
     let first = try await ReelTraitCache.traits(
       kind: "candidate", videoID: "test", database: fixture.database, version: 1

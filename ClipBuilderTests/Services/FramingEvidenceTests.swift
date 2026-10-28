@@ -36,7 +36,7 @@ struct FramingEvidenceTests {
 
     @Test("a moving camera without framed: tags samples no frames; the static camera still does")
     func trackedCameraSkipsSamples() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await FixtureVideo.make(in: temp.directory.url, wide: true)
         let videoID = try await temp.database.registerVideo(
             hash: "framing-evidence", filename: source.lastPathComponent, path: source.path,

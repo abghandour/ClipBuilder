@@ -242,7 +242,7 @@ struct AISettingsTests {
 
     @Test("Run snapshots and model details survive database reload")
     func persistedSnapshots() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let settings = AnalysisRunSettings(instructions: "captured", includeTranscript: true)
         let role = AIRole(
@@ -270,7 +270,7 @@ struct AISettingsTests {
 
     @Test("Legacy runs retain the not-recorded state")
     func legacyRows() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         _ = try await temp.seedVideo()
         let runs = try await temp.database.fetchAnalysisRuns()
         #expect(runs.first?.settingsJSON == nil)
@@ -346,7 +346,7 @@ struct AISettingsTests {
         #expect(preview.truncated)
         let settings = AnalysisRunSettings(
             instructions: "Keep all of my instructions", modelPrompts: capture.prompts)
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let id = try await temp.database.saveAnalysis(
             videoID: videoID, runName: "Bounded", instructions: settings.instructions,

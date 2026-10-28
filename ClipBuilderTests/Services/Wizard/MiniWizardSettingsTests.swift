@@ -258,7 +258,7 @@ struct MiniWizardSettingsTests {
 
 extension MiniWizardSettingsTests {
     @Test func transcriptLanguageComesFromOriginalStoredSegments() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let video = try await temp.seedVideo()
         #expect(try await temp.database.originalTranscriptLanguage(videoID: video) == nil)
         let rows = [TranscriptSegment(start: 0, end: 4, text: "Question", words: nil)]
@@ -271,7 +271,7 @@ extension MiniWizardSettingsTests {
     }
 
     @Test func combinedSelectionKeepsOriginalsOutOfTheRestorableBatch() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let video = try await temp.seedVideo()
         let project = try await db.createProject(profileName: "Mini", name: "Mini", videoIDs: [video])

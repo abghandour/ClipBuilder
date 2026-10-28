@@ -10,7 +10,7 @@ struct RenderEngineTests {
     @Test("hardware intermediate passes match software; final audio still encodes", arguments: ["extract", "areas"])
     func intermediateExtractParity(pass: String) async throws {
         guard FFmpeg.hasVideoToolboxDecode else { return }
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let fixture = try await FixtureVideo.make(in: temp.directory.url)
         let render = RenderEngine()
         let source = temp.directory.url.appendingPathComponent("normalized.mp4")
@@ -85,7 +85,7 @@ struct RenderEngineTests {
         let temp = try TempDirectory(prefix: "ClipBuilderRenderTest")
         let source = try await FixtureVideo.make(in: temp.url, wide: true)
         let output = temp.url.appendingPathComponent("output.mp4")
-        let database = try TempDatabase()
+        let database = try await TempDatabase()
         var scene = Fixtures.scene(start: 0, end: 3)
         scene.videoPath = source.path
         var clip = Fixtures.planClip(start: 0, end: 1)

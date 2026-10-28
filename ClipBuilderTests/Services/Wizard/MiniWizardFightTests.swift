@@ -93,7 +93,7 @@ struct MiniWizardFightTests {
     }
 
     @Test func picksRoundTripAndBecomeTaggedScenesAndSelections() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo(sceneCount: 2)
         let projectID = try await database.createProject(profileName: "Test", name: "Fight", videoIDs: [videoID])

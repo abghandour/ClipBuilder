@@ -5,7 +5,7 @@ import Testing
 @MainActor @Suite("Script library model", .serialized)
 struct ScriptLibraryModelTests {
     @Test func recentScriptsOrderByLastRunAndLimitToFive() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         var records: [BuilderScriptRecord] = []
         for index in 0..<7 {
             let source = ScriptHeaderTests.source("return;").replacingOccurrences(of: "\"name\":\"Test script\"", with: "\"name\":\"Recent \(index)\"")
@@ -29,7 +29,7 @@ struct ScriptLibraryModelTests {
         let suite = "ScriptLibraryModelTests." + UUID().uuidString
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let live = ScriptFixtures.model()
         let capture = ScriptCapture(model: live, library: ScriptFixtures.library())
         let preferences = ScriptPreferences(defaults: defaults)
@@ -88,7 +88,7 @@ struct ScriptLibraryModelTests {
     }
 
     @Test func parameterRulesAndMalformedHeader() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let model = ScriptLibraryModel(database: temp.database)
         model.open(nil, capture: ScriptCapture(model: ScriptFixtures.model(), library: ScriptFixtures.library()))
         model.source = ScriptHeaderTests.source("return;", params: #"[{"name":"n","type":"number","min":2,"max":8,"step":2},{"name":"yes","type":"boolean"},{"name":"choice","type":"choice","choices":["a","b"]},{"name":"text","type":"string"}]"#)
@@ -111,7 +111,7 @@ struct ScriptLibraryModelTests {
     }
 
     @Test func formRunProducesPreviewAndScriptAudit() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let project = try await temp.database.createProject(profileName: "S2", name: "S2")
         let document = Fixtures.timelineDocument()
         let timeline = try await temp.database.createTimeline(projectID: project, name: "S2",

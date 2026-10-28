@@ -17,7 +17,7 @@ struct InstagramServiceTests {
         defer { transport.finish(graph) }
         let web = InstagramWebSpy()
         let service = makeService(graph: graph, web: web)
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         do {
             _ = try await service.refreshAccount(username: "peacegrappler", kind: "own", database: temp.database,
                                                  settings: connectedSettings(), limit: 4, log: { _ in })
@@ -38,7 +38,7 @@ struct InstagramServiceTests {
         let graph = transport.provider(id: nil)
         defer { transport.finish(graph) }
         let web = InstagramWebSpy()
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         do {
             _ = try await makeService(graph: graph, web: web).refreshAccount(
                 username: "peacegrappler", kind: "own", database: temp.database,
@@ -58,7 +58,7 @@ struct InstagramServiceTests {
         let graph = transport.provider()
         defer { transport.finish(graph) }
         let web = InstagramWebSpy()
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await makeService(graph: graph, web: web).refreshAccount(
             username: "peacegrappler", kind: "own", database: temp.database,
             settings: connectedSettings(), limit: 4, log: { _ in })
@@ -78,7 +78,7 @@ struct InstagramServiceTests {
         let graph = transport.provider()
         defer { transport.finish(graph) }
         let web = InstagramWebSpy()
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         do {
             _ = try await makeService(graph: graph, web: web).refreshAccount(
                 username: "peacegrappler", kind: "own", database: temp.database,
@@ -100,7 +100,7 @@ struct InstagramServiceTests {
         let graph = transport.provider()
         defer { transport.finish(graph) }
         let web = InstagramWebSpy()
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         do {
             _ = try await makeService(graph: graph, web: web).refreshAccount(
                 username: "peacegrappler", kind: "own", database: temp.database,
@@ -118,7 +118,7 @@ struct InstagramServiceTests {
         let graph = transport.provider()
         defer { transport.finish(graph) }
         let web = InstagramWebSpy()
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         do {
             _ = try await makeService(graph: graph, web: web).refreshAccount(
                 username: "peacegrappler", kind: "own", database: temp.database,
@@ -139,7 +139,7 @@ struct InstagramServiceTests {
         defer { transport.finish(graph) }
         let web = InstagramWebSpy()
         let service = makeService(graph: graph, web: web)
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         do {
             _ = try await service.refreshAccount(username: "peacegrappler", kind: "own", database: temp.database,
                                                  settings: connectedSettings(), limit: 4, log: { _ in })
@@ -295,7 +295,7 @@ struct InstagramServiceTests {
         settings.connections[0].tokenFlavor = "instagram"
         settings.connections[0].tokenRefreshedAt = instant.addingTimeInterval(-48 * 3600)
         settings.connections[0].tokenExpiresAt = instant.addingTimeInterval(86400)
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let existingID = try await temp.database.upsertIGAccount(username: "peacegrappler", kind: "own",
                                                               displayName: nil, igUserID: "ig-123", followers: nil)
         try await temp.database.setIGSyncState(accountID: existingID, key: "account_insights_last_day",
@@ -393,7 +393,7 @@ struct InstagramServiceTests {
         let service = InstagramService(ai: AIService(config: AIConfig()),
             readToken: { _ in Issue.record("Unconnected accounts must not read the Keychain"); return nil },
             makeWebProvider: { _ in web })
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         _ = try await service.refreshAccount(username: "public-account", kind: "public", database: temp.database,
                                              settings: connectedSettings(), limit: 4, log: { _ in })
         #expect(web.profileCalls == 1)

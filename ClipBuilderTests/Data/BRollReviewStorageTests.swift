@@ -4,7 +4,7 @@ import Testing
 
 struct BRollReviewStorageTests {
     @Test func transcriptRecreationRetainsEditedCutsAfterTrimAndEmptyRemoval() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let video = try await temp.seedVideo(sceneCount: 2)
         let project = try await db.createProject(profileName: "Test", name: "B-roll picks", videoIDs: [video])
@@ -34,7 +34,7 @@ struct BRollReviewStorageTests {
     }
 
     @Test func qaRecreationKeepsReviewedCutsOnTheirWords() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let video = try await temp.seedVideo(sceneCount: 0)
         _ = try await db.saveAnalysis(videoID: video, runName: "Q&A", instructions: "", sampleInterval: nil,
@@ -62,7 +62,7 @@ struct BRollReviewStorageTests {
 
 extension BRollReviewStorageTests {
     @Test func identicalPicksRetainIndependentCuts() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let video = try await temp.seedVideo(sceneCount: 1)
         let project = try await db.createProject(profileName: "Test", name: "Repeated picks", videoIDs: [video])
@@ -83,7 +83,7 @@ extension BRollReviewStorageTests {
 
 extension BRollReviewStorageTests {
     @Test func savedPicksRestoreIndependentCutsWithoutRunLocalIdentity() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let video = try await temp.seedVideo(sceneCount: 1)
         let project = try await db.createProject(profileName: "Test", name: "Relaunch", videoIDs: [video])

@@ -16,7 +16,7 @@ struct ExpressDeferredFinishTests {
     }
 
     @Test func captionAndReportWaitForTheDeferredFinish() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let source = try await FixtureVideo.make(in: temp.directory.url)
         let videoID = try await database.registerVideo(hash: UUID().uuidString, filename: source.lastPathComponent,
@@ -100,7 +100,7 @@ struct ExpressDeferredFinishTests {
     }
 
     @Test func inlineFinishStillCompletesBeforeReturning() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let source = try await FixtureVideo.make(in: temp.directory.url)
         let videoID = try await database.registerVideo(hash: UUID().uuidString, filename: source.lastPathComponent,

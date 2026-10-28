@@ -85,7 +85,7 @@ struct MiniWizardQATests {
     }
 
     @Test func rerecordingReplacesOnlyThisProjectsQABatchWithCurrentSavedRanges() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let video = try await temp.seedVideo(sceneCount: 0)
         _ = try await db.saveAnalysis(videoID: video, runName: "Q&A", instructions: "", sampleInterval: nil,
@@ -144,7 +144,7 @@ struct MiniWizardQATests {
     }
 
     @Test func failedReplacementRollsBackTheExistingBatch() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let video = try await temp.seedVideo(sceneCount: 0)
         _ = try await db.saveAnalysis(videoID: video, runName: "Q&A", instructions: "", sampleInterval: nil,

@@ -25,7 +25,7 @@ struct GoogleDriveAdvancedSettingsTests {
     @Test("Save enables Connect for attached profiles and an unattached active profile")
     func saveRefreshesProfiles() async throws {
         let transfers = drive()
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         await transfers.attach(profile: BrandProfile(name: "attached"), database: temp.database)
         await transfers.refreshState(profile: "active")
         #expect(transfers.states["attached"] == .notConfigured)

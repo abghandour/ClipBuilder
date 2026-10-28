@@ -18,7 +18,7 @@ struct AnalysisRunsStorageTests {
     }
 
     @Test func discoveryUsesOneBatchWhileHistoryRetainsAll() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let rows = try await twoRuns(temp)
         let projectID = try await temp.database.createProject(profileName: "Fixture", name: "Scope", videoIDs: [rows.videoID])
         let history = try await temp.database.fetchScenes(projectID: projectID, scope: .history)
@@ -36,7 +36,7 @@ struct AnalysisRunsStorageTests {
     }
 
     @Test func identityIgnoresPinAndCurrentProjectScope() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let rows = try await twoRuns(temp)
         let key = try #require(rows.old.runKey)
         let oldScenes = try await temp.database.fetchScenes(videoID: rows.videoID, runKey: key)
@@ -49,7 +49,7 @@ struct AnalysisRunsStorageTests {
     }
 
     @Test func legacyTakeHydrationUsesHistoryAndKeepsItsSceneID() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let rows = try await twoRuns(temp)
         let old = try #require(try await temp.database.fetchScenes(scope: .history).first { $0.runID == rows.old.id })
         let projectID = try await temp.database.createProject(profileName: "Fixture", name: "Legacy", videoIDs: [rows.videoID])
@@ -68,7 +68,7 @@ struct AnalysisRunsStorageTests {
     }
 
     @Test @MainActor func builderFramingSurvivesPinChangeThroughReferencedScenes() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let rows = try await twoRuns(temp)
         let old = try #require(try await temp.database.fetchScenes(scope: .history).first { $0.runID == rows.old.id })
         try await temp.database.setSceneCropX(old.id, fraction: 0.2)
@@ -93,7 +93,7 @@ struct AnalysisRunsStorageTests {
     }
 
     @Test func mergeCreatesNewBatchWithSceneAndTagUnion() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let rows = try await twoRuns(temp)
         let preferred = try #require(try await temp.database.fetchScenes(scope: .history).first { $0.runID == rows.old.id })
         try await temp.database.setSceneExcluded(preferred.id, excluded: true)
@@ -111,7 +111,7 @@ struct AnalysisRunsStorageTests {
     }
 
     @Test func mergeKeepsDistinctCuratedRanges() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let rows = try await twoRuns(temp)
         let old = try #require(try await temp.database.fetchScenes(scope: .history).first { $0.runID == rows.old.id })
         try await temp.database.setSceneEditRange(old.id, start: 1, end: 8)
@@ -122,7 +122,7 @@ struct AnalysisRunsStorageTests {
     }
 
     @Test func deleteListsAllReferenceKindsAndClearsPinAtomically() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let rows = try await twoRuns(temp)
         let scene = try #require(try await temp.database.fetchScenes(scope: .history).first { $0.runID == rows.old.id })
         let projectID = try await temp.database.createProject(profileName: "Fixture", name: "References", videoIDs: [rows.videoID])
@@ -152,7 +152,7 @@ struct AnalysisRunsStorageTests {
     }
 
     @Test func missingPinIsPreservedAcrossReadsAndDatabaseReopen() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let rows = try await twoRuns(temp)
         try await temp.database.setActiveRunKey(videoID: rows.videoID, runKey: "not-here-yet")
         _ = try await temp.database.fetchScenes(scope: .active)
@@ -163,7 +163,7 @@ struct AnalysisRunsStorageTests {
     }
 
     @Test func migrationAddsOptionalLayerAndPassColumns() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let raw = try SQLiteConnection(path: temp.path.path)
         // Reconstruct the previous schema's missing columns without its generated sync triggers.

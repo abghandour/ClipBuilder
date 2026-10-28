@@ -9,7 +9,7 @@ struct BuilderScriptPersistenceTests {
     }
 
     @Test func freshSaveAtomicMetadataAndReopen() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let saved = try await temp.database.saveBuilderScript(source: source(), origin: .ai)
         #expect(saved.origin == .ai)
         #expect(saved.paramsJSON == "[]")
@@ -45,7 +45,7 @@ struct BuilderScriptPersistenceTests {
     }
 
     @Test(arguments: [14, 12, 0]) func upgrade(version: Int) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let raw = try SQLiteConnection(path: temp.path.path)
         try raw.execute("DROP TABLE builder_scripts")
         try raw.execute("PRAGMA user_version = \(version)")
@@ -59,7 +59,7 @@ struct BuilderScriptPersistenceTests {
     }
 
     @Test func constraintsAndHostValidation() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let record = try await temp.database.saveBuilderScript(source: source())
         let raw = try SQLiteConnection(path: temp.path.path)
         for sql in ["name='  '", "mode='other'", "origin='other'", "last_run_status='other'",

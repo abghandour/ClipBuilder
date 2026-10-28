@@ -27,7 +27,7 @@ struct StrikeStatsStorageTests {
     }
 
     @Test func staleGenerationIsDiscardedIncludingEmptyReplacement() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let old = try await temp.database.fightEventGeneration(videoID: videoID)
         let row = FightEventRecord(id: 0, videoID: videoID, time: 1, fighterKey: "a", action: "strike", points: 1)
@@ -41,7 +41,7 @@ struct StrikeStatsStorageTests {
     }
 
     @Test func passStatesAndCoverageUseSavedPassesEvenWithoutResults() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         for status in AnalysisPassRecord.Status.allCases {
             let pass = try await temp.database.startAnalysisPass(videoID: videoID, pass: .fightScore, version: 2)
@@ -62,7 +62,7 @@ struct StrikeStatsStorageTests {
     }
 
     @Test func syncOldPayloadStampsGenerationWithoutClearingOtherData() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let scope = SyncScope(teamID: UUID(), profileID: UUID())
         try await temp.database.bindSync(to: scope)

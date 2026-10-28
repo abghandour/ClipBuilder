@@ -6,10 +6,15 @@ struct TempDatabase {
     let database: Database
     let path: URL
 
-    init() throws {
-        directory = try TempDirectory(prefix: "ClipBuilderDatabase")
-        path = directory.url.appendingPathComponent("test.db")
-        database = try Database(path: path)
+    /// Opens the database off the caller's actor: creating the schema takes
+    /// ~150 ms of SQLite work, and hundreds of main-actor tests doing it
+    /// inline serialise into a stall that trips other suites' time limits.
+    init() async throws {
+        let directory = try TempDirectory(prefix: "ClipBuilderDatabase")
+        let path = directory.url.appendingPathComponent("test.db")
+        self.directory = directory
+        self.path = path
+        database = try await Task.detached { try Database(path: path) }.value
     }
 
     @discardableResult

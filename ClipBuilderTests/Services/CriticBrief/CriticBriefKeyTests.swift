@@ -51,7 +51,7 @@ struct CriticBriefKeyTests {
 
 extension CriticBriefKeyTests {
     @Test @MainActor func unrelatedDatabaseWritesDoNotInvalidateTheBrief() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand()
         for index in 1...2 {
             let url = temp.directory.url.appendingPathComponent("reel-\(index).mp4")

@@ -3,7 +3,7 @@ import Testing
 
 struct CaptionSpeakerEvidenceTests {
     @Test func clusterOnlyTurnsUseRosterPeopleAndDiscardExcessClusters() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let fixture = try await Fixtures.personCorrection(in: temp)
         try seedClusters(in: temp, videoID: fixture.video.id, guest: fixture.from, host: fixture.to)
 
@@ -23,7 +23,7 @@ struct CaptionSpeakerEvidenceTests {
     }
 
     @Test func storedKeysOutsideTheRosterAreClearedAndRosterKeysArePreserved() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let fixture = try await Fixtures.personCorrection(in: temp)
         let raw = try SQLiteConnection(path: temp.path.path)
         for (index, key) in ["speaker-99", "removed-person"].enumerated() {
@@ -39,7 +39,7 @@ struct CaptionSpeakerEvidenceTests {
     }
 
     @Test func multipleVideosAreNamedIndependentlyInTheSuppliedOrder() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let fixture = try await Fixtures.personCorrection(in: temp)
         try seedClusters(in: temp, videoID: fixture.video.id, guest: fixture.from, host: fixture.to)
         let raw = try SQLiteConnection(path: temp.path.path)
@@ -57,7 +57,7 @@ struct CaptionSpeakerEvidenceTests {
     }
 
     @Test func explicitTranscriptionFiltersTurnsBeforeNaming() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let fixture = try await Fixtures.personCorrection(in: temp)
         try seedClusters(in: temp, videoID: fixture.video.id, guest: fixture.from, host: fixture.to)
         try await temp.database.replaceSpeakerTurns(videoID: fixture.video.id, transcriptionKey: "preview", turns: [
@@ -70,7 +70,7 @@ struct CaptionSpeakerEvidenceTests {
     }
 
     @Test func missingVideoAndEmptySelectionReturnEmptyEvidence() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let missing = await CaptionSpeakerEvidence.load(database: temp.database, videoID: -1)
         let empty = await CaptionSpeakerEvidence.load(database: temp.database, videoIDs: [])
         for evidence in [missing, empty] {

@@ -204,7 +204,7 @@ extension ClipFilterTests {
 
 extension ClipFilterTests {
     @Test func snapshotLoadsAndRefreshesPersistedRosterRanges() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let video = try await temp.seedVideo(sceneCount: 0)
         try await temp.database.upsertPerson(key: "aljo_key", descriptor: "fixture")
         let people = try await temp.database.fetchPeople()

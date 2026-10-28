@@ -5,7 +5,7 @@ import Testing
 @Suite("Transcript picks storage")
 struct TranscriptPicksStorageTests {
     @Test func picksRoundTripInListOrder() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo(sceneCount: 2)
         let first = try await database.addTranscriptPick(videoID: videoID, start: 1, end: 4)
@@ -29,7 +29,7 @@ struct TranscriptPicksStorageTests {
     }
 
     @Test func savingPicksMakesScenesAndSelectionsInListOrder() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo(sceneCount: 1)
         let projectID = try await database.createProject(profileName: "Test", name: "Picks", videoIDs: [videoID])
@@ -72,7 +72,7 @@ struct TranscriptPicksStorageTests {
     }
 
     @Test func picksFromConversationalFootageCarryThePodcastTagSoCameraFocusApplies() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo(sceneCount: 1)
         let projectID = try await database.createProject(profileName: "Test", name: "Picks", videoIDs: [videoID])

@@ -7,7 +7,7 @@ import Testing
 @Suite("Isolated JavaScript validation", .serialized)
 struct ScriptValidationTests {
     @Test func threeValidationsHaveNoProductionCapability() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let live = ScriptFixtures.model()
         let before = live.document
         var autosaves = 0
@@ -37,7 +37,7 @@ struct ScriptValidationTests {
     }
 
     @Test func threeAuthorSubmissionsNeverWriteProductionState() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let live = ScriptFixtures.model()
         let before = live.document
         let library = ScriptFixtures.library()
@@ -84,7 +84,7 @@ struct ScriptValidationTests {
     }
 
     @Test func splitEvenlyUsesSnapshotAndRecordsScriptProvider() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let model = BuilderTimelineModel()
         let document = Fixtures.timelineDocument()
         let project = try await temp.database.createProject(profileName: "S1", name: "S1")

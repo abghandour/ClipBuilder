@@ -14,7 +14,7 @@ struct TranscriptEditingTests {
     }
 
     @Test func editThenRevertRestoresExactTextAndWordJSON() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, before) = try await seed(temp)
         try await temp.database.updateTranscriptText(id: before[0].id, text: "ONE extra two")
         try await temp.database.updateTranscriptText(id: before[0].id, text: "one changed two")
@@ -29,7 +29,7 @@ struct TranscriptEditingTests {
     }
 
     @Test func typingTheOriginalBackIsARevert() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, before) = try await seed(temp)
         try await temp.database.updateTranscriptText(id: before[0].id, text: "one changed two")
         try await temp.database.updateTranscriptText(id: before[0].id, text: before[0].text)
@@ -39,7 +39,7 @@ struct TranscriptEditingTests {
     }
 
     @Test func revertWithoutOriginalWordsAlignsOriginalTextOntoCurrentWords() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, before) = try await seed(temp)
         try await temp.database.updateTranscriptText(id: before[0].id, text: "one changed two")
         // A row pulled by Team Sync carries original_text but not original_words.
@@ -53,7 +53,7 @@ struct TranscriptEditingTests {
     }
 
     @Test func revertAllCountsOnlyEditedRowsInSet() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, rows) = try await seed(temp)
         try await temp.database.updateTranscriptTexts(rows.map { (id: $0.id, text: "changed") })
         #expect(try await temp.database.editedTranscriptCount(videoID: id) == 2)
@@ -65,7 +65,7 @@ struct TranscriptEditingTests {
     }
 
     @Test func derivedRefreshAndUnforcedTranscriptionUseEditedRowsWithoutDiskCache() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, rows) = try await seed(temp)
         try await temp.database.updateTranscriptText(id: rows[0].id, text: "Corrected words")
         let video = try #require(try await temp.database.video(id: id))
@@ -79,7 +79,7 @@ struct TranscriptEditingTests {
     }
 
     @Test func recutAndBackupRestoreCarryOriginalWords() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, rows) = try await seed(temp)
         try await temp.database.updateTranscriptText(id: rows[0].id, text: "one extra two")
         let edited = try await temp.database.fetchTranscripts(videoID: id)
@@ -97,7 +97,7 @@ struct TranscriptEditingTests {
     }
 
     @Test func legacyBackupWithoutOriginalWordsStillDecodesAndRevertsExactly() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, rows) = try await seed(temp)
         var legacy = rows
         legacy[0].originalText = legacy[0].text
@@ -118,7 +118,7 @@ struct TranscriptEditingTests {
     }
 
     @Test func migrationBackfillsPreviouslyEditedRows() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, rows) = try await seed(temp)
         let raw = try SQLiteConnection(path: temp.path.path)
         try raw.execute("UPDATE transcripts SET original_text = text, text = 'one extra two' WHERE id = ?", [.integer(rows[0].id)])

@@ -23,7 +23,7 @@ extension AppStoreTests {
 
     @Test("People review researches only newly confirmed people, excluding merged identities")
     func peopleReviewStartsResearch() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         try await temp.database.upsertPerson(key: "new-person", descriptor: "Red gloves")
         try await temp.database.upsertPerson(key: "duplicate", descriptor: "Blue gloves")
         let target = try await temp.database.createPerson(name: "Existing Fighter")
@@ -43,7 +43,7 @@ extension AppStoreTests {
 
     @Test("People pass researches stale existing fighters, excluding fresh, new and non-fighters")
     func peoplePassRefreshesStaleRecords() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let now = Date(timeIntervalSince1970: 1_800_000_000)
         var people: [PersonRecord] = []
         for name in ["Stale", "Fresh", "Trainer", "Missing", "New"] {
@@ -71,7 +71,7 @@ extension AppStoreTests {
 
     @Test("Naming an unnamed person starts profile research")
     func namingStartsResearch() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         try await temp.database.upsertPerson(key: "unnamed", descriptor: "Interview guest")
         let person = try #require(try await temp.database.fetchPeople().first)
         let recorder = PersonResearchRecorder()
@@ -85,7 +85,7 @@ extension AppStoreTests {
 
     @Test("Research skips unnamed people and duplicates in an in-flight batch")
     func researchDeduplicates() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let named = try await temp.database.createPerson(name: "Named Fighter")
         let unnamed = PersonRecord(id: 999, key: "unconfirmed", name: "", descriptor: "")
         let recorder = PersonResearchRecorder()
@@ -101,7 +101,7 @@ extension AppStoreTests {
 
     @Test("Stopping research releases the in-flight person and never writes a field")
     func researchCancellation() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let person = try await temp.database.createPerson(name: "Named Fighter")
         let store = researchStore(temp.database, recorder: PersonResearchRecorder())
         store.personResearchRunner = { _ in

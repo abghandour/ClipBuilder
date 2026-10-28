@@ -35,7 +35,7 @@ struct WizardSheetModelTests {
     // and inject service work. No DataFolderOverride survives an await.
     @Test(arguments: [false, true])
     func deferredSilenceSavesEffectsBeforePreviewOrFailure(failAfterSaving: Bool) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let project = try #require(store.activeProjectID)
         let video = try await temp.database.registerVideo(hash: UUID().uuidString, filename: "fixture.mp4",
@@ -92,7 +92,7 @@ struct WizardSheetModelTests {
     }
 
     @Test func deferredSilenceWithoutNewEvidenceRefusesOnce() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let project = try #require(store.activeProjectID)
         let video = try await temp.database.registerVideo(hash: UUID().uuidString, filename: "fixture.mp4",
@@ -124,7 +124,7 @@ struct WizardSheetModelTests {
     }
 
     @Test func rawJSONRequiresDebugBuild() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardSheetModelTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -146,7 +146,7 @@ struct WizardSheetModelTests {
     }
 
     @Test func runDiffApplyAndRevert() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardSheetModelTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -178,7 +178,7 @@ struct WizardSheetModelTests {
     }
 
     @Test func discardRecordsOnceAndDoesNotEdit() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardSheetModelTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -200,7 +200,7 @@ struct WizardSheetModelTests {
     }
 
     @Test func unrecognisedAndRefused() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardSheetModelTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -219,7 +219,7 @@ struct WizardSheetModelTests {
     }
 
     @Test func staleApply() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardSheetModelTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -242,7 +242,7 @@ struct WizardSheetModelTests {
     }
 
     @Test func findThenPreviewAddition() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardSheetModelTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -263,7 +263,7 @@ struct WizardSheetModelTests {
         await model.discard()
     }
     @Test func pickerAdditionUsesOneAtomicApplyAndRunRecord() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardSheetModelTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -305,7 +305,7 @@ struct WizardSheetModelTests {
 
     @Test(arguments: ["revision", "timeline", "profile", "scene"])
     func pickerRejectsStaleOrForeignFind(change: String) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardSheetModelTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -334,7 +334,7 @@ struct WizardSheetModelTests {
     }
 
     @Test func planningResultTargetsCreatedTimelineAndPrefillsExamples() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let originalID = store.builder.timelineID
         var document = store.builder.document
@@ -368,7 +368,7 @@ struct WizardSheetModelTests {
     }
 
     @Test func emptyLibraryPlanExamplesStayGenericAndDoNotRun() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let result = BuilderPlanResult(store: store)
         let model = try #require(result.makeWizard(store: store, loadLibrary: { ScriptLibrarySnapshot() }))
@@ -380,7 +380,7 @@ struct WizardSheetModelTests {
     }
 
     @Test func scenesTabKeepsRunningWizardAndPreviewSession() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardBrowserTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -419,7 +419,7 @@ struct WizardSheetModelTests {
     }
 
     @Test func dismissedModelClearsOnlyItsOwnStoreReference() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardBrowserTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -437,7 +437,7 @@ struct WizardSheetModelTests {
     }
 
     @Test func statusStripInputsFollowRunAndLogClearing() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardBrowserTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -462,7 +462,7 @@ struct WizardSheetModelTests {
     }
 
     @Test func dismissalDuringSnapshotCannotReviveRun() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardSheetModelTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -482,7 +482,7 @@ struct WizardSheetModelTests {
     }
 
     @Test func discardAfterTimelineSwitchKeepsOriginalAuditOwner() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardSheetModelTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -502,7 +502,7 @@ struct WizardSheetModelTests {
     }
 
     @Test func revertRefusesDifferentRunThanConfirmation() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let id = try #require(store.builder.timelineID)
         let before = store.builder.document
@@ -520,7 +520,7 @@ extension WizardSheetModelTests {
     func agentRoutingFreezesAndPersistsEventsThroughTerminalAction(action: String) async throws {
         let apply = ["apply", "save", "decline"].contains(action)
         let refuseScript = action == "refuse"
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         store.settings.ai.tasks["builder_agent"] = "claude"
         store.settings.ai.taskModels["builder_agent"] = "fixture-model"
@@ -658,7 +658,7 @@ extension WizardSheetModelTests {
 
 extension WizardSheetModelTests {
     @Test func findFollowedByAnEditGoesToTheEditAgent() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         store.settings.ai.providers["claude"] = AIProviderSettings(bin: "/usr/bin/false", model: nil)
         let suite = "WizardFindTests.\(UUID().uuidString)"
@@ -691,7 +691,7 @@ extension WizardSheetModelTests {
     }
 
     @Test func localAssistedFindExplainsUnresolvedWithoutAgent() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardFindTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -715,7 +715,7 @@ extension WizardSheetModelTests {
 
     @Test(arguments: [false, true])
     func assistedFindRequiresStructuredReport(report: Bool) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         store.settings.ai.providers["claude"] = AIProviderSettings(bin: "/usr/bin/false", model: nil)
         let suite = "WizardFindTests.\(UUID().uuidString)"
@@ -806,7 +806,7 @@ extension WizardSheetModelTests {
     }
 
     @Test func recognizedFindStaysLocalWithClaudeSelectedAndCapsResults() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardFindTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -832,7 +832,7 @@ extension WizardSheetModelTests {
 
 extension WizardSheetModelTests {
     @Test func logDropsBlankLines() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardLog.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -847,7 +847,7 @@ extension WizardSheetModelTests {
 
 extension WizardSheetModelTests {
     @Test func modelChoiceFollowsProviderAndPersists() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardModel.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -876,7 +876,7 @@ extension WizardSheetModelTests {
 extension WizardSheetModelTests {
     @Test(arguments: [false, true])
     func authorRetriesThenHandsOffOrRefuses(failAll: Bool) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         store.settings.ai.providers["claude"] = AIProviderSettings(bin: "/usr/bin/false", model: nil)
         let suite = "WizardAuthorTests.\(UUID().uuidString)"
@@ -995,7 +995,7 @@ extension WizardSheetModelTests {
     }
 
     @Test func localAuthoringExplainsProviderRequirement() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let suite = "WizardAuthorLocal.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
@@ -1018,7 +1018,7 @@ private actor WizardReplyTestCounter {
 extension WizardSheetModelTests {
     @Test(arguments: ["continue", "stale", "discard"])
     func inlineRepliesKeepContextAndPreview(action: String) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         store.settings.ai.tasks["builder_agent"] = "claude"
         store.settings.ai.providers["claude"] = AIProviderSettings(bin: "/usr/bin/false", model: nil)
@@ -1134,7 +1134,7 @@ extension WizardSheetModelTests {
 
 extension WizardSheetModelTests {
     @Test func routedScriptUsesManualPreviewAndApply() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let stub = try StubAI(response: "must not be called")
         let suite = "WizardRoutedPreview.\(UUID())"
@@ -1172,7 +1172,7 @@ extension WizardSheetModelTests {
     }
 
     @Test func askAgentInsteadBypassesSavedScriptRouting() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         store.settings.ai.tasks["builder_agent"] = "claude"
         store.settings.ai.providers["claude"] = AIProviderSettings(bin: "/usr/bin/false", model: nil)

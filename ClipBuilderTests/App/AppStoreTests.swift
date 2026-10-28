@@ -7,7 +7,7 @@ import Testing
 struct AppStoreTests {
     @Test("Undo Merge returns false without a snapshot")
     func undoPeopleMergeWithoutSnapshot() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand(name: "Merge Undo")
         let settings = AppSettings()
         let store = AppStore(settings: settings, profiles: [profile], active: profile,
@@ -18,7 +18,7 @@ struct AppStoreTests {
 
     @Test("People merges save one snapshot and undo restores the people and clears it", arguments: [false, true])
     func undoPeopleMergeClearsSnapshot(batch: Bool) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await temp.database.createPerson(name: "Duplicate")
         let survivor = try await temp.database.createPerson(name: "Original Name")
         let extra = try await temp.database.createPerson(name: "Another Duplicate")
@@ -54,7 +54,7 @@ struct AppStoreTests {
 
     @Test("Video person correction creates a named person, refreshes references and logs counts")
     func reassignPersonToNewPerson() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let fixture = try await Fixtures.personCorrection(in: temp)
         let profile = Fixtures.brand(name: "Person Correction")
         let settings = AppSettings()
@@ -384,7 +384,7 @@ struct AppStoreTests {
 
     @Test("regression: switching projects does not invalidate the profile generation")
     func projectSwitchKeepsProfileGeneration() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         try await temp.database.ensureDefaultProject(profileName: "One", legacyTimelineJSON: nil)
         let other = try await temp.database.createProject(profileName: "One", name: "Other")
         let profile = Fixtures.brand(name: "One")
@@ -407,7 +407,7 @@ struct AppStoreTests {
 
     @Test("regression: a project with a job in flight cannot be deleted")
     func busyProjectCannotBeDeleted() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         try await temp.database.ensureDefaultProject(profileName: "One", legacyTimelineJSON: nil)
         let busy = try await temp.database.createProject(profileName: "One", name: "Busy")
         let profile = Fixtures.brand(name: "One")
@@ -427,7 +427,7 @@ struct AppStoreTests {
 
     @Test("timelines switch and cycle within the project; wizard rows are skipped")
     func timelineSwitching() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         try await temp.database.ensureDefaultProject(profileName: "One", legacyTimelineJSON: nil)
         let homeID = try #require(try await temp.database.homeProjectID(profileName: "One"))
         // Real clips: the playhead clamps to the timeline's length on open.
@@ -482,7 +482,7 @@ struct AppStoreTests {
 
     @Test("launch restores the most recently opened project and its UI state")
     func restoresLastProject() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         try await temp.database.ensureDefaultProject(profileName: "One", legacyTimelineJSON: nil)
         let projectID = try await temp.database.createProject(profileName: "One", name: "Last Project")
         let state = ProjectUIState(
@@ -517,7 +517,7 @@ struct AppStoreTests {
 
     @Test("launch falls back to Home after the last project is deleted")
     func deletedLastProjectFallsBackHome() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         try await temp.database.ensureDefaultProject(profileName: "One", legacyTimelineJSON: nil)
         let homeID = try #require(try await temp.database.homeProjectID(profileName: "One"))
         let projectID = try await temp.database.createProject(profileName: "One", name: "Gone")

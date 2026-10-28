@@ -8,7 +8,7 @@ import Testing
 struct DubRenderTests {
     @Test("decoded audio has timed dub energy, lowered original, and no stale finishing cache")
     func dubWindowsAndOriginalLevel() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = temp.directory.url.appendingPathComponent("source.mp4")
         try await FFmpeg.run(["-y", "-f", "lavfi", "-i", "color=c=blue:s=360x640:r=30",
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=48000", "-t", "3",

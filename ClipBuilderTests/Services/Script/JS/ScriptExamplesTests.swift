@@ -30,7 +30,7 @@ struct ScriptExamplesTests {
     }
 
     @Test func installsAndRestoresByStableIDOnly() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         try await temp.database.installBuilderScriptExamples()
         try await temp.database.installBuilderScriptExamples()
         let installed = try await temp.database.fetchBuilderScripts()
@@ -65,8 +65,8 @@ struct ScriptExamplesTests {
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         let preferences = ScriptPreferences(defaults: defaults)
-        let firstDB = try TempDatabase()
-        let secondDB = try TempDatabase()
+        let firstDB = try await TempDatabase()
+        let secondDB = try await TempDatabase()
         let first = ScriptLibraryModel(database: firstDB.database, profile: "First", preferences: preferences)
         await first.load()
         let removed = try #require(first.scripts.first)

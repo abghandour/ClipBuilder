@@ -38,7 +38,7 @@ struct FakeAIProviderTests {
 
     @Test("visual analysis persists scenes and moments from the provider's reply")
     func analysisPersists() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await FixtureVideo.make(in: temp.directory.url, wide: true)
         let videoID = try await temp.database.registerVideo(
             hash: "analysis-fixture", filename: source.lastPathComponent, path: source.path,
@@ -65,7 +65,7 @@ struct FakeAIProviderTests {
 
     @Test("wizard planning turns the provider's reply into a validated plan over real scenes")
     func planFromScenes() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await FixtureVideo.make(in: temp.directory.url, wide: true)
         let videoID = try await temp.database.registerVideo(
             hash: "plan-fixture", filename: source.lastPathComponent, path: source.path,

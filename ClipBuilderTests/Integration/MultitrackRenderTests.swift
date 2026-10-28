@@ -10,7 +10,7 @@ struct MultitrackRenderTests {
     @Test("hardware intermediates preserve decoded output and use distinct cache entries")
     func intermediateExperimentsMatch() async throws {
         guard FFmpeg.hasVideoToolboxDecode else { return }
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = temp.directory.url.appendingPathComponent("intermediate.mp4")
         try await FFmpeg.run(["-y", "-f", "lavfi", "-i", "testsrc2=s=1080x1920:r=30",
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "1"]
@@ -62,7 +62,7 @@ struct MultitrackRenderTests {
 
     @Test("separate reels watermark clips, reuse plain bumpers and finish by stream copy")
     func batchWatermarkedBumper() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "batch-watermark")
         let settings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
         var block = OverlayBlockItem()
@@ -155,7 +155,7 @@ struct MultitrackRenderTests {
 
     @Test("single segments and finishing cache hits do not claim a stream-copy concat")
     func finishingStreamCopyLogging() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "finishing-log")
         var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 0.5)
         clip.videoFile = source.path
@@ -181,7 +181,7 @@ struct MultitrackRenderTests {
 
     @Test("podcast look and burn-ins match the legacy extract across segment boundaries", arguments: ["none", "fade", "slide_up", "retained-overlay"])
     func podcastExtractFoldedMatchesTwoPass(animation: String) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "express-folded")
         var first = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 0.2)
         first.videoFile = source.path
@@ -263,7 +263,7 @@ struct MultitrackRenderTests {
 
     @Test("podcast mute retains silent stereo AAC and crossfades, invalidating the voiced cache")
     func podcastFoldedMute() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "express-mute")
         var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 1)
         clip.videoFile = source.path
@@ -309,7 +309,7 @@ struct MultitrackRenderTests {
 
     @Test("podcast extraction trims an overlong cut to the plan and remains passthrough eligible")
     func podcastFoldedTrimsToPlan() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "express-trim")
         var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 2.3)
         clip.videoFile = source.path
@@ -336,7 +336,7 @@ struct MultitrackRenderTests {
 
     @Test("a saved portrait path is tracked again for a 4:5 Full Screen", arguments: [false, true])
     func savedPathRejectsDifferentCanvas(explicit: Bool) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await FixtureVideo.makePodcast(in: temp.directory.url)
         var scene = Fixtures.scene(start: 0, end: 1)
         scene.videoPath = source.path; scene.videoWidth = 1280; scene.videoHeight = 720
@@ -365,7 +365,7 @@ struct MultitrackRenderTests {
 
     @Test("two full-frame podcast cells with distinct focus produce distinct paths")
     func savedPathDoesNotOverrideCellFocus() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await FixtureVideo.makePodcast(in: temp.directory.url)
         var scene = Fixtures.scene(start: 0, end: 1)
         scene.videoPath = source.path; scene.videoWidth = 1280; scene.videoHeight = 720
@@ -406,7 +406,7 @@ struct MultitrackRenderTests {
 
     @Test("two podcast feeds use JSON paths and match the retained export reference")
     func podcastFeedPathsMatchExport() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await FixtureVideo.makePodcast(in: temp.directory.url)
         var clips: [TimelineClip] = []
         for index in 0..<2 {
@@ -496,7 +496,7 @@ struct MultitrackRenderTests {
 
     @Test("static area fuses its crop with zero intermediates and reuses the segment")
     func staticAreaFusionAndReuse() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "static-area-fixture")
         var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 3)
         clip.videoFile = source.path
@@ -558,7 +558,7 @@ struct MultitrackRenderTests {
 
     @Test("a transition-spanning overlay is fused into both segments; without fusion it needs a final pass")
     func mixedOverlayPasses() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "overlay-passes-fixture")
         var first = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 3)
         first.videoFile = source.path
@@ -611,7 +611,7 @@ struct MultitrackRenderTests {
 
     @Test("fused spanning overlays match the final pass frame for frame across hard cuts")
     func spanningOverlayFusionMatchesFinalPass() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "overlay-fusion-parity")
         var clips: [TimelineClip] = []
         for index in 0..<3 {
@@ -673,7 +673,7 @@ struct MultitrackRenderTests {
 
     @Test("across crossfades the final pass lands overlays on the same footage as fused overlays")
     func finalPassOverlaysFollowCrossfadeClock() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "overlay-crossfade-clock")
         var clips: [TimelineClip] = []
         for index in 0..<3 {
@@ -721,7 +721,7 @@ struct MultitrackRenderTests {
 
     @Test("regression: wide masked clip and delayed faded text render successfully")
     func maskedWideClipAndDelayedText() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "render-fixture")
         var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 3)
         clip.videoFile = source.path
@@ -749,7 +749,7 @@ struct MultitrackRenderTests {
 
     @Test("two tracks, a slow-motion clip, and music overlay render to the timeline's length")
     func layeredTracksSlowMotionAndMusic() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "layered-fixture")
 
         // Keep music local to this test; catalog lookup has no injectable root.
@@ -797,7 +797,7 @@ struct MultitrackRenderTests {
 extension MultitrackRenderTests {
     @Test("editing an earlier caption preserves the later trimmed, slow framed segment")
     func framedCaptionOffsets() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, initialScene) = try await seedScene(in: temp, hash: "framed-captions")
         var scene = initialScene
         let path = SceneCameraPath(camera: "balanced", keyframes: [
@@ -905,7 +905,7 @@ extension MultitrackRenderTests {
 
     @Test("tracked-area fallback preserves caption timing and never publishes a prepass")
     func areaFallbackIsNotCached() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "area-fallback")
         var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 1, duration: 1)
         clip.videoFile = source.path
@@ -936,7 +936,7 @@ extension MultitrackRenderTests {
 
     @Test("finishing reuse preserves every decoded frame and audio sample, and invalidates caption/title edits")
     func finishingReuseAndEdits() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "finishing-reuse")
         var first = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 3)
         first.videoFile = source.path
@@ -1022,7 +1022,7 @@ extension MultitrackRenderTests {
 
     @Test("finishing ranges appear only on the edit path, rebuild the edited range, and keep the full pass timing")
     func finishingRangesOnEditPath() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (sourceA, sceneA) = try await seedScene(in: temp, hash: "ranges-a")
         let (sourceB, sceneB) = try await seedScene(in: temp, hash: "ranges-b",
             directory: temp.directory.url.appendingPathComponent("second", isDirectory: true))
@@ -1185,7 +1185,7 @@ extension MultitrackRenderTests {
 
     @Test("exact-placement overlay blocks render where designed; ordinary ones are kept clear of platform chrome")
     func exactPlacementBlocksRenderAtTheirDesignedPosition() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         // A black source, so the only red in the frame is the overlay square.
         let source = temp.directory.url.appendingPathComponent("black.mp4")
         _ = try await FFmpeg.run(["-y", "-f", "lavfi", "-i", "color=c=black:size=1920x1080:rate=30", "-t", "3",
@@ -1268,7 +1268,7 @@ extension MultitrackRenderTests {
 extension MultitrackRenderTests {
     @Test("hard-cut fallbacks never satisfy the finishing cache")
     func finishingFallbackIsNotPublished() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "finishing-fallback")
         var first = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 0.06)
         first.videoFile = source.path
@@ -1302,7 +1302,7 @@ extension MultitrackRenderTests {
 extension MultitrackRenderTests {
     @Test("lengthening an early clip reuses every later hard-cut segment")
     func shiftedSegmentsHitTheCache() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "shifted-segments")
         func document(firstLength: Double) -> TimelineDocument {
             var first = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: firstLength)
@@ -1342,7 +1342,7 @@ extension MultitrackRenderTests {
 
     @Test("caption edits reuse only unaffected crossfade groups with identical decoded output")
     func captionEditReusesUnaffectedAssembly() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (source, scene) = try await seedScene(in: temp, hash: "assembly-reuse")
         var first = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 1.5)
         first.videoFile = source.path

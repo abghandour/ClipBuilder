@@ -5,7 +5,7 @@ import Testing
 @Suite("Analysis request storage")
 struct AnalysisRequestStorageTests {
     @Test func successfulNonActiveRunMatchesButFailedCancelledAndEmptyLegacyDoNot() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let request = AnalysisRequestTests.request()
         let id = try await temp.database.saveAnalysis(videoID: videoID, runName: "Matching older batch", instructions: "", sampleInterval: nil,
@@ -32,7 +32,7 @@ struct AnalysisRequestStorageTests {
     }
 
     @Test func migrationAddsNullableRequestColumnsAndSyncIncludesThem() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         _ = try await temp.seedVideo()
         let raw = try SQLiteConnection(path: temp.path.path)
         // Simulate the previous schema after dropping the new columns.

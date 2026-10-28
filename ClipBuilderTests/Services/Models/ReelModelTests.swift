@@ -40,7 +40,7 @@ import Testing
   }
 
   @Test func evaluateLeavesSwitchesUntouched() async throws {
-    let fixture = try TempDatabase()
+    let fixture = try await TempDatabase()
     let store = ReelModelStore(
       databasePath: fixture.path, reports: fixture.directory.url.appendingPathComponent("reports"))
     var config = AIConfig()
@@ -125,7 +125,7 @@ import Testing
   }
 
   @Test func offPathDoesNotLoadModelsOrChangeCriticOrScenes() async throws {
-    let fixture = try TempDatabase()
+    let fixture = try await TempDatabase()
     _ = try await fixture.seedVideo(sceneCount: 3)
     let scenes = try await fixture.database.fetchScenes()
     let store = ReelModelStore(

@@ -5,7 +5,7 @@ import Testing
 @Suite("Wizard selection store")
 struct WizardSelectionStoreTests {
     @Test func takesEditsBestProjectScopeAndDeletion() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let project = try await db.createProject(profileName: "Test", name: "First")
         let other = try await db.createProject(profileName: "Test", name: "Other")
@@ -48,7 +48,7 @@ struct WizardSelectionStoreTests {
     }
 
     @Test func bestTakeCannotBelongToAnotherSelectionAndProjectDeletionCascades() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let project = try await db.createProject(profileName: "Test", name: "Project")
         let first = try await db.recordWizardTake(projectID: project, options: WizardOptions().step1, plan: Fixtures.plan())
@@ -84,7 +84,7 @@ struct WizardSelectionStoreTests {
     }
 
     @Test func failedPlanEncodingRollsBackSelectionCreation() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let project = try await temp.database.createProject(profileName: "Test", name: "Project")
         var plan = Fixtures.plan()
         plan.targetDuration = .nan
@@ -100,7 +100,7 @@ struct WizardSelectionStoreTests {
 
 extension WizardSelectionStoreTests {
     @Test func persistedFootageAndRenamingSurviveTakeEditsWithoutANewOrdinal() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let videoID = try await temp.seedVideo()
         let project = try await db.createProject(profileName: "Test", name: "Selections", videoIDs: [videoID])
@@ -125,7 +125,7 @@ extension WizardSelectionStoreTests {
 
 extension WizardSelectionStoreTests {
     @Test func criticReferencesExcludeAllLooksOfTheSelectionAndTheirBatchSiblings() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let project = try await db.createProject(profileName: "Test", name: "Selections")
         let first = try await db.recordWizardTake(projectID: project, options: WizardOptions().step1, plan: Fixtures.plan())
@@ -148,7 +148,7 @@ extension WizardSelectionStoreTests {
 
 extension WizardSelectionStoreTests {
     @Test func miniBatchQueriesKeepProjectScopeAndPlannerOrderAcrossRegeneration() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let db = temp.database
         let project = try await db.createProject(profileName: "Test", name: "Mini")
         let other = try await db.createProject(profileName: "Test", name: "Other")
@@ -177,7 +177,7 @@ extension WizardSelectionStoreTests {
     }
 
     @Test func miniBatchMigrationPreservesVersion21SelectionsAndTakes() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let project = try await temp.database.createProject(profileName: "Test", name: "Old selections")
         let take = try await temp.database.recordWizardTake(projectID: project, options: WizardOptions().step1,
                                                            plan: Fixtures.plan())

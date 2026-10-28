@@ -7,7 +7,7 @@ import Testing
 struct AnalyzerStaticTests {
     @Test("Visual runs persist their own pipeline stamp and preserve captured settings")
     func pipelineStamp() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let original = AnalysisRunSettings(instructions: "Keep action", sampleInterval: 2,
                                            smartSampling: true, pipeline: 999)

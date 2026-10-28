@@ -20,7 +20,7 @@ struct PrerenderedSegmentTests {
     }
 
     @Test func wholeNormalizedClipsAreCopiedNotEncoded() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let document0 = Fixtures.timelineDocument(clips: [])
         let first = try await prerenderedClip(in: temp.directory.url, name: "clip-a", settings: document0.renderSettings)
         let second = try await prerenderedClip(in: temp.directory.url, name: "clip-b", settings: document0.renderSettings)

@@ -85,7 +85,7 @@ struct CaptionPagingTests {
 
 extension CaptionPagingTests {
     @Test func renderQueryRetainsOriginalWordClocksButNeverAppliesThemToTranslations() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await temp.seedVideo()
         let words = [TranscriptWord(word: "Original", start: 1.2, end: 1.8)]
         try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "pt", isTranslation: false,

@@ -108,7 +108,7 @@ struct AnalysisCoverageTests {
 
     @Test("Library snapshots count transcripts even when no analysis run exists")
     func transcriptOnlySnapshot() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.database.registerVideo(
             hash: "transcript-only", filename: "transcript.mp4",
             path: temp.directory.url.appendingPathComponent("transcript.mp4").path,

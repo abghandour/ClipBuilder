@@ -5,7 +5,7 @@ import Testing
 extension MultitrackRenderTests {
     @Test("original focus frame renders the selected source at normal and retimed source clocks", arguments: [false, true])
     func originalFocusFrameContainment(_ retimed: Bool) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = temp.directory.url.appendingPathComponent("focus-source.mp4")
         try await FFmpeg.run(["-y", "-f", "lavfi", "-i", "testsrc2=size=960x540:rate=30",
             "-f", "lavfi", "-i", "sine=frequency=440:sample_rate=44100", "-t", "4",

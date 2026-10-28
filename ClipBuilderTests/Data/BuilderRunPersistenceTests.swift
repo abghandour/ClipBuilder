@@ -24,7 +24,7 @@ struct BuilderRunPersistenceTests {
 
     @Test("Run CRUD retains immutable audit and distinguishes all statuses")
     func runCRUD() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await timeline(temp)
         var run = BuilderRunRecord(runUUID: UUID().uuidString, timelineID: id, request: "Cut pauses",
                                    provider: "local", model: "parser", durationSeconds: 0.25, status: .completed,
@@ -43,7 +43,7 @@ struct BuilderRunPersistenceTests {
 
     @Test("Retention stays at 50 and protects the oldest referenced run")
     func retention() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await timeline(temp)
         let protected = BuilderRunRecord(runUUID: "protected", timelineID: id, request: "Old",
                                          createdAt: "2000-01-01", status: .applied, baselineRevision: 0)
@@ -63,7 +63,7 @@ struct BuilderRunPersistenceTests {
 
     @Test("Before-version is ordinary JSON and both tables cascade on timeline deletion")
     func beforeRoundTripAndCascade() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await timeline(temp)
         let document = Fixtures.timelineDocument()
         let json = String(decoding: try JSONEncoder().encode(document), as: UTF8.self)
@@ -87,7 +87,7 @@ struct BuilderRunPersistenceTests {
 
     @Test("Concurrent autosave and Wizard commit cannot claim the same revision", arguments: 0..<10)
     func concurrentAutosaveAndCommit(iteration: Int) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await timeline(temp)
         let database = temp.database
         let gate = WriterStartGate()
@@ -128,7 +128,7 @@ struct BuilderRunPersistenceTests {
 
     @Test("An autosave at the committed revision cannot overwrite the Wizard snapshot")
     func equalRevisionAutosaveIsStale() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await timeline(temp)
         try temp.database.commitWizardSnapshot(timelineID: id, documentJSON: "{\"wizard\":true}",
                                                 expectedRevision: 0, revision: 1, thumbnailVideoID: nil,
@@ -144,7 +144,7 @@ struct BuilderRunPersistenceTests {
 
     @Test("CAS and a failure after timeline write roll back the entire commit")
     func rollback() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await timeline(temp)
         let raw = try SQLiteConnection(path: temp.path.path)
         let run = BuilderRunRecord(runUUID: "run", timelineID: id, request: "Request", status: .applied,

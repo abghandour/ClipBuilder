@@ -7,7 +7,7 @@ import Testing
 struct VideoCreatedDateTests {
     @Test("Registration stores filesystem creation time as ISO 8601")
     func registration() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let url = temp.directory.url.appendingPathComponent("video.mp4")
         try Data("video".utf8).write(to: url)
         let expected = try #require(url.resourceValues(forKeys: [.creationDateKey]).creationDate)
@@ -45,7 +45,7 @@ struct VideoCreatedDateTests {
 
     @Test("Version 5 migrates exactly one column and lazily backfills without overwriting saved dates")
     func backfill() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let raw = try SQLiteConnection(path: temp.path.path)
         let url = temp.directory.url.appendingPathComponent("old.mp4")
         try Data("old".utf8).write(to: url)

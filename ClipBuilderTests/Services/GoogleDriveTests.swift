@@ -56,8 +56,8 @@ nonisolated final class CountingDriveChecksum: @unchecked Sendable {
 struct GoogleDriveTests {
     @Test("Automatic source upload defaults on and persists independently per profile")
     func autoUploadSetting() async throws {
-        let first = try TempDatabase()
-        let second = try TempDatabase()
+        let first = try await TempDatabase()
+        let second = try await TempDatabase()
         #expect(try await first.database.driveSetting(AutoDriveUpload.settingKey) == nil)
         #expect(try await first.database.autoUploadNewSourcesEnabled())
         try await first.database.setAutoUploadNewSourcesEnabled(false)
@@ -135,7 +135,7 @@ struct GoogleDriveTests {
 
     @Test("Download registration reuses a local copy and preserves scenes")
     func registrationReuse() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let url = temp.directory.url.appendingPathComponent("existing.mp4")
         try Data("video fixture".utf8).write(to: url)
         let id = try await temp.database.registerVideo(
@@ -153,7 +153,7 @@ struct GoogleDriveTests {
 
     @Test("Off-load preserves scenes, and fetching restores the same path")
     func offloadAndRestore() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await temp.seedVideo(sceneCount: 2)
         let video = try #require(try await temp.database.video(id: id))
         let bytes = Data("fixture".utf8)
@@ -218,7 +218,7 @@ struct GoogleDriveTests {
 
     @Test("Upload stores the returned id and link on an output")
     func uploadRegistration() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let url = temp.directory.url.appendingPathComponent("output.mp4")
         try Data("fixture".utf8).write(to: url)
         let id = try await temp.database.insertGeneratedVideo(
@@ -244,7 +244,7 @@ struct GoogleDriveTests {
 
     @Test("Re-running an upload whose media already has a Drive copy uploads nothing")
     func uploadAlreadyCopiedIsNoOp() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let url = temp.directory.url.appendingPathComponent("output.mp4")
         try Data("fixture".utf8).write(to: url)
         let id = try await temp.database.insertGeneratedVideo(
@@ -344,7 +344,7 @@ struct GoogleDriveTests {
 
     @Test("Concurrent imports share one download and retain both project memberships")
     func concurrentImports() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let firstProject = try await temp.database.createProject(profileName: profile, name: "First")
         let secondProject = try await temp.database.createProject(profileName: profile, name: "Second")
         let file = DriveFile(id: "concurrent", name: "fixture.mp4", size: "7", version: "1")
@@ -369,7 +369,7 @@ struct GoogleDriveTests {
 
     @Test("An off-loaded file cannot silently restore different media under existing scenes")
     func changedOffloadedCopy() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await temp.seedVideo()
         let video = try #require(try await temp.database.video(id: id))
         try Data("fixture".utf8).write(to: video.url)
@@ -395,7 +395,7 @@ struct GoogleDriveTests {
 
     @Test("Missing ordinary local files retain their original consumer error behavior")
     func missingLocalPath() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await temp.seedVideo()
         let video = try #require(try await temp.database.video(id: id))
         // The fixture registers a real file; this test is about one that is gone.
@@ -493,7 +493,7 @@ struct GoogleDriveTests {
 
     @Test("Stable thumbnails are created only for Drive records or identity sidecars")
     func thumbnailCacheScope() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await temp.seedVideo()
         let video = try #require(try await temp.database.video(id: id))
         try Data("fixture".utf8).write(to: video.url)

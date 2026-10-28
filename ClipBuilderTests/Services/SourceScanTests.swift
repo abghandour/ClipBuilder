@@ -26,7 +26,7 @@ struct SourceScanTests {
 
     @Test("A file still being copied is not registered; it registers once, after it settles")
     func copyInProgressWaits() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let input = realPath(temp.directory.url).appendingPathComponent("Input", isDirectory: true)
         try FileManager.default.createDirectory(at: input, withIntermediateDirectories: true)
         let source = try await FixtureVideo.make(in: temp.directory.url, wide: true)
@@ -65,7 +65,7 @@ struct SourceScanTests {
 
     @Test("A zero-duration row left by an earlier mid-copy registration is removed once the file has a real row")
     func repairsGhostRegistration() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let input = realPath(temp.directory.url).appendingPathComponent("Input", isDirectory: true)
         try FileManager.default.createDirectory(at: input, withIntermediateDirectories: true)
         let source = try await FixtureVideo.make(in: temp.directory.url, wide: true)

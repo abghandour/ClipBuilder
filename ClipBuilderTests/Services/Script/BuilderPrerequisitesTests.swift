@@ -13,7 +13,7 @@ struct BuilderPrerequisitesTests {
         var current = true
         var calls = 0
         var operation: @MainActor (BuilderPrerequisiteKind, VideoRecord, Database) async throws -> Void = { _, _, _ in }
-        init() throws { temp = try TempDatabase() }
+        init() async throws { temp = try await TempDatabase() }
         var database: Database { temp.database }
         func video() async throws -> Int64 {
             try await database.registerVideo(hash: UUID().uuidString, filename: "test.mp4",
@@ -59,7 +59,7 @@ struct BuilderPrerequisitesTests {
     @Test func unavailableAndFailureNeverPresentSheets() async throws {
         let unavailable = BuilderPrerequisites { nil }
         #expect(await unavailable.ensureTranscript(video: 1).outcome == .unavailable(reason: "The captured Library is no longer available."))
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         h.operation = { _, _, _ in throw TranscriptionError.noAudioTrack("test") }
         if case .unavailable = await h.adapters().ensureTranscript(video: video).outcome {} else { Issue.record("Expected unavailable") }
@@ -76,7 +76,7 @@ struct BuilderPrerequisitesTests {
 
     @Test(arguments: BuilderPrerequisiteKind.allCases)
     func completedEmptyPersistsAndReuses(kind: BuilderPrerequisiteKind) async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         let first = await h.adapters().ensure(kind, video: video)
         #expect(first.outcome == .completedEmpty)
@@ -93,7 +93,7 @@ struct BuilderPrerequisitesTests {
 
     @Test(arguments: BuilderPrerequisiteKind.allCases)
     func completedWithData(kind: BuilderPrerequisiteKind) async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         h.operation = { kind, video, db in
             switch kind {
@@ -117,7 +117,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func runningDeduplicatesAndDrainsSharedCancellation() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         let gate = Gate()
         defer { gate.release() }
@@ -140,7 +140,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func sharedSuccessfulJobIsAwaitedOnce() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         let gate = Gate()
         defer { gate.release() }
@@ -157,7 +157,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func cancellationReachesSuspendedService() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         var started = false
         var cancelled = false
@@ -176,8 +176,8 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func profileSwitchCannotWriteNewProfile() async throws {
-        let h = try Harness()
-        let next = try Harness()
+        let h = try await Harness()
+        let next = try await Harness()
         let video = try await h.video()
         let nextVideo = try await next.video()
         let nextBefore = try await next.database.prerequisiteInventory(videoID: nextVideo)
@@ -200,7 +200,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func transcriptReplacementScopeAndDecisions() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         let other = try await h.video()
         try await Self.transcript(h.database, video: video, text: "old")
@@ -237,7 +237,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func failedEnrichmentIsNotReusedAsSuccessfulTranscript() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         h.operation = { _, video, db in
             try await Self.transcript(db, video: video.id)
@@ -250,7 +250,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func peopleReplacesOnlyTargetRosterAndKeepsUserIdentity() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         let other = try await h.video()
         try await h.database.upsertPerson(key: "alex", descriptor: "old")
@@ -279,7 +279,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func sessionHydrationIsExplicitAndBaselineStaysFixed() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         let live = ScriptFixtures.model()
         let hydration = BuilderLibraryHydration()
@@ -303,7 +303,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func externalRevisionStillInvalidatesPendingRun() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         let live = ScriptFixtures.model()
         let session = BuilderScriptSession(live: live, library: try await h.library())
@@ -315,7 +315,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func failedRunAndDiscardKeepLibraryChanges() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         h.operation = { _, video, db in try await Self.transcript(db, video: video.id) }
         let session = BuilderScriptSession(live: ScriptFixtures.model(), library: try await h.library())
@@ -328,7 +328,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func requiresConfirmationAndOrderedPrefix() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         let library = try await h.library()
         let steps = [BuilderScriptStep(.ensurePeople(video: video)), .init(.addText(text: "preview"))]
@@ -345,7 +345,7 @@ struct BuilderPrerequisitesTests {
         #expect(try ScriptRunner.decode(JSONEncoder().encode(steps)) == steps)
     }
     @Test func librarySurvivesApplyUndoAndPersistedRevert() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         let profile = Fixtures.brand(name: "PrerequisiteUndo")
         let store = AppStore(settings: AppSettings(), profiles: [profile], active: profile,
@@ -386,7 +386,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func wizardConfirmationAndFailureExplainSavedLibraryWork() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         let profile = Fixtures.brand()
         let store = AppStore(settings: AppSettings(), profiles: [profile], active: profile,
@@ -418,7 +418,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func ordinaryAppStoreRefreshDefersLiveHydration() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         let profile = Fixtures.brand()
         let store = AppStore(settings: AppSettings(), profiles: [profile], active: profile,
@@ -440,7 +440,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func discardCancelsAndDrainsWithoutLateRevival() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         let gate = Gate()
         defer { gate.release() }
@@ -470,7 +470,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func missingProjectVideoIsUnavailableWithoutServiceCalls() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         _ = try await h.video()
         let report = await h.adapters().ensureAnalysis(video: 999)
         if case .unavailable = report.outcome {} else { Issue.record("Expected unavailable") }
@@ -478,7 +478,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func legacySuccessfulEmptyPeopleAndExistingTranscriptAreReused() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         try await h.database.replaceVideoPeople(videoID: video, entries: [], provenance: AIProvenance(provider: "legacy"))
         try await Self.transcript(h.database, video: video)
@@ -489,7 +489,7 @@ struct BuilderPrerequisitesTests {
     }
 
     @Test func wizardCancellationShowsSavedEffectsWithoutTimelineApply() async throws {
-        let h = try Harness()
+        let h = try await Harness()
         let video = try await h.video()
         let profile = Fixtures.brand()
         let store = AppStore(settings: AppSettings(), profiles: [profile], active: profile,

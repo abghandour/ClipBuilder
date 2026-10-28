@@ -6,7 +6,7 @@ import Testing
 struct DatabaseTagFieldsTests {
     @Test("Source and provenance round-trip, and manual overwrites clear them")
     func sourceRoundTrip() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let person = try await temp.database.createPerson(name: "Test Fighter")
         let provenance = AIProvenance(provider: "claude", task: "person_research", at: Date(timeIntervalSince1970: 1_800_000_000))
         try await temp.database.savePersonTagField(personKey: person.key, field: "MMA record", value: "23-7-0",
@@ -23,7 +23,7 @@ struct DatabaseTagFieldsTests {
 
     @Test("Generated tag text never replaces a value the user saved meanwhile")
     func generatedTextOnlyFillsMissing() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let person = try await temp.database.createPerson(name: "Coach Person")
         let provenance = AIProvenance(provider: "claude", task: "tag_text", at: Date(timeIntervalSince1970: 1_800_000_000))
         try await temp.database.savePersonTagField(personKey: person.key, field: "Role", value: "Coach", provenance: nil)
@@ -37,7 +37,7 @@ struct DatabaseTagFieldsTests {
 
     @Test("Version 29 databases migrate existing tag fields without losing their values")
     func existingRowsMigrate() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let person = try await temp.database.createPerson(name: "Legacy Person")
         try await temp.database.savePersonTagField(personKey: person.key, field: "Role", value: "Trainer", provenance: nil)
         let raw = try SQLiteConnection(path: temp.path.path)
@@ -53,7 +53,7 @@ struct DatabaseTagFieldsTests {
 
     @Test("Apply saves only checked values and preserves a category assigned during research")
     func selectiveApply() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let person = try await temp.database.createPerson(name: "Test Fighter")
         let first = PersonResearchProposal(personKey: person.key, field: "Role", value: "Champion",
                                           source: "https://stats.example/fighter", asOf: nil, confidence: 0.9)
@@ -75,7 +75,7 @@ struct DatabaseTagFieldsTests {
 
     @Test("Apply normalizes handles and clears invalid selected handle values")
     func applyHandles() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let person = try await temp.database.createPerson(name: "Test Fighter")
         try await temp.database.savePersonTagField(personKey: person.key, field: "X", value: "old_name", provenance: nil)
         let instagram = PersonResearchProposal(personKey: person.key, field: "Instagram",
@@ -99,7 +99,7 @@ struct DatabaseTagFieldsTests {
 
     @Test("Merging people carries source links with their tag fields")
     func mergePreservesSource() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = try await temp.database.createPerson(name: "Duplicate")
         let target = try await temp.database.createPerson(name: "Survivor")
         try await temp.database.savePersonTagField(personKey: source.key, field: "Role", value: "Fighter",

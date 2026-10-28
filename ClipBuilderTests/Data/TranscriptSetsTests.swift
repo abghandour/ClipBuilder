@@ -10,7 +10,7 @@ struct TranscriptSetsTests {
     }
 
     @Test func retranscriptionAllocatesNewKeyAndKeepsPreviousSet() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await temp.seedVideo()
         let segments = [TranscriptSegment(start: 0, end: 4, text: "First", words: nil)]
         let first = try await TranscriptionService.storeOriginal(videoID: id, language: "en", segments: segments, database: temp.database)
@@ -25,7 +25,7 @@ struct TranscriptSetsTests {
     }
 
     @Test func activeTranscriptionHonorsPinMissingPinAndAutomatic() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await temp.seedVideo()
         try await original(temp.database, videoID: id, key: "a")
         try await original(temp.database, videoID: id, key: "z")
@@ -47,7 +47,7 @@ struct TranscriptSetsTests {
     }
 
     @Test func predicateReadsPinnedOriginalAndItsTranslations() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await temp.seedVideo()
         try await original(temp.database, videoID: id, key: "old", text: "Portuguese")
         try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "old", language: "en",
@@ -69,7 +69,7 @@ struct TranscriptSetsTests {
     }
 
     @Test func speakerTurnsAttachToExplicitSourceKey() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await temp.seedVideo()
         try await original(temp.database, videoID: id, key: "old")
         try await original(temp.database, videoID: id, key: "new")
@@ -83,7 +83,7 @@ struct TranscriptSetsTests {
     }
 
     @Test func recutAndBackupsKeepSourceKeyAcrossNewTranscription() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await temp.seedVideo()
         try await original(temp.database, videoID: id, key: "old", text: "one two")
         let source = try #require(try await temp.database.fetchTranscripts(videoID: id).first)
@@ -106,7 +106,7 @@ struct TranscriptSetsTests {
     }
 
     @Test func legacyVideoOnlyBackupMigratesToFootageSyncKey() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await temp.seedVideo()
         try await original(temp.database, videoID: id, key: "temporary", text: "Legacy original")
         var rows = try await temp.database.fetchTranscripts(videoID: id)
@@ -133,7 +133,7 @@ struct TranscriptSetsTests {
     }
 
     @Test func derivedDataFromAnotherSetIsAbsentAndPreserved() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await temp.seedVideo()
         try await original(temp.database, videoID: id, key: "old")
         try await temp.database.replaceTranscriptFeatures(videoID: id, transcriptionKey: "old",

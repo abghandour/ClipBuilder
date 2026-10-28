@@ -93,7 +93,7 @@ struct BRollRenderTests {
 
     @Test("a muted cutaway keeps the dialogue; a mixed one adds to it")
     func audioLevels() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let main = try await FixtureVideo.make(in: temp.directory.url)
         let silent = try await redSource(in: temp.directory.url, tone: false)
         let noisy = try await redSource(in: temp.directory.url, tone: true)
@@ -115,7 +115,7 @@ struct BRollRenderTests {
 
     @Test("the cutaway fills its area and leaves the rest of the frame alone")
     func areaPixels() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let main = try await FixtureVideo.make(in: temp.directory.url)
         let broll = try await redSource(in: temp.directory.url, tone: false)
         let output = try await render(document(main: main, broll: broll), temp: temp)
@@ -133,7 +133,7 @@ struct BRollRenderTests {
 
     @Test("a dissolving cutaway is part way in halfway through the fade")
     func dissolveFrames() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let main = try await FixtureVideo.make(in: temp.directory.url)
         let broll = try await redSource(in: temp.directory.url, tone: false)
         let output = try await render(document(main: main, broll: broll, fadeIn: 1.4), temp: temp)

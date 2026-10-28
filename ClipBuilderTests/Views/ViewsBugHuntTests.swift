@@ -85,7 +85,7 @@ struct ViewsBugHuntTests {
 
     @Test("image metadata moves with a renamed file and with a moved folder")
     func imageMetadataMoves() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let database = temp.database
         let images = AssetKind.images.rawValue
         try await database.upsertAssetMetadata(LibraryAssetMetadata(

@@ -8,7 +8,7 @@ struct PodcastAnalysisTests {
     @Test("Podcast and interview runs persist the podcast pipeline stamp",
           arguments: [VideoType.podcast, .interview])
     func pipelineStamp(type: VideoType) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         try await temp.database.setVideoType(id: videoID, type: type.rawValue)
         let video = try #require(try await temp.database.video(id: videoID))
@@ -202,7 +202,7 @@ struct PodcastAnalysisTests {
 
     @Test("the speaker map needs a transcript and stores nothing without one")
     func speakerMapWithoutTranscript() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo(sceneCount: 0)
         let video = try #require(try await temp.database.video(id: videoID))
         let turns = try await PodcastAnalysisService.mapSpeakers(video: video, database: temp.database,
@@ -263,7 +263,7 @@ struct PodcastAnalysisTests {
 
     @Test("grid tiles and per-turn tiles persist")
     func gridPersistence() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo(sceneCount: 0)
         let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, personKey: "host"),
                      PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1)]
@@ -313,7 +313,7 @@ struct PodcastAnalysisTests {
 
     @Test("profile portraits and merged speaker identities survive People review")
     func profilePortraitsAndMerge() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo(sceneCount: 0)
         try await temp.database.upsertPerson(key: "guest", descriptor: "Guest")
         try await temp.database.upsertPerson(key: "known", descriptor: "Known guest")
@@ -338,7 +338,7 @@ struct PodcastAnalysisTests {
 
     @Test("speaker turns persist with resolved identity and picture evidence")
     func speakerTurnPersistence() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo(sceneCount: 0)
         let turn = SpeakerTurn(videoID: videoID, start: 1, end: 4, cluster: 1,
                                confidence: 0.75, pictureSide: .right,
@@ -500,7 +500,7 @@ struct PodcastAnalysisTests {
 
     @Test("two exchanges persist exactly two scenes with whole-exchange role tags")
     func exchangeSceneRanges() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo(sceneCount: 0)
         let segments = [
             TranscriptSegment(start: 0, end: 3, text: "Why this", words: nil),
@@ -584,7 +584,7 @@ struct PodcastAnalysisTests {
 
     @Test("podcast cache bypasses detection and the shared manual/batch route preserves language")
     func podcastCacheAndManualRouting() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let id = try await temp.seedVideo(sceneCount: 0)
         var video = try #require(try await temp.database.fetchVideos().first)
         video.videoType = "podcast"
@@ -634,7 +634,7 @@ struct PodcastAnalysisTests {
 
     @Test("source dimensions flow through database into aspect-aware Wizard windows")
     func splitFeedSourceDimensions() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         _ = try await temp.seedVideo()
         let stored = try #require(try await temp.database.fetchScenes().first)
         #expect(stored.videoWidth == 1920)

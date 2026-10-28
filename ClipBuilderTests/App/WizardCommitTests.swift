@@ -34,7 +34,7 @@ struct WizardCommitTests {
 
     @Test("Apply writes timeline/run/before together and Revert restores one undoable snapshot")
     func applyAndRevert() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let id = try #require(store.builder.timelineID)
         let undo = UndoManager()
@@ -70,7 +70,7 @@ struct WizardCommitTests {
 
     @Test("Failure on the final SQL write leaves live state, revision and existing undo untouched")
     func failedCommit() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let id = try #require(store.builder.timelineID)
         let undo = UndoManager()
@@ -102,7 +102,7 @@ struct WizardCommitTests {
 
     @Test("Failed and discarded outcomes preserve the previous before-version")
     func terminalOutcomes() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let id = try #require(store.builder.timelineID)
         let old = WizardBeforeRecord(timelineID: id, runUUID: "old", request: "Old", documentJSON: "{}", appliedRevision: 1)
@@ -122,7 +122,7 @@ struct WizardCommitTests {
 
     @Test("Speech precision survives durable apply and Revert after reopening with no undo manager")
     func speechReopenRevert() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let id = try #require(store.builder.timelineID)
         var clip = Fixtures.timelineClip()
@@ -156,7 +156,7 @@ struct WizardCommitTests {
 
     @Test("Database revision conflict and no manager refuse without live mutation")
     func conflicts() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let store = try await makeStore(temp)
         let id = try #require(store.builder.timelineID)
         let session = session(store)

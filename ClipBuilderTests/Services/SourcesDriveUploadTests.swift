@@ -116,7 +116,7 @@ struct SourcesDriveUploadTests {
 
     @Test("Cancel removes a transfer, frees its slot, and discards its checkpoint")
     func cancelTransfer() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = BrandProfile(name: "Cancel test")
         let credentials = FakeDriveCredentials()
         try credentials.write(
@@ -166,7 +166,7 @@ struct SourcesDriveUploadTests {
     func reconnectQueue() async throws { try await runQueue(failure: .reconnect) }
 
     private func runQueue(failure: GoogleDriveError) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = BrandProfile(name: "Queue test")
         let credentials = FakeDriveCredentials()
         try credentials.write(

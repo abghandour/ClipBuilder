@@ -94,7 +94,7 @@ struct PodcastHighlightTimelineTests {
     }
 
     @Test func oneTimelinePerReelWithinSharedBatch() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand(name: "PodcastHighlightTimelineTests")
         let settings = AppSettings()
         let store = AppStore(settings: settings, profiles: [profile], active: profile,

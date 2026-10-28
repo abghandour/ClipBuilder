@@ -49,7 +49,7 @@ struct InstagramReportSyncTests {
         ])
         let graph = transport.provider()
         defer { transport.finish(graph) }
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let accountID = try await temp.database.upsertIGAccount(username: "sync-test-\(UUID().uuidString)",
                                                                 kind: "own", displayName: nil,
                                                                 igUserID: "ig-123", followers: nil)

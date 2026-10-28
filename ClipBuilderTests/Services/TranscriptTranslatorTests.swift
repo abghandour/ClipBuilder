@@ -14,7 +14,7 @@ struct TranscriptTranslatorTests {
     }
 
     @Test func editedSubsetRefreshPreservesOtherTranslations() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, originals) = try await seed(temp, count: 3)
         try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "en",
             isTranslation: true, segments: originals.map {
@@ -31,7 +31,7 @@ struct TranscriptTranslatorTests {
     }
 
     @Test func chunksBy25EvenWhenBatchPolicyIsOff() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, originals) = try await seed(temp, count: 56)
         let stub = CaptionTranslationStub()
         let outcome = try await TranscriptTranslator.translateBatched(videoID: id, originals: originals, target: "en",
@@ -48,7 +48,7 @@ struct TranscriptTranslatorTests {
     }
 
     @Test func retriesOnlyUnansweredRowsThenFallsBackAndPreservesStoredRows() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, originals) = try await seed(temp, count: 5)
         try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "en", isTranslation: true,
             segments: [.init(start: 0, end: 2, text: "Old answer", words: nil),
@@ -70,7 +70,7 @@ struct TranscriptTranslatorTests {
 
 
     @Test func translatingOneLineKeepsHandSetSpeakersOnTheOthers() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, originals) = try await seed(temp, count: 3)
         try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "en",
             isTranslation: true, segments: originals.map {
@@ -88,7 +88,7 @@ struct TranscriptTranslatorTests {
     }
 
     @Test func completelyUnansweredChunkIsRetriedInSmallerBatches() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, originals) = try await seed(temp, count: 25)
         let stub = CaptionTranslationStub()
         _ = try await TranscriptTranslator.translateBatched(videoID: id, originals: originals, target: "en",
@@ -99,7 +99,7 @@ struct TranscriptTranslatorTests {
     }
 
     @Test func cancellationBetweenChunksDoesNotWritePartialTrack() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, originals) = try await seed(temp, count: 26)
         try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "en", isTranslation: true,
             segments: [.init(start: 100, end: 102, text: "Keep me", words: nil)], provider: "fixture", model: nil)
@@ -119,7 +119,7 @@ struct TranscriptTranslatorTests {
     }
 
     @Test func deviceAnswersAreExcludedFromAIBatches() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, originals) = try await seed(temp, count: 3)
         let stub = CaptionTranslationStub()
         _ = try await TranscriptTranslator.translateBatched(videoID: id, originals: originals, target: "en",
@@ -133,7 +133,7 @@ struct TranscriptTranslatorTests {
     }
 
     @Test func deviceFailureFallsBackToAI() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, originals) = try await seed(temp, count: 1)
         let stub = CaptionTranslationStub()
         _ = try await TranscriptTranslator.translateBatched(videoID: id, originals: originals, target: "en",
@@ -142,7 +142,7 @@ struct TranscriptTranslatorTests {
     }
 
     @Test func allDeviceAnswersAvoidAIAndStillEmitProgress() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, originals) = try await seed(temp, count: 26)
         let stub = CaptionTranslationStub()
         _ = try await TranscriptTranslator.translateBatched(videoID: id, originals: originals, target: "en",
@@ -156,7 +156,7 @@ struct TranscriptTranslatorTests {
     }
 
     @Test func deviceCancellationDoesNotStartAIOrWriteCaptions() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, originals) = try await seed(temp, count: 1)
         let stub = CaptionTranslationStub()
         await #expect(throws: CancellationError.self) {
@@ -168,7 +168,7 @@ struct TranscriptTranslatorTests {
     }
 
     @Test func nothingMissingDoesNotCallOrLogOrRewrite() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, _) = try await seed(temp, count: 1)
         let before = try await temp.database.fetchTranscripts(videoID: id)
         let stub = CaptionTranslationStub()
@@ -181,7 +181,7 @@ struct TranscriptTranslatorTests {
         #expect(try await temp.database.fetchTranscripts(videoID: id) == before)
     }
     @Test func translationKeepsCapturedSetWhenNewerOriginalArrivesDuringAwait() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let (id, originals) = try await seed(temp, count: 2)
         try await temp.database.replaceTranscripts(videoID: id, transcriptionKey: "test-transcription", language: "en",
             isTranslation: true, segments: [.init(start: 40, end: 42, text: "Keep source translation", words: nil)],

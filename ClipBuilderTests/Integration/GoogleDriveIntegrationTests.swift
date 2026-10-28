@@ -22,7 +22,7 @@ struct GoogleDriveIntegrationTests {
         let auth = GoogleDriveAuth(
             configuration: .init(clientID: clientID, clientSecret: secret), credentials: credentials)
         let client = GoogleDriveClient(auth: auth, profile: "integration")
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let local = temp.directory.url.appendingPathComponent("drive-integration-\(UUID().uuidString).mp4")
         try FileManager.default.copyItem(at: URL(fileURLWithPath: fixturePath), to: local)
         let uploaded = try await client.upload(

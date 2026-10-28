@@ -101,7 +101,7 @@ struct WizardPreviewCompositeTests {
     }
 
     @Test func namedClusterTurnsUseThePersonsCaptionStyleAndMarkerName() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let fixture = try await Fixtures.personCorrection(in: temp)
         let raw = try SQLiteConnection(path: temp.path.path)
         try raw.execute("UPDATE speaker_turns SET person_key = NULL WHERE video_id = ?", [.integer(fixture.video.id)])

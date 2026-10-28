@@ -37,7 +37,7 @@ struct CriticBriefContextTests {
 
     @Test(arguments: [CriticBriefUse.off, .automatic])
     func disabledRunsNeverBuildEvenWithEligibleTeachers(use: CriticBriefUse) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         _ = try await seedTeachers(temp)
         var profile = Fixtures.brand()
         profile.criticBriefUse = use
@@ -56,7 +56,7 @@ struct CriticBriefContextTests {
 
     @Test(arguments: [CriticBriefUse.off, .automatic])
     func cachedBriefDoesNotBypassDisabledDecision(use: CriticBriefUse) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let pool = try await seedTeachers(temp)
         var profile = Fixtures.brand()
         profile.criticBriefUse = use
@@ -76,7 +76,7 @@ struct CriticBriefContextTests {
     }
 
     @Test func onBuildsOnceThenUsesCacheWithoutAnAgreementDecision() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         _ = try await seedTeachers(temp)
         var profile = Fixtures.brand()
         profile.criticBriefUse = .on
@@ -109,7 +109,7 @@ struct CriticBriefContextTests {
     }
 
     @Test func automaticUsesOnlyTheMeasuredCachedBrief() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let pool = try await seedTeachers(temp)
         let profile = Fixtures.brand()
         let store = CriticBriefStore(profile: profile, root: temp.directory.url)

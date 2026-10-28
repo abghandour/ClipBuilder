@@ -6,7 +6,7 @@ import Testing
 extension MultitrackRenderTests {
     @Test("blurred fill is deterministic across cold and warm caches and matches the preview at both seams")
     func blurredFillMatchesPreview() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let png = temp.directory.url.appendingPathComponent("landscape.png")
         try FitTestImage.write(FitTestImage.source(), to: png)
         let source = temp.directory.url.appendingPathComponent("landscape.mp4")
@@ -110,7 +110,7 @@ extension MultitrackRenderTests {
 
     @Test("podcast extraction strips baked bars without changing source clocks; nil keeps the source")
     func podcastFitStripsBakedBars() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let source = temp.directory.url.appendingPathComponent("bars.mp4")
         try await FFmpeg.run(["-y", "-f", "lavfi", "-i", "color=c=0x80a0c0:s=640x360:r=30",
             "-f", "lavfi", "-i", "anullsrc=r=44100:cl=stereo", "-vf", "pad=640:640:0:140:black",

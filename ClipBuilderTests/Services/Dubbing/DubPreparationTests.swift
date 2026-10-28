@@ -117,7 +117,7 @@ struct DubPreparationTests {
     }
 
     @Test func gateRunsForEachSourceAndKeysRowsByClip() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let videoID = try await temp.seedVideo()
         let scenes = try await temp.database.fetchScenes(includeExcluded: true)
         var clip = TimelineClip(); clip.sceneID = try #require(scenes.first).id; clip.duration = 2

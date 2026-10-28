@@ -6,7 +6,7 @@ struct SyncEngineTests {
     @Test("Video person correction queues every synced reference table and no other video's rows",
           arguments: [false, true])
     func personReassignmentOutbox(nobody: Bool) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let fixture = try await Fixtures.personCorrection(in: temp)
         try await temp.database.bindSync(to: SyncScope(teamID: UUID(), profileID: UUID()))
         let raw = try SQLiteConnection(path: temp.path.path)

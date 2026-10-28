@@ -27,7 +27,7 @@ struct PodcastHighlightIntegrationTests {
     }
 
     @Test func sidebarPreparationDoesNotCreateOrRenderBeforeReview() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand(name: "PodcastReviewTests")
         let input = try await seed(temp, profile: profile)
         let stub = try StubAI(response: "{}")
@@ -55,7 +55,7 @@ struct PodcastHighlightIntegrationTests {
     }
 
     @Test func formBriefDoesNotSilentlyOverrideConfirmedControls() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand(name: "PodcastFormRulesTests")
         let input = try await seed(temp, profile: profile)
         let stub = try StubAI(response: "{}")
@@ -77,7 +77,7 @@ struct PodcastHighlightIntegrationTests {
     }
 
     @Test func builderCreatesSeparateTimelinesWithoutRenderingOrReplacingOpenDocument() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand(name: "PodcastBuilderTests")
         let input = try await seed(temp, profile: profile)
         let stub = try StubAI(response: "{}")
@@ -104,7 +104,7 @@ struct PodcastHighlightIntegrationTests {
         #expect(try await temp.database.fetchGeneratedVideos(projectID: input.project).isEmpty)
     }
     @Test func emptyBuilderFallsBackToOnlyAnalyzedPodcast() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand(name: "PodcastFallbackTests")
         let input = try await seed(temp, profile: profile)
         let other = try await temp.seedVideo(sceneCount: 0)
@@ -121,7 +121,7 @@ struct PodcastHighlightIntegrationTests {
     }
 
     @Test func multiplePinnedPodcastsListFilenamesAndAcceptRequestFragment() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand(name: "PodcastChoiceTests")
         let first = try await seed(temp, profile: profile, filename: "Interview Modestino.mp4")
         let second = try await seed(temp, profile: profile, filename: "Interview Alex.mp4")
@@ -148,7 +148,7 @@ struct PodcastHighlightIntegrationTests {
     }
 
     @Test func renderRefusalKeepsPendingReviewWithMessage() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand(name: "PodcastRenderGuardTests")
         let input = try await seed(temp, profile: profile)
         let stub = try StubAI(response: "{}")
@@ -174,7 +174,7 @@ struct PodcastHighlightIntegrationTests {
 
 
     @Test func reviewCarriesExplicitCameraAndBRollRequest() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand(name: "PodcastControlsTests")
         let input = try await seed(temp, profile: profile, filename: "Modestino.mp4")
         let stub = try StubAI(response: "{}")
@@ -190,7 +190,7 @@ struct PodcastHighlightIntegrationTests {
     }
 
     @Test func singleReelBRollControlsReachEditableTimeline() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand(name: "SingleReelBRollTests")
         let input = try await seed(temp, profile: profile)
         let other = try await temp.seedVideo(sceneCount: 1)
@@ -227,7 +227,7 @@ struct PodcastHighlightIntegrationTests {
 
 
     @Test func singleReelUsesOnePlacementCallAcrossSourceSpans() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand(name: "SingleReelPlacementTests")
         let input = try await seed(temp, profile: profile, filename: "Podcast.mp4")
         let other = try await temp.seedVideo(sceneCount: 1)
@@ -272,7 +272,7 @@ struct PodcastHighlightIntegrationTests {
 
     @Test(arguments: ["podcast", "interview"])
     func plainSingleReelKeepsOriginalTimeline(_ preset: String) async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand()
         let input = try await seed(temp, profile: profile)
         let other = try await temp.seedVideo(sceneCount: 1)
@@ -305,7 +305,7 @@ struct PodcastHighlightIntegrationTests {
     }
 
     @Test func critiqueVersionsReusePlacementsAndInvalidateChangedRequests() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand()
         let input = try await seed(temp, profile: profile)
         let other = try await temp.seedVideo(sceneCount: 1)
@@ -365,7 +365,7 @@ struct PodcastHighlightIntegrationTests {
     }
 
     @Test func renderKeyCoversEveryInputAndFindsTheReelStillOnDisk() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand(name: "RenderKeyTests")
         let input = try await seed(temp, profile: profile)
         var options = WizardOptions()
@@ -437,7 +437,7 @@ struct PodcastHighlightIntegrationTests {
     }
 
     @Test func sourceContextLoadsOncePerDistinctRecording() async throws {
-        let temp = try TempDatabase()
+        let temp = try await TempDatabase()
         let profile = Fixtures.brand()
         let first = try await seed(temp, profile: profile, filename: "First.mp4")
         let second = try await seed(temp, profile: profile, filename: "Second.mp4")
