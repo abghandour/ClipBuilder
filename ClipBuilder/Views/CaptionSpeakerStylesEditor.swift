@@ -33,11 +33,14 @@ struct CaptionSpeakerStylesEditor: View {
                 FormCaption("Looking up who appears in the footage…")
             }
             ForEach(listed) { person in
-                HStack(spacing: Theme.spaceS) {
-                    PersonFaceAvatar(person: person, size: 28)
-                    Text(person.displayName)
-                        .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: Theme.spaceS)
+                HStack(spacing: Theme.spaceM) {
+                    // The person is the row's label: same column as the other labels.
+                    HStack(spacing: Theme.spaceS) {
+                        PersonFaceAvatar(person: person, size: 28)
+                        Text(person.displayName)
+                            .lineLimit(1).truncationMode(.tail)
+                    }
+                    .frame(width: SettingsRowMetrics.labelWidth, alignment: .trailing)
                     CaptionPositionPicker(selection: positionSelection(for: person.key), runLabel: "Run position")
                         .pickerStyle(.menu).labelsHidden().lineLimit(1).fixedSize()
                         .disabled(effectiveOrdinals[person.key] == nil)

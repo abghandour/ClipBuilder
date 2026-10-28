@@ -83,6 +83,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var fixedOverlayDuration: Double?
     var fixedOverlayTexts: [String]?
     var fixedOverlayPosition: String?
+    var framing: Framing?
     var fixedOverlayEdits: OverlayEdits?
     var introBumperPath: String?
     var outroBumperPath: String?
@@ -144,6 +145,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         case fixedOverlayDuration
         case fixedOverlayTexts
         case fixedOverlayPosition
+        case framing
         case fixedOverlayEdits
         case introBumperPath
         case outroBumperPath
@@ -153,6 +155,65 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         case lookPreset
         case lookIntensity
     }
+    /// Legacy controls remain readable; new snapshots carry only Framing.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(renderSettings, forKey: .renderSettings)
+        try c.encodeIfPresent(pacing, forKey: .pacing)
+        try c.encodeIfPresent(useMusic, forKey: .useMusic)
+        try c.encodeIfPresent(muteSource, forKey: .muteSource)
+        try c.encodeIfPresent(musicFolder, forKey: .musicFolder)
+        try c.encodeIfPresent(musicTrack, forKey: .musicTrack)
+        try c.encodeIfPresent(addCaptions, forKey: .addCaptions)
+        try c.encodeIfPresent(enableTextOverlays, forKey: .enableTextOverlays)
+        try c.encodeIfPresent(strikeStats, forKey: .strikeStats)
+        try c.encodeIfPresent(strikeUnits, forKey: .strikeUnits)
+        try c.encodeIfPresent(strikeSpeedCallouts, forKey: .strikeSpeedCallouts)
+        try c.encodeIfPresent(strikeGrapplingCard, forKey: .strikeGrapplingCard)
+        try c.encodeIfPresent(strikeRoundCard, forKey: .strikeRoundCard)
+        try c.encodeIfPresent(nameTagsOnly, forKey: .nameTagsOnly)
+        try c.encodeIfPresent(nameTags, forKey: .nameTags)
+        try c.encodeIfPresent(nameTagContent, forKey: .nameTagContent)
+        try c.encodeIfPresent(nameTagStyle, forKey: .nameTagStyle)
+        try c.encodeIfPresent(nameTagStyleID, forKey: .nameTagStyleID)
+        try c.encodeIfPresent(nameTagPosition, forKey: .nameTagPosition)
+        try c.encodeIfPresent(safeAreaOnly, forKey: .safeAreaOnly)
+        try c.encodeIfPresent(safeAreaPlatforms, forKey: .safeAreaPlatforms)
+        try c.encodeIfPresent(captionPosition, forKey: .captionPosition)
+        try c.encodeIfPresent(speakerCaptionPositions, forKey: .speakerCaptionPositions)
+        try c.encodeIfPresent(captionStyleID, forKey: .captionStyleID)
+        try c.encodeIfPresent(captionLanguage, forKey: .captionLanguage)
+        try c.encodeIfPresent(dubLanguage, forKey: .dubLanguage)
+        try c.encodeIfPresent(pinnedOverlayTemplate, forKey: .pinnedOverlayTemplate)
+        try c.encodeIfPresent(overlayStyle, forKey: .overlayStyle)
+        try c.encodeIfPresent(overlayAnimation, forKey: .overlayAnimation)
+        try c.encodeIfPresent(overlayPlacement, forKey: .overlayPlacement)
+        try c.encodeIfPresent(allowedTransitions, forKey: .allowedTransitions)
+        try c.encodeIfPresent(useBRoll, forKey: .useBRoll)
+        try c.encodeIfPresent(brollInstructions, forKey: .brollInstructions)
+        try c.encodeIfPresent(includeIntroBumper, forKey: .includeIntroBumper)
+        try c.encodeIfPresent(includeOutroBumper, forKey: .includeOutroBumper)
+        try c.encodeIfPresent(includeMiddleBumper, forKey: .includeMiddleBumper)
+        try c.encodeIfPresent(includeWatermark, forKey: .includeWatermark)
+        try c.encodeIfPresent(includeHeadline, forKey: .includeHeadline)
+        try c.encodeIfPresent(includeOutro, forKey: .includeOutro)
+        try c.encodeIfPresent(localHashtags, forKey: .localHashtags)
+        try c.encodeIfPresent(fixedOverlayTemplate, forKey: .fixedOverlayTemplate)
+        try c.encodeIfPresent(fixedOverlayStart, forKey: .fixedOverlayStart)
+        try c.encodeIfPresent(fixedOverlayDuration, forKey: .fixedOverlayDuration)
+        try c.encodeIfPresent(fixedOverlayTexts, forKey: .fixedOverlayTexts)
+        try c.encodeIfPresent(fixedOverlayPosition, forKey: .fixedOverlayPosition)
+        try c.encodeIfPresent(framing ?? WizardOptions.merge(step1: WizardStep1Options(), step2: self).requestedFraming, forKey: .framing)
+        try c.encodeIfPresent(fixedOverlayEdits, forKey: .fixedOverlayEdits)
+        try c.encodeIfPresent(introBumperPath, forKey: .introBumperPath)
+        try c.encodeIfPresent(outroBumperPath, forKey: .outroBumperPath)
+        try c.encodeIfPresent(watermarkOverlayTemplate, forKey: .watermarkOverlayTemplate)
+        try c.encodeIfPresent(watermarkOpacity, forKey: .watermarkOpacity)
+        try c.encodeIfPresent(transitionChoice, forKey: .transitionChoice)
+        try c.encodeIfPresent(lookPreset, forKey: .lookPreset)
+        try c.encodeIfPresent(lookIntensity, forKey: .lookIntensity)
+    }
+
 
 }
 
@@ -241,6 +302,7 @@ nonisolated extension WizardOptions {
         result.fixedOverlayDuration = fixedOverlayDuration
         result.fixedOverlayTexts = fixedOverlayTexts
         result.fixedOverlayPosition = fixedOverlayPosition
+        result.framing = framing
         result.fixedOverlayEdits = fixedOverlayEdits
         result.introBumperPath = introBumperPath
         result.outroBumperPath = outroBumperPath
@@ -334,6 +396,7 @@ nonisolated extension WizardOptions {
         result.fixedOverlayDuration = step2.fixedOverlayDuration
         result.fixedOverlayTexts = step2.fixedOverlayTexts
         result.fixedOverlayPosition = step2.fixedOverlayPosition
+        result.framing = step2.framing ?? base.framing
         result.fixedOverlayEdits = step2.fixedOverlayEdits
         result.introBumperPath = step2.introBumperPath
         result.outroBumperPath = step2.outroBumperPath

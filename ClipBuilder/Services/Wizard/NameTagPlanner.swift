@@ -216,6 +216,20 @@ nonisolated enum NameTagPlanner {
     /// second speaker-turn planner: its cut times could disagree with the picture.
     static func areas(plan: CropRecipePlanner.Plan, tiles: [PodcastTile], roster: [VideoPersonRecord],
                       layouts: [ScreenCropLayout], canvas: CGSize, duration: Double, sourceAspect: Double = 1) -> [Area] {
+        if let layout = plan.snapshot, let segments = plan.areas {
+            return layout.areas.map { area in
+                let box = area.bounds
+                let rect = CGRect(x: box.x * canvas.width, y: box.y * canvas.height,
+                    width: box.w * canvas.width, height: box.h * canvas.height)
+                let spans = segments.filter { $0.areaID == area.id }.compactMap { segment -> Span? in
+                    guard segment.sourcePath == plan.programSource?.url.path, let region = segment.region,
+                          let tile = tiles.first(where: { $0.contains(x: region.xFrac + region.wFrac / 2, y: region.yFrac + region.hFrac / 2) }) else { return nil }
+                    let start = segment.timelineStart ?? 0
+                    return Span(start: start, end: start + segment.duration, personKey: tile.personKey)
+                }
+                return Area(rect: rect, spans: spans)
+            }
+        }
         let rectangles: [CGRect]
         if plan.layout.isFullScreen {
             rectangles = [CGRect(origin: .zero, size: canvas)]

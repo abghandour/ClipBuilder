@@ -15,7 +15,7 @@ nonisolated enum InterviewPunchIn: String, Codable, CaseIterable, Sendable {
 
 /// Static interview shots and slow moves, independent of decoding and persistence.
 nonisolated enum InterviewFocusPlanning {
-    static let moveSeconds = 0.8
+    static let moveSeconds = FramingHolds.glide
     static let deadZoneCenter = 0.05
     static let deadZoneHeight = 0.08
     /// Room the two-shot keeps around the VIP's face, as fractions of the

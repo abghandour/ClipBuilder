@@ -32,7 +32,8 @@ struct PodcastHighlightTimelineTests {
             let document = PodcastHighlightTimeline.build(candidate: candidate, video: video, scenes: [], turns: turns,
                 roster: [], segments: segments, layouts: ScreenCropStore.builtIn, settings: RenderSettings(), tagText: [:], log: { _ in })
             let main = document.videoTrack.filter { !$0.isCutaway }
-            #expect(main.count == (framing == .talker ? 1 : 2))
+            // Saved talker-and-* candidates convert to Speaker focus (one tracked track).
+            #expect(main.count == 1)
             #expect(main.filter { !$0.muted }.count == 1)
             #expect(main.allSatisfy { $0.cameraPath != nil && $0.captions == "none" && $0.duration == 10 })
             let cuts = document.videoTrack.filter(\.isCutaway)

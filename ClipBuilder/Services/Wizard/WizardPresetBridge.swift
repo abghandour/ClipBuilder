@@ -12,18 +12,7 @@ nonisolated enum WizardPresetBridge {
         render.quality = settings.quality
         render.preset = settings.preset
         fields["renderSettings"] = JSONSetting.dictionaryValue(render)
-        let focus = settings.cameraFocus.trimmingCharacters(in: .whitespacesAndNewlines)
-        fields["interviewZoom"] = .number(settings.interviewZoom)
-        fields["interviewZoomMoves"] = .bool(settings.interviewZoomMoves)
-        fields["interviewCuts"] = .bool(settings.resolvedInterviewCuts)
-        fields["interviewPunchIn"] = settings.interviewPunchIn.map(JSONSetting.string) ?? .null
-        if focus == WizardCameraFocus.original {
-            fields["podcastFraming"] = .string(PodcastFramingMode.original.rawValue)
-            fields["highlightFraming"] = .null
-        } else if !focus.isEmpty {
-            fields["podcastFraming"] = .string(PodcastFramingMode.followSpeaker.rawValue)
-            fields["highlightFraming"] = .string(focus)
-        }
+        fields["framing"] = .string(settings.framing.joined)
         fields["dubLanguage"] = settings.dub ? .string(settings.dubLanguage ?? DubLanguageChoices.defaultLanguage) : .string("")
         // Keep the remembered choice even when the toggle is off in an Express preset.
         fields["dub"] = .bool(settings.dub)
@@ -75,13 +64,22 @@ nonisolated enum WizardPresetBridge {
         }
         if fields["podcastFraming"]?.string == PodcastFramingMode.original.rawValue {
             settings.cameraFocus = WizardCameraFocus.original
+        } else if fields["podcastFraming"]?.string == PodcastFramingMode.splitZoom.rawValue {
+            settings.cameraFocus = CropRecipe.Kind.grid.rawValue
         } else if let framing = fields["highlightFraming"]?.string, CropRecipe.Kind(rawValue: framing) != nil {
             settings.cameraFocus = framing
+        } else if let focus = fields["cameraFocus"]?.string {
+            settings.cameraFocus = focus
         }
         if let zoom = fields["interviewZoom"]?.number { settings.interviewZoom = min(1, max(0, zoom)) }
         if let moves = fields["interviewZoomMoves"]?.bool { settings.interviewZoomMoves = moves }
         if let cuts = fields["interviewCuts"]?.bool { settings.interviewCuts = cuts }
         if let value = fields["interviewPunchIn"] { settings.interviewPunchIn = value.string }
+        if let value = fields["framing"] {
+            settings.framing = Framing.split(value.string) ?? value.decodeValue() ?? Framing()
+        } else if ["podcastFraming", "highlightFraming", "cameraFocus", "interviewZoom", "interviewZoomMoves", "interviewCuts", "interviewPunchIn", "framingCamera"].contains(where: { fields[$0] != nil }) {
+            settings.framing = settings.legacyFraming
+        }
         if let value = fields["dubLanguage"] {
             settings.dubLanguage = value.string.flatMap { $0.isEmpty ? nil : $0 }
             settings.dub = value.string?.isEmpty == false

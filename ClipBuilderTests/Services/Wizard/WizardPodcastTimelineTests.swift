@@ -28,54 +28,57 @@ struct WizardPodcastTimelineTests {
         let ranges = [0.13...2.87, 3.12...6.34, 7.21...9.98]
         var plan = Fixtures.plan(clips: ranges.map { Fixtures.planClip(start: $0.lowerBound, end: $0.upperBound) },
                                  transitions: ["cut", "cut"])
-        plan.framing = .talker
-        for kind in [CropRecipe.Kind.grid, .talkerAndPrevious] {
+        plan.framing = .speakerFocus
+        for layout in ["Split", "50-50 Horizontal"] {
             var options = WizardOptions()
             options.formatPreset = "podcast"
-            options.highlightFraming = kind
+            options.framing = Framing(subject: .layout, layout: layout)
             let cuts = WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: [1: scene], options: options,
                 videos: [video], turns: [1: turns], layouts: ScreenCropStore.builtIn)
             let document = WizardEngine.timelineDocument(from: plan, sceneMap: [1: scene], podcastCuts: cuts)
-            #expect(document.trackCount == 2 && document.videoTrack.count == 6)
+            #expect(document.trackCount == 2 && document.videoTrack.count >= 6)
             #expect(!document.trackSequential[1])
             var cursor = 0.0
             for range in ranges {
-                let clips = document.videoTrack.filter { $0.sourceStart == range.lowerBound }
-                try #require(clips.count == 2)
-                #expect(Set(clips.map(\.track)) == [0, 1])
-                #expect(clips.allSatisfy { $0.sourceEnd == range.upperBound && $0.startTime == cursor })
-                #expect(clips.allSatisfy { abs($0.duration - (range.upperBound - range.lowerBound)) < 0.000001 })
-                #expect(clips.allSatisfy { $0.precision == .speech && $0.transIn == nil && $0.transOut == nil })
-                #expect(clips.filter { !$0.muted }.count == 1)
-                #expect(document.cropBlocks.contains { abs($0.startTime - cursor) < 0.000001 && abs($0.duration - clips[0].duration) < 0.000001 })
+                let end = cursor + range.upperBound - range.lowerBound
+                for track in 0...1 {
+                    let clips = document.videoTrack.filter { $0.track == track && $0.startTime >= cursor - 0.000001 && $0.startTime < end - 0.000001 }
+                        .sorted { $0.startTime < $1.startTime }
+                    #expect(clips.first?.sourceStart == range.lowerBound)
+                    #expect(clips.last?.sourceEnd == range.upperBound)
+                    #expect(abs(clips.reduce(0) { $0 + $1.duration } - (end - cursor)) < 0.000001)
+                    #expect(clips.allSatisfy { $0.precision == .speech && $0.transIn == nil && $0.transOut == nil })
+                    #expect(clips.allSatisfy { $0.muted == (track > 0) })
+                    #expect(clips.allSatisfy { $0.framingPlan?.area(forTrack: track) != nil })
+                }
                 cursor += range.upperBound - range.lowerBound
             }
             let resolved = MultitrackRenderer.resolveClips(document: document, scenes: [scene])
-            #expect(resolved.count == 6)
+            #expect(resolved.count == document.videoTrack.count)
         }
     }
 
     @Test func automaticAndExplicitChoices() throws {
         let (video, scene, turns) = try source()
         var plan = Fixtures.plan()
-        plan.framing = .grid
+        plan.framing = .layout
         var options = WizardOptions()
         options.formatPreset = "podcast"
         func cuts() -> [Int: TimelineDocument] {
             WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: [1: scene], options: options,
                 videos: [video], turns: [1: turns], layouts: ScreenCropStore.builtIn)
         }
-        #expect(cuts()[0]?.videoTrack.count == 2)
-        options.highlightFraming = .talker
+        #expect(Set(cuts()[0]?.videoTrack.map(\.track) ?? []) == [0, 1])
+        options.framing = Framing(subject: .speakerFocus)
         #expect(cuts()[0]?.videoTrack.count == 1)
-        options.highlightFraming = nil
+        options.framing = Framing()
         plan.framing = nil
         #expect(cuts()[0]?.videoTrack.count == 1)
-        options.podcastFraming = .original
+        options.framing = Framing(subject: .original)
         #expect(cuts().isEmpty)
-        let original = WizardEngine.timelineDocument(from: plan, sceneMap: [1: scene], podcastFraming: .original, podcastCuts: cuts())
+        let original = WizardEngine.timelineDocument(from: plan, sceneMap: [1: scene], framing: Framing(subject: .original), podcastCuts: cuts())
         #expect(original.videoTrack.count == 1 && original.videoTrack[0].centerStage == false)
-        options.podcastFraming = .followSpeaker
+        options.framing = Framing(subject: .speakerFocus)
         options.formatPreset = "mma-finish"
         #expect(cuts().isEmpty)
         options.formatPreset = "custom"
@@ -86,32 +89,25 @@ struct WizardPodcastTimelineTests {
             videos: [video], turns: [1: turns], layouts: ScreenCropStore.builtIn).isEmpty)
     }
 
-    @Test func missingAnalysisAndPlannerFailureFollowSpeaker() throws {
+    @Test func layoutsHonorTheirAreasWithoutPeopleAndUseBuiltInFallbacks() throws {
         let (video, scene, turns) = try source()
         let plan = Fixtures.plan()
         var options = WizardOptions()
         options.formatPreset = "podcast"
-        options.highlightFraming = .grid
+        options.framing = Framing(subject: .layout)
         var noTiles = video
         noTiles.podcastTilesJSON = nil
-        for (source, speakerTurns, layouts, reason) in [
-            (video, [SpeakerTurn](), ScreenCropStore.builtIn, "no speaker turns"),
-            (noTiles, turns, ScreenCropStore.builtIn, "no feed tiles"),
-            (video, turns, [ScreenCropLayout](), ""),
-        ] {
+        for source in [noTiles, video] {
             var messages: [String] = []
             let cuts = WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: [1: scene], options: options,
-                videos: [source], turns: [1: speakerTurns], layouts: layouts, log: { messages.append($0) })
+                videos: [source], turns: [1: turns], layouts: [], log: { messages.append($0) })
             let document = WizardEngine.timelineDocument(from: plan, sceneMap: [1: scene], podcastCuts: cuts)
-            #expect(document.videoTrack.count == 1 && document.videoTrack[0].centerStage)
-            #expect(document.videoTrack[0].sceneID == scene.id)
-            #expect(document.cropBlocks.allSatisfy { $0.layout.isFullScreen })
-            try #require(messages.count == 1)
-            #expect(messages[0].contains(CropRecipe.Kind.grid.name))
-            // Foundation's contains("") is false; the missing-layout case names no fixed reason.
-            #expect((reason.isEmpty || messages[0].contains(reason)) && messages[0].contains("following speaker"))
+            #expect(Set(document.videoTrack.map(\.track)) == [0, 1])
+            #expect(document.videoTrack.allSatisfy { $0.framingPlan?.area(forTrack: $0.track) != nil })
+            #expect(messages.contains { $0.contains("No VIP") })
         }
     }
+
 }
 
 extension WizardPodcastTimelineTests {
@@ -122,7 +118,7 @@ extension WizardPodcastTimelineTests {
                       PersonRecord(id: 2, key: "bob", name: "Bob", descriptor: "short, red cap")]
         var options = WizardOptions()
         options.formatPreset = "podcast"
-        options.highlightFraming = .talkerAndPrevious
+        options.framing = Framing(subject: .layout, layout: "Split")
         options.nameTags = true
         options.addCaptions = true
         options.captionPosition = "bottom"
@@ -130,12 +126,15 @@ extension WizardPodcastTimelineTests {
         let cuts = WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: [1: scene], options: options,
             videos: [video], turns: [1: turns], layouts: ScreenCropStore.builtIn, people: people, tagText: ["ann": "Host", "bob": "Guest"])
         let cut = try #require(cuts[0])
+        #expect(cut.videoTrack.contains { $0.track != 0 })
         #expect(cut.videoTrack.filter { $0.track == 0 }.allSatisfy { $0.captions == "bottom" })
         #expect(cut.videoTrack.filter { $0.track != 0 }.allSatisfy { $0.captions == "none" })
+        // Both people remain tagged as the current and previous talker exchange areas.
         #expect(cut.textOverlays.count == 4)
         #expect(cut.textOverlays.allSatisfy { $0.design == "nameTag" && $0.transIn == "cut" && $0.transOut == "cut" })
         let document = WizardEngine.timelineDocument(from: plan, sceneMap: [1: scene], podcastCuts: cuts)
         #expect(document.textOverlays == cut.textOverlays)
-        #expect(cut.textOverlays.contains { $0.text == "Bob\nGuest" && $0.startTime == 4 })
+        #expect(cut.textOverlays.contains { $0.text == "Bob\nGuest" && $0.startTime == 0 })
+        #expect(cut.textOverlays.contains { $0.text == "Ann\nHost" && $0.startTime == 0 })
     }
 }

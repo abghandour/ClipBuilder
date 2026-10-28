@@ -105,4 +105,18 @@ struct WizardPreviewClipsTests {
             transcript: MiniWizardTranscript(rows: [], labels: [:], picks: []))
         #expect(WizardPreviewClips.kept(run: emptyRun, scenes: [other, own]).first?.range == 60...90)
     }
+
+    @Test func layoutPreviewCarriesReviewedBRollAndHashesChanges() {
+        var clip = Fixtures.planClip(sceneID: 1, start: 2, end: 9)
+        clip.brollCuts = [.init(start: 4, end: 6, sceneID: 20, sceneOffset: 3, reason: "Example", origin: .user)]
+        let run = MiniWizardRun(projectID: 1, video: Fixtures.video(), footageKind: .highlights, length: .automatic,
+            batchID: "layout", candidates: [candidate(10, name: "Kept", clips: [clip])], options: WizardOptions())
+        let previews = WizardPreviewClips.kept(run: run, scenes: [Fixtures.scene(id: 1)])
+        #expect(previews.first?.brollCuts == clip.brollCuts)
+        if var changed = previews.first {
+            changed.brollCuts = []
+            #expect(changed != previews.first)
+        }
+    }
+
 }

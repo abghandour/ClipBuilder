@@ -3,83 +3,35 @@ import Testing
 @testable import Clip_Builder
 
 struct CameraFocusChooserTests {
-    @Test func promptIncludesEveryExchangeAndOnlyAvailableLayouts() {
-        let exchanges = [
-            CameraFocusChooser.Exchange(id: 11, duration: 12,
-                speakers: [.init(name: "Ana", seconds: 3, turns: 1), .init(name: "João", seconds: 9, turns: 2)],
-                asker: "Ana", answerer: "João", transcript: "Por quê? Porque sim."),
-            CameraFocusChooser.Exchange(id: 22, duration: 30, speakers: [], transcript: "Outra troca.")
-        ]
-        let single = CameraFocusChooser.prompt(exchanges: exchanges, feeds: [11: 1, 22: 1], options: WizardOptions())
-        #expect(single.contains("id: 11") && single.contains("id: 22"))
-        #expect(single.contains("duration: 12.0s"))
-        #expect(single.contains("Ana: 25% talk time, 1 turns"))
-        #expect(single.contains("João: 75% talk time, 2 turns"))
-        #expect(single.contains("asks: Ana; answers: João"))
-        #expect(single.contains("Por quê? Porque sim."))
-        #expect(single.contains("recording feeds/tiles: 1"))
-        #expect(single.contains(CropRecipe.Kind.talker.summary))
-        for kind in CropRecipe.Kind.allCases where kind != .talker {
-            #expect(!single.contains(kind.rawValue))
-        }
-        let multi = CameraFocusChooser.prompt(exchanges: exchanges, feeds: [11: 2, 22: 3], options: WizardOptions())
-        for kind in CropRecipe.Kind.allCases where kind != .vip && kind != .vipBRoll && kind != .interview {
-            #expect(multi.contains(kind.rawValue) && multi.contains(kind.name) && multi.contains(kind.summary))
-        }
-        // VIP focus is offered only to exchanges whose recording has a VIP.
-        #expect(!multi.contains(CropRecipe.Kind.vip.summary))
-        #expect(!multi.contains(CropRecipe.Kind.vipBRoll.summary))
-        var withVIP = exchanges
-        withVIP[0].vipNames = ["João"]
-        let gated = CameraFocusChooser.prompt(exchanges: withVIP, feeds: [11: 2, 22: 3], options: WizardOptions())
-        #expect(gated.contains(CropRecipe.Kind.vip.summary) && gated.contains("VIP people: João"))
-        #expect(gated.contains(CropRecipe.Kind.vipBRoll.summary))
-        #expect(!gated.contains(CropRecipe.Kind.interview.summary))
-        withVIP[0].nonVIPPeople = 1
-        let interview = CameraFocusChooser.prompt(exchanges: withVIP, feeds: [11: 1, 22: 3], options: WizardOptions())
-        #expect(interview.contains(CropRecipe.Kind.interview.summary))
-        for feeds in [1, 2, 3] {
-            #expect(!CameraFocusChooser.allowedLayouts(feeds: feeds).contains(.vipBRoll))
-            #expect(CameraFocusChooser.allowedLayouts(feeds: feeds, hasVIP: true).contains(.vipBRoll))
-        }
+    @Test func promptIncludesEveryExchangeAndOnlyAvailableSubjects() {
+        let exchanges = [CameraFocusChooser.Exchange(id: 11, duration: 12,
+            speakers: [.init(name: "Ana", seconds: 3, turns: 1), .init(name: "João", seconds: 9, turns: 2)],
+            asker: "Ana", answerer: "João", transcript: "Por quê? Porque sim."),
+            CameraFocusChooser.Exchange(id: 22, duration: 30, speakers: [], transcript: "Outra troca.")]
+        let prompt = CameraFocusChooser.prompt(exchanges: exchanges, feeds: [11: 1, 22: 1], options: WizardOptions())
+        #expect(prompt.contains("id: 11") && prompt.contains("id: 22"))
+        #expect(prompt.contains("Ana: 25% talk time, 1 turns") && prompt.contains("João: 75% talk time, 2 turns"))
+        #expect(prompt.contains("asks: Ana; answers: João") && prompt.contains("Por quê? Porque sim."))
+        #expect(prompt.contains("speakerFocus") && prompt.contains("centerStage"))
+        #expect(!prompt.contains("vipFocus") && !prompt.contains("talker_and_previous"))
     }
 
-    @Test func interviewNeedsVIPAndOneOrTwoNonVIPPeopleRegardlessOfFeedCount() {
-        for feeds in [1, 2, 3, 4] {
-            for others in [0, 1, 2, 3] {
-                #expect(!CameraFocusChooser.allowedLayouts(feeds: feeds, nonVIPPeople: others).contains(.interview))
-                #expect(CameraFocusChooser.allowedLayouts(feeds: feeds, hasVIP: true, nonVIPPeople: others)
-                    .contains(.interview) == (others == 1 || others == 2))
-            }
-        }
+    @Test(arguments: VideoType.allCases)
+    func chooserRestrictsSubjectsToTheKind(type: VideoType) {
+        let allowed = CameraFocusChooser.allowedSubjects(type: type, hasTurns: true, hasVIP: true)
+        #expect(allowed == FramingMenu.allowed(type: type).filter { $0 != .auto })
+        let missing = CameraFocusChooser.allowedSubjects(type: type, hasTurns: false, hasVIP: false)
+        #expect(!missing.contains(.speakerFocus))
+        #expect(type == .fight || !missing.contains(.vipFocus))
+        #expect(missing.contains(CameraFocusChooser.fallback(type: type, allowed: missing)))
     }
 
-    @Test func parserValidatesIDsAndLayouts() {
-        let response = """
-        ```json
-        {"choices":[
-          {"id":11,"framing":"talker_and_previous","reason":"Keep the questioner visible."},
-          {"id":22,"framing":"grid","reason":"Both feeds matter."},
-          {"id":999,"framing":"talker","reason":"Unknown exchange."},
-          {"id":33,"framing":"invented","reason":"Unknown layout."}
-        ]}
-        ```
-        """
-        let choices = CameraFocusChooser.parse(response, ids: [11, 22, 33], allowed: [.talker, .talkerAndPrevious])
-        #expect(choices.count == 1)
-        #expect(choices[11]?.kind == .talkerAndPrevious)
-        #expect(choices[11]?.reason == "Keep the questioner visible.")
-        #expect(CameraFocusChooser.parse("invalid", ids: [11], allowed: [.talker]).isEmpty)
-        #expect(CameraFocusChooser.parse(response, ids: [22], allowed: [.grid])[22]?.kind == .grid)
-    }
-
-    @Test(arguments: [0, 1, 2, 3, 5])
-    func fallbackUsesSpeakerCountAndAvailableFeeds(speakers: Int) {
-        let expected: CropRecipe.Kind = speakers >= 3 ? .talkerAndRotation : speakers == 2 ? .talkerAndPrevious : .talker
-        #expect(CameraFocusChooser.fallback(speakers: speakers,
-            allowed: CameraFocusChooser.allowedLayouts(feeds: 3)) == expected)
-        #expect(CameraFocusChooser.fallback(speakers: speakers,
-            allowed: CameraFocusChooser.allowedLayouts(feeds: 1)) == .talker)
+    @Test func parserValidatesIDsSubjectsAndReasons() {
+        let response = #"{"choices":[{"id":11,"framing":"speakerFocus","reason":"Follow the answer."},{"id":22,"framing":"vipFocus","reason":"Unavailable."},{"id":999,"framing":"original","reason":"Unknown."},{"id":33,"framing":"auto","reason":"Unresolved."}]}"#
+        let choices = CameraFocusChooser.parse(response, ids: [11, 22, 33], allowed: [.speakerFocus, .original])
+        #expect(choices.count == 1 && choices[11]?.kind == .speakerFocus)
+        #expect(choices[11]?.reason == "Follow the answer.")
+        #expect(CameraFocusChooser.parse("invalid", ids: [11], allowed: [.original]).isEmpty)
     }
 
     @Test func evidenceUsesTrimmedSpeechAndOriginalOpeningAndClosing() {

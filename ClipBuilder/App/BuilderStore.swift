@@ -730,6 +730,7 @@ final class BuilderTimelineModel {
                  highlightTalker: Bool = false) -> ComposeResult {
         guard source.duration.isFinite, source.duration > 0, !plan.slots.isEmpty else { return ComposeResult(clips: []) }
         registerUndo("Compose")
+        document.trackCount = max(document.trackCount, min(TimelineDocument.maxTracks, plan.slots.count))
         // A sequential first track packs its clips back to back, so the
         // composition starts where that track ends; otherwise at the
         // playhead. The other cells are freed from packing so they line up
@@ -738,45 +739,53 @@ final class BuilderTimelineModel {
             ? (clips(inTrack: 0).map { $0.startTime + $0.duration }.max() ?? 0)
             : Self.snap(time ?? playhead)
         let length = (source.duration * 10).rounded() / 10
-        // VIP changes are speech-precise adjacent clips so each feed can track independently.
-        if plan.slots.count == 1, let spans = plan.slots[0].trackingSpans, !spans.isEmpty {
+        if let areas = plan.areas, let layout = plan.snapshot {
             var ids: [UUID] = []
-            let baseSourceStart: Double
-            switch source {
-            case .video: baseSourceStart = 0
-            case .scene(let scene): baseSourceStart = scene.startTime
+            // The crop block comes first: the document derives its track count
+            // from the widest block, and a clip cannot land on a track that
+            // has no area at its time.
+            if !plan.layout.isFullScreen {
+                _ = addCropBlock(plan.layout, at: start, duration: length)
             }
-            for span in spans {
-                var piece = plan
-                piece.slots[0].trackingSpans = nil
-                piece.slots[0].path = nil
-                piece.slots[0].window = nil
-                piece.slots[0].region = span.region
-                piece.slots[0].focus = span.focus.map { ($0.x, $0.y) }
-                let pieceSource: ComposeSource
-                switch source {
-                case .video(var video):
-                    video.duration = span.end - span.start
-                    pieceSource = .video(video)
-                case .scene(var scene):
-                    scene.startTime = baseSourceStart + span.start
-                    scene.endTime = baseSourceStart + span.end
-                    pieceSource = .scene(scene)
-                }
-                let result = compose(piece, source: pieceSource, at: start + span.start, highlightTalker: false)
-                for id in result.clips {
-                    updateClip(id) {
-                        $0.sourceStart = baseSourceStart + span.start
-                        $0.sourceEnd = baseSourceStart + span.end
-                        $0.startTime = start + span.start
-                        $0.duration = span.end - span.start
+            document.trackCount = max(document.trackCount, min(TimelineDocument.maxTracks, layout.areas.count))
+            for (track, area) in layout.areas.enumerated() where track < TimelineDocument.maxTracks {
+                if document.trackSequential[track] { setTrackSequential(false, track: track) }
+                for segment in areas where segment.areaID == area.id {
+                    let offset = segment.timelineStart ?? 0
+                    var video = plan.sources.first { $0.url.path == segment.sourcePath } ?? plan.programSource
+                    if video == nil, case .video(let value) = source { video = value }
+                    guard var video else { continue }
+                    video.path = segment.sourcePath
+                    video.filename = URL(fileURLWithPath: segment.sourcePath).lastPathComponent
+                    let sourceDuration = max(video.duration, segment.start + segment.duration)
+                    video.duration = segment.duration
+                    let before = Set(document.videoTrack.map(\.uid))
+                    addVideo(video, at: start + offset, track: track, snapped: false)
+                    guard let uid = document.videoTrack.first(where: { !before.contains($0.uid) })?.uid else { continue }
+                    updateClip(uid) {
+                        $0.sourceStart = segment.start
+                        $0.sourceEnd = segment.start + segment.duration
+                        $0.startTime = start + offset
+                        $0.duration = segment.duration
                         $0.precision = .speech
+                        $0.sceneFullDuration = sourceDuration
+                        $0.framingPlan = plan.framingPlan
+                        $0.muted = track > 0
                         $0.transIn = nil
                         $0.transOut = nil
+                        $0.cameraPath = nil
+                        $0.centerStage = false
+                        $0.areaRegion = segment.region
+                        $0.areaFocus = segment.focus
+                        if case .static(let window) = segment.framing { $0.areaWindow = window ?? FreeCropRect() }
+                        if track == 0, let program = plan.programSource, let range = plan.programRange {
+                            $0.framingProgramAudio = FramingProgramAudio(path: program.url.path, start: range.lowerBound + offset, visualStart: segment.start)
+                        }
                     }
+                    ids.append(uid)
                 }
-                ids += result.clips
             }
+            documentDidChange()
             return ComposeResult(clips: ids, start: start)
         }
         var block: UUID?
@@ -814,7 +823,32 @@ final class BuilderTimelineModel {
                     if plan.layout.isFullScreen { $0.centerStage = true }
                 }
             }
-            clips.append(uid)
+            if let spans = slot.trackingSpans, !spans.isEmpty {
+                let template = document.videoTrack.first { $0.uid == uid }
+                document.videoTrack.removeAll { $0.uid == uid }
+                let baseSourceStart: Double
+                switch source {
+                case .video: baseSourceStart = 0
+                case .scene(let scene): baseSourceStart = scene.startTime
+                }
+                for span in spans {
+                    guard var piece = template else { continue }
+                    piece.uid = UUID()
+                    piece.sourceStart = baseSourceStart + span.start
+                    piece.sourceEnd = baseSourceStart + span.end
+                    piece.startTime = start + span.start
+                    piece.duration = span.end - span.start
+                    piece.areaRegion = span.region
+                    piece.areaFocus = span.focus
+                    piece.areaWindow = nil
+                    piece.cameraPath = nil
+                    piece.precision = .speech
+                    piece.transIn = nil
+                    piece.transOut = nil
+                    document.videoTrack.append(piece)
+                    clips.append(piece.uid)
+                }
+            } else { clips.append(uid) }
             if highlightTalker, !plan.layout.isFullScreen, !slot.talking.isEmpty {
                 clips.append(contentsOf: outline(uid, spans: slot.talking))
             }

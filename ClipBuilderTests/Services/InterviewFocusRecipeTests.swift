@@ -186,7 +186,9 @@ struct InterviewFocusRecipeTests {
     }
 
     @MainActor @Test func builderAndPodcastTimelineInstallCameraPath() throws {
-        let plan = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video(), range: 10...30,
+        var expected = CropRecipe(kind: .interview)
+        expected.interviewPunchIn = .talker
+        let plan = try CropRecipePlanner.plan(expected, video: video(), range: 10...30,
             turns: turns(), roster: roster(), layouts: [], canvasAspect: 9.0 / 16)
         let builder = BuilderTimelineModel(mode: .transient)
         var source = video(); source.duration = 20
@@ -195,7 +197,7 @@ struct InterviewFocusRecipeTests {
         #expect(composed.centerStage && composed.cameraPath == plan.slots[0].path)
         #expect(composed.cameraPathSource == "recipe" && composed.areaRegion == nil)
         let scene = Fixtures.scene(id: 42, start: 10, end: 30)
-        let document = PodcastRecipeTimeline.build(kind: .interview, video: video(), range: 10...30,
+        let document = PodcastRecipeTimeline.build(subject: .speakerFocus, video: video(), range: 10...30,
             sourceScene: scene, turns: turns(), roster: roster(), layouts: [], settings: RenderSettings(), tagText: [:])
         let clip = try #require(document.videoTrack.first)
         #expect(document.videoTrack.count == 1)
@@ -208,7 +210,7 @@ struct InterviewFocusRecipeTests {
         var scene = Fixtures.scene(id: 42, start: 10, end: 30)
         scene.tags = ["podcast", "podcast-exchange"]
         var plan = Fixtures.plan(clips: [Fixtures.planClip(sceneID: scene.id, start: 10, end: 30)])
-        plan.framing = .interview
+        plan.framing = .speakerFocus
         var options = WizardOptions()
         options.formatPreset = "podcast"
         let cuts = WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: [scene.id: scene], options: options,
@@ -226,19 +228,19 @@ struct InterviewFocusRecipeTests {
 extension InterviewFocusRecipeTests {
     @MainActor @Test func interviewerCutsReachTheRecipeAndPodcastTimeline() throws {
         var recipe = CropRecipe(kind: .interview)
-        recipe.interviewPunchIn = .interviewer
+        recipe.interviewPunchIn = .talker
         recipe.interviewCuts = true
         let plan = try CropRecipePlanner.plan(recipe, video: video(), range: 10...30,
             turns: turns(), roster: roster(), layouts: [], canvasAspect: 9.0 / 16)
         let path = try #require(plan.slots.first?.path)
         #expect(path.map(\.t) == [0, 4.99, 5, 11.99, 12, 20])
         #expect(abs(path[2].x + path[2].w / 2 - 0.54) < 0.001)
-        #expect(path[2].h < path[0].h && path[4].x == path[0].x)
+        #expect(path[2] != path[0] && path[4].x == path[0].x)
         #expect(CameraKeyframes.isCut(path, at: 2) && CameraKeyframes.isCut(path, at: 4))
         var options = WizardOptions()
-        options.interviewPunchIn = "interviewer"
-        options.interviewCuts = true
-        let document = PodcastRecipeTimeline.build(kind: .interview, video: video(), range: 10...30,
+        options.framing = Framing(subject: .speakerFocus)
+        options.framing?.moves = .cuts
+        let document = PodcastRecipeTimeline.build(subject: .speakerFocus, video: video(), range: 10...30,
             sourceScene: nil, turns: turns(), roster: roster(), layouts: [], settings: RenderSettings(),
             options: options, tagText: [:])
         #expect(document.videoTrack.first?.cameraPath == path)

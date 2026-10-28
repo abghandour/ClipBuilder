@@ -1,5 +1,4 @@
 import Foundation
-import Vision
 
 /// Headless linear render engine — the Swift port of video.py's wizard path:
 /// trim → normalize to 1080x1920@30 → concat with xfade transitions → music
@@ -82,13 +81,6 @@ actor RenderEngine {
         var animation: String?
     }
 
-    /// How a wide (landscape) source fills the portrait frame.
-    nonisolated enum WideTreatment: Sendable {
-        case none                 // letterbox/normalize
-        case autoCrop(Double)     // 9:16 window at the given x fraction
-        case split                // left/right halves stacked top/bottom
-    }
-
     /// Baked-in letterbox detection result: the sub-rect of the source that
     /// holds real footage (screen recordings and reposts bake black bars into
     /// the pixels), as frame fractions with a top-left origin.
@@ -111,7 +103,6 @@ actor RenderEngine {
     /// alpha-masked with it and composited over black, so only the named
     /// area of the clip shows.
     func extractClip(source: URL, start: Double, duration: Double,
-                     wide: WideTreatment = .none,
                      contentBox: ContentBox? = nil,
                      overlays: [ClipOverlay] = [],
                      effect: EffectSpec? = nil,
@@ -170,28 +161,7 @@ actor RenderEngine {
             filters.append(String(format: "%@setpts=PTS/%.4f[speed]", sourceStream, speed))
             sourceStream = "[speed]"
         }
-        switch wide {
-        case .none:
-            filters.append("\(sourceStream)\(Self.normalizeFilter)\(baseLabel)")
-        case .autoCrop(let xFraction):
-            // A column at the canvas aspect (portrait on the default 9:16),
-            // never wider than the source itself.
-            let aspect = RenderContext.settings.aspectRatio
-            filters.append(String(format: "%@crop='min(iw\\,ih*%.5f)':ih:(iw-min(iw\\,ih*%.5f))*%.4f:0," +
-                                  "scale=%d:%d,setsar=1,fps=30%@",
-                                  sourceStream, aspect, aspect, xFraction,
-                                  Self.outputWidth, Self.outputHeight, baseLabel))
-        case .split:
-            let half = Self.outputHeight / 2
-            filters.append("""
-            \(sourceStream)split=2[left][right];\
-            [left]crop=iw/2:ih:0:0,scale=\(Self.outputWidth):\(half):force_original_aspect_ratio=increase,\
-            crop=\(Self.outputWidth):\(half)[top];\
-            [right]crop=iw/2:ih:iw/2:0,scale=\(Self.outputWidth):\(half):force_original_aspect_ratio=increase,\
-            crop=\(Self.outputWidth):\(half)[bottom];\
-            [top][bottom]vstack,setsar=1,fps=30\(baseLabel)
-            """)
-        }
+        filters.append("\(sourceStream)\(Self.normalizeFilter)\(baseLabel)")
         if !lookFragment.isEmpty {
             filters.append("[framed]\(lookFragment)\(framedLabel)")
         }
@@ -214,41 +184,6 @@ actor RenderEngine {
         arguments += ["-t", String(format: "%.2f", duration)]
         try await FFmpeg.run(arguments + FFmpeg.encodeArgs + [output.path], timeout: 900,
             capture: .boundedStderrTail(), purpose: "extract clip: framing, look and overlays")
-    }
-
-    /// A screen-crop layout block: every entry is a normalized 1080×1920
-    /// clip already framed into its area, paired with the area's mask PNG.
-    /// Each is alpha-masked and stacked over black; the first entry's audio
-    /// is the block's audio. Shorter entries hold their last frame.
-    func compositeAreas(_ entries: [(clip: URL, mask: URL)], duration: Double,
-                        output: URL) async throws {
-        guard !entries.isEmpty else { throw AIError.unusableResponse("A layout block needs at least one area clip.") }
-        let w = Self.outputWidth
-        let h = Self.outputHeight
-        var arguments: [String] = ["-y", "-f", "lavfi", "-i",
-                                   String(format: "color=c=black:s=%dx%d:r=30:d=%.3f", w, h, duration)]
-        var filters: [String] = []
-        var previous = "[0:v]"
-        for (index, entry) in entries.enumerated() {
-            let clipIndex = 1 + index * 2
-            let maskIndex = clipIndex + 1
-            arguments += await FFmpeg.intermediateDecodeArguments(for: entry.clip)
-            arguments += ["-i", entry.clip.path,
-                          "-loop", "1", "-t", String(format: "%.3f", duration), "-i", entry.mask.path]
-            filters.append("[\(maskIndex):v]format=gray,scale=\(w):\(h)[mk\(index)]")
-            filters.append("[\(clipIndex):v]scale=\(w):\(h),setsar=1,fps=30[v\(index)]")
-            filters.append("[v\(index)][mk\(index)]alphamerge[am\(index)]")
-            let outLabel = index == entries.count - 1 ? "[stack]" : "[o\(index)]"
-            filters.append("\(previous)[am\(index)]overlay=x=0:y=0:shortest=0:eof_action=repeat\(outLabel)")
-            previous = outLabel
-        }
-        filters.append("[stack]format=yuv420p[vout]")
-        arguments += ["-filter_complex", filters.joined(separator: ";"),
-                      "-map", "[vout]", "-map", "1:a?",
-                      "-t", String(format: "%.3f", duration)]
-        arguments += FFmpeg.encodeArgs
-        arguments.append(output.path)
-        try await FFmpeg.run(arguments, timeout: 900, capture: .boundedStderrTail(), purpose: "area compositor")
     }
 
     /// Plain trim + normalize (no overlays).
@@ -327,145 +262,6 @@ actor RenderEngine {
                           w: contentWidth / Double(width),
                           h: contentHeight / Double(height),
                           aspect: contentWidth / contentHeight)
-    }
-
-    /// Score horizontal crop positions across sampled frames: 0.4·detail
-    /// (column stdev) + 0.6·motion (frame-to-frame column diff), sliding a
-    /// 9:16 window to find the busiest region. Port of auto_crop_x_frac.
-    /// A `contentBox` restricts scoring to the real footage; the returned
-    /// fraction is then relative to the box, matching the pre-cropped stream.
-    func autoCropXFraction(source: URL, start: Double, duration: Double,
-                           contentBox: ContentBox? = nil) async -> Double {
-        // Grab the sample frames concurrently — each is an independent
-        // AVAssetImageGenerator (or ffmpeg fallback) call.
-        let frames: [(pixels: [UInt8], width: Int, height: Int)] =
-            await withTaskGroup(of: (Int, (pixels: [UInt8], width: Int, height: Int)?).self) { group in
-                for i in 0..<7 {
-                    let fraction = 0.05 + 0.90 * Double(i) / 6.0
-                    let t = start + duration * fraction
-                    group.addTask {
-                        (i, await ThumbnailService.grayscaleFrame(url: source, at: t, width: 384))
-                    }
-                }
-                var collected: [(Int, (pixels: [UInt8], width: Int, height: Int))] = []
-                for await (i, frame) in group {
-                    if let frame { collected.append((i, frame)) }
-                }
-                return collected.sorted { $0.0 < $1.0 }.map(\.1)
-            }
-        guard frames.count >= 2, let first = frames.first else { return 0.5 }
-        let width = first.width
-        let height = first.height
-        guard frames.allSatisfy({ $0.width == width && $0.height == height }), width > 0, height > 0 else {
-            return 0.5
-        }
-
-        // Column detail: stdev down each column, averaged across frames.
-        // (Row-major scans with per-column accumulators for cache locality.)
-        var detail = [Double](repeating: 0, count: width)
-        for frame in frames {
-            var sums = [Double](repeating: 0, count: width)
-            var squares = [Double](repeating: 0, count: width)
-            frame.pixels.withUnsafeBufferPointer { pixels in
-                var offset = 0
-                for _ in 0..<height {
-                    for x in 0..<width {
-                        let v = Double(pixels[offset])
-                        offset += 1
-                        sums[x] += v
-                        squares[x] += v * v
-                    }
-                }
-            }
-            for x in 0..<width {
-                let mean = sums[x] / Double(height)
-                detail[x] += max(0, squares[x] / Double(height) - mean * mean).squareRoot()
-            }
-        }
-        // Column motion: mean abs diff between consecutive frames.
-        var motion = [Double](repeating: 0, count: width)
-        for index in 1..<frames.count {
-            var diffs = [Double](repeating: 0, count: width)
-            frames[index - 1].pixels.withUnsafeBufferPointer { a in
-                frames[index].pixels.withUnsafeBufferPointer { b in
-                    var offset = 0
-                    for _ in 0..<height {
-                        for x in 0..<width {
-                            diffs[x] += abs(Double(b[offset]) - Double(a[offset]))
-                            offset += 1
-                        }
-                    }
-                }
-            }
-            for x in 0..<width {
-                motion[x] += diffs[x] / Double(height)
-            }
-        }
-
-        func normalized(_ values: [Double]) -> [Double] {
-            guard let maxValue = values.max(), maxValue > 0 else { return values }
-            return values.map { $0 / maxValue }
-        }
-        let normalizedDetail = normalized(detail)
-        let normalizedMotion = normalized(motion)
-        let score = (0..<width).map { 0.4 * normalizedDetail[$0] + 0.6 * normalizedMotion[$0] }
-
-        // Slide within the content box when one was detected — the crop
-        // window's height is the content height, and the returned fraction
-        // must be relative to the pre-cropped stream.
-        let x0 = contentBox.map { Int((Double(width) * $0.x).rounded()) } ?? 0
-        let contentWidth = contentBox.map { Int((Double(width) * $0.w).rounded()) } ?? width
-        let contentHeight = contentBox.map { Double(height) * $0.h } ?? Double(height)
-        let targetWidth = Int((contentHeight * RenderContext.settings.aspectRatio).rounded())
-        guard targetWidth > 0, targetWidth < contentWidth, x0 + contentWidth <= width else { return 0.5 }
-
-        // People anchor the search: when the main subjects are found, the
-        // busyness scan only refines within ±30% of the crop width around
-        // them — the action fine-tunes the position, but the crop can no
-        // longer drift off to a busy crowd or scoreboard and cut people off.
-        var lowerBound = x0
-        var upperBound = x0 + contentWidth - targetWidth
-        if let peopleCenter = await Self.peopleCenterX(source: source, start: start, duration: duration) {
-            let desired = min(max(Int((peopleCenter * Double(width)).rounded()) - targetWidth / 2,
-                                  lowerBound), upperBound)
-            let deviation = Int(0.3 * Double(targetWidth))
-            lowerBound = max(lowerBound, desired - deviation)
-            upperBound = min(upperBound, desired + deviation)
-        }
-
-        var prefix: [Double] = [0]
-        prefix.reserveCapacity(width + 1)
-        for value in score { prefix.append(prefix[prefix.count - 1] + value) }
-        func windowSum(_ left: Int) -> Double { prefix[left + targetWidth] - prefix[left] }
-        var bestLeft = lowerBound
-        var bestSum = windowSum(lowerBound)
-        for left in lowerBound...upperBound where windowSum(left) > bestSum {
-            bestSum = windowSum(left)
-            bestLeft = left
-        }
-        return min(1, max(0, Double(bestLeft - x0) / Double(contentWidth - targetWidth)))
-    }
-
-    /// Median horizontal center (fraction of frame width) of the primary
-    /// people across three sampled frames of the clip; nil when nobody is
-    /// detected. Uses the same detector and peripheral-people filter as the
-    /// analyzer's portrait-fit pass, so crops and previews agree on who the
-    /// subjects are.
-    static func peopleCenterX(source: URL, start: Double, duration: Double) async -> Double? {
-        var centers: [Double] = []
-        for fraction in [0.25, 0.5, 0.75] {
-            guard let data = await ThumbnailService.jpegFrame(url: source, at: start + duration * fraction,
-                                                              maxDimension: 720) else { continue }
-            var request = DetectHumanRectanglesRequest(.revision2)
-            request.upperBodyOnly = false
-            let observations = (try? await request.perform(on: data)) ?? []
-            let boxes = Analyzer.primaryPeopleBoxes(observations.map { $0.boundingBox.cgRect })
-            guard !boxes.isEmpty else { continue }
-            let union = boxes.dropFirst().reduce(boxes[0]) { $0.union($1) }
-            centers.append(Double(union.midX))
-        }
-        guard !centers.isEmpty else { return nil }
-        return centers.sorted()[centers.count / 2]
     }
 
     // MARK: - Concatenation

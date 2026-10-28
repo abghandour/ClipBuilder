@@ -60,7 +60,6 @@ struct WizardView: View {
     @AppStorage("wizard.pinnedOverlayTemplate") var overlayTemplateRaw = ""
     @AppStorage("wizard.overlayAnimation") var overlayAnimationRaw = ""
     @AppStorage("wizard.overlayPlacement") var overlayPlacementRaw = ""
-    @AppStorage("wizard.framingCamera") var framingCameraRaw = WizardDefaults.fallbackFramingCamera
     @AppStorage(WizardDefaults.limitTransitionsKey) var limitTransitions = false
     @AppStorage(WizardDefaults.allowedTransitionsKey) var transitionsRaw = ""
     /// Express navigation: the requested card is the open card; any header opens.
@@ -70,14 +69,8 @@ struct WizardView: View {
     @State var deletingSelection: WizardSelectionSummary?
     @State var musicTracks: [String] = []
     @State var overlayTemplates: [String] = []
-    @AppStorage("wizard.highlightFraming") private var highlightFramingRaw = ""
-    @AppStorage("wizard.interviewZoom") var interviewZoom = 0.0
-    @AppStorage("wizard.interviewZoomMoves") var interviewZoomMoves = false
-    @AppStorage("wizard.interviewCuts") var interviewCuts = false
-    @AppStorage("wizard.interviewPunchIn") var interviewPunchIn = InterviewPunchIn.vip.rawValue
     @AppStorage("wizard.useBRoll") var useBRoll = true
     @AppStorage("wizard.brollInstructions") var brollInstructions = ""
-    @AppStorage("wizard.podcastFraming") private var podcastFramingRaw = PodcastFramingMode.followSpeaker.rawValue
     @AppStorage(WizardDefaults.layoutModeKey) private var layoutModeRaw = WizardLayoutMode.automatic.rawValue
     @AppStorage(WizardDefaults.selectedLayoutsKey) private var selectedLayoutsRaw = ""
     @AppStorage("wizard.bumperIntro") var includeIntroBumper = false
@@ -101,6 +94,7 @@ struct WizardView: View {
     @AppStorage(WizardExpressExtras.overlayDurationKey) var fixedOverlayDuration = 0.0
     @AppStorage(WizardExpressExtras.overlayTextsKey) var fixedOverlayTexts = ""
     @AppStorage(WizardExpressExtras.overlayPositionKey) var fixedOverlayPosition = ""
+    @AppStorage(WizardExpressExtras.framingKey) var framing = ""
     @AppStorage(WizardExpressExtras.overlayEditsKey) var fixedOverlayEdits = ""
     @AppStorage(WizardExpressExtras.watermarkOverlayKey) var watermarkOverlay = ""
     @AppStorage(WizardExpressExtras.watermarkOpacityKey) var watermarkOpacity = 0.0
@@ -821,15 +815,15 @@ struct WizardView: View {
         }
     }
 
-    var cameraFocusBinding: Binding<String> {
+    var framingVideo: VideoRecord? {
+        store.videos.first { $0.path == highlightVideoPath }
+            ?? sourcePool.first.flatMap { scene in store.videos.first { $0.id == scene.videoID } }
+    }
+
+    var framingBinding: Binding<Framing> {
         Binding(get: {
-            lookCapabilities.offersOriginalFraming && podcastFramingRaw == PodcastFramingMode.original.rawValue
-                ? WizardCameraFocus.original : highlightFramingRaw
-        }, set: { value in
-            podcastFramingRaw = value == WizardCameraFocus.original
-                ? PodcastFramingMode.original.rawValue : PodcastFramingMode.followSpeaker.rawValue
-            if value != WizardCameraFocus.original { highlightFramingRaw = value }
-        })
+            Framing.split(framing) ?? WizardExpressExtras.storedFraming(type: framingVideo?.type ?? .other)
+        }, set: { framing = $0.joined })
     }
 
     private var runSummary: String {
@@ -844,7 +838,7 @@ struct WizardView: View {
             captions: textMode.output(transcriptsAvailable: transcriptsAvailable, recipe: formatPreset).captions,
             critique: workflow == .iterate, selectionReview: selectionReview,
             critiqueTargetScore: critiqueTargetScore, critiqueMaxVersions: critiqueMaxVersions)
-            + (capabilities.offersCameraFocus ? " · " + WizardCameraFocus.name(cameraFocusBinding.wrappedValue) : "")
+            + (capabilities.offersCameraFocus ? " · " + framingBinding.wrappedValue.subject.label(type: framingVideo?.type ?? .other) : "")
     }
 
     func bumperToggle(_ title: String, placement: BumperPlacement, value: Binding<Bool>,
@@ -1275,8 +1269,7 @@ struct WizardView: View {
             durationModeRaw = WizardDurationMode.custom.rawValue
         }
         if capabilities.offersCameraFocus, let framing = parsed.highlightFraming {
-            podcastFramingRaw = PodcastFramingMode.followSpeaker.rawValue
-            highlightFramingRaw = framing.rawValue
+            framingBinding.wrappedValue.subject = Framing.Subject.legacy(framing)
         }
         if capabilities.bRoll, let enabled = parsed.useBRoll { useBRoll = enabled }
         if let useMusic = parsed.useMusic {
@@ -1392,7 +1385,7 @@ struct WizardView: View {
         options.strikeGrapplingCard = strikeGrapplingCard
         options.strikeRoundCard = strikeRoundCard
 
-        options.framingCamera = framingCameraRaw
+        options.framing = framingBinding.wrappedValue
         options.screenCropLayouts = WizardDefaults.screenCropLayouts(for: layoutMode)
         options.allowedTransitions = pasted?.allowedTransitions ?? WizardOptions.allowedTransitionsFromDefaults()
         options.useFightResearch = pasted?.useFightResearch ?? useFightResearch
@@ -1400,14 +1393,8 @@ struct WizardView: View {
         options.targetDurationSeconds = durationMode.duration
             ?? (durationMode == .custom ? min(180, max(3, customDuration)) : nil)
         options.formatPreset = formatPreset
-        options.highlightFraming = CropRecipe.Kind(rawValue: highlightFramingRaw)
-        options.interviewZoom = highlightFramingRaw == CropRecipe.Kind.interview.rawValue ? interviewZoom : nil
-        options.interviewZoomMoves = highlightFramingRaw == CropRecipe.Kind.interview.rawValue ? interviewZoomMoves : nil
-        options.interviewCuts = highlightFramingRaw == CropRecipe.Kind.interview.rawValue ? interviewCuts : nil
-        options.interviewPunchIn = highlightFramingRaw == CropRecipe.Kind.interview.rawValue ? interviewPunchIn : nil
         options.useBRoll = useBRoll
         options.brollInstructions = brollInstructions
-        options.podcastFraming = PodcastFramingMode(rawValue: podcastFramingRaw) ?? .followSpeaker
         options = WizardFormPlan.applyingOutcome(workflow, to: options)
         options.critiqueTargetScore = critiqueTargetScore
         options.critiqueMaxVersions = critiqueMaxVersions

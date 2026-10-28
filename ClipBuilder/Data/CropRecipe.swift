@@ -70,7 +70,7 @@ nonisolated enum CropRecipeSubject: Sendable, Hashable, Codable {
 /// A way to lay a whole recording out on the canvas: a Screen Crop layout
 /// plus what each area shows, built from the recording's speaker turns and
 /// feeds. The layout picks itself by the number of people unless named.
-nonisolated struct CropRecipe: Sendable, Hashable, Identifiable {
+nonisolated struct CropRecipe: Codable, Sendable, Hashable, Identifiable {
     enum Kind: String, CaseIterable, Sendable, Codable {
         /// Full screen, following whoever is talking.
         case talker
@@ -114,6 +114,13 @@ nonisolated struct CropRecipe: Sendable, Hashable, Identifiable {
     }
 
     var kind: Kind
+    /// Whole-picture tracking, independent of speaker turns. Nil for older recipes.
+    var centerStage: Bool?
+    /// Center stage keeps only the tagged VIPs in the picture. Nil frames everyone.
+    var centerStageVIPs: Bool?
+    /// The run's own VIP keys for `centerStageVIPs`; nil uses the People tags.
+    var centerStageVIPKeys: [String]?
+    var fighterFocus: Bool?
     /// A Screen Crop layout to use instead of the automatic one.
     var layout: String? = nil
     /// What each area shows, instead of the recipe's own assignment.
@@ -121,7 +128,7 @@ nonisolated struct CropRecipe: Sendable, Hashable, Identifiable {
     /// Outline the talker's cell (layouts with two or more areas).
     var highlightTalker = false
     /// Seconds a cell keeps its subject before the next speaker takes it.
-    var minimumHold = 1.5
+    var minimumHold = FramingHolds.recipeHold
     /// Seconds a rotating cell shows each person.
     var rotationSeconds = 5.0
     /// Interview focus pull-back, 0 (tight on the VIP) to 1 (full source height).
@@ -184,6 +191,12 @@ nonisolated enum CropRecipePlanner {
         /// Interview focus) by the speech fallback, so name tags follow the
         /// same identities as the picture.
         var tiles: [PodcastTile] = []
+        var areas: [AreaSegment]? = nil
+        var snapshot: ScreenCropLayout? = nil
+        var framingPlan: FramingPlan? = nil
+        var sources: [VideoRecord] = []
+        var programSource: VideoRecord? = nil
+        var programRange: ClosedRange<Double>? = nil
     }
 
     /// One stretch of the recording with a stable talker.
@@ -355,7 +368,7 @@ nonisolated enum CropRecipePlanner {
     /// is the output width ÷ height.
     static func plan(_ recipe: CropRecipe, video: VideoRecord, range: ClosedRange<Double>? = nil,
                      turns: [SpeakerTurn], roster: [VideoPersonRecord], layouts: [ScreenCropLayout],
-                     canvasAspect: Double) throws -> Plan {
+                     canvasAspect: Double, availableTiles: [PodcastTile]? = nil) throws -> Plan {
         guard video.duration.isFinite, video.duration > 0 else { throw Failure(description: "The file has no duration.") }
         let span = range ?? 0...video.duration
         guard span.lowerBound >= 0, span.upperBound <= video.duration + 0.05, span.upperBound - span.lowerBound > 0.05 else {
@@ -366,7 +379,7 @@ nonisolated enum CropRecipePlanner {
             throw Failure(description: "The file's frame size is unknown; analyze it first.")
         }
         let sourceAspect = Double(video.width) / Double(video.height)
-        var tiles = tiles(video: video, roster: roster)
+        var tiles = availableTiles ?? tiles(video: video, roster: roster)
         if recipe.kind == .vip || recipe.kind == .interview, tiles.isEmpty {
             tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 1, h: 1)]
         }
@@ -391,7 +404,7 @@ nonisolated enum CropRecipePlanner {
         // A single camera may have several stored person columns. Only separate
         // recorded feeds call for Interview focus's two-cell layout.
         let interviewFeeds = video.podcastLayout == PodcastLayout.singleCamera.rawValue
-            ? 1 : max(1, VIPRecipePlanning.recordedFeeds(video: video, roster: roster).count)
+            ? 1 : max(1, availableTiles?.count ?? VIPRecipePlanning.recordedFeeds(video: video, roster: roster).count)
         let people = recipe.kind == .interview ? interviewFeeds : max(1, tiles.count)
         guard recipe.kind == .talker || recipe.kind == .vip || recipe.kind == .vipBRoll || recipe.kind == .interview || tiles.count >= 2 else {
             throw Failure(description: "This recipe needs a recording with two or more feeds or people; only the full-screen talker works here.")

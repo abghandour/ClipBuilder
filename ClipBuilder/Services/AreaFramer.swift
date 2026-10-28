@@ -27,6 +27,7 @@ nonisolated enum AreaFramer {
     /// `source` framed into `area`'s bounding box, black elsewhere.
     static func frame(source: URL, start: Double, duration: Double,
                       area: ScreenCropArea,
+                      framingPlan: FramingPlan? = nil,
                       focusPortraits: [Data] = [],
                       avoidPortraits: [Data] = [],
                       fallbackCenter: (x: Double, y: Double)? = nil,
@@ -36,6 +37,10 @@ nonisolated enum AreaFramer {
                       scratch: URL,
                       onFallback: (@Sendable () -> Void)? = nil,
                       log: @escaping @Sendable (String) -> Void) async throws -> URL {
+        if let plan = framingPlan, plan.isStatic {
+            return try await frame(source: source, start: start, duration: duration, area: area,
+                window: plan.sourceWindow ?? FreeCropRect(), framingPlan: plan, scratch: scratch)
+        }
         let timing = PerfSignpost.begin("AreaFraming", metadata: "tracking")
         defer { PerfSignpost.end(timing) }
         let box = pixelBounds(of: area)
@@ -90,7 +95,16 @@ nonisolated enum AreaFramer {
             }
             arguments += ["-ss", String(format: "%.3f", max(0, start)),
                           "-t", String(format: "%.3f", duration), "-i", source.path]
-            filter = "[0:v]" + staticFilter(area: area, window: window) + "[vout]"
+            if let plan = framingPlan {
+                // Fit sees the source window before the fallback aspect crop discards its bars.
+                let foreground = plan.fit == .blurredFill ? plan.sourceWindow ?? FreeCropRect() : window
+                var inputs: [URL] = []
+                filter = try fitFilter(area: area, window: foreground,
+                    sourceSize: CGSize(width: size.width, height: size.height), plan: plan, extraInputs: &inputs)
+                for input in inputs { arguments += ["-threads", "1", "-loop", "1", "-i", input.path] }
+            } else {
+                filter = "[0:v]" + staticFilter(area: area, window: window) + "[vout]"
+            }
         }
         arguments += ["-filter_complex", filter, "-map", "[vout]", "-map", "0:a?",
                       "-t", String(format: "%.3f", duration)]
@@ -150,20 +164,39 @@ nonisolated enum AreaFramer {
     /// area's bounding box, and placed on the black canvas. No tracking.
     static func frame(source: URL, start: Double, duration: Double,
                       area: ScreenCropArea, window: FreeCropRect,
-                      scratch: URL) async throws -> URL {
+                      framingPlan: FramingPlan? = nil, scratch: URL) async throws -> URL {
         let timing = PerfSignpost.begin("AreaFraming", metadata: "static")
         defer { PerfSignpost.end(timing) }
         let output = scratch.appendingPathComponent("area_\(UUID().uuidString).mp4")
-        let filter = "[0:v]" + staticFilter(area: area, window: window) + "[vout]"
+        var inputs: [URL] = []
+        let filter: String
+        if let plan = framingPlan {
+            let size = await FFmpeg.dimensions(of: source)
+            filter = try fitFilter(area: area, window: window,
+                sourceSize: CGSize(width: size.width, height: size.height), plan: plan, extraInputs: &inputs)
+        } else {
+            filter = "[0:v]" + staticFilter(area: area, window: window) + "[vout]"
+        }
         var arguments: [String] = ["-y",
                                    "-ss", String(format: "%.3f", max(0, start)),
-                                   "-t", String(format: "%.3f", duration), "-i", source.path,
-                                   "-filter_complex", filter, "-map", "[vout]", "-map", "0:a?",
+                                   "-t", String(format: "%.3f", duration), "-i", source.path]
+        for input in inputs { arguments += ["-threads", "1", "-loop", "1", "-i", input.path] }
+        arguments += ["-filter_complex", filter, "-map", "[vout]", "-map", "0:a?",
                                    "-t", String(format: "%.3f", duration)]
         arguments += FFmpeg.encodeArgs
         arguments.append(output.path)
         try await FFmpeg.run(arguments, timeout: 600)
         return output
+    }
+
+    /// The source window is fitted before any aspect crop, preserving the background pixels.
+    static func fitFilter(area: ScreenCropArea, window: FreeCropRect, sourceSize: CGSize,
+                          plan: FramingPlan, extraInputs: inout [URL]) throws -> String {
+        let spec = FitSpec(sourceWindow: window, sourceSize: sourceSize, destination: pixelBounds(of: area),
+            canvasSize: CGSize(width: RenderEngine.outputWidth, height: RenderEngine.outputHeight),
+            fit: plan.fit, feather: plan.feather, blur: plan.blur)
+        return try FitComposer.graph(spec, inputLabel: "0:v", outputLabel: "fit_area", extraInputs: &extraInputs)
+            + ";[fit_area]fps=30[vout]"
     }
 
     /// Shared by standalone framing and the fused segment graph. Preserve
@@ -188,7 +221,7 @@ nonisolated enum AreaFramer {
     /// piecewise-linear expressions on EVERY frame (T is sendcmd's clock).
     /// x/y are evaluated by crop itself on each frame. No intermediate video.
     static func pathFilter(keyframes: [CameraPathKeyframe], source _: CGSize,
-                           area: ScreenCropArea, namespace: String = "area") -> String {
+                           area: ScreenCropArea, namespace: String = "area", framingPlan: FramingPlan? = nil) -> String {
         let path = keyframes.sorted { $0.t < $1.t }
         guard let first = path.first else { return "null" }
         let box = pixelBounds(of: area)
@@ -229,7 +262,26 @@ nonisolated enum AreaFramer {
         filter += "\(target)='max(2,2*floor(iw*\(first.w)/2))':'max(2,2*floor(ih*\(first.h)/2))':x='iw*(\(x))':y='ih*(\(y))',"
         // Scaling the source crop to the box is still necessary at Full Screen;
         // only the redundant canvas pad disappears there.
-        filter += "scale=\(Int(box.width)):\(Int(box.height))"
+        if let plan = framingPlan, plan.recipe?.fighterFocus == true {
+            let width = Int(box.width), height = Int(box.height)
+            if plan.fit == .blurredFill {
+                let fit = FitSpec(sourceSize: box.size, destination: box, canvasSize: box.size,
+                    fit: plan.fit, feather: plan.feather, blur: plan.blur)
+                let radius = max(0, min(fit.blurRadius, Double(min(width, height)) / 2 - 1))
+                let ramp = max(0.001, min(0.2, max(0, plan.feather)) * Double(width))
+                filter += "split[\(namespace)_bg][\(namespace)_fg];"
+                filter += "[\(namespace)_bg]scale=\(width):\(height):force_original_aspect_ratio=increase:eval=frame,"
+                    + "crop=\(width):\(height),format=gbrp,boxblur=\(radius):1,eq=brightness=-0.25[\(namespace)_back];"
+                filter += "[\(namespace)_fg]scale=\(width):\(height):force_original_aspect_ratio=decrease:force_divisible_by=2:eval=frame,format=rgba"
+                if plan.feather > 0 {
+                    let alpha = "255*min(if(lt(W,\(width)),min(1,min(X,W-1-X)/\(ramp)),1),if(lt(H,\(height)),min(1,min(Y,H-1-Y)/\(ramp)),1))"
+                    filter += ",geq=r='r(X,Y)':g='g(X,Y)':b='b(X,Y)':a='\(alpha)'"
+                }
+                filter += "[\(namespace)_front];[\(namespace)_back][\(namespace)_front]overlay=(W-w)/2:(H-h)/2:shortest=1"
+            } else {
+                filter += "scale=\(width):\(height):force_original_aspect_ratio=increase:eval=frame,crop=\(width):\(height)"
+            }
+        } else { filter += "scale=\(Int(box.width)):\(Int(box.height))" }
         if box != CGRect(x: 0, y: 0, width: RenderEngine.outputWidth, height: RenderEngine.outputHeight) {
             filter += ",pad=\(RenderEngine.outputWidth):\(RenderEngine.outputHeight):\(Int(box.minX)):\(Int(box.minY)):color=black"
         }

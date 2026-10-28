@@ -2,7 +2,7 @@ import Foundation
 
 /// VIP shots on the source clock, independent of rendering and persistence.
 nonisolated enum VIPRotation {
-    static let every = 6.0, minimumHold = 4.0, tail = 2.5
+    static let every = FramingHolds.rotation, minimumHold = FramingHolds.vipHold, tail = FramingHolds.tail
 
     struct Shot: Sendable, Equatable {
         var time: Double

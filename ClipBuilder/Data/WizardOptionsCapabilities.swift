@@ -5,6 +5,8 @@ extension WizardOptions {
     nonisolated func neutralized(for recipe: ReelRecipe) -> WizardOptions {
         let capabilities = recipe.capabilities
         var options = self
+        // Finalize old saved runs once, before capability filtering drops old choices.
+        if options.framing == nil { options.framing = Framing.legacy(from: options) }
         if !capabilities.fightResearch { options.useFightResearch = false }
         if !capabilities.layouts { options.screenCropLayouts = [] }
         if !capabilities.onScreenText {

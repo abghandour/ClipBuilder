@@ -39,6 +39,7 @@ struct MiniSettingsCard: View {
             case .package: packageRows
             }
         }
+        .environment(\.formCaptionIndent, SettingsRowMetrics.labelWidth + Theme.spaceM)
         .disabled(store.isWizardRunning)
     }
 
@@ -62,42 +63,10 @@ struct MiniSettingsCard: View {
             }
             .pickerStyle(.menu)
         }
-        if flow.showsCameraFocus {
-            MiniRow("Camera focus") {
-                HStack(spacing: Theme.spaceS) {
-                    WizardCameraFocusPicker(selection: $settings.cameraFocus, allowsOriginal: true,
-                                            showsSummary: false)
-                        .pickerStyle(.menu)
-                    if settings.cameraFocus.isEmpty, run.footageKind != .highlights {
-                        MiniModelButton(tasks: ["framing"])
-                    }
-                }
-            }
-            FormCaption(settings.cameraFocus.isEmpty
-                ? (run.footageKind != .highlights
-                    ? "The AI picks the layout for each \(run.footageKind == .qa ? "exchange" : "pick") when you generate."
-                    : "Chosen by the highlights model when the candidates were found.")
-                : WizardCameraFocus.summary(settings.cameraFocus))
-            if settings.cameraFocus == CropRecipe.Kind.interview.rawValue {
-                MiniRow("Shot changes") {
-                    InterviewShotChangesPicker(cuts: $settings.resolvedInterviewCuts)
-                }
-                FormCaption(InterviewShotChangesPicker.caption)
-                MiniRow("Punch in on") {
-                    InterviewPunchInPicker(selection: $settings.resolvedInterviewPunchIn)
-                }
-                FormCaption(InterviewPunchInPicker.caption)
-                MiniRow("Zoom in/out for focus") {
-                    InterviewZoomMovesToggle(isOn: $settings.interviewZoomMoves)
-                }
-                FormCaption(InterviewZoomMovesToggle.caption)
-                if !settings.interviewZoomMoves {
-                    MiniRow("Pull back") {
-                        InterviewZoomSlider(zoom: $settings.interviewZoom)
-                    }
-                    FormCaption(InterviewZoomSlider.caption)
-                }
-            }
+        FramingRows(framing: $settings.framing, type: run.video.type ?? .other, videoIDs: [run.video.id],
+                    canvasAspect: Double(settings.preset.width ?? 1080) / Double(settings.preset.height ?? 1920))
+        if settings.framing.subject == .auto, run.footageKind != .highlights {
+            MiniModelButton(tasks: ["framing"])
         }
         MiniRow("Effect") {
             lookPicker
@@ -123,8 +92,9 @@ struct MiniSettingsCard: View {
         if settings.captions {
             MiniDependents {
                 MiniRow("Caption position") {
+                    // A menu: five segments, one of them "Custom (dragged)", outgrow the control column.
                     CaptionPositionPicker(selection: $settings.captionPosition)
-                        .pickerStyle(.segmented)
+                        .pickerStyle(.menu).fixedSize()
                 }
                 FormCaption("Auto keeps clear of the platform buttons. Safe area only also keeps explicit positions clear.")
                 MiniRow("Caption style") {

@@ -184,7 +184,7 @@ struct PodcastHighlightIntegrationTests {
         let review = try await WizardEngine(ai: stub.service, render: RenderEngine()).findPodcastHighlights(
             options: options, settings: PodcastSettings(), database: temp.database, emit: { _ in },
             requestText: "podcast highlights for Modestino camera: grid no b-roll")
-        #expect(review.options.highlightFraming == .grid && !review.options.useBRoll)
+        #expect(review.options.requestedFraming.subject == .layout && !review.options.useBRoll)
         #expect(review.options.brollInstructions == options.brollInstructions)
         #expect(review.candidates.count == 3 && review.candidates.allSatisfy { $0.framing == .grid })
     }

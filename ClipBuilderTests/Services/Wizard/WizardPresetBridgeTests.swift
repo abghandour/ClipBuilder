@@ -4,11 +4,46 @@ import Testing
 
 @Suite("Express and Wizard presets bridge")
 struct WizardPresetBridgeTests {
+    @Test func oldFramingPresetsMigrateAndNewFramingWins() throws {
+        let fields: [String: JSONSetting] = ["highlightFraming": .string("interview_focus"),
+                                             "interviewZoom": .number(0.7), "interviewCuts": .bool(true)]
+        let converted = WizardPresetBridge.miniSettings(from: fields)
+        #expect(converted.framing == Framing(subject: .speakerFocus, pullBack: 0.7, moves: .cuts))
+        var newFields = fields
+        newFields["framing"] = .string("{}")
+        #expect(WizardPresetBridge.miniSettings(from: newFields).framing == Framing())
+        #expect(WizardPresetBridge.miniSettings(from: ["highlightFraming": .string("grid")]).framing.layout == "Split")
+        #expect(AISettingsEnvelope.keys(.options, kind: .wizard).contains("framing"))
+
+        let suite = "FramingDefaultsTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var options = WizardOptions()
+        options.framing = Framing(subject: .vipFocus)
+        WizardExpressExtras.apply(to: &options, defaults: defaults)
+        #expect(options.framing == Framing(subject: .vipFocus))
+        #expect(Framing.split(defaults.string(forKey: WizardExpressExtras.framingKey)) == options.framing)
+        var replay = WizardOptions()
+        replay.podcastFraming = .original
+        WizardExpressExtras.apply(to: &replay, defaults: defaults)
+        #expect(replay.framing == options.framing)
+
+        AISettingsPreferences.write(fields, kind: .wizard, defaults: defaults)
+        #expect(Framing.split(defaults.string(forKey: WizardExpressExtras.framingKey)) == converted.framing)
+        let snapshot = try #require(defaults.string(forKey: AISettingsPreferences.snapshotKey))
+        #expect(try JSONDecoder().decode(WizardOptions.self, from: Data(snapshot.utf8)).framing == converted.framing)
+        let fresh = Framing(subject: .centerStage, fit: .blurredFill, blur: 0.8)
+        AISettingsPreferences.write(["framing": JSONSetting.dictionaryValue(fresh)], kind: .wizard, defaults: defaults)
+        #expect(Framing.split(defaults.string(forKey: WizardExpressExtras.framingKey)) == fresh)
+        AISettingsPreferences.write(fields, kind: .wizard, scopes: [.prompts], defaults: defaults)
+        #expect(Framing.split(defaults.string(forKey: WizardExpressExtras.framingKey)) == fresh)
+    }
+
     private var express: MiniWizardSettings {
         var settings = MiniWizardSettings()
         settings.quality = .compact
         settings.preset = .square1080
-        settings.cameraFocus = WizardCameraFocus.original
+        settings.framing = Framing(subject: .original, fit: .blurredFill, feather: 0.12, blur: 0.9)
         settings.captions = true
         settings.captionPosition = "bottom"
         settings.captionStyleID = "bold"
@@ -36,10 +71,11 @@ struct WizardPresetBridgeTests {
     @Test func expressSettingsRoundTripThroughTheWizardShape() {
         let fields = WizardPresetBridge.wizardFields(from: express)
         #expect(fields["addCaptions"] == .bool(true) && fields["captionLanguage"] == .string("en"))
-        #expect(fields["podcastFraming"] == .string("original") && fields["highlightFraming"] == .null)
+        #expect(fields["podcastFraming"] == nil && fields["highlightFraming"] == nil)
         #expect(fields["transitionChoice"] == .string("fadeblack") && fields["lookPreset"] == .string("vintage"))
         #expect(fields["fixedOverlayTextsJoined"] == .string("Hook\nSecond"))
         #expect(fields["outputMode"] == .string("oneReel"))
+        #expect(Framing.split(fields["framing"]?.string) == express.framing)
         let back = WizardPresetBridge.miniSettings(from: fields)
         #expect(back == express)
     }
@@ -50,7 +86,7 @@ struct WizardPresetBridgeTests {
             "addCaptions": .bool(true), "captionLanguage": .null, "includeWatermark": .bool(false),
             "lookPreset": .string("bw"), "transitionChoice": .string("random"),
         ])
-        #expect(settings.cameraFocus == "grid" && settings.captions && !settings.englishCaptions)
+        #expect(settings.framing.subject == .layout && settings.captions && !settings.englishCaptions)
         #expect(!settings.watermark && settings.look == "bw" && settings.transition == "random")
         #expect(settings.outputMode == .separateVideos && settings.quality == .balanced)
         // Custom render values fall back to Express's allowed ones.

@@ -12,6 +12,7 @@ nonisolated enum SceneBatchFilter: Int64, CaseIterable, Sendable {
     case recaps = -6
     case training = -7
     case other = -8
+    case screen = -9
 
     /// Recent covers batches analyzed in the last three days.
     static let recentWindow: TimeInterval = 3 * 24 * 60 * 60
@@ -27,6 +28,7 @@ nonisolated enum SceneBatchFilter: Int64, CaseIterable, Sendable {
         case .recaps: "Fight Recaps"
         case .training: "Training"
         case .other: "Other"
+        case .screen: "Screen Recordings"
         }
     }
 
@@ -39,6 +41,7 @@ nonisolated enum SceneBatchFilter: Int64, CaseIterable, Sendable {
         case .recaps: "film.stack"
         case .training: "figure.strengthtraining.traditional"
         case .other: "questionmark.square.dashed"
+        case .screen: "rectangle.on.rectangle"
         }
     }
 
@@ -50,6 +53,7 @@ nonisolated enum SceneBatchFilter: Int64, CaseIterable, Sendable {
         case .fights: "Scenes from batches of videos typed Fight"
         case .recaps: "Scenes from batches of videos typed Fight Recap"
         case .training: "Scenes from batches of videos typed Training"
+        case .screen: "Scenes from batches of videos typed Screen recording"
         case .other: "Scenes from batches of videos typed Other or not typed yet"
         }
     }
@@ -71,6 +75,7 @@ nonisolated enum SceneBatchFilter: Int64, CaseIterable, Sendable {
         case .fights: return run.videoType == .fight
         case .recaps: return run.videoType == .recap
         case .training: return run.videoType == .training
+        case .screen: return run.videoType == .screen
         // Untyped videos land here so every batch has a type row.
         case .other: return run.videoType == .other || run.videoType == nil
         }

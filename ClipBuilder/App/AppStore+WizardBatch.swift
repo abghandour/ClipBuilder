@@ -41,7 +41,7 @@ extension AppStore {
                     try await sceneEditSaveTask?.value
                     var takes = try await gatherTakes(database)
                     guard !takes.isEmpty else { throw WizardSelectionError.missingTake }
-                    if cameraFocus, options.highlightFraming == nil, options.podcastFraming != .original,
+                    if cameraFocus, options.requestedFraming.subject == .auto,
                        takes.contains(where: { $0.plan.framing == nil }) {
                         let stage = "Choosing camera focus"
                         wizardStatus = WizardRunStatus(stage: stage, fraction: 0)

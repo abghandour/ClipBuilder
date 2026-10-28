@@ -1494,24 +1494,4 @@ nonisolated enum PodcastFramingService {
                 FreeCropRect(xFrac: 0.5, yFrac: y, wFrac: 0.5, hFrac: height))
     }
 
-    /// Build a vertical 50/50 frame from the two equal source halves. The
-    /// Wizard then burns captions and lower thirds onto this normalized clip
-    /// in its usual single encode pass.
-    static func splitZoom(source: URL, start: Double, duration: Double,
-                          output: URL) async throws {
-        let width = RenderContext.settings.width
-        let height = RenderContext.settings.height
-        let halfHeight = height / 2
-        let filter = """
-        [0:v]crop=iw/2:ih:0:0,scale=\(width):\(halfHeight):force_original_aspect_ratio=increase,crop=\(width):\(halfHeight),setsar=1[left];\
-        [0:v]crop=iw/2:ih:iw/2:0,scale=\(width):\(halfHeight):force_original_aspect_ratio=increase,crop=\(width):\(halfHeight),setsar=1[right];\
-        [left][right]vstack=inputs=2[v]
-        """
-        var arguments = ["-y", "-ss", String(format: "%.3f", start),
-                         "-t", String(format: "%.3f", duration), "-i", source.path,
-                         "-filter_complex", filter, "-map", "[v]", "-map", "0:a?"]
-        arguments += FFmpeg.encodeArgs
-        arguments.append(output.path)
-        try await FFmpeg.run(arguments, timeout: max(180, duration * 8))
-    }
 }

@@ -104,6 +104,7 @@ nonisolated enum VideoType: String, CaseIterable, Sendable {
     case interview
     case podcast
     case recap
+    case screen
     case other
 
     var label: String {
@@ -113,6 +114,7 @@ nonisolated enum VideoType: String, CaseIterable, Sendable {
         case .interview: "Interview"
         case .podcast: "Podcast"
         case .recap: "Fight Recap"
+        case .screen: "Screen recording"
         case .other: "Other"
         }
     }

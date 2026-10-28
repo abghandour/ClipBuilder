@@ -564,11 +564,11 @@ extension AppStore {
             try Task.checkCancellation()
             guard generation == profileGeneration else { throw CancellationError() }
             var roster = review.roster
-            if candidate.framing == .interview {
+            if review.options.requestedFraming.subject == .speakerFocus || (review.options.requestedFraming.subject == .auto && Framing.Subject.legacy(candidate.framing) == .speakerFocus) {
                 roster = await InterviewFaceSampling.refinedRoster(video: review.video, roster: roster,
                     range: candidate.sourceStart...candidate.sourceEnd, turns: review.turns,
-                    punchIn: InterviewPunchIn(rawValue: review.options.interviewPunchIn ?? "") ?? .vip,
-                    cuts: review.options.interviewCuts ?? false, log: logSink(\.analysisLog))
+                    punchIn: .talker,
+                    cuts: review.options.requestedFraming.moves == .cuts, log: logSink(\.analysisLog))
             }
             let document = PodcastHighlightTimeline.build(candidate: candidate, video: review.video, scenes: review.scenes,
                 turns: review.turns, roster: roster, segments: review.segments, layouts: ScreenCropStore.all(),
@@ -657,11 +657,11 @@ extension AppStore {
                         try Task.checkCancellation()
                         guard generation == profileGeneration else { throw CancellationError() }
                         var roster = request.roster
-                        if candidate.framing == .interview {
+                        if request.options.requestedFraming.subject == .speakerFocus || (request.options.requestedFraming.subject == .auto && Framing.Subject.legacy(candidate.framing) == .speakerFocus) {
                             roster = await InterviewFaceSampling.refinedRoster(video: request.video, roster: roster,
                                 range: candidate.sourceStart...candidate.sourceEnd, turns: request.turns,
-                                punchIn: InterviewPunchIn(rawValue: request.options.interviewPunchIn ?? "") ?? .vip,
-                                cuts: request.options.interviewCuts ?? false, log: logSink(\.analysisLog))
+                                punchIn: .talker,
+                                cuts: request.options.requestedFraming.moves == .cuts, log: logSink(\.analysisLog))
                         }
                         let document = PodcastHighlightTimeline.build(candidate: candidate, video: request.video, scenes: request.scenes,
                             turns: request.turns, roster: roster, segments: request.segments, layouts: ScreenCropStore.all(),

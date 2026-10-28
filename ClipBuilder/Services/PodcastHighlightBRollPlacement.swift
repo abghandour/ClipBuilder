@@ -6,7 +6,10 @@ nonisolated enum PodcastHighlightBRollPlacement {
                      options: WizardOptions, threshold: Double = 7, ai: AIService? = nil, people: [PersonRecord] = [],
                      log: @escaping @Sendable (String) -> Void = { _ in }) async throws -> [PodcastHighlightBRollPlanner.Cut] {
         guard options.useBRoll else { log("B-roll off"); return [] }
-        let framing = options.highlightFraming ?? candidate.framing
+        let context = FramingContext(video: video, range: candidate.sourceRange,
+            canvasAspect: options.renderSettings.aspectRatio, roster: roster, turns: turns,
+            hasBRoll: options.useBRoll, chosenSubject: Framing.Subject.legacy(candidate.framing))
+        let framing = FramingPlanner.resolve(framing: options.requestedFraming, context: context).recipe?.kind
         let vipFocus = framing == .vip || framing == .vipBRoll
         let tiles = vipFocus ? VIPRecipePlanning.recordedFeeds(video: video, roster: roster)
             : VIPRecipePlanning.namedTiles(CropRecipePlanner.tiles(video: video, roster: roster), roster: roster)

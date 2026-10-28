@@ -115,6 +115,8 @@ struct FieldCaption: View {
 /// when it fits on one line and left-aligned once it wraps; pinning it to the
 /// leading edge keeps every caption under its control's label.
 struct FormCaption: View {
+    /// Leading inset so a caption under a labelled row starts at the control, not the label.
+    @Environment(\.formCaptionIndent) private var indent
     let text: String
     var tone: FormCaptionTone = .secondary
 
@@ -127,8 +129,14 @@ struct FormCaption: View {
         Text(text)
             .font(.caption)
             .foregroundStyle(tone == .warning ? AnyShapeStyle(.orange) : AnyShapeStyle(.secondary))
+            .padding(.leading, indent)
             .frame(maxWidth: .infinity, alignment: .leading)
     }
+}
+
+extension EnvironmentValues {
+    /// Set where captions follow label-column rows (Express Settings, the Full wizard's steps).
+    @Entry var formCaptionIndent: CGFloat = 0
 }
 
 enum FormCaptionTone {

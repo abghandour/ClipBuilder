@@ -19,8 +19,8 @@ struct WizardCameraFocusTests {
         defer { defaults.removePersistentDomain(forName: suite) }
         defaults.set("split_zoom", forKey: "wizard.podcastFraming")
         WizardDefaults.migrateLegacy(defaults: defaults)
-        #expect(defaults.string(forKey: "wizard.highlightFraming") == "grid")
-        #expect(defaults.string(forKey: "wizard.podcastFraming") == "follow_speaker")
+        #expect(Framing.split(defaults.string(forKey: WizardExpressExtras.framingKey))?.subject == .layout)
+        #expect(Framing.split(defaults.string(forKey: WizardExpressExtras.framingKey))?.layout == "Split")
         defaults.set("talker_and_rotation", forKey: "wizard.highlightFraming")
         WizardDefaults.migrateLegacy(defaults: defaults)
         #expect(defaults.string(forKey: "wizard.highlightFraming") == "talker_and_rotation")
@@ -36,7 +36,7 @@ struct WizardCameraFocusTests {
             let fight = options.neutralized(for: .mmaFinish)
             #expect(fight.highlightFraming == nil && fight.podcastFraming == .followSpeaker)
             let restored = try JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(podcast))
-            #expect(restored.highlightFraming == kind && restored.podcastFraming == .original)
+            #expect(restored.framing?.subject == .original)
         }
     }
 
@@ -68,13 +68,13 @@ struct WizardCameraFocusTests {
                 let exported = AISettingsPreferences.wizard(defaults: defaults, profile: Fixtures.brand())
                 let restored = try JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(exported))
                 let pipeline = AppStore.wizardOptionsFromForm(transcriptsAvailable: true, defaults: defaults)
-                #expect(restored.highlightFraming == kind && pipeline.highlightFraming == kind)
-                #expect(restored.podcastFraming == options.podcastFraming && pipeline.podcastFraming == options.podcastFraming)
+                #expect(restored.framing == options.requestedFraming && pipeline.framing == options.requestedFraming)
+                #expect(restored.requestedFraming.subject == options.requestedFraming.subject)
             }
         }
         AISettingsPreferences.write(["podcastFraming": .string("split_zoom")], kind: .wizard, defaults: defaults)
-        #expect(defaults.string(forKey: "wizard.highlightFraming") == "grid")
-        #expect(defaults.string(forKey: "wizard.podcastFraming") == "follow_speaker")
+        #expect(Framing.split(defaults.string(forKey: WizardExpressExtras.framingKey))?.subject == .layout)
+        #expect(Framing.split(defaults.string(forKey: WizardExpressExtras.framingKey))?.layout == "Split")
     }
 
     @Test func planFramingValidation() async throws {
@@ -84,17 +84,17 @@ struct WizardCameraFocusTests {
         for value in CropRecipe.Kind.allCases.map(\.rawValue) + ["unknown", "", "original"] {
             let raw: [String: Any] = ["clips": [["scene_id": 1, "start": 2, "end": 6]], "framing": value]
             let plan = try #require(await engine.validatePlan(raw, scenes: [1: Fixtures.scene()], musicNames: [], options: options))
-            #expect(plan.framing == (CropRecipe.Kind(rawValue: value) ?? .talker))
+            #expect(plan.framing == (Framing.Subject(rawValue: value) ?? .speakerFocus))
         }
         for nullValue in [false, true] {
             let raw: [String: Any] = ["clips": [["scene_id": 1, "start": 2, "end": 6]],
                                       "framing": nullValue ? NSNull() : 42]
             let plan = try #require(await engine.validatePlan(raw, scenes: [1: Fixtures.scene()], musicNames: [], options: options))
-            #expect(plan.framing == .talker)
+            #expect(plan.framing == .speakerFocus)
         }
         let raw: [String: Any] = ["clips": [["scene_id": 1, "start": 2, "end": 6]]]
         let absent = try #require(await engine.validatePlan(raw, scenes: [1: Fixtures.scene()], musicNames: [], options: options))
-        #expect(absent.framing == .talker)
+        #expect(absent.framing == .speakerFocus)
         options.formatPreset = "mma-finish"
         let fightRaw: [String: Any] = ["clips": [["scene_id": 1, "start": 2, "end": 6]], "framing": "grid"]
         let fight = try #require(await engine.validatePlan(fightRaw, scenes: [1: Fixtures.scene()], musicNames: [], options: options))
@@ -108,8 +108,8 @@ struct WizardCameraFocusTests {
         let prompt = await engine.legacyPlanPrompt(profile: Fixtures.brand(), research: [:],
             scenes: [Fixtures.scene()], musicNames: [], signals: .init(), people: [], outcomes: [], options: options)
         #expect(prompt.contains("optional top-level \"framing\""))
-        for kind in CropRecipe.Kind.allCases {
-            #expect(prompt.contains(kind.rawValue + ": " + kind.summary))
+        for subject in FramingMenu.allowed(type: .podcast) where subject != .auto {
+            #expect(prompt.contains(subject.rawValue))
         }
     }
 }

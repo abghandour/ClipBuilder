@@ -4,6 +4,7 @@ import Foundation
 nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var quality: EncodeQuality = .balanced
     var preset: RenderPreset = .portrait1080
+    var framing = Framing()
     var cameraFocus = ""
     /// Interview focus pull-back, 0 (tight) to 1 (full height).
     var interviewZoom = 0.0
@@ -86,6 +87,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     init() {}
 
     enum CodingKeys: String, CodingKey {
+        case framing
         case includeBRoll
         case quality, preset, cameraFocus, interviewZoom, interviewZoomMoves, interviewCuts, interviewPunchIn, captions, englishCaptions, captionPosition, speakerCaptionPositions, captionStyleID
         case introVideo, outroVideo, introBumper, outroBumper
@@ -95,6 +97,49 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, overlayPosition, overlayEdits, outputMode, transition, look
         case muteSourceAudio, music, musicTrack, dub, dubLanguage
     }
+    /// Legacy controls remain readable; new snapshots carry only Framing.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(framing, forKey: .framing)
+        try c.encodeIfPresent(includeBRoll, forKey: .includeBRoll)
+        try c.encodeIfPresent(quality, forKey: .quality)
+        try c.encodeIfPresent(preset, forKey: .preset)
+        try c.encodeIfPresent(captions, forKey: .captions)
+        try c.encodeIfPresent(englishCaptions, forKey: .englishCaptions)
+        try c.encodeIfPresent(captionPosition, forKey: .captionPosition)
+        try c.encodeIfPresent(speakerCaptionPositions, forKey: .speakerCaptionPositions)
+        try c.encodeIfPresent(captionStyleID, forKey: .captionStyleID)
+        try c.encodeIfPresent(introVideo, forKey: .introVideo)
+        try c.encodeIfPresent(outroVideo, forKey: .outroVideo)
+        try c.encodeIfPresent(introBumper, forKey: .introBumper)
+        try c.encodeIfPresent(outroBumper, forKey: .outroBumper)
+        try c.encodeIfPresent(safeAreaOnly, forKey: .safeAreaOnly)
+        try c.encodeIfPresent(safeAreaPlatforms, forKey: .safeAreaPlatforms)
+        try c.encodeIfPresent(nameTags, forKey: .nameTags)
+        try c.encodeIfPresent(nameTagContent, forKey: .nameTagContent)
+        try c.encodeIfPresent(nameTagStyle, forKey: .nameTagStyle)
+        try c.encodeIfPresent(nameTagStyleID, forKey: .nameTagStyleID)
+        try c.encodeIfPresent(nameTagPosition, forKey: .nameTagPosition)
+        try c.encodeIfPresent(watermark, forKey: .watermark)
+        try c.encodeIfPresent(watermarkOverlay, forKey: .watermarkOverlay)
+        try c.encodeIfPresent(watermarkOpacity, forKey: .watermarkOpacity)
+        try c.encodeIfPresent(overlay, forKey: .overlay)
+        try c.encodeIfPresent(overlayTemplate, forKey: .overlayTemplate)
+        try c.encodeIfPresent(overlayStart, forKey: .overlayStart)
+        try c.encodeIfPresent(overlayDuration, forKey: .overlayDuration)
+        try c.encodeIfPresent(overlayTexts, forKey: .overlayTexts)
+        try c.encodeIfPresent(overlayPosition, forKey: .overlayPosition)
+        try c.encodeIfPresent(overlayEdits, forKey: .overlayEdits)
+        try c.encodeIfPresent(outputMode, forKey: .outputMode)
+        try c.encodeIfPresent(transition, forKey: .transition)
+        try c.encodeIfPresent(look, forKey: .look)
+        try c.encodeIfPresent(muteSourceAudio, forKey: .muteSourceAudio)
+        try c.encodeIfPresent(music, forKey: .music)
+        try c.encodeIfPresent(musicTrack, forKey: .musicTrack)
+        try c.encodeIfPresent(dub, forKey: .dub)
+        try c.encodeIfPresent(dubLanguage, forKey: .dubLanguage)
+    }
+
 
     /// Saved presets: every key optional so a preset written by an older
     /// build (or a hand-edited file) still loads with defaults for the rest.
@@ -143,8 +188,29 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         musicTrack = try c.decodeIfPresent(String.self, forKey: .musicTrack)
         dub = try c.decodeIfPresent(Bool.self, forKey: .dub) ?? false
         dubLanguage = try c.decodeIfPresent(String.self, forKey: .dubLanguage)
+        framing = try c.decodeIfPresent(Framing.self, forKey: .framing) ?? Framing()
+        let oldKeys: [WizardOptions.CodingKeys] = [.podcastFraming, .highlightFraming, .interviewZoom,
+            .interviewZoomMoves, .interviewCuts, .interviewPunchIn, .framingCamera]
+        let oldValues = try decoder.container(keyedBy: WizardOptions.CodingKeys.self)
+        if !c.contains(.framing), c.contains(.cameraFocus) || oldKeys.contains(where: { oldValues.contains($0) }) {
+            var old = try WizardOptions(from: decoder)
+            if !cameraFocus.isEmpty {
+                old.highlightFraming = CropRecipe.Kind(rawValue: cameraFocus)
+                old.podcastFraming = cameraFocus == WizardCameraFocus.original ? .original : .followSpeaker
+            }
+            framing = Framing.legacy(from: old)
+        }
         if quality == .custom { quality = .balanced }
         if preset == .custom { preset = .portrait1080 }
+    }
+
+    var legacyFraming: Framing {
+        var old = WizardOptions()
+        old.highlightFraming = CropRecipe.Kind(rawValue: cameraFocus)
+        old.podcastFraming = cameraFocus == WizardCameraFocus.original ? .original : .followSpeaker
+        old.interviewZoom = interviewZoom
+        old.interviewCuts = interviewCuts
+        return Framing.legacy(from: old)
     }
 
     /// Preview and generation share Express's own choices and profile canvas defaults.
@@ -161,12 +227,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         render.quality = quality
         render.preset = preset
         result.renderSettings = render
-        result.highlightFraming = CropRecipe.Kind(rawValue: cameraFocus)
-        result.interviewZoom = interviewZoom
-        result.interviewZoomMoves = interviewZoomMoves
-        result.interviewCuts = resolvedInterviewCuts
-        result.interviewPunchIn = resolvedInterviewPunchIn
-        result.podcastFraming = cameraFocus == WizardCameraFocus.original ? .original : .followSpeaker
+        result.framing = framing
         result.addCaptions = captions
         result.captionPosition = captionPosition
         result.speakerCaptionPositions = speakerCaptionPositions
@@ -239,7 +300,9 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     /// Hidden questions must not leak a remembered answer into another video type.
     func effective(for flow: MiniWizardFlow, introAvailable: Bool, outroAvailable: Bool) -> Self {
         var result = self
-        if !flow.showsCameraFocus { result.cameraFocus = "" }
+        if !FramingMenu.allowed(type: flow.video?.type ?? .other).contains(result.framing.subject) {
+            result.framing = FramingMenu.default(type: flow.video?.type ?? .other)
+        }
         if !flow.isPodcastOrInterview { result.includeBRoll = false }
         if !flow.showsNameTags { result.nameTags = false }
         if !flow.showsCaptionLanguage { result.englishCaptions = false }
@@ -315,6 +378,15 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         for (field, path) in booleanFields {
             if defaults.object(forKey: key(field)) != nil { result[keyPath: path] = defaults.bool(forKey: key(field)) }
         }
+        if let saved = Framing.split(defaults.string(forKey: key(.framing))) {
+            result.framing = saved
+        } else {
+            result.framing = result.legacyFraming
+            let oldFields: [MiniWizardMemory.Field] = [.cameraFocus, .interviewZoom, .interviewZoomMoves, .interviewCuts, .interviewPunchIn]
+            if oldFields.contains(where: { defaults.object(forKey: key($0)) != nil }) {
+                defaults.set(result.framing.joined, forKey: key(.framing))
+            }
+        }
         return result
     }
 
@@ -336,9 +408,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         set(nameTagStyleID, forKey: key(.nameTagStyleID))
         set(nameTagPosition, forKey: key(.nameTagPosition))
         set(safeAreaPlatforms, forKey: key(.safeAreaPlatforms))
-        set(interviewPunchIn, forKey: key(.interviewPunchIn))
-        set(cameraFocus, forKey: key(.cameraFocus))
-        set(interviewZoom, forKey: key(.interviewZoom))
+        set(framing.joined, forKey: key(.framing))
         set(overlayTemplate, forKey: key(.overlayTemplate))
         set(overlayTexts, forKey: key(.overlayTexts))
         set(overlayPosition, forKey: key(.overlayPosition))
@@ -354,7 +424,9 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         set(look, forKey: key(.look))
         set(musicTrack, forKey: key(.musicTrack))
         set(dubLanguage, forKey: key(.dubLanguage))
-        for (field, path) in Self.booleanFields { set(self[keyPath: path], forKey: key(field)) }
+        for (field, path) in Self.booleanFields where field != .interviewCuts && field != .interviewZoomMoves {
+            set(self[keyPath: path], forKey: key(field))
+        }
         return changed
     }
 

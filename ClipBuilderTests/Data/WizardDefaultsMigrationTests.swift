@@ -16,7 +16,7 @@ struct WizardDefaultsMigrationTests {
         defaults.set("split_zoom", forKey: "wizard.podcastFraming")
         WizardDefaults.migrateLegacy(defaults: defaults)
         #expect(defaults.string(forKey: WizardDefaults.workflowKey) == "reviewMoments")
-        #expect(defaults.string(forKey: "wizard.highlightFraming") == "grid")
+        #expect(Framing.split(defaults.string(forKey: WizardExpressExtras.framingKey))?.subject == .layout)
         #expect(defaults.object(forKey: "wizard.reviewProposedCuts") == nil)
 
         let before = defaults.dictionaryRepresentation() as NSDictionary

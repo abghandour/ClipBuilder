@@ -7,6 +7,99 @@ import UniformTypeIdentifiers
 
 @Suite("Wizard preview composite")
 struct WizardPreviewCompositeTests {
+    @Test func previewTrackingWindowStaysInsideTheActiveSpanAndRecord() {
+        #expect(WizardPreviewFraming.trackingWindow(time: 150, range: 100...400) == 148...152)
+        #expect(WizardPreviewFraming.trackingWindow(time: 100, range: 100...400) == 100...102)
+        #expect(WizardPreviewFraming.trackingWindow(time: 400, range: 100...400) == 398...400)
+        #expect(WizardPreviewFraming.trackingWindow(time: 150, range: 100...400, span: 149...151) == 149...151)
+        #expect(WizardPreviewFraming.trackingWindow(time: 100, range: 100...400, span: 99...101) == 100...101)
+        #expect(WizardPreviewFraming.trackingWindow(time: 400, range: 100...400, span: 399...401) == 399...400)
+        #expect(WizardPreviewFraming.trackingWindow(time: 105, range: 100...101) == 100...101)
+    }
+
+    @Test func scenePlanningIgnoresCompositeControlsButKeepsPlanningInputs() {
+        for subject in Framing.Subject.allCases {
+            let framing = Framing(subject: subject)
+            let original = WizardPreviewFraming.planningFraming(framing, videoType: .podcast)
+            for change: (inout Framing) -> Void in [
+                { $0.fit = .blurredFill }, { $0.feather = 0.7 }, { $0.blur = 0.9 }, { $0.lockAspect = false },
+            ] {
+                var changed = framing
+                change(&changed)
+                #expect(WizardPreviewFraming.planningFraming(changed, videoType: .podcast) == original)
+            }
+            for change: (inout Framing) -> Void in [
+                { $0.subject = subject == .original ? .centerStage : .original },
+                { $0.moves = .cuts }, { $0.focusFrame = FreeCropRect(wFrac: 0.5) },
+                { $0.sourceRoles = ["screen": "source"] }, { $0.layout = "PiP" },
+            ] {
+                var changed = framing
+                change(&changed)
+                #expect(WizardPreviewFraming.planningFraming(changed, videoType: .podcast) != original)
+            }
+        }
+        for subject in Framing.Subject.allCases {
+            for type in [VideoType.podcast, .fight] {
+                let original = WizardPreviewFraming.planningFraming(Framing(subject: subject), videoType: type)
+                let changed = WizardPreviewFraming.planningFraming(Framing(subject: subject, pullBack: 1), videoType: type)
+                let affectsPlanning = subject == .auto || subject == .speakerFocus || (subject == .vipFocus && type == .fight)
+                #expect((changed != original) == affectsPlanning)
+            }
+        }
+    }
+
+    @Test func cancelledReloadRetainsTheSceneButCannotCompositeItAsCurrent() async throws {
+        let model = WizardPreviewModel(thumbnails: ThumbnailService())
+        let record = Fixtures.scene()
+        let profile = Fixtures.brand()
+        var options = WizardOptions()
+        options.framing = Framing(subject: .original)
+        await model.loadScene(record, database: nil, people: [], language: nil, tagStyleID: nil,
+            profile: profile, options: options)
+        let original = try #require(model.scene)
+        let revision = model.contentRevision
+        #expect(model.isSceneCurrent)
+
+        let reload = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await model.loadScene(record, database: nil, people: [], language: nil, tagStyleID: nil,
+                profile: profile, options: options, time: record.startTime)
+        }
+        await reload.value
+        #expect(model.scene?.time == original.time)
+        #expect(model.loadedSceneID == record.id)
+        #expect(model.loadedTime == original.time)
+        #expect(model.contentRevision == revision)
+        #expect(!model.isSceneCurrent && !model.isLoadingScene)
+        let key = PreviewKey(options: options, scene: record, profile: profile,
+            contentRevision: revision, overlayTexts: [])
+        var requestedInput = false
+        model.update(key: key) { requestedInput = true; return nil }
+        #expect(!requestedInput)
+
+        await model.loadScene(record, database: nil, people: [], language: nil, tagStyleID: nil,
+            profile: profile, options: options)
+        #expect(model.isSceneCurrent)
+        // Rejecting a stale scene must not claim its key and suppress the retry.
+        model.update(key: key) { requestedInput = true; return nil }
+        #expect(requestedInput)
+
+        var other = record
+        other.id += 1
+        let changeRecord = Task {
+            withUnsafeCurrentTask { $0?.cancel() }
+            await model.loadScene(other, database: nil, people: [], language: nil, tagStyleID: nil,
+                profile: profile, options: options)
+        }
+        await changeRecord.value
+        #expect(model.scene == nil && model.loadedSceneID == nil && model.loadedTime == nil)
+        await model.loadScene(record, database: nil, people: [], language: nil, tagStyleID: nil,
+            profile: profile, options: options)
+        await model.loadScene(nil, database: nil, people: [], language: nil, tagStyleID: nil,
+            profile: profile, options: options)
+        #expect(model.scene == nil && model.loadedSceneID == nil && model.loadedTime == nil)
+    }
+
     @Test func namedClusterTurnsUseThePersonsCaptionStyleAndMarkerName() async throws {
         let temp = try TempDatabase()
         let fixture = try await Fixtures.personCorrection(in: temp)
@@ -106,6 +199,19 @@ struct WizardPreviewCompositeTests {
         #expect(try changedPixels(WizardPreviewComposite.render(input, baseFrame: base), fallback, in: canvas) == 0)
     }
 
+    @Test func everyFitControlInvalidatesPreviewPixels() {
+        let scene = Fixtures.scene()
+        let profile = Fixtures.brand()
+        var options = WizardOptions()
+        options.framing = Framing(subject: .original)
+        let original = PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: [])
+        for framing in [Framing(subject: .original, fit: .blurredFill),
+                        Framing(subject: .original, feather: 0.2), Framing(subject: .original, blur: 1)] {
+            options.framing = framing
+            #expect(PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: []) != original)
+        }
+    }
+
     @Test func personCaptionChoicesInvalidatePreviewKeyWithoutAProfileGenerationChange() {
         let scene = Fixtures.scene()
         let options = WizardOptions()
@@ -159,7 +265,7 @@ struct WizardPreviewCompositeTests {
         scene.startTime = 0
         scene.endTime = 10
         var options = WizardOptions()
-        options.highlightFraming = .vip
+        options.framing = Framing(subject: .vipFocus)
         let result = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
             turns: [turn], roster: [guest], people: [], layouts: ScreenCropStore.builtIn)
         #expect(result.warning == nil)
@@ -167,14 +273,12 @@ struct WizardPreviewCompositeTests {
         #expect(cells.count == 1)
         #expect(cells[0].source.midX > 0.5)
         #expect(!cells[0].isTalking)
-        #expect(CameraFocusChooser.allowedLayouts(feeds: 2, hasVIP: true).contains(.vip))
-        #expect(!CameraFocusChooser.allowedLayouts(feeds: 2).contains(.vip))
+        #expect(CameraFocusChooser.allowedSubjects(type: .fight, hasTurns: true, hasVIP: true).contains(.vipFocus))
+        #expect(!CameraFocusChooser.allowedSubjects(type: .podcast, hasTurns: true, hasVIP: false).contains(.vipFocus))
     }
 
-    /// "Zoom in/out for focus" keeps the preview centred on the VIP during
-    /// the interviewer's question when both cannot share a frame, instead of
-    /// leaning toward the interviewer.
-    @Test func interviewZoomMovesKeepThePreviewOnTheVIPWhileTheInterviewerTalks() throws {
+    /// The same speaker shots can glide or cut without changing the subject.
+    @Test func speakerMovesSwitchBetweenGlidesAndCuts() throws {
         var video = Fixtures.video()
         video.podcastLayout = PodcastLayout.singleCamera.rawValue
         video.duration = 40
@@ -192,30 +296,23 @@ struct WizardPreviewCompositeTests {
         scene.startTime = 0
         scene.endTime = 40
         var options = WizardOptions()
-        options.highlightFraming = .interview
-        options.interviewZoom = 0
-        func source(zoomMoves: Bool?, at time: Double) -> CGRect? {
-            options.interviewZoomMoves = zoomMoves
+        options.framing = Framing(subject: .speakerFocus)
+        options.framing?.pullBack = 0
+        func source(moves: Framing.Moves, at time: Double) -> CGRect? {
+            options.framing?.moves = moves
             let result = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
                 turns: turns, roster: [vip, host], people: [], layouts: ScreenCropStore.builtIn, time: time)
-            guard case .cells(let cells) = result.framing, cells.count == 1 else {
-                Issue.record("Expected one cell: \(result.warning ?? "")"); return nil
-            }
-            return cells[0].source
+            guard case .cells(let cells) = result.framing else { Issue.record("Expected cells"); return nil }
+            return cells.first?.source
         }
-        guard let panning = source(zoomMoves: nil, at: 2), let zooming = source(zoomMoves: true, at: 2),
-              let tight = source(zoomMoves: true, at: 30) else { return }
-        #expect(abs(zooming.height - 1) < 0.001, "the question is shown pulled out to the full height")
-        #expect(abs(zooming.midX - tight.midX) < 0.03, "centred where the tight shot is")
-        // Panning keeps the tight height (Pull back 0) and never sits further
-        // right than the zoomed-out shot; zooming opens to the full height.
-        #expect(panning.height < zooming.height - 0.2)
-        #expect(panning.midX <= zooming.midX + 0.0001, "panning leans toward the host on the left, never away")
-        #expect(panning != zooming)
+        let smooth = source(moves: .smooth, at: 10.4)
+        let cut = source(moves: .cuts, at: 10.4)
+        #expect(smooth != cut)
+        #expect(cut == source(moves: .cuts, at: 12))
         let profile = Fixtures.brand()
-        options.interviewZoomMoves = nil
+        options.framing?.moves = .smooth
         let before = PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: [])
-        options.interviewZoomMoves = true
+        options.framing?.moves = .cuts
         #expect(PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: []) != before)
     }
 
@@ -237,7 +334,7 @@ struct WizardPreviewCompositeTests {
         scene.startTime = 0
         scene.endTime = 40
         var options = WizardOptions()
-        options.highlightFraming = .interview
+        options.framing = Framing(subject: .speakerFocus)
         func source(at time: Double) -> CGRect? {
             let result = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
                 turns: turns, roster: [vip, host], people: [], layouts: ScreenCropStore.builtIn, time: time)
@@ -265,7 +362,7 @@ struct WizardPreviewCompositeTests {
         kept.startTime = 120
         kept.endTime = 160
         var options = WizardOptions()
-        options.highlightFraming = .talker
+        options.framing = Framing(subject: .speakerFocus)
         // Showing 130 s: 30 s into the scene (left shot), not 10 s into the kept range.
         let wrong = WizardPreviewFraming.resolve(options: options, record: kept, video: nil, face: nil,
             turns: [], roster: [], people: [], layouts: ScreenCropStore.builtIn, time: 130)
@@ -302,24 +399,24 @@ struct WizardPreviewCompositeTests {
         scene.startTime = 0
         scene.endTime = 10
         var options = WizardOptions()
-        options.highlightFraming = .interview
-        func cells(zoom: Double?) -> [WizardPreviewComposite.Cell]? {
-            options.interviewZoom = zoom
+        options.framing = Framing(subject: .speakerFocus)
+        func cells(zoom: Double) -> [WizardPreviewComposite.Cell]? {
+            options.framing?.pullBack = zoom
             let result = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
                 turns: [turn], roster: [vip, host], people: [], layouts: ScreenCropStore.builtIn)
             #expect(result.warning == nil, "\(result.warning ?? "")")
             guard case .cells(let cells) = result.framing else { Issue.record("Expected interview cell"); return nil }
             return cells
         }
-        guard let tight = cells(zoom: nil), let wide = cells(zoom: 1) else { return }
+        guard let tight = cells(zoom: 0), let wide = cells(zoom: 1) else { return }
         #expect(tight.count == 1 && wide.count == 1)
         #expect(wide[0].source.height > tight[0].source.height)
         #expect(abs(wide[0].source.height - 1) < 0.001)
         #expect(WizardPreviewComposite.Framing.cells(tight) != WizardPreviewComposite.Framing.cells(wide))
         let profile = Fixtures.brand()
-        options.interviewZoom = nil
+        options.framing?.pullBack = 0
         let before = PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: [])
-        options.interviewZoom = 1
+        options.framing?.pullBack = 1
         #expect(PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: []) != before)
     }
 
@@ -339,8 +436,8 @@ struct WizardPreviewCompositeTests {
         scene.startTime = 0
         scene.endTime = 10
         var options = WizardOptions()
-        options.highlightFraming = .interview
-        options.interviewZoom = 1
+        options.framing = Framing(subject: .speakerFocus)
+        options.framing?.pullBack = 1
         let refinedVIP = CGRect(x: 0.56, y: 0.17, width: 0.06, height: 0.11)
         let refinedHost = CGRect(x: 0.34, y: 0.25, width: 0.07, height: 0.13)
         let refiner: WizardPreviewFraming.RosterRefiner = { _, roster, range, _, _, _ in
@@ -361,7 +458,7 @@ struct WizardPreviewCompositeTests {
         #expect(after[0].face == refinedVIP || after[0].face == refinedHost)
         #expect(before[0].face.map { $0.minX >= 1 } ?? true)
         #expect(WizardPreviewFraming.usesRefinedRoster(options: options))
-        options.highlightFraming = .talker
+        options.framing = Framing(subject: .centerStage)
         #expect(!WizardPreviewFraming.usesRefinedRoster(options: options))
     }
 
@@ -389,7 +486,7 @@ struct WizardPreviewCompositeTests {
         scene.startTime = 0
         scene.endTime = 40
         var options = WizardOptions()
-        options.highlightFraming = .interview
+        options.framing = Framing(subject: .speakerFocus)
         func source(at time: Double?) -> CGRect? {
             let result = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
                 turns: turns, roster: [vip, host], people: [], layouts: ScreenCropStore.builtIn, time: time)
@@ -401,6 +498,7 @@ struct WizardPreviewCompositeTests {
         guard let opening = source(at: 0), let middle = source(at: nil), let answer = source(at: 30) else { return }
         var recipe = CropRecipe(kind: .interview)
         recipe.interviewZoom = 0
+        recipe.interviewPunchIn = .talker
         let plan = try? CropRecipePlanner.plan(recipe, video: video, range: 0...40, turns: turns, roster: [vip, host],
             layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16)
         let detail = "tiles=\(plan?.tiles ?? []) path=\(plan?.slots.first?.path ?? []) notes=\(plan?.notes ?? [])"
@@ -427,9 +525,9 @@ struct WizardPreviewCompositeTests {
         scene.startTime = 0
         scene.endTime = 40
         var options = WizardOptions()
-        options.highlightFraming = .interview
+        options.framing = Framing(subject: .speakerFocus)
         func source(zoom: Double) -> CGRect? {
-            options.interviewZoom = zoom
+            options.framing?.pullBack = zoom
             // Explicitly show the interviewer turn, not the VIP answer at the midpoint.
             let result = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
                 turns: turns, roster: [vip, host], people: [], layouts: ScreenCropStore.builtIn, time: 5)
@@ -500,6 +598,8 @@ struct WizardPreviewCompositeTests {
             let data = try #require(context.data)
             return Array(UnsafeBufferPointer(start: data.assumingMemoryBound(to: UInt8.self), count: image.width * image.height * 4))
         }
+        try #require(a.width == b.width && a.height == b.height,
+            "changedBounds needs equal sizes: \(a.width)x\(a.height) vs \(b.width)x\(b.height)")
         let lhs = try pixels(a), rhs = try pixels(b)
         var minX = a.width, minY = a.height, maxX = -1, maxY = -1
         for y in 0..<a.height {
@@ -585,7 +685,10 @@ struct WizardPreviewCompositeTests {
         var plain = try self.input()
         plain.options.addCaptions = false
         let empty = try WizardPreviewComposite.renderWithLayout(plain, baseFrame: base.image)
-        #expect(empty.layout == WizardPreviewComposite.Layout())
+        var blank = WizardPreviewComposite.Layout()
+        blank.sourceRect = empty.layout.sourceRect
+        #expect(empty.layout == blank)
+        #expect(empty.layout.sourceRect == CGRect(x: 0, y: 0, width: 640, height: 360))
     }
 
     @Test func topTrailingNameTagUsesThatCorner() async throws {
@@ -708,10 +811,68 @@ struct WizardPreviewCompositeTests {
                            contentRevision: 0, overlayTexts: ["Changed"]) != original)
     }
 
+    @Test func originalFocusPixelsAndHandleUseTheSameSourceTransform() async throws {
+        var input = try input()
+        // Custom sizes clamp at 240 wide, so stay above that.
+        input.options.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+        input.options.framing = Framing(subject: .original, focusFrame: FreeCropRect(xFrac: 0.5, wFrac: 0.5))
+        input.scene.framing = .original
+        input.scene.sourceSize = CGSize(width: 960, height: 540)
+        let directory = try TempDirectory()
+        let png = directory.url.appendingPathComponent("focus.png")
+        // The left half is black; only the selected right half contributes pixels.
+        let source = try FitTestImage.context(width: 960, height: 540)
+        source.setFillColor(CGColor(gray: 0, alpha: 1))
+        source.fill(CGRect(x: 0, y: 0, width: 960, height: 540))
+        source.setFillColor(CGColor(red: 0.2, green: 0.8, blue: 0.4, alpha: 1))
+        source.fill(CGRect(x: 480, y: 0, width: 480, height: 540))
+        try FitTestImage.write(try #require(source.makeImage()), to: png)
+        input.frameData = try Data(contentsOf: png)
+        let base = try WizardPreviewComposite.croppedFrame(input)
+        let rendered = try WizardPreviewComposite.renderWithLayout(input, baseFrame: base)
+        let whole = try #require(rendered.layout.sourceRect)
+        let frame = try #require(input.options.framing?.focusFrame)
+        let handle = CGRect(x: whole.minX + frame.xFrac * whole.width, y: whole.minY + frame.yFrac * whole.height,
+            width: frame.wFrac * whole.width, height: frame.hFrac * whole.height)
+        let black = try FitTestImage.context(width: 360, height: 640)
+        black.setFillColor(CGColor(gray: 0, alpha: 1))
+        black.fill(CGRect(x: 0, y: 0, width: 360, height: 640))
+        let blackImage = try #require(black.makeImage())
+        #expect(try changedBounds(base, blackImage) == handle)
+        #expect(handle == CGRect(x: 0, y: 0, width: 360, height: 640))
+    }
+
+    @Test func changingFocusFrameInvalidatesBothPreviewCaches() async throws {
+        var input = try input()
+        input.options.lookPreset = "none"
+        input.options.framing = Framing(subject: .original, focusFrame: FreeCropRect(xFrac: 0, wFrac: 0.5))
+        input.scene.framing = .original
+        input.frameData = try frameData(red: 1, split: true)
+        let model = WizardPreviewModel(thumbnails: ThumbnailService())
+        let record = Fixtures.scene()
+        func key(_ value: WizardPreviewComposite.Input) -> PreviewKey {
+            PreviewKey(options: value.options, scene: record, profile: value.profile, contentRevision: 1, overlayTexts: [])
+        }
+        let first = key(input)
+        model.update(key: first) { input }
+        for _ in 0..<200 where model.isRendering { try await Task.sleep(for: .milliseconds(25)) }
+        let left = try #require(model.image)
+        input.options.framing?.focusFrame = FreeCropRect(xFrac: 0.5, wFrac: 0.5)
+        let second = key(input)
+        #expect(second != first)
+        model.update(key: second) { input }
+        for _ in 0..<200 where model.isRendering { try await Task.sleep(for: .milliseconds(25)) }
+        let right = try #require(model.image)
+        #expect(model.error == nil && !model.isRendering)
+        #expect(try changedPixels(left, right, in: CGRect(x: 0, y: 0, width: right.width, height: right.height)) > 100)
+        model.cancel()
+    }
+
     @Test func originalIgnoresFacesAndSavedPaths() async throws {
         var input = try input()
         input.frameData = try frameData(red: 1, split: true)
         input.options.renderSettings = RenderSettings(preset: .custom, customWidth: 180, customHeight: 320)
+        input.scene.framing = .original
         let plain = try await WizardPreviewComposite.render(input)
         let face = CGRect(x: 0.8, y: 0.2, width: 0.1, height: 0.1)
         let path = SceneCameraPath(camera: "test", keyframes: [.init(t: 0, x: 0.5, y: 0, w: 0.5, h: 1)])
@@ -768,7 +929,7 @@ struct WizardPreviewCompositeTests {
         scene.startTime = 4
         scene.endTime = 10
         var options = WizardOptions()
-        options.highlightFraming = .talker
+        options.framing = Framing(subject: .speakerFocus)
         let resolved = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
             turns: [turn], roster: [], people: [], layouts: ScreenCropStore.builtIn)
         #expect(resolved.warning == nil)
@@ -780,16 +941,16 @@ struct WizardPreviewCompositeTests {
         #expect(cells[0].area == WizardPreviewFraming.full)
         #expect(cells[0].source.midX > 0.5 && cells[0].source.width <= 0.5)
         // "Let AI choose" resolves the same way for the preview.
-        options.highlightFraming = nil
+        options.framing = Framing()
         if case .cells = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
             turns: [turn], roster: [], people: [], layouts: ScreenCropStore.builtIn).framing {} else {
             Issue.record("nil framing should preview as talker on a tiled recording")
         }
         // Original keeps the whole recording.
-        options.podcastFraming = .original
-        if case .cover(face: nil) = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
+        options.framing = Framing(subject: .original)
+        if case .original = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
             turns: [turn], roster: [], people: [], layouts: ScreenCropStore.builtIn).framing {} else {
-            Issue.record("original should be a plain cover crop")
+            Issue.record("original should keep the whole source")
         }
     }
 
@@ -810,19 +971,20 @@ struct WizardPreviewCompositeTests {
 
     @Test func unavailableRecipeFallsBackToTalkerWithReason() {
         var options = WizardOptions()
-        options.highlightFraming = .grid
+        options.framing = Framing(subject: .layout)
         let face = CGRect(x: 0.7, y: 0.1, width: 0.1, height: 0.2)
         let result = WizardPreviewFraming.resolve(options: options, record: Fixtures.scene(), video: Fixtures.video(),
             face: face, turns: [], roster: [], people: [], layouts: ScreenCropStore.builtIn)
-        #expect(result.framing == .cover(face: face))
-        #expect(result.warning?.contains("two or more feeds") == true)
+        if case .cells(let cells) = result.framing { #expect(cells.count == 2) }
+        else { Issue.record("A layout with no people still honors its areas") }
+        #expect(result.warning?.contains("No VIP") == true)
         let missing = WizardPreviewFraming.resolve(options: options, record: Fixtures.scene(), video: nil,
             face: face, turns: [], roster: [], people: [], layouts: [])
         #expect(missing.framing == .cover(face: face))
         #expect(missing.warning?.contains("analyze it first") == true)
         var split = Fixtures.video()
         split.podcastLayout = PodcastLayout.splitHorizontal.rawValue
-        options.highlightFraming = .talkerAndRest
+        options.framing = Framing(subject: .speakerFocus)
         let noTurns = WizardPreviewFraming.resolve(options: options, record: Fixtures.scene(), video: split,
             face: face, turns: [], roster: [], people: [], layouts: ScreenCropStore.builtIn)
         #expect(noTurns.framing == .cover(face: face))
@@ -898,8 +1060,28 @@ struct WizardPreviewCompositeTests {
         options.lookIntensity = 0.5
         #expect(key() != look)
         let graded = key()
-        options.highlightFraming = .grid
+        options.framing = Framing(subject: .layout)
         #expect(key() != graded)
+    }
+
+    @Test func threeStackPaintsThreeIndependentSourceBands() throws {
+        var input = try input()
+        input.options.framing = Framing(subject: .layout, layout: "Three stack")
+        let layout = try #require(ScreenCropStore.builtIn.first { $0.name == "Three stack" })
+        let cells = layout.areas.enumerated().map { index, area in
+            let box = area.bounds
+            return WizardPreviewComposite.Cell(source: CGRect(x: 0, y: 0, width: 1, height: 1),
+                area: CGRect(x: box.x, y: box.y, width: box.w, height: box.h),
+                sourcePath: "/tmp/area-\(index).mp4", sourceTime: 0, mask: area, role: area.role)
+        }
+        input.scene.framing = .cells(cells)
+        for (index, cell) in cells.enumerated() {
+            input.cellFrames[cell.frameKey] = try frameData(red: CGFloat(index + 1) / 3)
+        }
+        let painted = try WizardPreviewComposite.croppedFrame(input)
+        let samples = try [60, 180, 300].map { y in try FitTestImage.pixel(painted, x: 320, y: y)[0] }
+        #expect(Set(samples).count == 3)
+        #expect(samples.max()! - samples.min()! >= 150)
     }
 
     private func input() throws -> WizardPreviewComposite.Input {
@@ -969,9 +1151,8 @@ extension WizardPreviewCompositeTests {
         var scene = Fixtures.scene()
         scene.startTime = 0; scene.endTime = 30
         var options = WizardOptions()
-        options.highlightFraming = .interview
-        options.interviewPunchIn = "interviewer"
-        options.interviewCuts = true
+        options.framing = Framing(subject: .speakerFocus)
+        options.framing?.moves = .cuts
         func source(at time: Double) throws -> CGRect {
             let result = WizardPreviewFraming.resolve(options: options, record: scene, video: video, face: nil,
                 turns: turns, roster: [guest, host], people: [], layouts: [], time: time)
@@ -983,19 +1164,19 @@ extension WizardPreviewCompositeTests {
         let opening = try source(at: 0)
         #expect(try source(at: 9.995) == opening)
         let question = try source(at: 10)
-        #expect(abs(question.midX - 0.54) < 0.001 && question.height < opening.height)
+        #expect(abs(question.midX - 0.54) < 0.001 && question != opening)
         #expect(try source(at: 19.995) == question)
         #expect(try source(at: 20) == opening)
         let profile = Fixtures.brand()
         let cuts = PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: [])
-        options.interviewCuts = false
+        options.framing?.moves = .smooth
         #expect(PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: []) != cuts)
-        options.interviewCuts = true
-        options.interviewPunchIn = "vip"
+        options.framing?.moves = .cuts
+        options.framing?.pullBack = 0.4
         #expect(PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: []) != cuts)
-        options.interviewPunchIn = "interviewer"
+        options.framing?.pullBack = 0
         let refiner: WizardPreviewFraming.RosterRefiner = { _, roster, _, _, punchIn, cuts in
-            #expect(punchIn == .interviewer && cuts)
+            #expect(punchIn == .talker && cuts)
             return roster
         }
         let cached = await WizardPreviewFraming.resolveCached(options: options, record: scene, video: video, face: nil,

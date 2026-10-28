@@ -19,7 +19,7 @@ enum WizardPodcastBRoll {
         }
         var spans: [SourceSpan]
         var instructions: String
-        var framing: CropRecipe.Kind?
+        var framing: Framing
         var projectID: Int64?
     }
 
@@ -52,17 +52,17 @@ enum WizardPodcastBRoll {
                        log: @escaping @Sendable (String) -> Void) async throws -> TimelineDocument {
         guard (ReelRecipe.recipe(id: options.formatPreset) ?? .custom).capabilities.bRoll else { return document }
         guard options.useBRoll else { log("B-roll off"); return document }
-        guard options.highlightFraming == .vip || options.highlightFraming == .vipBRoll || !options.brollInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return document }
+        guard options.requestedFraming.subject == .vipFocus || !options.brollInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { return document }
         // Generated brand cards have new paths in every version and cannot
         // supply B-roll sentences; they must not invalidate the source cache.
-        let main = document.videoTrack.filter { $0.track == 0 && !$0.isCutaway && !$0.bumper && $0.sceneID != nil }
+        let main = document.videoTrack.filter { $0.track == 0 && !$0.isCutaway && !$0.bumper && $0.sceneID != nil && $0.framingPlan?.isComposed != true }
             .sorted { $0.startTime < $1.startTime }
         let key = Key(spans: main.map {
             Key.SourceSpan(sceneID: $0.sceneID, file: $0.videoFile, start: $0.sourceStart, end: $0.sourceEnd,
                            time: $0.startTime, duration: $0.duration, speed: $0.speed)
-        }, instructions: options.brollInstructions, framing: options.highlightFraming, projectID: options.projectID)
+        }, instructions: options.brollInstructions, framing: options.requestedFraming, projectID: options.projectID)
         let planned: Planned
-        if options.highlightFraming != .vip, options.highlightFraming != .vipBRoll, let cached = cache.plans[key] {
+        if options.requestedFraming.subject != .vipFocus, let cached = cache.plans[key] {
             planned = cached
             log("B-roll: reusing placements for unchanged source spans and instructions.")
         } else {
@@ -119,12 +119,12 @@ enum WizardPodcastBRoll {
                 speakerKeys: Array(Set(turns.filter { $0.end > start && $0.start < end }.compactMap(\.personKey))))
             let sentences = context.sentences
                 .filter { $0.start >= start && $0.end <= end }.sorted { $0.start < $1.start }
-            let vipFocus = options.highlightFraming == .vip || options.highlightFraming == .vipBRoll
+            let vipFocus = options.requestedFraming.subject == .vipFocus
             let vipKeys = vipFocus ? Set(context.roster.filter(\.isVIP).map(\.key)) : []
             let tiles = vipFocus
                 ? VIPRecipePlanning.recordedFeeds(video: video, roster: context.roster)
                 : VIPRecipePlanning.namedTiles(context.tiles, roster: context.roster)
-            let vipWindows = options.highlightFraming == .vip
+            let vipWindows = options.requestedFraming.subject == .vipFocus
                 ? VIPBRollWindows.needingFootage(turns: turns, roster: context.roster, tiles: tiles, range: start...end) : nil
             let sources = PodcastHighlightBRollPlanner.sources(videoID: video.id, range: start...end,
                 speakerKeys: candidate.speakerKeys, turns: turns, roster: context.roster, scenes: scenes,
@@ -133,7 +133,7 @@ enum WizardPodcastBRoll {
                 turns: turns, roster: context.roster, tiles: tiles, sources: sources, vipWindows: vipWindows))
         }
         guard !spans.isEmpty else { return Planned(spans: [], cuts: [], scenes: scenes) }
-        if options.highlightFraming == .vipBRoll {
+        if options.requestedFraming.subject == .vipFocus && options.useBRoll {
             var cuts: [[PodcastHighlightBRollPlanner.Cut]] = []
             for span in spans {
                 try Task.checkCancellation()
@@ -145,7 +145,7 @@ enum WizardPodcastBRoll {
             PodcastHighlightBRollPlacement.logVIPBRoll(cuts.flatMap { $0 }, log: log)
             return Planned(spans: spans, cuts: cuts, scenes: scenes)
         }
-        if options.highlightFraming == .vip, options.brollInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
+        if options.requestedFraming.subject == .vipFocus, options.brollInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             log("VIP B-roll (rules): prefer the VIP's own feed, then same-recording VIP footage, then other recordings.")
             let cuts = spans.map { span in
                 PodcastHighlightBRollPlanner.plan(candidate: span.candidate, sources: span.sources, turns: span.turns,

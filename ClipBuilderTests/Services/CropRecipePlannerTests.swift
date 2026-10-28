@@ -74,9 +74,12 @@ struct CropRecipePlannerTests {
         #expect(tracking.slots.first?.trackingSpans?.map(\.start) == [0, 4])
         #expect(tracking.slots.first?.trackingSpans?.map(\.end) == [4, 10])
         let sourceScene = Fixtures.scene(id: 42, start: 0, end: 10)
-        let document = PodcastRecipeTimeline.build(kind: .vip, video: video, range: 0...10,
+        var options = WizardOptions()
+        options.framing = Framing(subject: .vipFocus)
+        options.useBRoll = false
+        let document = PodcastRecipeTimeline.build(subject: .vipFocus, video: video, range: 0...10,
             sourceScene: sourceScene, turns: turns, roster: roster(["a", "b"]), layouts: [],
-            settings: RenderSettings(), tagText: [:])
+            settings: RenderSettings(), options: options, tagText: [:])
         #expect(document.videoTrack.allSatisfy { $0.sceneID == sourceScene.id })
         #expect(document.videoTrack.map(\.sourceStart) == [0, 4])
         #expect(document.videoTrack.map(\.sourceEnd) == [4, 10])

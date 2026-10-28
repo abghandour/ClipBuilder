@@ -11,7 +11,7 @@ actor RenderSegmentCache {
     // v6 uses half-open caption windows at page boundaries.
     // v7 folds Express burn-ins/mute and feed paths into the segment graph.
     // v8 preserves muted AAC, validates saved paths, and grades the whole composite.
-    nonisolated static let rendererVersion = "multitrack-segment-v8"
+    nonisolated static let rendererVersion = "multitrack-segment-v12-wizard-documents"
     private let root: URL?
     private let byteLimit: Int64
 

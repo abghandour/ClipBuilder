@@ -58,7 +58,7 @@ struct PodcastHighlightBRollPlannerTests {
         let roster = [VideoPersonRecord(videoID: 1, personID: 1, key: "vip", name: "Guest",
             descriptor: "", portraitAt: 0, portraitBox: nil, vip: true)]
         var options = WizardOptions()
-        options.highlightFraming = .vipBRoll
+        options.framing = Framing(subject: .vipFocus)
         options.useBRoll = true
         options.brollInstructions = "Show the guest."
         let cuts = try await PodcastHighlightBRollPlacement.plan(candidate: candidate, video: video,

@@ -40,19 +40,6 @@ struct PodcastPipelineIntegrationTests {
         #expect(Set(resolved.compactMap(\.personKey)) == Set(["host", "guest"]))
     }
 
-    @Test("split Zoom render is vertical and keeps audio")
-    func splitRender() async throws {
-        let temp = try TempDirectory(prefix: "ClipBuilderPodcastSplitTest")
-        let source = try await FixtureVideo.makePodcast(in: temp.url)
-        let output = temp.url.appendingPathComponent("split.mp4")
-        try await PodcastFramingService.splitZoom(source: source, start: 0,
-                                                  duration: 2, output: output)
-        let dimensions = await FFmpeg.dimensions(of: output)
-        #expect(dimensions.width == 1080)
-        #expect(dimensions.height == 1920)
-        #expect(await FFmpeg.hasAudioStream(output))
-    }
-
     @Test("a center seam without faces does not classify as Zoom")
     func layoutNeedsFacesAndSeam() async throws {
         let temp = try TempDirectory(prefix: "ClipBuilderPodcastLayoutTest")

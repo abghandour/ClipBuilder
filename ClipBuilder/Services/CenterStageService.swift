@@ -326,26 +326,37 @@ actor CenterStageService {
                     avoidPortraits: [Data] = [],
                     hints: [(time: Double, crop: CGRect)] = [],
                     tuning: Tuning = .balanced,
-                    aspect: Double = Double(RenderEngine.outputWidth) / Double(RenderEngine.outputHeight)) async throws
+                    aspect: Double = Double(RenderEngine.outputWidth) / Double(RenderEngine.outputHeight),
+                    fighterFocus: Bool = false, fighterHasVIP: Bool = false, fighterRegion: FreeCropRect? = nil) async throws
         -> (keyframes: [CameraPathKeyframe], trackedShare: Double) {
-        let info = try await loadSource(source)
+        let info = try await loadSource(source, requireWide: !fighterFocus)
         let targets = try await trackPeople(asset: info.asset, track: info.track,
                                             start: start, duration: duration,
                                             focusRanges: [],
                                             focusPortraits: focusPortraits,
                                             avoidPortraits: avoidPortraits,
                                             orientation: Self.displayOrientation(of: info.preferredTransform),
-                                            tuning: tuning)
+                                            tuning: tuning, fighterFocus: fighterFocus, fighterHasVIP: fighterHasVIP, fighterRegion: fighterRegion)
         let trackedShare = targets.isEmpty ? 0
             : Double(targets.filter(\.tracked).count) / Double(targets.count)
         let keyframes = cameraPath(from: targets, size: info.size, duration: duration,
                                    tuning: tuning, hints: hints, aspect: aspect)
-        let normalized = keyframes.map { keyframe in
+        var normalized = keyframes.map { keyframe in
             CameraPathKeyframe(t: keyframe.time,
                                x: keyframe.crop.minX / info.size.width,
                                y: keyframe.crop.minY / info.size.height,
                                w: keyframe.crop.width / info.size.width,
                                h: keyframe.crop.height / info.size.height)
+        }
+        if fighterFocus {
+            // Preserve both bodies even when their union is wider than the canvas.
+            // Blurred fill fits this source window; it must not be aspect-cropped first.
+            normalized = normalized.map { key in
+                let neighborhood = targets.filter { abs($0.time - key.t) <= tuning.keyframeInterval }
+                let crop = CGRect(x: key.x, y: key.y, width: key.w, height: key.h)
+                let clipped = FighterTrackingAdapter.containing(camera: crop, subjects: neighborhood.map(\.union), region: fighterRegion)
+                return CameraPathKeyframe(t: key.t, x: clipped.minX, y: clipped.minY, w: clipped.width, h: clipped.height)
+            }
         }
         return (normalized, trackedShare)
     }
@@ -571,6 +582,7 @@ actor CenterStageService {
                              orientation: CGImagePropertyOrientation,
                              tuning: Tuning,
                              region: FreeCropRect? = nil,
+                             fighterFocus: Bool = false, fighterHasVIP: Bool = false, fighterRegion: FreeCropRect? = nil,
                              evidence: (@Sendable (FeedPathSample) -> Void)? = nil,
                              log: @Sendable (String) -> Void = { print($0) }) async throws -> [Target] {
         let decodePermit = try await MediaWorkScheduler.current.acquire(.decoding)
@@ -581,6 +593,7 @@ actor CenterStageService {
         // them are framed; detections matching a NEGATIVE reference (an
         // ignored person — referee, staff) are dropped outright.
         let references = focusPortraits.compactMap { AppearanceSignature(jpeg: $0) }
+        var fighter = FighterTrackingAdapter.Tracker(portraits: references, hasVIP: fighterHasVIP)
         let negatives = avoidPortraits.compactMap { AppearanceSignature(jpeg: $0) }
         let naturalSize = try await track.load(.naturalSize)
         let transform = try await track.load(.preferredTransform)
@@ -738,6 +751,19 @@ actor CenterStageService {
             // camera frames the main subjects instead of everyone visible.
             let detections = Analyzer.primaryPeopleBoxes(boxes)
 
+            if fighterFocus {
+                let bodies = detections.filter { box in
+                    fighterRegion.map { FocusFrame.contains($0, x: box.midX, y: box.midY) } ?? true
+                }.map { box in
+                    FighterTrackingAdapter.Body(box: box, appearance: AppearanceSignature(
+                        pixelBuffer: pixelBuffer, displayRect: box, orientation: orientation))
+                }
+                let selected = fighter.select(bodies, at: time)
+                let box = fighterRegion.map { selected.box.intersection(FocusFrame.rect($0)) } ?? selected.box
+                targets.append(Target(time: time, union: box.isNull ? fighterRegion.map(FocusFrame.rect) ?? selected.box : box,
+                    tracked: !bodies.isEmpty))
+                continue
+            }
             var focused = detections
             if (!references.isEmpty || !negatives.isEmpty) && !detections.isEmpty {
                 let signatures = detections.map {

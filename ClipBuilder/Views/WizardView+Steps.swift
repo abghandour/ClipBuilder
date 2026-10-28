@@ -60,7 +60,7 @@ extension WizardView {
         answers.savedSelectionCount = visibleSelections.count
         answers.keptSelectionCount = visibleSelections.count { $0.selection.bestTakeID != nil }
         answers.look = editingSummary + (lookCapabilities.offersCameraFocus
-            ? " · " + WizardCameraFocus.name(cameraFocusBinding.wrappedValue) : "")
+            ? " · " + framingBinding.wrappedValue.subject.label(type: framingVideo?.type ?? .other) : "")
         let requested = store.pendingWizardPrompt?.statusMessage != nil ? WizardCardFlow.Card.source : requestedCard
         return WizardCardFlow(answers: answers, requestedCard: requested, collapsedCard: collapsedCard,
             sourcesReady: !readiness.contains(where: \.isBlocking), needsFootageProposal: needsFootageProposal,
@@ -89,7 +89,14 @@ extension WizardView {
                     var edits = OverlayEdits.split(fixedOverlayEdits)
                     edits.place(component, at: box)
                     fixedOverlayEdits = edits.joined
-                })
+                },
+                onPlaceFocusFrame: cardFlow.visibleCard == .settings && cardFlow.canExpand(.settings) && !store.isWizardRunning
+                    && (WizardSettingsTab(rawValue: settingsTabRaw) ?? .picture) == .picture
+                    ? { frame in
+                        var value = framingBinding.wrappedValue
+                        value.focusFrame = frame
+                        framingBinding.wrappedValue = value
+                    } : nil)
                 .id("\(store.profileGeneration):\(store.activeProjectID ?? 0)")
                 .rememberedPaneWidth("pane.wizard.preview", min: 240, initial: 320, max: 480)
         }
@@ -150,6 +157,7 @@ extension WizardView {
             }
         }
         .environment(\.wizardStepRows, true)
+        .environment(\.formCaptionIndent, SettingsRowMetrics.labelWidth + Theme.spaceM)
         .toggleStyle(.switch)
         .textFieldStyle(.roundedBorder)
         .safeAreaInset(edge: .bottom, spacing: 0) {

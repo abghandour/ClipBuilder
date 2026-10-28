@@ -50,6 +50,7 @@ import Foundation
         "fixedOverlayTextsJoined": WizardExpressExtras.overlayTextsKey,
         "fixedOverlayPosition": WizardExpressExtras.overlayPositionKey,
         "fixedOverlayEdits": WizardExpressExtras.overlayEditsKey,
+        "framing": WizardExpressExtras.framingKey,
         "watermarkOverlayTemplate": WizardExpressExtras.watermarkOverlayKey,
         "watermarkOpacity": WizardExpressExtras.watermarkOpacityKey,
         "introBumperLibraryPath": WizardExpressExtras.introBumperKey,
@@ -71,6 +72,7 @@ import Foundation
         options.pacing = profile.defaultPacing
         options.dubLanguage = profile.editing?.footage.dubLanguage
         var result = JSONSetting.dictionary(options)
+        result.removeValue(forKey: "framing")
         if let saved = AISettingsJSON.decode(
             [String: JSONSetting].self, defaults.string(forKey: snapshotKey))
         {
@@ -131,6 +133,9 @@ import Foundation
             (defaults.string(forKey: "wizard.sourcePeople") ?? "").split(separator: ",").map {
                 .string(String($0))
             })
+        let framing = WizardPresetBridge.miniSettings(from: result).framing
+        result["framing"] = JSONSetting.dictionaryValue(framing)
+        for key in legacyFramingKeys { result.removeValue(forKey: key) }
         return result
     }
     static func analysis(defaults: UserDefaults) -> [String: JSONSetting] {
@@ -152,14 +157,29 @@ import Foundation
         }
         return .null
     }
+    private static let legacyFramingKeys: Set<String> = ["cameraFocus", "highlightFraming", "podcastFraming",
+        "interviewZoom", "interviewZoomMoves", "interviewCuts", "interviewPunchIn", "framingCamera"]
+
     static func write(
         _ result: [String: JSONSetting], kind: AISettingsEnvelope.Kind,
         scopes: Set<AISettingsScope> = Set(AISettingsScope.allCases),
         sourceName: String = "another run", profileName: String? = nil, defaults: UserDefaults,
         recordSnapshot: Bool = true
     ) {
-        let result = kind == .wizard ? WizardOptions.normalizeSettings(result) : result
-        let mapping = kind == .wizard ? wizardKeys : analysisKeys
+        var result = kind == .wizard ? WizardOptions.normalizeSettings(result) : result
+        if kind == .wizard, scopes.contains(.options) {
+            if let framing: Framing = result["framing"]?.decodeValue() {
+                result["framing"] = .string(framing.joined)
+            } else if result["framing"] == nil,
+                      ["podcastFraming", "highlightFraming", "interviewZoom", "interviewZoomMoves", "interviewCuts", "interviewPunchIn", "framingCamera"].contains(where: { result[$0] != nil }) {
+                // Loading an old preset replaces a previous run's migrated preference.
+                result["framing"] = .string(WizardPresetBridge.miniSettings(from: result).framing.joined)
+            }
+        }
+        if kind == .wizard {
+            for key in legacyFramingKeys { result.removeValue(forKey: key) }
+        }
+        let mapping = kind == .wizard ? wizardKeys.filter { !Self.legacyFramingKeys.contains($0.key) } : analysisKeys
         let allowed = scopes.reduce(into: Set<String>()) {
             $0.formUnion(AISettingsEnvelope.keys($1, kind: kind))
         }
@@ -207,12 +227,6 @@ import Foundation
                 }
                 if result["workflow"]?.string == nil {
                     defaults.set(WizardWorkflow.automatic.rawValue, forKey: WizardDefaults.workflowKey)
-                }
-                // Pasted legacy split-feed settings need the same mapping even
-                // after this installation has migrated its own preferences.
-                if result["podcastFraming"]?.string == PodcastFramingMode.splitZoom.rawValue {
-                    defaults.set(CropRecipe.Kind.grid.rawValue, forKey: "wizard.highlightFraming")
-                    defaults.set(PodcastFramingMode.followSpeaker.rawValue, forKey: "wizard.podcastFraming")
                 }
                 defaults.set(true, forKey: WizardCameraFocus.migrationKey)
                 let recipe = ReelRecipe.recipe(id: defaults.string(forKey: "wizard.formatPreset") ?? "custom") ?? .custom

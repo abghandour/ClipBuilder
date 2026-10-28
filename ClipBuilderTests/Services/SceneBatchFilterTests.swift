@@ -21,9 +21,9 @@ struct SceneBatchFilterTests {
 
     @Test func sentinelsAreNegativeAndDistinctFromAllBatches() {
         let ids = SceneBatchFilter.allCases.map(\.id)
-        #expect(ids == [-2, -3, -4, -5, -6, -7, -8])
+        #expect(ids == [-2, -3, -4, -5, -6, -7, -8, -9])
         #expect(!ids.contains(-1))
-        #expect(SceneBatchFilter.allCases.map(\.title) == ["Recent", "Interviews", "Podcasts", "Fights", "Fight Recaps", "Training", "Other"])
+        #expect(SceneBatchFilter.allCases.map(\.title) == ["Recent", "Interviews", "Podcasts", "Fights", "Fight Recaps", "Training", "Other", "Screen Recordings"])
     }
 
     @Test func recentCoversTheLastThreeDays() {

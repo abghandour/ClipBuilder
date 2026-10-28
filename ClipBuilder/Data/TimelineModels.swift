@@ -585,7 +585,9 @@ nonisolated extension ScreenCropLayout {
     /// slightly uneven hand-drawn splits still share a row), then left to
     /// right within a row. This is the order tracks map to areas.
     var areasInTrackOrder: [ScreenCropArea] {
-        areas.sorted { lhs, rhs in
+        // Role layouts preserve authoring order: PiP's corner must draw last.
+        if areas.contains(where: { $0.role != nil }) { return areas }
+        return areas.sorted { lhs, rhs in
             let a = lhs.bounds, b = rhs.bounds
             if abs(a.y - b.y) > 0.06 { return a.y < b.y }
             if abs(a.x - b.x) > 0.001 { return a.x < b.x }
@@ -731,6 +733,9 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     /// Who wrote the camera path: "wizard" for a script or Wizard run, nil
     /// for the inspector.
     var cameraPathSource: String?
+    /// Resolved picture retained independently of future framing choices.
+    var framingPlan: FramingPlan?
+    var framingProgramAudio: FramingProgramAudio?
 
     /// How a wide main clip in Full Screen is framed.
     enum Framing: String, CaseIterable, Sendable {
@@ -865,6 +870,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case centerStage = "center_stage"
         case cameraPath = "camera_path"
         case cameraPathSource = "camera_path_source"
+        case framingPlan = "framing_plan"
+        case framingProgramAudio = "framing_program_audio"
         case speed
     }
 
@@ -906,6 +913,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         cutawaySourceWindow = try container.decodeIfPresent(FreeCropRect.self, forKey: .cutawaySourceWindow)
         areaRegion = try container.decodeIfPresent(FreeCropRect.self, forKey: .areaRegion)
         areaFocus = try container.decodeIfPresent(AreaFocus.self, forKey: .areaFocus)
+        framingProgramAudio = try container.decodeIfPresent(FramingProgramAudio.self, forKey: .framingProgramAudio)
+        framingPlan = try container.decodeIfPresent(FramingPlan.self, forKey: .framingPlan)
         centerStage = try container.decodeIfPresent(Bool.self, forKey: .centerStage) ?? false
         if let path = try container.decodeIfPresent([CameraPathKeyframe].self, forKey: .cameraPath), path.count >= 2 {
             cameraPath = path
@@ -976,6 +985,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         try container.encodeIfPresent(cutawaySourceWindow, forKey: .cutawaySourceWindow)
         if let areaRegion { try container.encode(areaRegion, forKey: .areaRegion) }
         try container.encodeIfPresent(areaFocus, forKey: .areaFocus)
+        try container.encodeIfPresent(framingProgramAudio, forKey: .framingProgramAudio)
+        try container.encodeIfPresent(framingPlan, forKey: .framingPlan)
         try container.encode(captions, forKey: .captions)
         try container.encode(centerStage, forKey: .centerStage)
         if let cameraPath, cameraPath.count >= 2 {
@@ -1012,7 +1023,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             && lhs.centerStage == rhs.centerStage && lhs.speed == rhs.speed
             && lhs.effect == rhs.effect && lhs.cropXFrac == rhs.cropXFrac && lhs.freeCrops == rhs.freeCrops && lhs.captions == rhs.captions
             && lhs.screenCrop == rhs.screenCrop && lhs.areaWindow == rhs.areaWindow && lhs.areaRegion == rhs.areaRegion
-            && lhs.areaFocus == rhs.areaFocus
+            && lhs.areaFocus == rhs.areaFocus && lhs.framingPlan == rhs.framingPlan
+            && lhs.framingProgramAudio == rhs.framingProgramAudio
             && lhs.cutawaySourceWindow == rhs.cutawaySourceWindow
     }
 
@@ -1433,12 +1445,12 @@ nonisolated struct FreeCrop: Codable, Sendable, Equatable {
 }
 
 /// A known face center expressed as fractions of the full source frame.
-nonisolated struct AreaFocus: Codable, Sendable, Equatable {
+nonisolated struct AreaFocus: Codable, Sendable, Hashable {
     var x: Double
     var y: Double
 }
 
-nonisolated struct FreeCropRect: Codable, Sendable, Equatable {
+nonisolated struct FreeCropRect: Codable, Sendable, Hashable {
     var xFrac: Double = 0
     var yFrac: Double = 0
     var wFrac: Double = 1

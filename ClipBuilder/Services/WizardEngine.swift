@@ -29,12 +29,97 @@ nonisolated struct WizardOptions: Codable, Sendable {
         case captionPosition, speakerCaptionPositions, captionStyleID, nameTagsOnly, workflow, critiqueTargetScore, critiqueMaxVersions, musicTrack, overlayStyle, overlayAnimation, overlayPlacement
         case highlightFraming, interviewZoom, useBRoll, brollInstructions, highlightMaxSeconds, highlightMaxCount, sourceSceneSelection, sourceSceneIDs, sourceVideoPaths, sourcesRestricted, stackLevel, projectID, renderSettings, pacing, captionLanguage, muteSource, addCaptions, enableTextOverlays, useMusic, aiInstructions, useFightResearch, selectedRunIDs, favoritesOnly, tastePreset, sourcePeople, modelOverride, templateJSON, templateLabel, targetDurationSeconds, framingCamera, podcastFraming, screenCropLayouts, allowedTransitions, pinnedOverlayTemplate, pinnedOverlayText, formatPreset, critiqueLoop, includeWatermark, includeHeadline, includeOutro, includeIntroBumper, includeOutroBumper, includeMiddleBumper, musicFolder
         case fixedOverlayPosition
+        case framing
         case fixedOverlayEdits
         case interviewZoomMoves
         case interviewCuts
         case interviewPunchIn
         case fixedOverlayTemplate, fixedOverlayStart, fixedOverlayDuration, fixedOverlayTexts, introBumperPath, outroBumperPath, watermarkOverlayTemplate, watermarkOpacity, transitionChoice, lookPreset, lookIntensity
     }
+    /// Legacy controls remain readable; new snapshots carry only Framing.
+    func encode(to encoder: Encoder) throws {
+        var c = encoder.container(keyedBy: CodingKeys.self)
+        try c.encodeIfPresent(dubLanguage, forKey: .dubLanguage)
+        try c.encodeIfPresent(manualBRoll, forKey: .manualBRoll)
+        try c.encodeIfPresent(strikeStats, forKey: .strikeStats)
+        try c.encodeIfPresent(strikeUnits, forKey: .strikeUnits)
+        try c.encodeIfPresent(strikeSpeedCallouts, forKey: .strikeSpeedCallouts)
+        try c.encodeIfPresent(strikeGrapplingCard, forKey: .strikeGrapplingCard)
+        try c.encodeIfPresent(strikeRoundCard, forKey: .strikeRoundCard)
+        try c.encodeIfPresent(safeAreaOnly, forKey: .safeAreaOnly)
+        try c.encodeIfPresent(safeAreaPlatforms, forKey: .safeAreaPlatforms)
+        try c.encodeIfPresent(nameTags, forKey: .nameTags)
+        try c.encodeIfPresent(nameTagContent, forKey: .nameTagContent)
+        try c.encodeIfPresent(nameTagStyle, forKey: .nameTagStyle)
+        try c.encodeIfPresent(nameTagStyleID, forKey: .nameTagStyleID)
+        try c.encodeIfPresent(nameTagPosition, forKey: .nameTagPosition)
+        try c.encodeIfPresent(captionPosition, forKey: .captionPosition)
+        try c.encodeIfPresent(speakerCaptionPositions, forKey: .speakerCaptionPositions)
+        try c.encodeIfPresent(captionStyleID, forKey: .captionStyleID)
+        try c.encodeIfPresent(nameTagsOnly, forKey: .nameTagsOnly)
+        try c.encodeIfPresent(workflow, forKey: .workflow)
+        try c.encodeIfPresent(critiqueTargetScore, forKey: .critiqueTargetScore)
+        try c.encodeIfPresent(critiqueMaxVersions, forKey: .critiqueMaxVersions)
+        try c.encodeIfPresent(musicTrack, forKey: .musicTrack)
+        try c.encodeIfPresent(overlayStyle, forKey: .overlayStyle)
+        try c.encodeIfPresent(overlayAnimation, forKey: .overlayAnimation)
+        try c.encodeIfPresent(overlayPlacement, forKey: .overlayPlacement)
+        try c.encodeIfPresent(useBRoll, forKey: .useBRoll)
+        try c.encodeIfPresent(brollInstructions, forKey: .brollInstructions)
+        try c.encodeIfPresent(highlightMaxSeconds, forKey: .highlightMaxSeconds)
+        try c.encodeIfPresent(highlightMaxCount, forKey: .highlightMaxCount)
+        try c.encodeIfPresent(sourceSceneSelection, forKey: .sourceSceneSelection)
+        try c.encodeIfPresent(sourceSceneIDs, forKey: .sourceSceneIDs)
+        try c.encodeIfPresent(sourceVideoPaths, forKey: .sourceVideoPaths)
+        try c.encodeIfPresent(sourcesRestricted, forKey: .sourcesRestricted)
+        try c.encodeIfPresent(stackLevel, forKey: .stackLevel)
+        try c.encodeIfPresent(projectID, forKey: .projectID)
+        try c.encodeIfPresent(renderSettings, forKey: .renderSettings)
+        try c.encodeIfPresent(pacing, forKey: .pacing)
+        try c.encodeIfPresent(captionLanguage, forKey: .captionLanguage)
+        try c.encodeIfPresent(muteSource, forKey: .muteSource)
+        try c.encodeIfPresent(addCaptions, forKey: .addCaptions)
+        try c.encodeIfPresent(enableTextOverlays, forKey: .enableTextOverlays)
+        try c.encodeIfPresent(useMusic, forKey: .useMusic)
+        try c.encodeIfPresent(aiInstructions, forKey: .aiInstructions)
+        try c.encodeIfPresent(useFightResearch, forKey: .useFightResearch)
+        try c.encodeIfPresent(selectedRunIDs, forKey: .selectedRunIDs)
+        try c.encodeIfPresent(favoritesOnly, forKey: .favoritesOnly)
+        try c.encodeIfPresent(tastePreset, forKey: .tastePreset)
+        try c.encodeIfPresent(sourcePeople, forKey: .sourcePeople)
+        try c.encodeIfPresent(modelOverride, forKey: .modelOverride)
+        try c.encodeIfPresent(templateJSON, forKey: .templateJSON)
+        try c.encodeIfPresent(templateLabel, forKey: .templateLabel)
+        try c.encodeIfPresent(targetDurationSeconds, forKey: .targetDurationSeconds)
+        try c.encodeIfPresent(screenCropLayouts, forKey: .screenCropLayouts)
+        try c.encodeIfPresent(allowedTransitions, forKey: .allowedTransitions)
+        try c.encodeIfPresent(pinnedOverlayTemplate, forKey: .pinnedOverlayTemplate)
+        try c.encodeIfPresent(pinnedOverlayText, forKey: .pinnedOverlayText)
+        try c.encodeIfPresent(formatPreset, forKey: .formatPreset)
+        try c.encodeIfPresent(critiqueLoop, forKey: .critiqueLoop)
+        try c.encodeIfPresent(includeWatermark, forKey: .includeWatermark)
+        try c.encodeIfPresent(includeHeadline, forKey: .includeHeadline)
+        try c.encodeIfPresent(includeOutro, forKey: .includeOutro)
+        try c.encodeIfPresent(includeIntroBumper, forKey: .includeIntroBumper)
+        try c.encodeIfPresent(includeOutroBumper, forKey: .includeOutroBumper)
+        try c.encodeIfPresent(includeMiddleBumper, forKey: .includeMiddleBumper)
+        try c.encodeIfPresent(musicFolder, forKey: .musicFolder)
+        try c.encodeIfPresent(fixedOverlayPosition, forKey: .fixedOverlayPosition)
+        try c.encodeIfPresent(requestedFraming, forKey: .framing)
+        try c.encodeIfPresent(fixedOverlayEdits, forKey: .fixedOverlayEdits)
+        try c.encodeIfPresent(fixedOverlayTemplate, forKey: .fixedOverlayTemplate)
+        try c.encodeIfPresent(fixedOverlayStart, forKey: .fixedOverlayStart)
+        try c.encodeIfPresent(fixedOverlayDuration, forKey: .fixedOverlayDuration)
+        try c.encodeIfPresent(fixedOverlayTexts, forKey: .fixedOverlayTexts)
+        try c.encodeIfPresent(introBumperPath, forKey: .introBumperPath)
+        try c.encodeIfPresent(outroBumperPath, forKey: .outroBumperPath)
+        try c.encodeIfPresent(watermarkOverlayTemplate, forKey: .watermarkOverlayTemplate)
+        try c.encodeIfPresent(watermarkOpacity, forKey: .watermarkOpacity)
+        try c.encodeIfPresent(transitionChoice, forKey: .transitionChoice)
+        try c.encodeIfPresent(lookPreset, forKey: .lookPreset)
+        try c.encodeIfPresent(lookIntensity, forKey: .lookIntensity)
+    }
+
 
     var localHashtags = false
     var sourceSceneSelection = false
@@ -112,8 +197,8 @@ nonisolated struct WizardOptions: Codable, Sendable {
     /// differs from the scene's saved 9:16 framing. Ordinary clips always
     /// replay their saved scene path when one exists.
     var framingCamera = "balanced"
-    /// Podcast-specific framing; each choice remains optional per generated
-    /// timeline and can be changed again in the Builder.
+    /// Retained old control, read only by `Framing.legacy(from:)`; new runs set `framing`.
+    var podcastFraming: PodcastFramingMode = .followSpeaker
     var highlightMaxSeconds: Double? = nil
     var highlightMaxCount: Int? = nil
     var highlightFraming: CropRecipe.Kind? = nil
@@ -126,7 +211,6 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var manualBRoll: Bool?
     var useBRoll = true
     var brollInstructions = ""
-    var podcastFraming: PodcastFramingMode = .followSpeaker
     /// Screen-crop layouts (by name) the planner may use to show several
     /// scenes at once, each area framed by its own tracking camera. Empty =
     /// the feature is off and "screen_crop"/"layout" in a plan are ignored.
@@ -184,6 +268,8 @@ nonisolated struct WizardOptions: Codable, Sendable {
     /// Replacement text for the template's AI-replaceable text items, in
     /// template order; an empty entry keeps the template's own text.
     var fixedOverlayTexts: [String]?
+    /// Requested framing; nil migrates the retained old controls when a run is finalized.
+    var framing: Framing?
     /// Hand placements of the design's components from the preview (text
     /// boxes and alignments, image positions and widths); nil keeps the design.
     var fixedOverlayEdits: OverlayEdits?
@@ -432,7 +518,7 @@ nonisolated struct WizardPlan: Codable, Sendable {
     /// strickland-split-decision"); nil falls back to the headline/title.
     var fileName: String?
     /// Validated podcast camera focus; an explicit run option takes precedence.
-    var framing: CropRecipe.Kind? = nil
+    var framing: Framing.Subject? = nil
     /// Independent of the planner: retained so later renders credit the camera choice.
     var framingProvenance: AIProvenance? = nil
     /// The provider/model that wrote this plan (after any failover).
@@ -474,7 +560,6 @@ nonisolated struct WizardPlan: Codable, Sendable {
 actor WizardEngine {
     let ai: AIService
     private let render: RenderEngine
-    private let centerStage = CenterStageService()
 
     typealias CaptionTranslation = @Sendable (Int64, [TranscriptRow], String, Database) async throws -> Int
     private let translateCaptions: CaptionTranslation?
@@ -505,7 +590,7 @@ actor WizardEngine {
         if interpretRequest {
             options.highlightMaxCount = Self.podcastHighlightMaxCount(in: requestText) ?? options.highlightMaxCount
             let controls = WizardRequestParser.parse(requestText, tags: [], templates: []).request
-            options.highlightFraming = controls.highlightFraming ?? options.highlightFraming
+            if let kind = controls.highlightFraming { options.framing = Framing(subject: Framing.Subject.legacy(kind)) }
             options.useBRoll = controls.useBRoll ?? options.useBRoll
         }
         options.formatPreset = ReelRecipe.podcastHighlights.id
@@ -543,6 +628,14 @@ actor WizardEngine {
         guard !segments.isEmpty else { throw AIError.unusableResponse("This podcast needs a transcript before finding highlights.") }
         let turns = try await database.fetchSpeakerTurns(videoID: video.id)
         let roster = try await database.fetchVideoPeople(videoID: video.id)
+        let framingContext = FramingContext(video: video, range: 0...video.duration,
+            canvasAspect: options.renderSettings.aspectRatio, roster: roster, turns: turns,
+            hasBRoll: options.useBRoll && scenes.contains { $0.videoID != video.id })
+        let explicitSubject = options.requestedFraming.subject
+        // Candidates still carry a recipe kind; a layout request is the grid kind for them.
+        let explicitRecipe: CropRecipe.Kind? = explicitSubject == .auto ? nil
+            : explicitSubject == .layout ? .grid
+            : FramingPlanner.resolve(framing: options.requestedFraming, context: framingContext).recipe?.kind
         let candidates = try await PodcastHighlightFinder.find(exchanges: exchanges.map {
             PodcastExchange(start: $0.startTime, end: $0.endTime,
                             title: $0.narrative?.components(separatedBy: " — ").first ?? "Podcast exchange",
@@ -550,7 +643,7 @@ actor WizardEngine {
                             score: $0.score ?? 0, speakerKeys: $0.tags.filter { $0.hasPrefix("person:") }.map { String($0.dropFirst(7)) })
         }, segments: segments, turns: turns, roster: roster, vipKeys: Set(roster.filter(\.isVIP).map(\.key)),
             maxSeconds: options.highlightMaxSeconds ?? settings.highlightMaxSeconds,
-            threshold: settings.highlightThreshold, maxCount: options.highlightMaxCount, highlightFraming: options.highlightFraming,
+            threshold: settings.highlightThreshold, maxCount: options.highlightMaxCount, highlightFraming: explicitRecipe,
             excludedRanges: avoidingRanges.filter { $0.videoID == video.id }.map { (start: $0.start, end: $0.end) },
             instructions: requestText, ai: ai, model: options.modelOverride, log: emit, progress: progress)
         let people = try await database.fetchPeople()
@@ -1102,8 +1195,8 @@ actor WizardEngine {
 
             """
             presetBlock += "- You may return an optional top-level \"framing\" field choosing one camera focus raw value:\n"
-            for kind in CropRecipe.Kind.allCases {
-                presetBlock += "  - \(kind.rawValue): \(kind.summary)\n"
+            for subject in FramingMenu.allowed(type: .podcast) where subject != .auto {
+                presetBlock += "  - \(subject.rawValue): \(subject.label(type: .podcast))\n"
             }
             if let target = options.targetDurationSeconds {
                 presetBlock += "- Aim for \(target)s containing the full question and the answer's key point. You may jump from the answer's opening to its closing sentences to fit. Completeness takes priority over Length.\n"
@@ -1716,7 +1809,7 @@ actor WizardEngine {
                           introTitle: cleanLine(raw["intro_title"], maxWords: 7),
                           fileName: WizardPlan.slug(raw["file_name"] as? String),
                           framing: options.formatPreset == "podcast"
-                            ? (CropRecipe.Kind(rawValue: raw["framing"] as? String ?? "") ?? .talker) : nil)
+                            ? (Framing.Subject(rawValue: raw["framing"] as? String ?? "").flatMap { FramingMenu.allowed(type: .podcast).contains($0) && $0 != .auto ? $0 : nil } ?? .speakerFocus) : nil)
     }
 
     // MARK: - Caption phase
@@ -2519,7 +2612,7 @@ actor WizardEngine {
                                       end: candidate.sourceEnd, reason: candidate.reason)
             let plan = WizardPlan(targetDuration: candidate.duration, rationale: candidate.reason,
                 musicName: nil, musicVolume: 0, clips: [clip], transitions: [],
-                headline: candidate.title, framing: candidate.framing)
+                headline: candidate.title, framing: Framing.Subject.legacy(candidate.framing))
             return WizardSelectionRules.snapshot(plan, scenes: [scene])
         }
         return WizardPlanRules.candidatesWithoutOverlap(plans)
@@ -2582,7 +2675,7 @@ actor WizardEngine {
     func chooseCameraFocus(takes: [WizardSelectionTake], options: WizardOptions,
                            profile: BrandProfile, database: Database,
                            emit: @escaping @Sendable (String) -> Void) async throws -> [WizardSelectionTake] {
-        guard options.highlightFraming == nil, options.podcastFraming != .original,
+        guard options.requestedFraming.subject == .auto,
               (ReelRecipe.recipe(id: options.formatPreset) ?? .custom).capabilities.offersCameraFocus else { return takes }
         try Task.checkCancellation()
         let scenes = try await database.scenesForSavedPlans(takes.map(\.plan), projectID: options.projectID)
@@ -2624,8 +2717,12 @@ actor WizardEngine {
             } ?? 1
         }
         let exchanges = pending.map { index in
-            CameraFocusChooser.exchange(id: result[index].id, clips: podcastClips[result[index].id] ?? [],
+            var exchange = CameraFocusChooser.exchange(id: result[index].id, clips: podcastClips[result[index].id] ?? [],
                 sceneMap: sceneMap, turns: turns, rosters: rosters, rows: rows)
+            if let clip = podcastClips[result[index].id]?.first, let scene = sceneMap[clip.sceneID] {
+                exchange.type = videos.first { $0.id == scene.videoID }?.type ?? .podcast
+            }
+            return exchange
         }
         var feeds: [Int64: Int] = [:]
         for index in pending {
@@ -2650,19 +2747,18 @@ actor WizardEngine {
             emit("Camera focus choice failed: \(error.userMessage) — using speaker rules")
         }
         try Task.checkCancellation()
-        let choices = CameraFocusChooser.parse(text, ids: Set(exchanges.map(\.id)), allowed: CropRecipe.Kind.allCases)
+        let choices = CameraFocusChooser.parse(text, ids: Set(exchanges.map(\.id)), allowed: Framing.Subject.allCases.filter { $0 != .auto })
         for (index, exchange) in zip(pending, exchanges) {
-            let allowed = CameraFocusChooser.allowedLayouts(feeds: feeds[exchange.id] ?? 1, hasVIP: !exchange.vipNames.isEmpty,
-                                                            nonVIPPeople: exchange.nonVIPPeople)
+            let allowed = CameraFocusChooser.allowedSubjects(type: exchange.type, hasTurns: !exchange.speakers.isEmpty, hasVIP: !exchange.vipNames.isEmpty)
             let choice = choices[exchange.id].flatMap { allowed.contains($0.kind) ? $0 : nil }
-            let kind = choice?.kind ?? CameraFocusChooser.fallback(speakers: exchange.speakers.count, allowed: allowed)
+            let kind = choice?.kind ?? CameraFocusChooser.fallback(type: exchange.type, allowed: allowed)
             result[index].plan.framing = kind
             result[index].plan.framingProvenance = choice != nil ? provenance
                 : AIProvenance(provider: "local", model: "speaker-count", task: "framing", at: Date(),
                                fellBack: true, technique: "speaker-count")
             try Task.checkCancellation()
             try await database.updateWizardSelectionTakePlan(id: exchange.id, plan: result[index].plan)
-            emit("Camera focus: \(kind.name) — \(choice?.reason ?? "chosen by rule (the model did not answer)")")
+            emit("Camera focus: \(kind.label(type: exchange.type)) — \(choice?.reason ?? "chosen by rule (the model did not answer)")")
         }
         return result
     }
@@ -2866,7 +2962,7 @@ actor WizardEngine {
             let result = try await assemble(plan: plan, music: music, options: options,
                 profile: profile, database: database, sceneMap: sceneMap,
                 brollCache: &brollCache, batchID: batchID, selectionTakeID: takeID, emit: emit)
-            if options.highlightFraming == nil, options.podcastFraming != .original,
+            if options.requestedFraming.subject == .auto,
                let provenance = plan.framingProvenance {
                 try await database.recordOutputRole(id: result.recordID, role: "Camera focus", provenance: provenance)
             }
@@ -3436,13 +3532,14 @@ actor WizardEngine {
     /// Map a validated plan onto a Builder timeline document: sequential clips
     /// on track 0 with planner transitions as transIn, music spanning the
     /// whole timeline, per-clip text overlays. No rendering — the user edits
-    /// from here. (Auto-crop covers wide scenes.)
+    /// from here. Framing and extraction share the same source geometry.
     nonisolated static func timelineDocument(from plan: WizardPlan,
                                              sceneMap: [Int64: SceneRecord],
                                              renderSettings: RenderSettings = RenderSettings(),
                                              pacing: EditPacing = EditPacing(),
-                                             podcastFraming: PodcastFramingMode = .followSpeaker,
-                                             podcastCuts: [Int: TimelineDocument] = [:]) -> TimelineDocument {
+                                             framing: Framing = Framing(),
+                                             podcastCuts: [Int: TimelineDocument] = [:],
+                                             videoTypes: [Int64: VideoType] = [:]) -> TimelineDocument {
         var document = TimelineDocument()
         document.renderSettings = renderSettings
         document.pacing = pacing
@@ -3451,8 +3548,7 @@ actor WizardEngine {
             guard let scene = sceneMap[clip.sceneID] else { continue }
             // Screen time — slow motion stretches it beyond the source span.
             let podcastCut = podcastCuts[cutIndex]
-            let duration = podcastCut != nil ? clip.end - clip.start
-                : ((clip.end - clip.start) / clip.speed * 10).rounded() / 10
+            let duration = (clip.end - clip.start) / clip.speed
             guard duration > 0 else { continue }
 
             var timelineClip = TimelineClip()
@@ -3467,11 +3563,12 @@ actor WizardEngine {
             timelineClip.wide = scene.wide
             timelineClip.cropXFrac = scene.cropXFrac
             timelineClip.screenCrop = clip.screenCrop
-            timelineClip.centerStage = scene.tags.contains("podcast")
-                && podcastFraming == .followSpeaker && scene.centerStagePath != nil
-            let index = document.videoTrack.filter { $0.track == 0 }.count
-            if index > 0 {
-                let name = plan.transitions[safe: index - 1] ?? "cut"
+            let resolved = FramingPlanner.resolve(framing: framing,
+                context: FramingContext(scene: scene, range: clip.start...clip.end,
+                    canvasAspect: renderSettings.aspectRatio, chosenSubject: plan.framing, type: videoTypes[scene.videoID]))
+            WizardOrdinaryTimeline.apply(resolved, scene: scene, to: &timelineClip)
+            if cutIndex > 0 {
+                let name = plan.transitions[safe: cutIndex - 1] ?? "cut"
                 timelineClip.transIn = name == "cut" ? nil : name
             }
             if let podcastCut {
@@ -3480,7 +3577,10 @@ actor WizardEngine {
                     // Pieces of one cut on the main track (VIP feed changes)
                     // share the cut's origin, so assembly pairs the cut's one
                     // extracted file with all of them.
-                    if area.track == 0, !area.isCutaway { area.originKey = timelineClip.originKey }
+                    if area.track == 0, !area.isCutaway {
+                        area.originKey = timelineClip.originKey
+                        if abs(area.startTime - cursor) < 0.000001 { area.transIn = timelineClip.transIn }
+                    }
                     document.videoTrack.append(area)
                 }
                 for var overlay in podcastCut.textOverlays {
@@ -3494,42 +3594,50 @@ actor WizardEngine {
                 }
                 document.trackCount = max(document.trackCount, podcastCut.trackCount)
                 for track in 1..<max(1, podcastCut.trackCount) { document.trackSequential[track] = false }
+            } else if case .composed(let layout, let areas, _) = resolved {
+                for (track, area) in layout.areas.enumerated() where track < TimelineDocument.maxTracks {
+                    for segment in areas where segment.areaID == area.id {
+                        var piece = timelineClip
+                        piece.uid = UUID()
+                        piece.sceneID = segment.sourcePath == scene.videoURL.path ? scene.id : nil
+                        piece.videoFile = segment.sourcePath
+                        piece.track = track
+                        piece.sourceStart = segment.start
+                        piece.sourceEnd = segment.start + segment.duration
+                        piece.startTime = cursor + (segment.timelineStart ?? 0) / clip.speed
+                        piece.duration = segment.duration / clip.speed
+                        piece.precision = .speech
+                        piece.muted = track > 0
+                        piece.cameraPath = nil
+                        piece.cropXFrac = nil
+                        piece.centerStage = false
+                        piece.areaRegion = segment.region
+                        piece.areaFocus = segment.focus
+                        if case .static(let window) = segment.framing { piece.areaWindow = window ?? FreeCropRect() }
+                        if track == 0 {
+                            piece.framingProgramAudio = .init(path: scene.videoURL.path,
+                                start: clip.start + (segment.timelineStart ?? 0), visualStart: segment.start)
+                        }
+                        document.videoTrack.append(piece)
+                    }
+                    document.trackCount = max(document.trackCount, track + 1)
+                    document.trackSequential[track] = false
+                }
             } else {
                 document.videoTrack.append(timelineClip)
             }
-            if podcastCut == nil, podcastFraming == .splitZoom, scene.tags.contains("podcast:split") {
-                var left = timelineClip
-                var right = timelineClip
-                right.uid = UUID()
-                // An independent feed, not a piece of the left one.
-                right.originKey = UUID().uuidString
-                right.track = 1
-                right.muted = true
-                left.screenCrop = ScreenCropStore.reference(layout: "50-50 Horizontal", area: "Top")
-                right.screenCrop = ScreenCropStore.reference(layout: "50-50 Horizontal", area: "Bottom")
-                let aspect = scene.videoHeight > 0 ? Double(scene.videoWidth) / Double(scene.videoHeight) : 16.0 / 9.0
-                let windows = PodcastFramingService.splitFeedWindows(sourceAspect: aspect)
-                left.areaWindow = windows.left
-                right.areaWindow = windows.right
-                document.videoTrack[document.videoTrack.count - 1] = left
-                document.videoTrack.append(right)
-                document.trackCount = max(document.trackCount, 2)
-                document.trackSequential[1] = false
-                document.trackSettings[0].label = clip.leftSpeakerName ?? "Left speaker"
-                document.trackSettings[1].label = clip.rightSpeakerName ?? "Right speaker"
-                document.cropBlocks.append(CropBlockItem(
-                    layout: CropLayoutRef(name: "50-50 Horizontal"),
-                    startTime: cursor, duration: duration))
-            }
             // A layout block's other areas become muted clips on their own
             // (free-form) tracks, stacked over the same slot.
-            if podcastCut == nil, let layoutName = clip.layout {
+            if podcastCut == nil, !resolved.isComposed, let layoutName = clip.layout {
                 for (slot, areaClip) in clip.areaClips.enumerated() {
                     guard let areaScene = sceneMap[areaClip.sceneID] else { continue }
                     let track = min(TimelineDocument.maxTracks - 1, slot + 1)
                     var extra = TimelineClip()
                     extra.sceneID = areaClip.sceneID
                     extra.videoFile = areaScene.videoPath
+                    extra.framingPlan = FramingPlanner.resolve(framing: framing,
+                        context: FramingContext(scene: areaScene, range: areaClip.start...areaClip.end,
+                            canvasAspect: renderSettings.aspectRatio, chosenSubject: plan.framing))
                     extra.sourceStart = areaClip.start
                     extra.sourceEnd = areaClip.end
                     extra.startTime = cursor
@@ -3755,8 +3863,8 @@ actor WizardEngine {
             emit("Headline: \(headline)")
         }
 
-        // Extract every planned clip concurrently. Podcast layouts compose
-        // first; captions, text overlays and mute share the final encode.
+        // Prepare one document per cut, then render them concurrently. Recipe
+        // layouts, ordinary footage, captions and overlays share the compositor.
         let profile = profile.withCaptionStyle(id: options.captionStyleID)
         let captionStyle = profile.captions
         let people = options.usesNameTags ? try await database.fetchPeople() : []
@@ -3766,16 +3874,18 @@ actor WizardEngine {
             try await WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: sceneMap,
                 options: options, database: database, profile: profile, captionStyle: captionStyle, log: emit)
         }
-        if options.manualBRoll == true, plan.clips.contains(where: { !($0.brollCuts ?? []).isEmpty }) {
+        if options.requestedFraming.subject != .layout, options.manualBRoll == true, plan.clips.contains(where: { !($0.brollCuts ?? []).isEmpty }) {
             let ids = Set(plan.clips.flatMap { ($0.brollCuts ?? []).map(\.sceneID) })
             let brollScenes = try await database.fetchScenes(ids: ids)
             for (index, clip) in plan.clips.enumerated() {
+                if preparedPodcastCuts[index]?.videoTrack.contains(where: { $0.framingPlan?.isComposed == true }) == true { continue }
                 var single = plan
                 single.clips = [clip]
+                single.clips[0].speed = 1
                 single.transitions = []
                 var original = preparedPodcastCuts[index] ?? Self.timelineDocument(from: single, sceneMap: sceneMap,
                     renderSettings: options.renderSettings, pacing: options.pacing,
-                    podcastFraming: options.podcastFraming)
+                    framing: options.requestedFraming)
                 if preparedPodcastCuts[index] == nil {
                     // Every kept piece keeps the speech clock, including pieces
                     // before the first cutaway and when Include B-roll is off.
@@ -3795,7 +3905,32 @@ actor WizardEngine {
                     scenes: brollScenes, enabled: options.useBRoll)
             }
         }
-        let podcastCuts = preparedPodcastCuts
+        let podcastCuts = preparedPodcastCuts.reduce(into: [Int: TimelineDocument]()) { result, entry in
+            result[entry.key] = WizardOrdinaryTimeline.retimed(entry.value, speed: plan.clips[entry.key].speed)
+        }
+        let sourceVideos = try await database.fetchVideos(projectID: options.projectID)
+        let sourceTypes = Dictionary(uniqueKeysWithValues: sourceVideos.compactMap { video in video.type.map { (video.id, $0) } })
+        var preparedCuts = podcastCuts
+        var framingRosters: [Int64: [VideoPersonRecord]] = [:]
+        for (index, clip) in plan.clips.enumerated() where preparedCuts[index] == nil {
+            guard let scene = sceneMap[clip.sceneID] else { continue }
+            var context = FramingContext(scene: scene, range: clip.start...clip.end,
+                canvasAspect: options.renderSettings.aspectRatio, chosenSubject: plan.framing, type: sourceTypes[scene.videoID])
+            if let video = sourceVideos.first(where: { $0.id == scene.videoID }) { context.video = video }
+            if options.requestedFraming.focusFrame != nil || (context.type == .fight && options.requestedFraming.subject == .vipFocus) {
+                if framingRosters[scene.videoID] == nil {
+                    framingRosters[scene.videoID] = try await database.fetchVideoPeople(videoID: scene.videoID)
+                }
+                context.roster = framingRosters[scene.videoID] ?? []
+                context.feeds = CropRecipePlanner.tiles(video: context.video, roster: context.roster)
+            }
+            let resolved = FramingPlanner.resolve(framing: options.requestedFraming, context: context)
+            if let warning = FramingPlanner.warning(framing: options.requestedFraming, context: context) { emit(warning) }
+            preparedCuts[index] = WizardOrdinaryTimeline.cutDocument(clip: clip, sceneMap: sceneMap,
+                settings: options.renderSettings, pacing: options.pacing, framingPlan: resolved)
+        }
+        // Save and render exactly the same per-cut source ranges and plans.
+        let cutDocuments = preparedCuts
         let overlayTemplates = OverlayTemplateStore.list()
         var batchWatermark: [RenderEngine.ClipOverlay] = []
         if ExpressBatchWatermark.canFold(options: options, plan: plan,
@@ -3822,8 +3957,8 @@ actor WizardEngine {
             }
         }
         var document = Self.timelineDocument(from: editPlan, sceneMap: sceneMap,
-            renderSettings: options.renderSettings, pacing: options.pacing, podcastFraming: options.podcastFraming,
-            podcastCuts: podcastCuts)
+            renderSettings: options.renderSettings, pacing: options.pacing, framing: options.requestedFraming,
+            podcastCuts: cutDocuments, videoTypes: sourceTypes)
             .keepingOverlaysClearOfPlatformChrome()
         if let look = Self.lookEffect(for: options) {
             // The clips are graded at extraction; the editable document keeps
@@ -3837,8 +3972,7 @@ actor WizardEngine {
         var tagCursor = 0.0
         for (index, clip) in editPlan.clips.enumerated() {
             guard let scene = sceneMap[clip.sceneID] else { continue }
-            let duration = podcastCuts[index] != nil ? clip.end - clip.start
-                : ((clip.end - clip.start) / clip.speed * 10).rounded() / 10
+            let duration = (clip.end - clip.start) / clip.speed
             if podcastCuts[index] == nil {
                 for var item in WizardNameTags.ordinary(scene: scene, duration: duration, people: people, tagText: tagText,
                                                        options: options, captionStyle: captionStyle, profile: profile,
@@ -3903,9 +4037,12 @@ actor WizardEngine {
         let bumperLog = BumperPlanner.apply(to: &document, bumpers: bumpers, options: options)
         bumperLog.forEach(emit)
         var brollOptions = options
-        if brollOptions.highlightFraming == nil { brollOptions.highlightFraming = plan.framing }
+        if brollOptions.requestedFraming.subject == .auto, let subject = plan.framing {
+            brollOptions.framing = options.requestedFraming
+            brollOptions.framing?.subject = subject
+        }
         // The VIP focuses are B-roll by definition; they do not wait for the B-roll switch or instructions.
-        let vipFraming = brollOptions.highlightFraming == .vip || brollOptions.highlightFraming == .vipBRoll
+        let vipFraming = brollOptions.requestedFraming.subject == .vipFocus
         if options.manualBRoll == true {
             // Manual cutaways already live in each extraction document, below
             // captions/name tags. Never invoke Full Wizard's planner here.
@@ -4000,12 +4137,15 @@ actor WizardEngine {
             rows: captionEvidence.rows, roster: captionEvidence.rosterKeys)
         let extracted = try await WizardTiming.measure("extract clips", emit: emit) {
             try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job in
-                try await self.extractPlannedClip(job.clip, index: job.index, of: clipCount,
-                                                  scene: job.scene, sceneMap: sceneMap, options: options,
+                guard let cutDocument = cutDocuments[job.index] else {
+                    throw AIError.unusableResponse("The planned clip has no render document.")
+                }
+                return try await self.renderPlannedClip(job.clip, index: job.index, of: clipCount,
+                                                  scene: job.scene, sceneMap: sceneMap, options: options, cutDocument: cutDocument,
                                                   dubLines: dubLinesByJob[job.index] ?? [],
                                                   captionStyle: captionStyle, captionFallbacks: captionFallbacks, captionOrdinals: captionOrdinals,
                                                   brandOverlays: brandOverlayFiles, topOverlays: clipWatermark,
-                                                  podcastDocument: podcastCuts[job.index], nameTagPeople: people, tagText: tagText, profile: profile,
+                                                  plannedNameTags: podcastCuts[job.index]?.textOverlays.filter { $0.design == "nameTag" }, nameTagPeople: people, tagText: tagText, profile: profile,
                                                   database: database, scratch: scratch,
                                                   emit: emit)
             }
@@ -4132,22 +4272,6 @@ actor WizardEngine {
         return AssemblyResult(url: outputURL, duration: finalDuration, recordID: recordID, document: document)
     }
 
-    /// One planned clip → one normalized file in a single decode→encode pass:
-    /// wide handling, caption overlays, text overlay and mute all ride the
-    /// same ffmpeg filter graph.
-    /// Identity references for the tracking camera: the source video's
-    /// named person markers (focus) and ignored ones (avoid).
-    private func markerPortraits(scene: SceneRecord, database: Database) async -> (focus: [Data], avoid: [Data]) {
-        let allMarkers = (try? await database.personMarkers(videoID: scene.videoID)) ?? []
-        let named = allMarkers.filter { $0.personID != nil && !$0.ignored }
-        let ignored = allMarkers.filter(\.ignored)
-        let focus = named.isEmpty ? []
-            : await Analyzer.markerPortraits(url: scene.videoURL, markers: named, duration: scene.videoDuration)
-        let avoid = ignored.isEmpty ? []
-            : await Analyzer.markerPortraits(url: scene.videoURL, markers: ignored, duration: scene.videoDuration)
-        return (focus, avoid)
-    }
-
     /// The look the options ask for, when the local ffmpeg can render it.
     nonisolated static func lookEffect(for options: WizardOptions) -> EffectSpec? {
         guard let name = options.lookPreset?.trimmingCharacters(in: .whitespacesAndNewlines),
@@ -4155,13 +4279,15 @@ actor WizardEngine {
         return EffectSpec(preset: name, intensity: min(1, max(0.05, options.lookIntensity ?? 1)))
     }
 
-    private func extractPlannedClip(_ clip: WizardPlanClip, index: Int, of total: Int,
+    /// All footage reaches the segment cache through its prepared document.
+    /// Burn-ins use output time; the document retains the original source clock.
+    private func renderPlannedClip(_ clip: WizardPlanClip, index: Int, of total: Int,
                                     scene: SceneRecord, sceneMap: [Int64: SceneRecord] = [:],
-                                    options: WizardOptions, dubLines: [DubLine] = [],
+                                    options: WizardOptions, cutDocument: TimelineDocument, dubLines: [DubLine] = [],
                                     captionStyle: CaptionStyle, captionFallbacks: WizardCaptionFallbackLog,
                                     captionOrdinals: [String: Int] = [:],
                                     brandOverlays: [URL] = [], topOverlays: [RenderEngine.ClipOverlay] = [],
-                                    podcastDocument: TimelineDocument? = nil, nameTagPeople: [PersonRecord] = [], tagText: [String: String], profile: BrandProfile,
+                                    plannedNameTags: [TextOverlayItem]? = nil, nameTagPeople: [PersonRecord] = [], tagText: [String: String], profile: BrandProfile,
                                     database: Database, scratch: URL,
                                     emit: @escaping @Sendable (String) -> Void) async throws -> URL {
         let lookEffect = Self.lookEffect(for: options)
@@ -4170,27 +4296,16 @@ actor WizardEngine {
         // (overlays, captions, -t) uses `duration`; everything reading the
         // SOURCE (content box, Center Stage, hints) uses `sourceDuration`.
         let sourceDuration = clip.end - clip.start
-        let duration = podcastDocument != nil ? sourceDuration : sourceDuration / clip.speed
-        // Screen crop: the named area's mask rides into every render path.
-        let mask = ScreenCropStore.maskFile(reference: clip.screenCrop, in: scratch)
-        if clip.screenCrop != nil, mask == nil {
-            emit("Clip \(index + 1): screen crop \"\(clip.screenCrop ?? "")\" not found — rendering unmasked")
-        }
+        let duration = sourceDuration / clip.speed
         // Screen recordings and reposts bake black bars into the pixels, so
         // the file's aspect lies about the footage. Crop to the detected
         // content box and treat the CONTENT's aspect as the wide signal —
         // otherwise a landscape fight inside a portrait recording letterboxes
-        // no matter what the user asks for. The podcast document path frames
-        // from its own layout and never reads the box, so it skips the seeks.
-        let contentBox = podcastDocument == nil
-            ? await render.detectContentBox(source: scene.videoURL,
-                                            start: clip.start, duration: sourceDuration)
-            : nil
-        let contentIsWide = contentBox?.isWide ?? scene.wide
-        let usesSavedFraming = contentIsWide && scene.centerStagePath != nil
-            && options.podcastFraming != .original
-        var mode = podcastDocument == nil && contentIsWide ? "framing" : ""
-        if contentBox != nil { mode = mode.isEmpty ? "bars removed" : mode + ", bars removed" }
+        // no matter what the user asks for. Document rendering retains the
+        // original source clock and intersects its windows with this box.
+        let contentBox = await render.detectContentBox(source: scene.videoURL,
+                                                       start: clip.start, duration: sourceDuration)
+        let mode = contentBox == nil ? "" : "bars removed"
         emit("Extracting clip \(index + 1)/\(total) " +
              String(format: "[%.1fs +%.1fs]", clip.start, duration) +
              " from \(scene.videoFilename)\(mode.isEmpty ? "" : " (\(mode))")")
@@ -4203,7 +4318,7 @@ actor WizardEngine {
             let renderer = TextOverlayRenderer(videoWidth: RenderEngine.outputWidth,
                                                videoHeight: RenderEngine.outputHeight)
             let imageAspects = await TextOverlayRenderer.tagImageAspects(profile.tagStyle(id: options.nameTagStyleID))
-            let tags = podcastDocument?.textOverlays.filter { $0.design == "nameTag" }
+            let tags = plannedNameTags
                 ?? WizardNameTags.ordinary(scene: scene, duration: duration, people: nameTagPeople, tagText: tagText,
                                           options: options, captionStyle: captionStyle, profile: profile,
                                           imageAspects: imageAspects)
@@ -4230,7 +4345,7 @@ actor WizardEngine {
                                            safeAreaOnly: options.safeAreaOnly == true)
             let renderers = CaptionRendererSet(base: renderer,
                 speakerStyles: profile.speakerCaptionStyles(runStyleID: options.captionStyleID))
-            let captionSpeed = podcastDocument == nil ? clip.speed : 1
+            let captionSpeed = clip.speed
             let dubbed = DubPlanning.captionSegments(lines: dubLines, sourceStart: clip.start, sourceEnd: clip.end,
                                                     speed: captionSpeed)
             let sourceSegments: [TranscriptSegment]
@@ -4337,131 +4452,12 @@ actor WizardEngine {
 
         overlays += topOverlays
         let output = scratch.appendingPathComponent("clip_\(index).mp4")
-        if let podcastDocument {
-            try await ExpressPodcastRenderer.extract(document: podcastDocument, scenes: Array(sceneMap.values),
-                profile: profile, database: database, render: render, camera: options.framingCamera,
-                overlays: overlays, look: lookEffect, mute: options.muteSource,
-                clipNumber: index + 1, duration: duration, output: output, emit: emit)
-            return output
-        }
-        if options.podcastFraming == .splitZoom,
-           scene.tags.contains("podcast:split") {
-            let split = scratch.appendingPathComponent("clip_\(index)_split_zoom.mp4")
-            try await PodcastFramingService.splitZoom(source: scene.videoURL, start: clip.start,
-                                                      duration: sourceDuration, output: split)
-            defer { try? FileManager.default.removeItem(at: split) }
-            emit("Clip \(index + 1): split Zoom feeds")
-            try await render.extractClip(source: split, start: 0, duration: duration,
-                                         overlays: overlays, effect: lookEffect, mute: options.muteSource,
-                                         speed: clip.speed, intermediateSource: true, output: output)
-            return output
-        }
-        // Screen crop: the footage is framed INTO the area (tracking camera
-        // at the area's aspect) so the people fill it, then masked. A
-        // layout block also frames every other area's scene and stacks
-        // them all into one composite clip.
-        if let area = ScreenCropStore.area(reference: clip.screenCrop) {
-            let portraits = await markerPortraits(scene: scene, database: database)
-            let tuning = CenterStageService.Tuning.named(options.framingCamera)
-            let framed = try await AreaFramer.frame(source: scene.videoURL, start: clip.start,
-                                                    duration: sourceDuration, area: area,
-                                                    focusPortraits: portraits.focus,
-                                                    avoidPortraits: portraits.avoid,
-                                                    tuning: tuning, centerStage: centerStage,
-                                                    scratch: scratch, log: emit)
-            if let layoutName = clip.layout, let layout = ScreenCropStore.layout(named: layoutName),
-               !clip.areaClips.isEmpty, let mask {
-                let main = scratch.appendingPathComponent("clip_\(index)_main.mp4")
-                try await render.extractClip(source: framed, start: 0, duration: duration,
-                                             overlays: overlays, effect: lookEffect, mute: options.muteSource,
-                                             speed: clip.speed, intermediateSource: true, output: main)
-                var entries: [(clip: URL, mask: URL)] = [(main, mask)]
-                for (areaIndex, areaClip) in clip.areaClips.enumerated() {
-                    guard let areaScene = sceneMap[areaClip.sceneID],
-                          let areaDef = layout.areas.first(where: { $0.name == areaClip.area }),
-                          let areaMask = ScreenCropStore.maskFile(
-                              reference: ScreenCropStore.reference(layout: layout.name, area: areaDef.name),
-                              in: scratch) else { continue }
-                    let areaPortraits = await markerPortraits(scene: areaScene, database: database)
-                    let areaSourceDuration = min(areaClip.end - areaClip.start, sourceDuration)
-                    let areaFramed = try await AreaFramer.frame(
-                        source: areaScene.videoURL, start: areaClip.start,
-                        duration: areaSourceDuration, area: areaDef,
-                        focusPortraits: areaPortraits.focus, avoidPortraits: areaPortraits.avoid,
-                        tuning: tuning, centerStage: centerStage, scratch: scratch, log: emit)
-                    let areaOutput = scratch.appendingPathComponent("clip_\(index)_area\(areaIndex).mp4")
-                    try await render.extractClip(source: areaFramed, start: 0,
-                                                 duration: areaSourceDuration / clip.speed,
-                                                 mute: true, speed: clip.speed, intermediateSource: true, output: areaOutput)
-                    entries.append((areaOutput, areaMask))
-                }
-                try await render.compositeAreas(entries, duration: duration, output: output)
-                emit("Clip \(index + 1): layout \"\(layout.name)\" — \(entries.count) scene(s) on screen")
-                return output
-            }
-            try await render.extractClip(source: framed, start: 0, duration: duration,
-                                         overlays: overlays, effect: lookEffect, mute: options.muteSource,
-                                         speed: clip.speed, mask: mask, intermediateSource: true, output: output)
-            return output
-        }
-        // Framing belongs to the scene, not to this run. Replay the saved
-        // camera path exactly as it was reviewed in Analyze or Edit Scene; never
-        // silently replace it with a new live tracking pass here.
-        if usesSavedFraming, let stored = scene.centerStagePath,
-           CenterStageService.pathMatchesCanvas(stored.keyframes) {
-            let sliced = CenterStageService.slice(
-                stored.keyframes,
-                from: max(0, clip.start - scene.startTime),
-                duration: sourceDuration)
-            if sliced.count >= 2 {
-                do {
-                    let reframed = try await centerStage.reframeClip(
-                        source: scene.videoURL, start: clip.start,
-                        duration: sourceDuration, path: sliced, log: emit)
-                    defer { try? FileManager.default.removeItem(at: reframed) }
-                    emit("Clip \(index + 1) reframed with its saved scene framing")
-                    try await render.extractClip(source: reframed, start: 0,
-                                                 duration: duration,
-                                                 overlays: overlays, effect: lookEffect, mute: options.muteSource,
-                                                 speed: clip.speed,
-                                                 mask: mask,
-                                                 intermediateSource: true, output: output)
-                    return output
-                } catch {
-                    emit("Saved framing failed for clip \(index + 1) (\(error)) — falling back to auto-crop")
-                }
-            }
-        }
-        if contentIsWide {
-            let xFraction = await render.autoCropXFraction(source: scene.videoURL,
-                                                           start: clip.start, duration: sourceDuration,
-                                                           contentBox: contentBox)
-            do {
-                try await render.extractClip(source: scene.videoURL, start: clip.start,
-                                             duration: duration, wide: .autoCrop(xFraction),
-                                             contentBox: contentBox,
-                                             overlays: overlays, effect: lookEffect, mute: options.muteSource,
-                                             speed: clip.speed,
-                                             mask: mask,
-                                             output: output)
-            } catch {
-                try await render.extractClip(source: scene.videoURL, start: clip.start,
-                                             duration: duration,
-                                             contentBox: contentBox,
-                                             overlays: overlays, effect: lookEffect, mute: options.muteSource,
-                                             speed: clip.speed,
-                                             mask: mask,
-                                             output: output)
-            }
-        } else {
-            try await render.extractClip(source: scene.videoURL, start: clip.start,
-                                         duration: duration,
-                                         contentBox: contentBox,
-                                         overlays: overlays, effect: lookEffect, mute: options.muteSource,
-                                         speed: clip.speed,
-                                         mask: mask,
-                                         output: output)
-        }
+        let sources = sceneMap.merging([scene.id: scene]) { _, current in current }
+        try await ExpressPodcastRenderer.extract(document: cutDocument, scenes: Array(sources.values),
+            profile: profile, database: database, render: render, camera: cutDocument.videoTrack.first?.framingPlan?.camera ?? "balanced",
+            overlays: overlays, look: lookEffect, mute: options.muteSource,
+            clipNumber: index + 1, duration: duration, output: output,
+            contentSource: scene.videoURL, contentBox: contentBox, emit: emit)
         return output
     }
 

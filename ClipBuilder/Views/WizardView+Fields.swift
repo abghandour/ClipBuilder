@@ -66,7 +66,7 @@ extension WizardView {
             WizardControlRow("Length") {
                 Picker("Length", selection: durationModeBinding) {
                     ForEach(WizardDurationMode.allCases, id: \.self) { mode in
-                        Text(mode.title).tag(mode)
+                        Text(mode.title).lineLimit(1).fixedSize().tag(mode)
                     }
                 }
             }
@@ -148,7 +148,7 @@ extension WizardView {
             FieldCaption(WizardFieldHelp.styleReference)
         }
 
-        if capabilities.layouts {
+        if capabilities.layouts && framingBinding.wrappedValue.subject == .layout {
             WizardControlRow("Layouts") {
                 Picker("Layouts", selection: layoutModeBinding) {
                     ForEach(WizardLayoutMode.allCases, id: \.self) { mode in

@@ -10,8 +10,8 @@ nonisolated enum ExpressBatchWatermark {
               options.fixedOverlayTemplate?.isEmpty != false,
               !(options.useBRoll && !options.brollInstructions.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
         else { return false }
-        let framing = options.highlightFraming ?? plan.framing
-        return framing != .vip && framing != .vipBRoll
+        let framing = options.requestedFraming.subject == .auto ? plan.framing : options.requestedFraming.subject
+        return framing != .vipFocus
     }
 
     /// Use the same expansion, placement and image-before-text order as the

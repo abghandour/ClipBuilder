@@ -33,8 +33,11 @@ struct WizardPreviewColumn: View {
     /// owner stores it and the preview re-renders (text wraps to its width,
     /// an image keeps its aspect).
     var onPlaceOverlay: ((OverlayComponent, CGRect) -> Void)? = nil
+    /// Non-nil only while the Framing settings are visible. A saved frame's outline stays visible elsewhere.
+    var onPlaceFocusFrame: ((FreeCropRect?) -> Void)? = nil
     @State private var model: WizardPreviewModel
     @State private var reloadID = 0
+    @State private var loadedContentKey: ContentKey?
     @State private var clipIndex = 0
     /// Scrubber position in source seconds; nil shows the middle of the clip.
     @State private var scrubTime: Double?
@@ -47,7 +50,8 @@ struct WizardPreviewColumn: View {
     init(scenes: [SceneRecord], clips: [WizardPreviewClip] = [], options: WizardOptions, profile: BrandProfile,
          thumbnails: ThumbnailService, footer: AnyView? = nil, captionOrdinals: [String: Int]? = nil,
          onMove: ((PreviewElement, CustomPosition) -> Void)? = nil,
-         onPlaceOverlay: ((OverlayComponent, CGRect) -> Void)? = nil) {
+         onPlaceOverlay: ((OverlayComponent, CGRect) -> Void)? = nil,
+         onPlaceFocusFrame: ((FreeCropRect?) -> Void)? = nil) {
         self.scenes = scenes
         self.clips = clips
         self.options = options
@@ -56,6 +60,7 @@ struct WizardPreviewColumn: View {
         self.footer = footer
         self.onMove = onMove
         self.onPlaceOverlay = onPlaceOverlay
+        self.onPlaceFocusFrame = onPlaceFocusFrame
         _model = State(initialValue: WizardPreviewModel(thumbnails: thumbnails))
     }
 
@@ -81,13 +86,10 @@ struct WizardPreviewColumn: View {
         var language: String?
         var tagStyle: TagStyle
         var reloadID: Int
-        var cameraFocus: String
-        var interviewZoom: Double
-        var interviewZoomMoves: Bool
-        var interviewCuts: Bool
-        var interviewPunchIn: String
+        var framing: Framing
         var canvasAspect: Double
         var clipID: String?
+        var brollCuts: [BRollCut]?
         /// The kept range the framing is planned over (a trim changes it, not the id).
         var rangeStart: Double?
         var rangeEnd: Double?
@@ -99,19 +101,17 @@ struct WizardPreviewColumn: View {
     /// keeps that part across scrubs while this stays the same.
     private var snapshotKey: String {
         "\(previewRecord?.videoID ?? -1)|\(options.effectiveCaptionLanguage ?? "")|\(store.transcriptCountsVersion)|"
-            + "\(store.personTagFieldsVersion)|\(store.profileGeneration)|\(options.nameTagStyleID ?? "")|\(reloadID)"
+            + "\(store.personTagFieldsVersion)|\(store.profileGeneration)|\(options.nameTagStyleID ?? "")|\(reloadID)|\(store.videosVersion)|\(store.scenesVersion)"
     }
 
     private var contentKey: ContentKey {
         ContentKey(scene: previewRecord, generation: store.profileGeneration,
             transcriptVersion: store.transcriptCountsVersion, people: store.people,
             tagFieldsVersion: store.personTagFieldsVersion, language: options.effectiveCaptionLanguage, tagStyle: profile.tagStyle(id: options.nameTagStyleID), reloadID: reloadID,
-            cameraFocus: options.podcastFraming == .original ? WizardCameraFocus.original : options.highlightFraming?.rawValue ?? "",
-            interviewZoom: options.interviewZoom ?? 0, interviewZoomMoves: options.interviewZoomMoves ?? false,
-            interviewCuts: options.interviewCuts ?? false,
-            interviewPunchIn: (InterviewPunchIn(rawValue: options.interviewPunchIn ?? "") ?? .vip).rawValue,
+            framing: WizardPreviewFraming.planningFraming(options.requestedFraming,
+                videoType: store.videos.first { $0.id == previewRecord?.videoID }?.type),
             canvasAspect: options.renderSettings.aspectRatio,
-            clipID: currentClip?.id, rangeStart: currentClip?.start, rangeEnd: currentClip?.end,
+            clipID: currentClip?.id, brollCuts: currentClip?.brollCuts, rangeStart: currentClip?.start, rangeEnd: currentClip?.end,
             time: previewTime.map { ($0 * 20).rounded() / 20 })
     }
 
@@ -164,7 +164,8 @@ struct WizardPreviewColumn: View {
                         ? "One scene with the current Picture and Overlays settings. Position choices set to Auto are resolved for this scene."
                         : "Your kept footage with the current Picture and Overlays settings. Drag to any moment; position choices set to Auto are resolved for it.")
                         + (onMove == nil ? "" : " Drag the caption or a name tag to place it.")
-                        + (onPlaceOverlay == nil ? "" : " Drag any part of the overlay to move it, or its edges to resize it."))
+                        + (onPlaceOverlay == nil ? "" : " Drag any part of the overlay to move it, or its edges to resize it.")
+                        + (onPlaceFocusFrame == nil ? "" : " Drag the focus frame to move it, or a grip to resize it. Zoom with the slider in Settings, or scroll or pinch over the preview."))
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                     Spacer(minLength: 0)
@@ -191,6 +192,8 @@ struct WizardPreviewColumn: View {
             scrubTime = nil
         }
         .task(id: contentKey) {
+            let requestedContent = contentKey
+            loadedContentKey = nil
             model.cancel()
             // A dragged scrubber changes the key many times a second; load
             // once the hand pauses.
@@ -200,9 +203,14 @@ struct WizardPreviewColumn: View {
             }
             await model.loadScene(previewRecord, database: store.database, people: store.people,
                                   language: options.effectiveCaptionLanguage, tagStyleID: options.nameTagStyleID, profile: profile, options: options,
-                                  range: currentClip?.range, time: previewTime, snapshotKey: snapshotKey)
-            if !Task.isCancelled { refresh() }
+                                  range: currentClip?.range, time: previewTime, snapshotKey: snapshotKey, reviewedBRoll: currentClip?.brollCuts)
+            if !Task.isCancelled, model.isSceneCurrent {
+                loadedContentKey = requestedContent
+            }
         }
+        // Use the current view's options: composite controls may have changed
+        // while the content task was loading with its earlier options snapshot.
+        .onChange(of: loadedContentKey) { _, _ in refresh() }
         // The cache key includes the text snapshot used by the next render.
         .onChange(of: key(overlayTexts: []), initial: true) { _, _ in refresh() }
         // Typed replacement texts re-render after a short pause so the preview
@@ -368,6 +376,14 @@ struct WizardPreviewColumn: View {
                 }
             }
             .overlay {
+                if options.requestedFraming.subject != .layout, let sourceRect = model.layout?.sourceRect,
+                   model.image != nil, let scene = model.scene {
+                    GeometryReader { geometry in
+                        focusHandle(sourceRect: sourceRect, sourceSize: scene.sourceSize, size: geometry.size)
+                    }
+                }
+            }
+            .overlay {
                 if model.isRendering || model.isLoadingScene {
                     ProgressView().controlSize(.small).padding(Theme.spaceS)
                         .background(.regularMaterial, in: RoundedRectangle(cornerRadius: 6))
@@ -377,8 +393,40 @@ struct WizardPreviewColumn: View {
             .clipped()
     }
 
+    @ViewBuilder
+    private func focusHandle(sourceRect: CGRect, sourceSize: CGSize, size: CGSize) -> some View {
+        let framing = options.requestedFraming
+        let canvas = CGSize(width: options.renderSettings.width, height: options.renderSettings.height)
+        let scale = min(size.width / canvas.width, size.height / canvas.height)
+        let source = CGRect(x: (size.width - canvas.width * scale) / 2 + sourceRect.minX * scale,
+            y: (size.height - canvas.height * scale) / 2 + sourceRect.minY * scale,
+            width: sourceRect.width * scale, height: sourceRect.height * scale)
+        let frame = framing.focusFrame ?? FocusFrame.initial(framing: framing, sourceSize: sourceSize,
+            canvasAspect: options.renderSettings.aspectRatio)
+        let rect = CGRect(x: source.minX + frame.xFrac * source.width, y: source.minY + frame.yFrac * source.height,
+            width: frame.wFrac * source.width, height: frame.hFrac * source.height)
+        if framing.focusFrame != nil, onPlaceFocusFrame == nil {
+            Rectangle().strokeBorder(Color.accentColor, style: StrokeStyle(lineWidth: 1.5, dash: [5, 3]))
+                .frame(width: rect.width, height: rect.height).position(x: rect.midX, y: rect.midY)
+                .allowsHitTesting(false).accessibilityLabel("Focus frame")
+        }
+        if let onPlaceFocusFrame, source.width > 0, source.height > 0 {
+            // Account for a stored non-aspect crop's nonuniform mapping as well as a normal cover transform.
+            let aspect: CGFloat? = FocusFrame.handleAspectLocked(framing: framing)
+                ? CGFloat(source.height / source.width * sourceSize.width / sourceSize.height / options.renderSettings.aspectRatio) : nil
+            PreviewComponentHandle(rect: rect, aspect: aspect, size: size, bounds: source, allowsZoom: true) { placed in
+                onPlaceFocusFrame(FocusFrame.resolved(FreeCropRect(xFrac: (placed.minX - source.minX) / source.width,
+                    yFrac: (placed.minY - source.minY) / source.height,
+                    wFrac: placed.width / source.width, hFrac: placed.height / source.height)))
+            }
+        }
+    }
+
     private func refresh() {
-        guard let record = previewRecord, model.loadedSceneID == record.id,
+        // This also closes the gap before the content task starts (or while
+        // scrubbing is debounced): the retained scene belongs to the old key.
+        guard loadedContentKey == contentKey, model.isSceneCurrent,
+              let record = previewRecord, model.loadedSceneID == record.id,
               var scene = model.scene, let key = key(overlayTexts: options.fixedOverlayTexts ?? []) else { return }
         scene.captionOrdinals = captionOrdinals ?? scene.captionOrdinals
         model.update(key: key) {
@@ -445,18 +493,26 @@ private struct PreviewHandlesLayer: View {
 /// One component of the overlay design: a drag inside the outline moves it,
 /// grips on the corners and edges resize it. Images keep their aspect.
 private struct PreviewComponentHandle: View {
-    let component: OverlayComponent
+    var component: OverlayComponent? = nil
+    private var label: String { component?.label ?? "focus frame" }
     /// The component's rendered box in the preview view's coordinates.
     let rect: CGRect
     /// Height over width to keep while resizing; nil = free.
     var aspect: CGFloat? = nil
     /// The preview view's size; the box stays inside it.
     let size: CGSize
+    /// Focus frames are constrained to the source rather than to the cropped canvas.
+    var bounds: CGRect? = nil
+    /// Only the focus frame responds to wheel/pinch zoom and insets canvas-edge grips.
+    var allowsZoom = false
     /// The box the component was dropped at, in the preview view's coordinates.
     let onPlace: (CGRect) -> Void
     @State private var live: CGRect?
     @State private var hovering = false
     @State private var hoveredGrip: Grip?
+    @State private var zoomTask: Task<Void, Never>?
+    @State private var dragStart: CGRect?
+    @Namespace private var handleCoordinates
 
     static let minimumWidth: CGFloat = 24
     static let minimumHeight: CGFloat = 12
@@ -515,36 +571,99 @@ private struct PreviewComponentHandle: View {
     }
 
     /// `rect` moved by `translation`, kept inside the preview.
+    private var movementBounds: CGRect { bounds ?? CGRect(origin: .zero, size: size) }
+
     private func moved(by translation: CGSize) -> CGRect {
-        let x = min(max(0, rect.minX + translation.width), max(0, size.width - rect.width))
-        let y = min(max(0, rect.minY + translation.height), max(0, size.height - rect.height))
+        let rect = dragStart ?? rect
+        let box = movementBounds
+        let x = min(max(box.minX, rect.minX + translation.width), max(box.minX, box.maxX - rect.width))
+        let y = min(max(box.minY, rect.minY + translation.height), max(box.minY, box.maxY - rect.height))
         return CGRect(x: x, y: y, width: rect.width, height: rect.height)
+    }
+
+    private func resized(_ grip: Grip, by translation: CGSize) -> CGRect {
+        let rect = dragStart ?? rect
+        let box = movementBounds
+        let local = rect.offsetBy(dx: -box.minX, dy: -box.minY)
+        var result = grip.resized(local, by: translation, in: box.size, aspect: aspect)
+        if bounds != nil {
+            // Keep the locked aspect when a corner reaches a source boundary.
+            let factor = min(1, min(box.width / max(1, result.width), box.height / max(1, result.height)))
+            result.size = CGSize(width: result.width * factor, height: result.height * factor)
+            result.origin.x = min(max(0, result.minX), max(0, box.width - result.width))
+            result.origin.y = min(max(0, result.minY), max(0, box.height - result.height))
+        }
+        return result.offsetBy(dx: box.minX, dy: box.minY)
+    }
+
+    private func scale(by factor: CGFloat, debounce: Bool) {
+        guard dragStart == nil else { return }
+        zoomTask?.cancel()
+        zoomTask = nil
+        live = PreviewHandleGeometry.scaled(live ?? rect, by: factor, aspect: aspect, bounds: movementBounds,
+            minimum: CGSize(width: Self.minimumWidth, height: Self.minimumHeight))
+        if debounce {
+            zoomTask = Task { @MainActor in
+                try? await Task.sleep(for: .milliseconds(250))
+                guard !Task.isCancelled else { return }
+                finishZoom()
+            }
+        }
+    }
+
+    private func finishZoom() {
+        zoomTask?.cancel()
+        zoomTask = nil
+        guard dragStart == nil, let final = live else { return }
+        live = nil
+        if final != rect { onPlace(final) }
+    }
+
+    private func beginDrag() {
+        guard dragStart == nil else { return }
+        zoomTask?.cancel()
+        zoomTask = nil
+        // A drag can take over a wheel edit before its debounce commits.
+        dragStart = live ?? rect
+    }
+
+    private func resetInteraction() {
+        zoomTask?.cancel()
+        zoomTask = nil
+        live = nil
+        dragStart = nil
     }
 
     var body: some View {
         let current = live ?? rect
+        let visible = CGRect(origin: .zero, size: size)
+        let displayed = allowsZoom ? PreviewHandleGeometry.insetForDisplay(current, visible: visible, inset: Theme.spaceS) : current
         let active = live != nil || hovering || hoveredGrip != nil
         ZStack(alignment: .topLeading) {
             Rectangle()
                 .strokeBorder(active ? Color.accentColor : Color.white.opacity(0.4), lineWidth: active ? 1.5 : 1)
                 .contentShape(Rectangle())
-                .frame(width: max(Self.minimumWidth, current.width), height: max(Self.minimumHeight, current.height))
-                .position(x: current.midX, y: current.midY)
+                .frame(width: allowsZoom ? displayed.width : max(Self.minimumWidth, displayed.width),
+                       height: allowsZoom ? displayed.height : max(Self.minimumHeight, displayed.height))
+                .position(x: displayed.midX, y: displayed.midY)
                 .onHover { inside in
                     hovering = inside
                     if inside { NSCursor.openHand.push() } else { NSCursor.pop() }
                 }
-                .gesture(DragGesture(minimumDistance: 2)
-                    .onChanged { live = moved(by: $0.translation) }
+                .gesture(DragGesture(minimumDistance: 2, coordinateSpace: .named(handleCoordinates))
+                    .onChanged { value in
+                        beginDrag()
+                        live = moved(by: value.translation)
+                    }
                     .onEnded { value in
                         let final = moved(by: value.translation)
-                        live = nil
+                        resetInteraction()
                         onPlace(final)
                     })
-                .help("Drag to move the \(component.label); drag an edge or corner to resize it.")
-                .accessibilityLabel("\(component.label.capitalized) position")
+                .help("Drag to move the \(label); drag an edge or corner to resize it.")
+                .accessibilityLabel("\(label.capitalized) position")
             ForEach(Grip.allCases, id: \.self) { grip in
-                let point = grip.point(in: current)
+                let point = grip.point(in: displayed)
                 Rectangle()
                     .fill(active ? Color.accentColor : Color.white.opacity(0.7))
                     .frame(width: 7, height: 7)
@@ -560,16 +679,34 @@ private struct PreviewComponentHandle: View {
                             NSCursor.pop()
                         }
                     }
-                    .gesture(DragGesture(minimumDistance: 1)
-                        .onChanged { live = grip.resized(rect, by: $0.translation, in: size, aspect: aspect) }
+                    .gesture(DragGesture(minimumDistance: 1, coordinateSpace: .named(handleCoordinates))
+                        .onChanged { value in
+                            beginDrag()
+                            live = resized(grip, by: value.translation)
+                        }
                         .onEnded { value in
-                            let final = grip.resized(rect, by: value.translation, in: size, aspect: aspect)
-                            live = nil
+                            let final = resized(grip, by: value.translation)
+                            resetInteraction()
                             onPlace(final)
                         })
-                    .accessibilityLabel("\(component.label.capitalized) resize")
+                    .accessibilityLabel("\(label.capitalized) resize")
             }
         }
+        .frame(width: size.width, height: size.height, alignment: .topLeading)
+        .coordinateSpace(name: handleCoordinates)
+        .background {
+            if allowsZoom {
+                PreviewFocusZoomEvents(onScroll: { scale(by: $0, debounce: true) }, onMagnify: { factor, ended in
+                    scale(by: factor, debounce: false)
+                    if ended { finishZoom() }
+                })
+            }
+        }
+        .onChange(of: rect) { resetInteraction() }
+        .onChange(of: bounds) { resetInteraction() }
+        .onChange(of: size) { resetInteraction() }
+        .onChange(of: aspect) { resetInteraction() }
+        .onDisappear { resetInteraction() }
     }
 }
 

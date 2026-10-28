@@ -9,7 +9,6 @@ struct MiniWizardSettingsTests {
         var render = RenderSettings()
         render.customCRF = 17
         base.renderSettings = render
-        base.framingCamera = "gentle"
         base.includeMiddleBumper = true
         base.includeHeadline = true
         base.includeOutro = true
@@ -28,7 +27,7 @@ struct MiniWizardSettingsTests {
                     settings.nameTags = enabled
                     let result = settings.step2Options(base: base)
                     #expect(result.renderSettings?.quality == quality && result.renderSettings?.preset == preset)
-                    #expect(result.renderSettings?.customCRF == 17 && result.framingCamera == "gentle")
+                    #expect(result.renderSettings?.customCRF == 17)
                     #expect(result.addCaptions == enabled && result.captionLanguage == (enabled ? "en" : nil))
                     #expect(result.includeIntroBumper == enabled && result.includeOutroBumper == enabled)
                     #expect(result.includeWatermark == enabled && result.enableTextOverlays == enabled)
@@ -174,24 +173,19 @@ struct MiniWizardSettingsTests {
         #expect(WizardOptions().lookPreset == nil)
     }
 
-    @Test func everyCameraFocusMapsLikeTheFullWizard() {
+    @Test func everySubjectMapsLikeTheFullWizard() {
         var settings = MiniWizardSettings()
-        for kind in CropRecipe.Kind.allCases {
-            settings.cameraFocus = kind.rawValue
+        for subject in Framing.Subject.allCases {
+            settings.framing = Framing(subject: subject)
             let mapped = settings.step2Options(base: WizardStep2Options())
-            #expect(mapped.highlightFraming == kind && mapped.podcastFraming == .followSpeaker)
+            #expect(mapped.framing == settings.framing)
+            #expect(mapped.highlightFraming == nil && mapped.podcastFraming == nil)
         }
-        settings.cameraFocus = WizardCameraFocus.original
-        let original = settings.step2Options(base: WizardStep2Options())
-        #expect(original.highlightFraming == nil && original.podcastFraming == .original)
-        settings.cameraFocus = ""
-        let automatic = settings.step2Options(base: original)
-        #expect(automatic.highlightFraming == nil && automatic.podcastFraming == .followSpeaker)
     }
 
     @Test func hiddenChoicesAndUnavailableBumpersCannotAffectAnotherSource() {
         var settings = MiniWizardSettings()
-        settings.cameraFocus = WizardCameraFocus.original
+        settings.framing = Framing(subject: .original)
         settings.nameTags = true
         settings.captions = true
         settings.englishCaptions = true
@@ -199,7 +193,7 @@ struct MiniWizardSettingsTests {
         settings.outroVideo = true
         let ordinary = settings.effective(for: MiniWizardFlow(video: Fixtures.video(), captionsEnabled: true),
             introAvailable: false, outroAvailable: false)
-        #expect(ordinary.cameraFocus.isEmpty && !ordinary.nameTags && !ordinary.englishCaptions)
+        #expect(ordinary.framing.subject == .original && !ordinary.nameTags && !ordinary.englishCaptions)
         #expect(!ordinary.introVideo && !ordinary.outroVideo)
         let podcast = MiniWizardFlow(video: Fixtures.video(), hasPodcastExchangeScenes: true,
                                     captionsEnabled: true, transcriptLanguage: "pt")
@@ -232,7 +226,7 @@ struct MiniWizardSettingsTests {
         #expect(settings.quality == .archival && settings.preset == .landscape4K && settings.watermark)
         settings.quality = .compact
         settings.preset = .square1080
-        settings.cameraFocus = WizardCameraFocus.original
+        settings.framing = Framing(subject: .original)
         settings.captions = true
         settings.englishCaptions = true
         settings.introVideo = true
@@ -472,56 +466,39 @@ extension MiniWizardSettingsTests {
         }
     }
 
-    @Test func zoomMovesMapsToTheOptionsAndRoundTripsThroughMemoryAndPresets() throws {
+    @Test func pullBackMapsToOptionsMemoryAndPresets() throws {
         var settings = MiniWizardSettings()
-        settings.cameraFocus = CropRecipe.Kind.interview.rawValue
-        settings.interviewZoomMoves = true
+        settings.framing = Framing(subject: .speakerFocus, pullBack: 0.6)
         let profile = Fixtures.brand()
-        #expect(settings.previewOptions(profile: profile).interviewZoomMoves == true)
-        #expect(MiniWizardSettings().previewOptions(profile: profile).interviewZoomMoves == false)
-        let suite = "MiniWizardSettingsTests.zoomMoves.\(UUID().uuidString)"
-        let defaults = try #require(UserDefaults(suiteName: suite))
-        defer { defaults.removePersistentDomain(forName: suite) }
+        #expect(settings.previewOptions(profile: profile).framing == settings.framing)
+        let defaults = try #require(UserDefaults(suiteName: "FramingPullBack.\(UUID().uuidString)"))
         settings.remember(profileName: profile.profileName, defaults: defaults)
-        #expect(MiniWizardSettings.remembered(profile: profile, defaults: defaults).interviewZoomMoves)
-        let fields = WizardPresetBridge.wizardFields(from: settings)
-        #expect(fields["interviewZoomMoves"]?.bool == true)
-        #expect(WizardPresetBridge.miniSettings(from: fields).interviewZoomMoves)
+        #expect(MiniWizardSettings.remembered(profile: profile, defaults: defaults).framing == settings.framing)
+        #expect(WizardPresetBridge.miniSettings(from: WizardPresetBridge.wizardFields(from: settings)).framing == settings.framing)
     }
 }
 
 extension MiniWizardSettingsTests {
-    @Test(arguments: InterviewPunchIn.allCases)
-    func interviewChoicesRoundTripThroughEverySettingsBridge(punchIn: InterviewPunchIn) throws {
+    @Test(arguments: [Framing.Moves.smooth, .cuts])
+    func movesRoundTripThroughEverySettingsBridge(moves: Framing.Moves) throws {
         let profile = Fixtures.brand()
         var settings = MiniWizardSettings()
-        settings.cameraFocus = CropRecipe.Kind.interview.rawValue
-        settings.interviewCuts = true
-        settings.interviewPunchIn = punchIn.rawValue
-        let encoded = try JSONEncoder().encode(settings)
-        #expect(try JSONDecoder().decode(MiniWizardSettings.self, from: encoded) == settings)
+        settings.framing = Framing(subject: .speakerFocus, pullBack: 0.4, moves: moves)
+        #expect(try JSONDecoder().decode(MiniWizardSettings.self, from: JSONEncoder().encode(settings)) == settings)
         let options = settings.previewOptions(profile: profile)
-        #expect(options.interviewCuts == true && options.interviewPunchIn == punchIn.rawValue)
         let decoded = try JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(options))
-        #expect(decoded.interviewCuts == true && decoded.interviewPunchIn == punchIn.rawValue)
+        #expect(decoded.framing == settings.framing)
         let step = try JSONDecoder().decode(WizardStep2Options.self, from: JSONEncoder().encode(options.step2))
-        let merged = WizardOptions.merge(step1: options.step1, step2: step, base: WizardOptions())
-        #expect(merged.interviewCuts == true && merged.interviewPunchIn == punchIn.rawValue)
+        #expect(WizardOptions.merge(step1: options.step1, step2: step).framing == settings.framing)
         let fields = WizardPresetBridge.wizardFields(from: settings)
-        #expect(fields["interviewCuts"]?.bool == true && fields["interviewPunchIn"]?.string == punchIn.rawValue)
-        let restored = WizardPresetBridge.miniSettings(from: fields)
-        #expect(restored.interviewCuts == true && restored.interviewPunchIn == punchIn.rawValue)
-        let suite = "MiniWizardSettingsTests.punchIn.\(UUID().uuidString)"
+        #expect(fields["interviewCuts"] == nil && fields["interviewPunchIn"] == nil)
+        #expect(WizardPresetBridge.miniSettings(from: fields).framing == settings.framing)
+        let suite = "MiniWizardSettingsTests.framing.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         settings.remember(profileName: profile.profileName, defaults: defaults)
-        let remembered = MiniWizardSettings.remembered(profile: profile, defaults: defaults)
-        #expect(remembered.interviewCuts == true && remembered.interviewPunchIn == punchIn.rawValue)
-        let other = MiniWizardSettings.remembered(profile: BrandProfile(name: "Other"), defaults: defaults)
-        #expect(!other.resolvedInterviewCuts && other.resolvedInterviewPunchIn == "vip")
-        settings.interviewCuts = false
-        let smooth = WizardPresetBridge.miniSettings(from: WizardPresetBridge.wizardFields(from: settings), base: restored)
-        #expect(smooth.interviewCuts == false)
+        #expect(MiniWizardSettings.remembered(profile: profile, defaults: defaults).framing == settings.framing)
+        #expect(MiniWizardSettings.remembered(profile: BrandProfile(name: "Other"), defaults: defaults).framing == Framing())
     }
 
     @Test func oldSettingsKeepSmoothVIPDefaults() throws {
@@ -535,7 +512,7 @@ extension MiniWizardSettingsTests {
         #expect(step.interviewCuts == nil && step.interviewPunchIn == nil)
         var unknown = mini
         unknown.interviewPunchIn = "future-choice"
-        #expect(unknown.previewOptions(profile: Fixtures.brand()).interviewPunchIn == "vip")
+        #expect(unknown.previewOptions(profile: Fixtures.brand()).framing == Framing())
         #expect(CropRecipe(kind: .interview).interviewCuts == false)
         #expect(CropRecipe(kind: .interview).interviewPunchIn == .vip)
     }

@@ -1,4 +1,5 @@
 import CoreGraphics
+import CoreText
 import Foundation
 import ImageIO
 import OSLog
@@ -7,12 +8,14 @@ import UniformTypeIdentifiers
 /// One still using the same rasterizers, canvas and placement rules as export.
 nonisolated enum WizardPreviewComposite {
     enum Framing: Sendable, Hashable {
+        case original
         case cover(face: CGRect?)
         case path(CameraPathKeyframe)
         case cells([Cell])
 
         func hash(into hasher: inout Hasher) {
             switch self {
+            case .original: hasher.combine(3)
             case .cover(let face):
                 hasher.combine(0)
                 hasher.combine(face.map { [$0.minX, $0.minY, $0.width, $0.height] })
@@ -28,6 +31,14 @@ nonisolated enum WizardPreviewComposite {
         var person: PersonRecord? = nil
         var face: CGRect? = nil
         var isTalking = false
+        var sourcePath: String? = nil
+        var sourceTime: Double? = nil
+        var mask: ScreenCropArea? = nil
+        var role: ScreenCropArea.Role? = nil
+        var trackingRegion: FreeCropRect? = nil
+        var focus: AreaFocus? = nil
+
+        var frameKey: String { "\(sourcePath ?? "")@\(sourceTime ?? 0)" }
 
         func hash(into hasher: inout Hasher) {
             hasher.combine([source.minX, source.minY, source.width, source.height])
@@ -35,6 +46,12 @@ nonisolated enum WizardPreviewComposite {
             hasher.combine(person)
             hasher.combine(face.map { [$0.minX, $0.minY, $0.width, $0.height] })
             hasher.combine(isTalking)
+            hasher.combine(sourcePath)
+            hasher.combine(sourceTime)
+            hasher.combine(mask)
+            hasher.combine(role)
+            hasher.combine(trackingRegion)
+            hasher.combine(focus)
         }
     }
 
@@ -48,6 +65,7 @@ nonisolated enum WizardPreviewComposite {
         var words: [TranscriptWord]?
         var cameraPath: SceneCameraPath? = nil
         var contentIsWide = false
+        var contentBox: RenderEngine.ContentBox? = nil
         var sourceSize = CGSize(width: 16, height: 9)
         var framing: Framing = .cover(face: nil)
         var framingWarning: String? = nil
@@ -74,6 +92,7 @@ nonisolated enum WizardPreviewComposite {
         /// speaker only (no chips); a set draws exactly those people, with the
         /// moment's speaker on top when listed. Speech with no person always shows.
         var shownSpeakers: Set<String>? = nil
+        var cellFrames: [String: Data] = [:]
     }
 
     enum PreviewError: LocalizedError {
@@ -90,6 +109,9 @@ nonisolated enum WizardPreviewComposite {
     /// Where the draggable elements landed, in canvas pixels from the top
     /// left, so the preview can offer them as handles.
     struct Layout: Sendable, Equatable {
+        /// Where the uncropped, oriented recording maps into canvas pixels, y down.
+        /// It can extend beyond the canvas when the current picture is cropped.
+        var sourceRect: CGRect?
         var captions: [CaptionBox] = []
         var tags: [CGRect] = []
         var overlay: CGRect?
@@ -128,6 +150,7 @@ nonisolated enum WizardPreviewComposite {
     static func renderWithLayout(_ input: Input, baseFrame: CGImage) throws -> (image: CGImage, layout: Layout) {
         try Task.checkCancellation()
         var layout = Layout()
+        layout.sourceRect = sourceRect(input)
         let image = try RenderContext.$settings.withValue(input.options.renderSettings) {
             let settings = input.options.renderSettings
             let canvas = CGRect(x: 0, y: 0, width: settings.width, height: settings.height)
@@ -278,7 +301,7 @@ nonisolated enum WizardPreviewComposite {
             }
 
             if options.usesNameTags {
-                let geometry = tagGeometry(scene: input.scene, canvas: canvas.size)
+                let geometry = tagGeometry(scene: input.scene, canvas: canvas.size, options: input.options)
                 let tagStyle = input.profile.tagStyle(id: options.nameTagStyleID)
                 let imageAspects = TextOverlayRenderer.tagImages(tagStyle).mapValues { CGFloat($0.width) / CGFloat($0.height) }
                 let tags = NameTagPlanner.plan(areas: geometry.areas, people: geometry.people,
@@ -363,30 +386,118 @@ nonisolated enum WizardPreviewComposite {
         let canvas = CGSize(width: settings.width, height: settings.height)
         let context = try makeContext(settings)
         switch input.scene.framing {
+        case .original:
+            let spec = fitSpec(input, frame: frame, canvas: canvas)
+            if input.options.requestedFraming.focusFrame != nil, spec.fit == .fill,
+               let cropped = frame.cropping(to: spec.pixels) {
+                // A static focus frame is the timeline's free crop, including its exact edges.
+                context.draw(cropped, in: CGRect(origin: .zero, size: canvas))
+            } else {
+                try FitDrawer.draw(frame, spec: spec, in: context)
+            }
         case .cover(let face):
-            context.draw(frame, in: coverRect(source: CGSize(width: frame.width, height: frame.height), canvas: canvas, face: face))
+            if input.options.requestedFraming.fit == .blurredFill {
+                try FitDrawer.draw(frame, spec: fitSpec(input, frame: frame, canvas: canvas), in: context)
+            } else {
+                context.draw(frame, in: coverRect(source: CGSize(width: frame.width, height: frame.height), canvas: canvas, face: face))
+            }
         case .path(let key):
-            draw(frame, source: CGRect(x: key.x, y: key.y, width: key.w, height: key.h),
-                 area: WizardPreviewFraming.full, canvas: canvas, context: context)
+            var spec = fitSpec(input, frame: frame, canvas: canvas)
+            spec.sourceWindow = FreeCropRect(xFrac: key.x, yFrac: key.y, wFrac: key.w, hFrac: key.h)
+            try FitDrawer.draw(frame, spec: spec, in: context)
         case .cells(let cells):
-            for cell in cells { draw(frame, source: cell.source, area: cell.area, canvas: canvas, context: context) }
+            for cell in cells {
+                let cellFrame: CGImage
+                if let data = input.cellFrames[cell.frameKey],
+                   let source = CGImageSourceCreateWithData(data as CFData, nil),
+                   let decoded = CGImageSourceCreateImageAtIndex(source, 0, nil) { cellFrame = decoded }
+                else { cellFrame = frame }
+                var spec = fitSpec(input, frame: cellFrame, canvas: canvas)
+                spec.mask = cell.mask
+                spec.sourceWindow = FreeCropRect(xFrac: cell.source.minX, yFrac: cell.source.minY,
+                    wFrac: cell.source.width, hFrac: cell.source.height)
+                spec.destination = CGRect(x: cell.area.minX * canvas.width, y: cell.area.minY * canvas.height,
+                    width: cell.area.width * canvas.width, height: cell.area.height * canvas.height)
+                try FitDrawer.draw(cellFrame, spec: spec, in: context)
+                if let role = cell.role {
+                    let font = CTFontCreateWithName("Helvetica-Bold" as CFString, max(10, canvas.width * 0.025), nil)
+                    let line = CTLineCreateWithAttributedString(NSAttributedString(string: role.label, attributes: [
+                        NSAttributedString.Key(kCTFontAttributeName as String): font,
+                        NSAttributedString.Key(kCTForegroundColorAttributeName as String): CGColor(gray: 1, alpha: 1)]))
+                    let bounds = CTLineGetBoundsWithOptions(line, [])
+                    let origin = CGPoint(x: spec.destination.minX + 8,
+                        y: canvas.height - spec.destination.minY - bounds.height - 10)
+                    context.setFillColor(CGColor(gray: 0, alpha: 0.65))
+                    context.fill(CGRect(x: origin.x - 4, y: origin.y - 4, width: bounds.width + 8, height: bounds.height + 8))
+                    context.textPosition = origin
+                    CTLineDraw(line, context)
+                }
+            }
         }
         guard let image = context.makeImage() else { throw PreviewError.contextCreationFailed }
         return image
     }
 
-    private static func draw(_ frame: CGImage, source: CGRect, area: CGRect, canvas: CGSize, context: CGContext) {
-        let target = CGRect(x: area.minX * canvas.width, y: (1 - area.maxY) * canvas.height,
-                            width: area.width * canvas.width, height: area.height * canvas.height)
-        let visible = visibleSource(source, frame: CGSize(width: frame.width, height: frame.height), canvas: target.size)
-        guard visible.width > 0, visible.height > 0 else { return }
-        let width = target.width / visible.width, height = target.height / visible.height
-        let drawn = CGRect(x: target.minX - visible.minX * width,
-                           y: target.minY - (1 - visible.maxY) * height, width: width, height: height)
-        context.saveGState()
-        context.clip(to: target)
-        context.draw(frame, in: drawn)
-        context.restoreGState()
+    private static func fitSpec(_ input: Input, frame: CGImage, canvas: CGSize) -> FitSpec {
+        let framing = input.options.requestedFraming
+        return FitSpec(sourceWindow: FocusFrame.sourceWindow(framing.subject == .layout ? FreeCropRect() : framing.focusFrame ?? FreeCropRect(),
+                contentBox: input.scene.contentBox),
+            sourceSize: CGSize(width: frame.width, height: frame.height),
+            destination: CGRect(origin: .zero, size: canvas), canvasSize: canvas,
+            fit: framing.fit, feather: framing.feather, blur: framing.blur)
+    }
+
+    /// The inverse of the actual foreground placement, used by the focus handle.
+    static func sourceRect(_ input: Input) -> CGRect? {
+        let settings = input.options.renderSettings
+        let canvas = CGSize(width: settings.width, height: settings.height)
+        var sourceSize = input.scene.sourceSize
+        if let source = CGImageSourceCreateWithData(input.frameData as CFData, nil),
+           let properties = CGImageSourceCopyPropertiesAtIndex(source, 0, nil) as? [CFString: Any],
+           let width = properties[kCGImagePropertyPixelWidth] as? NSNumber,
+           let height = properties[kCGImagePropertyPixelHeight] as? NSNumber {
+            sourceSize = CGSize(width: width.doubleValue, height: height.doubleValue)
+        }
+        let framing = input.options.requestedFraming
+        guard framing.subject != .layout else { return nil }
+        var window = FocusFrame.sourceWindow(framing.focusFrame ?? FreeCropRect(), contentBox: input.scene.contentBox)
+        var destination = CGRect(origin: .zero, size: canvas)
+        var staticCrop = false
+        switch input.scene.framing {
+        case .original: staticCrop = framing.focusFrame != nil
+        case .path(let key): window = FreeCropRect(xFrac: key.x, yFrac: key.y, wFrac: key.w, hFrac: key.h)
+        case .cells(let cells):
+            guard let cell = cells.first else { return nil }
+            window = FocusFrame.window(cell.source)
+            destination = CGRect(x: cell.area.minX * canvas.width, y: cell.area.minY * canvas.height,
+                width: cell.area.width * canvas.width, height: cell.area.height * canvas.height)
+        case .cover(let face):
+            if framing.fit == .fill {
+                let drawn = coverRect(source: sourceSize, canvas: canvas, face: face)
+                return CGRect(x: drawn.minX, y: canvas.height - drawn.maxY, width: drawn.width, height: drawn.height)
+            }
+        }
+        let spec = FitSpec(sourceWindow: window, sourceSize: sourceSize,
+            destination: destination, canvasSize: canvas, fit: framing.fit)
+        let drawn: CGRect
+        if staticCrop && framing.fit == .fill { drawn = destination }
+        else if framing.fit == .blurredFill { drawn = spec.foreground }
+        else {
+            let scale = max(destination.width / spec.pixels.width, destination.height / spec.pixels.height)
+            let size = CGSize(width: spec.pixels.width * scale, height: spec.pixels.height * scale)
+            drawn = CGRect(x: destination.midX - size.width / 2, y: destination.midY - size.height / 2,
+                width: size.width, height: size.height)
+        }
+        return CGRect(x: drawn.minX - window.xFrac / window.wFrac * drawn.width,
+            y: drawn.minY - window.yFrac / window.hFrac * drawn.height,
+            width: drawn.width / window.wFrac, height: drawn.height / window.hFrac)
+    }
+
+    private static func containRect(source: CGSize, canvas: CGSize) -> CGRect {
+        let scale = min(canvas.width / max(1, source.width), canvas.height / max(1, source.height))
+        let size = CGSize(width: source.width * scale, height: source.height * scale)
+        return CGRect(x: (canvas.width - size.width) / 2, y: (canvas.height - size.height) / 2,
+                      width: size.width, height: size.height)
     }
 
     /// Apply the cell's final cover crop to both its pixels and its face geometry.
@@ -401,9 +512,18 @@ nonisolated enum WizardPreviewComposite {
 
     /// Planner geometry is top-left canvas pixels, including each cell's face and
     /// the caption band supplied by WizardNameTags.settings.
-    static func tagGeometry(scene: Scene, canvas: CGSize) -> (areas: [NameTagPlanner.Area], people: [NameTagPlanner.Person]) {
-        let cells: [Cell]
+    static func tagGeometry(scene: Scene, canvas: CGSize, options: WizardOptions? = nil) -> (areas: [NameTagPlanner.Area], people: [NameTagPlanner.Person]) {
+        var cells: [Cell]
         switch scene.framing {
+        case .original:
+            let drawn = options == nil ? containRect(source: scene.sourceSize, canvas: canvas)
+                : CGRect(origin: .zero, size: canvas)
+            let source = options?.requestedFraming.focusFrame.map { FocusFrame.rect(FocusFrame.sourceWindow($0, contentBox: scene.contentBox)) }
+                ?? WizardPreviewFraming.full
+            cells = [Cell(source: source,
+                area: CGRect(x: drawn.minX / canvas.width, y: drawn.minY / canvas.height,
+                    width: drawn.width / canvas.width, height: drawn.height / canvas.height),
+                person: scene.person, face: scene.faceRect)]
         case .cells(let values): cells = values
         case .path(let key):
             cells = [Cell(source: CGRect(x: key.x, y: key.y, width: key.w, height: key.h),
@@ -411,10 +531,24 @@ nonisolated enum WizardPreviewComposite {
         case .cover(let face):
             // Match the same cover transform used to draw the base frame.
             let source = scene.sourceSize
-            let drawn = coverRect(source: source, canvas: canvas, face: face)
+            let drawn = options?.requestedFraming.fit == .blurredFill
+                ? CGRect(origin: .zero, size: canvas)
+                : coverRect(source: source, canvas: canvas, face: face)
             let crop = CGRect(x: -drawn.minX / drawn.width, y: (drawn.maxY - canvas.height) / drawn.height,
                               width: canvas.width / drawn.width, height: canvas.height / drawn.height)
             cells = [Cell(source: crop, area: WizardPreviewFraming.full, person: scene.person, face: scene.faceRect)]
+        }
+        if options?.requestedFraming.fit == .blurredFill {
+            cells = cells.map { cell in
+                var cell = cell
+                let spec = FitSpec(sourceWindow: FreeCropRect(xFrac: cell.source.minX, yFrac: cell.source.minY,
+                    wFrac: cell.source.width, hFrac: cell.source.height), sourceSize: scene.sourceSize,
+                    destination: CGRect(x: cell.area.minX * canvas.width, y: cell.area.minY * canvas.height,
+                        width: cell.area.width * canvas.width, height: cell.area.height * canvas.height), canvasSize: canvas)
+                cell.area = CGRect(x: spec.foreground.minX / canvas.width, y: spec.foreground.minY / canvas.height,
+                    width: spec.foreground.width / canvas.width, height: spec.foreground.height / canvas.height)
+                return cell
+            }
         }
         var names: [NameTagPlanner.Person] = []
         let areas = cells.map { cell in
@@ -428,7 +562,10 @@ nonisolated enum WizardPreviewComposite {
             // The person's own corner wins over the run's, as in the export.
             names.append(.init(key: key, name: person?.tagName ?? "Alex Morgan", role: person?.descriptor ?? "Guest",
                                position: person?.tagPosition))
-            let source = visibleSource(cell.source, frame: scene.sourceSize, canvas: rect.size)
+            let source: CGRect
+            if case .original = scene.framing, options?.requestedFraming.focusFrame != nil {
+                source = cell.source
+            } else { source = visibleSource(cell.source, frame: scene.sourceSize, canvas: rect.size) }
             let face = cell.face.map {
                 CGRect(x: rect.minX + ($0.minX - source.minX) / source.width * rect.width,
                        y: rect.minY + ($0.minY - source.minY) / source.height * rect.height,

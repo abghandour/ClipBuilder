@@ -7,14 +7,14 @@ struct SafeAreaControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceS) {
-            HStack(alignment: .top, spacing: Theme.spaceM) {
-                Toggle(isOn: $enabled) {
-                    Text("Safe area only").lineLimit(1).fixedSize()
-                }
-                .fixedSize()
-                .help("Keep captions and name tags inside the platforms' safe zones, even at Bottom, Top or a corner.")
-                if enabled {
-                    PlatformTargetsPicker(platforms: $platforms)
+            SettingsRow("Safe area only") {
+                HStack(alignment: .top, spacing: Theme.spaceM) {
+                    Toggle("Safe area only", isOn: $enabled)
+                        .toggleStyle(.switch).fixedSize()
+                        .help("Keep captions and name tags inside the platforms' safe zones, even at Bottom, Top or a corner.")
+                    if enabled {
+                        PlatformTargetsPicker(platforms: $platforms)
+                    }
                 }
             }
             if enabled {

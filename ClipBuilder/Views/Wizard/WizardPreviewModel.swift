@@ -55,13 +55,8 @@ nonisolated struct PreviewKey: Hashable, Sendable {
         visual.overlayDuration = options.fixedOverlayDuration
         visual.overlayTexts = overlayTexts
         visual.overlayPosition = options.fixedOverlayPosition
+        visual.framing = options.framing ?? Framing.legacy(from: options)
         visual.overlayEdits = options.fixedOverlayEdits ?? OverlayEdits()
-        visual.cameraFocus = options.podcastFraming == .original ? WizardCameraFocus.original
-            : options.highlightFraming?.rawValue ?? ""
-        visual.interviewZoom = options.interviewZoom ?? 0
-        visual.interviewZoomMoves = options.interviewZoomMoves ?? false
-        visual.interviewCuts = options.interviewCuts ?? false
-        visual.interviewPunchIn = (InterviewPunchIn(rawValue: options.interviewPunchIn ?? "") ?? .vip).rawValue
         look = options.lookPreset ?? "none"
         lookIntensity = options.lookIntensity
         captionLanguage = options.effectiveCaptionLanguage
@@ -103,6 +98,9 @@ nonisolated struct PreviewKey: Hashable, Sendable {
     private(set) var loadedTime: Double?
     private(set) var isLoadingScene = false
     private(set) var renderCount = 0
+    private var sceneNeedsReload = false
+
+    var isSceneCurrent: Bool { scene != nil && !sceneNeedsReload && !isLoadingScene }
 
     @ObservationIgnored private var task: Task<Void, Never>?
     @ObservationIgnored private var requestID = UUID()
@@ -124,6 +122,8 @@ nonisolated struct PreviewKey: Hashable, Sendable {
         var tagText: [String: String]
         var captionOrdinals: [String: Int]
         var speakingPeople: Set<String>
+        var layoutSources: [VideoRecord] = []
+        var layoutScenes: [SceneRecord] = []
     }
     @ObservationIgnored private var gradedFrames: [(key: GradeKey, image: CGImage)] = []
     private let thumbnails: ThumbnailService
@@ -131,6 +131,8 @@ nonisolated struct PreviewKey: Hashable, Sendable {
     private nonisolated struct GradeKey: Equatable, Sendable {
         var frame: FrameKey
         var framing: WizardPreviewComposite.Framing
+        var request: Framing
+        var contentWindow: FreeCropRect?
         var width: Int
         var height: Int
         var look: String
@@ -162,6 +164,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             image = nil
             scene = nil
             loadedSceneID = nil
+            loadedTime = nil
             error = nil
         }
     }
@@ -172,12 +175,19 @@ nonisolated struct PreviewKey: Hashable, Sendable {
     /// default the middle of that range. Both default to the scene's own.
     func loadScene(_ record: SceneRecord?, database: Database?, people: [PersonRecord],
                    language: String?, tagStyleID: String?, profile: BrandProfile, options: WizardOptions,
-                   range: ClosedRange<Double>? = nil, time moment: Double? = nil, snapshotKey: String? = nil) async {
+                   range: ClosedRange<Double>? = nil, time moment: Double? = nil, snapshotKey: String? = nil,
+                   reviewedBRoll: [BRollCut]? = nil) async {
         let id = UUID()
         sceneRequestID = id
-        loadedSceneID = nil
-        loadedTime = nil
-        scene = nil
+        cancel()
+        sceneNeedsReload = true
+        if record == nil || record?.id != loadedSceneID {
+            loadedSceneID = nil
+            loadedTime = nil
+            scene = nil
+            image = nil
+            layout = nil
+        }
         error = nil
         guard let original = record else { isLoadingScene = false; return }
         isLoadingScene = true
@@ -192,7 +202,8 @@ nonisolated struct PreviewKey: Hashable, Sendable {
         // framing change reuses them.
         var loaded: RecordingSnapshot?
         if let database {
-            let key = snapshotKey ?? "\(record.videoID)|\(language ?? "")|\(tagStyleID ?? "")"
+            let key = (snapshotKey ?? "\(record.videoID)|\(language ?? "")|\(tagStyleID ?? "")")
+                + "|layout=\(options.requestedFraming.subject == .layout)|broll=\(options.useBRoll)"
             if let snapshot, snapshot.key == key {
                 loaded = snapshot
             } else {
@@ -209,11 +220,24 @@ nonisolated struct PreviewKey: Hashable, Sendable {
                     return (all, Set(speaking.keys))
                 }.value
                 guard sceneRequestID == id, !Task.isCancelled else { return }
+                let layoutSources = options.requestedFraming.subject == .layout
+                    ? (try? await database.fetchVideos(projectID: options.projectID)) ?? [] : []
+                let layoutScenes = options.requestedFraming.subject == .layout && options.useBRoll
+                    ? (try? await database.fetchScenes(projectID: options.projectID, scope: .active, includeExcluded: false)) ?? [] : []
+                guard sceneRequestID == id, !Task.isCancelled else { return }
                 let fresh = RecordingSnapshot(key: key, segments: segments, roster: evidence.roster, video: video,
                     turns: evidence.turns, speakerRows: evidence.rows, tagText: tagText,
-                    captionOrdinals: captionOrder.0, speakingPeople: captionOrder.1)
+                    captionOrdinals: captionOrder.0, speakingPeople: captionOrder.1,
+                    layoutSources: layoutSources, layoutScenes: layoutScenes)
                 snapshot = fresh
                 loaded = fresh
+            }
+        }
+        if let database, let reviewedBRoll, options.requestedFraming.subject == .layout, options.useBRoll {
+            let known = Set(loaded?.layoutScenes.map(\.id) ?? [])
+            let missing = Set(reviewedBRoll.map(\.sceneID)).subtracting(known)
+            if !missing.isEmpty, let extra = try? await database.fetchScenes(ids: missing) {
+                loaded?.layoutScenes += extra
             }
         }
         let snapshotForWorker = loaded
@@ -264,10 +288,41 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             scene.captionOrdinals = snapshotForWorker?.captionOrdinals ?? [:]
             scene.cameraPath = original.centerStagePath
             scene.contentIsWide = record.wide
-            if let video, video.width > 0, video.height > 0 { scene.sourceSize = CGSize(width: video.width, height: video.height) }
+            if let video, video.width > 0, video.height > 0 {
+                scene.sourceSize = CGSize(width: video.width, height: video.height)
+            } else if options.requestedFraming.focusFrame != nil {
+                let dimensions = await FFmpeg.dimensions(of: record.videoURL)
+                scene.sourceSize = CGSize(width: dimensions.width, height: dimensions.height)
+            }
+            if options.requestedFraming.focusFrame != nil {
+                scene.contentBox = await RenderEngine().detectContentBox(source: record.videoURL,
+                    start: record.startTime, duration: record.duration)
+            }
+            var brollCuts: [PodcastHighlightBRollPlanner.Cut] = []
+            if options.requestedFraming.subject == .layout, options.useBRoll, let video {
+                let scenes = snapshotForWorker?.layoutScenes ?? []
+                let candidate = HighlightCandidate(sourceStart: record.startTime, sourceEnd: record.endTime,
+                    title: "Layout", reason: "", score: 0, kind: .whole, speakerKeys: [])
+                let sources = PodcastHighlightBRollPlanner.sources(videoID: video.id, range: record.startTime...record.endTime,
+                    turns: turns, roster: roster, scenes: scenes, segments: [], people: taggedPeople)
+                if let reviewedBRoll {
+                    brollCuts = reviewedBRoll.compactMap { cut in
+                        guard let source = scenes.first(where: { $0.id == cut.sceneID }) else { return nil }
+                        let start = max(record.startTime, cut.start), end = min(record.endTime, cut.end)
+                        guard end > start else { return nil }
+                        return .init(source: .scene(source.id), sourceStart: source.startTime + cut.sceneOffset + start - cut.start,
+                            start: start - record.startTime, duration: end - start, reason: cut.reason)
+                    }
+                } else {
+                    brollCuts = PodcastHighlightBRollPlanner.plan(candidate: candidate, sources: sources,
+                        turns: turns, segments: [], tiles: CropRecipePlanner.tiles(video: video, roster: roster),
+                        scenes: scenes, threshold: 7, instructions: options.brollInstructions)
+                }
+            }
             let framing = await WizardPreviewFraming.resolveCached(options: options, record: record, video: video,
                 face: face, turns: turns, roster: roster, people: taggedPeople, layouts: ScreenCropStore.all(), time: time,
-                sceneStart: original.startTime)
+                sceneStart: original.startTime, contentBox: scene.contentBox,
+                sources: snapshotForWorker?.layoutSources ?? [], scenes: snapshotForWorker?.layoutScenes ?? [], brollCuts: brollCuts)
             scene.framing = framing.framing
             scene.framingWarning = framing.warning
             let templates = OverlayTemplateStore.list()
@@ -276,6 +331,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             fingerprint.combine(scene.person)
             fingerprint.combine(scene.framing)
             fingerprint.combine(scene.framingWarning)
+            fingerprint.combine(scene.contentBox.map { FreeCropRect(xFrac: $0.x, yFrac: $0.y, wFrac: $0.w, hFrac: $0.h) })
             fingerprint.combine(scene.captionText)
             fingerprint.combine(try JSONEncoder().encode(scene.words))
             fingerprint.combine(scene.roster)
@@ -306,6 +362,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             loadedSceneID = original.id
             loadedTime = result.0.time
             contentRevision = result.2
+            sceneNeedsReload = false
         } catch is CancellationError {
             // A newer scene request owns the column now.
         } catch {
@@ -314,6 +371,9 @@ nonisolated struct PreviewKey: Hashable, Sendable {
     }
 
     func update(key: PreviewKey, input: () -> WizardPreviewComposite.Input?) {
+        // A retained scene is display-only until its replacement is published.
+        // Do not poison currentKey or the composite LRU after a failed reload.
+        guard !sceneNeedsReload, !isLoadingScene else { return }
         guard key != currentKey else { return }
         task?.cancel()
         requestID = UUID()
@@ -335,6 +395,8 @@ nonisolated struct PreviewKey: Hashable, Sendable {
                                 dimension: max(input.options.renderSettings.width, input.options.renderSettings.height))
         let cachedFrame = baseFrame?.key == frameKey ? baseFrame?.data : nil
         let gradeKey = GradeKey(frame: frameKey, framing: WizardPreviewFraming.pixelFraming(input.scene.framing),
+            request: input.options.requestedFraming,
+            contentWindow: input.scene.contentBox.map { FreeCropRect(xFrac: $0.x, yFrac: $0.y, wFrac: $0.w, hFrac: $0.h) },
             width: key.width, height: key.height, look: key.look, intensity: key.lookIntensity)
         let cachedGrade: CGImage?
         if let index = gradedFrames.firstIndex(where: { $0.key == gradeKey }) {
@@ -355,6 +417,17 @@ nonisolated struct PreviewKey: Hashable, Sendable {
                             throw WizardPreviewComposite.PreviewError.unreadableFrame
                         }
                         input.frameData = data
+                    }
+                }
+                if case .cells(let cells) = input.scene.framing {
+                    for cell in cells {
+                        guard let path = cell.sourcePath, let time = cell.sourceTime else { continue }
+                        if path == frameKey.url.path, abs(time - frameKey.time) < 0.001 {
+                            input.cellFrames[cell.frameKey] = input.frameData
+                        } else if let data = await thumbnails.thumbnail(for: URL(fileURLWithPath: path), at: time,
+                            maxDimension: CGFloat(frameKey.dimension)) {
+                            input.cellFrames[cell.frameKey] = data
+                        }
                     }
                 }
                 try Task.checkCancellation()

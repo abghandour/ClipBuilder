@@ -631,6 +631,15 @@ struct ScreenCropEditor: View {
                             .textFieldStyle(.plain)
                             .font(.callout.weight(.medium))
                             .disabled(readOnly)
+                        Picker(selection: $layout.areas[index].role) {
+                            Text("By order").lineLimit(1).fixedSize().tag(ScreenCropArea.Role?.none)
+                            ForEach(ScreenCropArea.Role.allCases, id: \.self) { role in
+                                Text(role.label).lineLimit(1).fixedSize().tag(Optional(role))
+                            }
+                        } label: {
+                            Text("Role").lineLimit(1).fixedSize()
+                        }
+                        .controlSize(.small).disabled(readOnly)
                         Text(area.summary)
                             .font(.caption2)
                             .foregroundStyle(.secondary)

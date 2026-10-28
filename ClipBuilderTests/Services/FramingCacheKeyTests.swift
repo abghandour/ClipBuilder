@@ -12,7 +12,9 @@ struct FramingCacheKeyTests {
         try Data(repeating: 1, count: 1024).write(to: source)
         var item = Fixtures.timelineClip(sceneID: nil, sourceStart: 2, duration: 3)
         item.videoFile = source.path
+        item.framingPlan = .static(window: nil, fit: .fill, feather: 0.08, blur: 0.5)
         let clip = try #require(MultitrackRenderer.resolveClips(document: Fixtures.timelineDocument(clips: [item]), scenes: []).first)
+        #expect(clip.framingPlan == item.framingPlan)
         let settings = RenderSettings()
         func key(_ clip: MultitrackRenderer.ResolvedClip) throws -> String {
             try MultitrackRenderer.prepassKey(clip, area: nil, tuning: "balanced", settings: settings, encoder: ["encoder"])
@@ -22,6 +24,10 @@ struct FramingCacheKeyTests {
             { $0.sourceStart += 0.5 }, { $0.duration += 1 }, { $0.speed = 0.5 },
             { $0.cameraPath = [CameraPathKeyframe(t: 0, x: 0.3, y: 0, w: 0.3, h: 1)] },
             { $0.framingIdentity = "changed-upstream-framing" },
+            { $0.framingPlan = .static(window: nil, fit: .blurredFill, feather: 0.08, blur: 0.5) },
+            { $0.framingPlan = .static(window: nil, fit: .fill, feather: 0.2, blur: 0.5) },
+            { $0.framingPlan = .static(window: nil, fit: .fill, feather: 0.08, blur: 1) },
+            { $0.contentWindow = FreeCropRect(yFrac: 0.1, hFrac: 0.8) },
         ] {
             var changed = clip
             mutate(&changed)

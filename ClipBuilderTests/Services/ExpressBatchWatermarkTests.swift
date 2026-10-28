@@ -28,7 +28,7 @@ struct ExpressBatchWatermarkTests {
     func foldingEligibility() {
         var options = WizardOptions()
         options.includeWatermark = true; options.includeOutro = false
-        options.useBRoll = false; options.highlightFraming = nil
+        options.useBRoll = false; options.framing = Framing()
         options.fixedOverlayTemplate = nil
         let plan = Fixtures.plan()
         #expect(ExpressBatchWatermark.canFold(options: options, plan: plan, hasPodcastDocument: true, batchID: "batch"))
@@ -36,7 +36,7 @@ struct ExpressBatchWatermarkTests {
         #expect(!ExpressBatchWatermark.canFold(options: options, plan: plan, hasPodcastDocument: false, batchID: "batch"))
         for mutation: (inout WizardOptions) -> Void in [
             { $0.fixedOverlayTemplate = "Lower third" }, { $0.includeOutro = true },
-            { $0.highlightFraming = .vipBRoll }, { $0.highlightFraming = .vip },
+            { $0.framing = Framing(subject: .vipFocus) },
             { $0.useBRoll = true; $0.brollInstructions = "Add reactions" },
             { $0.includeWatermark = false },
         ] {

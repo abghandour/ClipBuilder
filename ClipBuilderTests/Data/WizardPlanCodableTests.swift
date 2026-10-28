@@ -24,7 +24,7 @@ struct WizardPlanCodableTests {
         clip.rightSpeakerName = "Guest"
         var plan = Fixtures.plan(clips: [clip], transitions: ["fade"])
         plan.provenance = AIProvenance(provider: "fixture", model: "test", task: "wizard")
-        plan.framing = .grid
+        plan.framing = .layout
         plan.headline = "A complete answer"
         plan.introTitle = "Listen"
         plan.fileName = "the-answer"

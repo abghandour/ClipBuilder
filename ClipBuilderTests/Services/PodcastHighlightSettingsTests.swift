@@ -38,17 +38,17 @@ struct PodcastHighlightSettingsTests {
         #expect(defaults.highlightFraming == nil && defaults.useBRoll && defaults.brollInstructions.isEmpty)
         for kind in CropRecipe.Kind.allCases {
             var options = WizardOptions()
-            options.highlightFraming = kind
+            options.framing = Framing(subject: Framing.Subject.legacy(kind))
             options.useBRoll = false
             options.brollInstructions = "Use fight footage; never cover the host."
             let data = try JSONEncoder().encode(options)
             let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
-            #expect(object["highlightFraming"] as? String == kind.rawValue)
+            #expect(object["highlightFraming"] == nil && object["framing"] != nil)
             #expect(object["useBRoll"] as? Bool == false)
             #expect(object["brollInstructions"] as? String == options.brollInstructions)
             #expect(!object.keys.contains { $0.hasPrefix("_") || $0.hasPrefix("wizard.") })
             let restored = try JSONDecoder().decode(WizardOptions.self, from: data)
-            #expect(restored.highlightFraming == kind && !restored.useBRoll)
+            #expect(restored.framing == options.framing && !restored.useBRoll)
             #expect(restored.brollInstructions == options.brollInstructions)
         }
         let restored = try JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(defaults))
@@ -72,17 +72,18 @@ struct PodcastHighlightSettingsTests {
         defaults.set(false, forKey: "wizard.useBRoll")
         defaults.set("Only reactions", forKey: "wizard.brollInstructions")
         let exported = AISettingsPreferences.wizard(defaults: defaults, profile: Fixtures.brand())
-        #expect(exported["highlightFraming"] == .null)
+        #expect(exported["highlightFraming"] == nil && exported["framing"] != nil)
         let data = try JSONEncoder().encode(exported)
         let options = try JSONDecoder().decode(WizardOptions.self, from: data)
         #expect(options.highlightFraming == nil && !options.useBRoll && options.brollInstructions == "Only reactions")
-        defaults.set("grid", forKey: "wizard.highlightFraming")
+        defaults.set(Framing(subject: .layout).joined, forKey: WizardExpressExtras.framingKey)
         let fixed = AISettingsPreferences.wizard(defaults: defaults, profile: Fixtures.brand())
-        #expect(fixed["highlightFraming"] == .string("grid"))
+        let fixedFraming: Framing? = fixed["framing"]?.decodeValue()
+        #expect(fixedFraming?.subject == .layout)
         defaults.set(true, forKey: "wizard.useBRoll")
         defaults.set("", forKey: "wizard.brollInstructions")
         AISettingsPreferences.write(exported, kind: .wizard, scopes: [.options, .prompts], defaults: defaults)
-        #expect(defaults.string(forKey: "wizard.highlightFraming") == nil)
+        #expect(Framing.split(defaults.string(forKey: WizardExpressExtras.framingKey))?.subject == .auto)
         #expect(!defaults.bool(forKey: "wizard.useBRoll"))
         #expect(defaults.string(forKey: "wizard.brollInstructions") == "Only reactions")
     }

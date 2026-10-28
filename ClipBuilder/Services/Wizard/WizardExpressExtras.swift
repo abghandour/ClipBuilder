@@ -5,6 +5,7 @@ import Foundation
 /// read from the Wizard's `wizard.*` defaults into the options the engine
 /// takes. One reader serves the Wizard page, the pipeline and Outputs.
 nonisolated enum WizardExpressExtras {
+    static let framingKey = "wizard.framing"
     static let transitionChoiceKey = "wizard.transitionChoice"
     static let lookPresetKey = "wizard.lookPreset"
     static let lookIntensityKey = "wizard.lookIntensity"
@@ -29,10 +30,28 @@ nonisolated enum WizardExpressExtras {
         return joined.components(separatedBy: "\n")
     }
 
+    static func storedFraming(type: VideoType, defaults: UserDefaults = .standard) -> Framing {
+        if let saved = Framing.split(defaults.string(forKey: framingKey)) { return saved }
+        let keys = ["highlightFraming", "podcastFraming", "interviewZoom", "interviewCuts", "interviewZoomMoves", "interviewPunchIn", "framingCamera"]
+        guard keys.contains(where: { defaults.object(forKey: "wizard." + $0) != nil }) else {
+            return FramingMenu.default(type: type)
+        }
+        var old = WizardOptions()
+        old.highlightFraming = defaults.string(forKey: "wizard.highlightFraming").flatMap(CropRecipe.Kind.init(rawValue:))
+        old.podcastFraming = defaults.string(forKey: "wizard.podcastFraming").flatMap(PodcastFramingMode.init(rawValue:)) ?? .followSpeaker
+        old.interviewZoom = defaults.double(forKey: "wizard.interviewZoom")
+        old.interviewCuts = defaults.bool(forKey: "wizard.interviewCuts")
+        return Framing.legacy(from: old)
+    }
+
     /// Apply the stored extras to `options`. `bumperPath` resolves a bumper's
     /// library path for a placement to this Mac's file, as Express does.
     static func apply(to options: inout WizardOptions, defaults: UserDefaults = .standard,
                       bumperPath: (String, BumperPlacement) -> String? = { _, _ in nil }) {
+        // The request on the options wins; otherwise the stored one, converted
+        // once from the retained old controls. Either way it is what Express remembers.
+        options.framing = options.framing ?? Framing.split(defaults.string(forKey: framingKey)) ?? Framing.legacy(from: options)
+        defaults.setIfChanged(options.framing?.joined, forKey: framingKey)
         let transition = (defaults.string(forKey: transitionChoiceKey) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
         options.transitionChoice = transition.isEmpty ? nil : transition
         let look = (defaults.string(forKey: lookPresetKey) ?? "").trimmingCharacters(in: .whitespacesAndNewlines)

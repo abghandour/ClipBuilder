@@ -12,16 +12,18 @@ enum PodcastHighlightTimeline {
         let builder = BuilderTimelineModel(mode: .transient)
         let sourceScene = scenes.filter { $0.videoID == video.id && $0.startTime <= candidate.sourceStart && $0.endTime >= candidate.sourceEnd }
             .min { $0.duration < $1.duration }
-        builder.document = PodcastRecipeTimeline.build(kind: candidate.framing, video: video,
-            range: candidate.sourceStart...candidate.sourceEnd, sourceScene: sourceScene,
-            turns: turns, roster: roster, layouts: layouts, settings: settings, options: options, people: people, tagText: tagText,
-            captionStyle: profile.captionStyle(id: options.captionStyleID), profile: profile, imageAspects: imageAspects)
         let tiles = CropRecipePlanner.tiles(video: video, roster: roster)
-        guard options.useBRoll else { log("B-roll off"); return builder.document }
         let sources = PodcastHighlightBRollPlanner.sources(videoID: video.id, range: candidate.sourceRange,
             speakerKeys: candidate.speakerKeys, turns: turns, roster: roster, scenes: scenes, segments: segments, people: people)
-        let cuts = plannedCuts ?? PodcastHighlightBRollPlanner.plan(candidate: candidate, sources: sources, turns: turns,
-            segments: segments, tiles: tiles, scenes: scenes, threshold: threshold, instructions: options.brollInstructions)
+        let cuts = options.useBRoll ? plannedCuts ?? PodcastHighlightBRollPlanner.plan(candidate: candidate, sources: sources, turns: turns,
+            segments: segments, tiles: tiles, scenes: scenes, threshold: threshold, instructions: options.brollInstructions) : []
+        builder.document = PodcastRecipeTimeline.build(subject: Framing.Subject.legacy(candidate.framing), video: video,
+            range: candidate.sourceStart...candidate.sourceEnd, sourceScene: sourceScene,
+            turns: turns, roster: roster, layouts: layouts, settings: settings, options: options, hasBRoll: !cuts.isEmpty,
+            brollCuts: cuts, scenes: scenes, people: people, tagText: tagText,
+            captionStyle: profile.captionStyle(id: options.captionStyleID), profile: profile, imageAspects: imageAspects)
+        if builder.document.videoTrack.contains(where: { $0.framingPlan?.isComposed == true }) { return builder.document }
+        guard options.useBRoll else { log("B-roll off"); return builder.document }
         add(cuts: cuts, to: builder, video: video, tiles: tiles, scenes: scenes, roster: roster, log: log)
         if cuts.isEmpty { log("B-roll: no suitable sources.") }
         return builder.document

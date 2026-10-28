@@ -25,6 +25,21 @@ nonisolated struct ScreenCropPoint: Codable, Sendable, Hashable {
 nonisolated struct ScreenCropArea: Codable, Sendable, Hashable, Identifiable {
     var name: String
     var points: [ScreenCropPoint]
+    var role: Role? = nil
+
+    enum Role: String, Codable, CaseIterable, Sendable, Hashable {
+        case vip, others, broll, screen, presenter
+
+        var label: String {
+            switch self {
+            case .vip: "VIP"
+            case .others: "Others"
+            case .broll: "B-roll"
+            case .screen: "Screen"
+            case .presenter: "Presenter"
+            }
+        }
+    }
 
     var id: String { name }
 
@@ -123,6 +138,23 @@ nonisolated enum ScreenCropStore {
     /// Ready-made layouts that ship with the app (not files; duplicate one
     /// in the Screen Crop section to customize it).
     static let builtIn: [ScreenCropLayout] = [
+        ScreenCropLayout(name: "Split", areas: [
+            ScreenCropArea(name: "Top", points: rect(0, 0, 1, 0.5), role: .vip),
+            ScreenCropArea(name: "Bottom", points: rect(0, 0.5, 1, 1), role: .others),
+        ]),
+        ScreenCropLayout(name: "PiP", areas: [
+            ScreenCropArea(name: "Full", points: rect(0, 0, 1, 1), role: .others),
+            ScreenCropArea(name: "Corner", points: rect(0.62, 0.68, 0.97, 0.97), role: .vip),
+        ]),
+        ScreenCropLayout(name: "Three stack", areas: [
+            ScreenCropArea(name: "Top", points: rect(0, 0, 1, 1.0 / 3), role: .vip),
+            ScreenCropArea(name: "Middle", points: rect(0, 1.0 / 3, 1, 2.0 / 3), role: .others),
+            ScreenCropArea(name: "Bottom", points: rect(0, 2.0 / 3, 1, 1), role: .broll),
+        ]),
+        ScreenCropLayout(name: "Screen + presenter", areas: [
+            ScreenCropArea(name: "Screen", points: rect(0, 0, 1, 0.7), role: .screen),
+            ScreenCropArea(name: "Presenter", points: rect(0, 0.7, 1, 1), role: .presenter),
+        ]),
         ScreenCropLayout(name: "50-50 Horizontal", areas: [
             ScreenCropArea(name: "Top", points: rect(0, 0, 1, 0.5)),
             ScreenCropArea(name: "Bottom", points: rect(0, 0.5, 1, 1)),
@@ -424,29 +456,96 @@ nonisolated enum ScreenCropStore {
             context.addPath(path)
             context.fillPath(using: .evenOdd)
         }
-        guard let image = context.makeImage(),
-              let destination = CGImageDestinationCreateWithURL(url as CFURL, UTType.png.identifier as CFString,
-                                                                1, nil) else {
-            throw CocoaError(.fileWriteUnknown)
-        }
-        CGImageDestinationAddImage(destination, image, nil)
-        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+        guard let image = context.makeImage() else { throw CocoaError(.fileWriteUnknown) }
+        try writeMaskImage(image, to: url)
         return url
     }
 
     /// Resolve a clip's reference and write its mask into `directory`
     /// (named after the reference so repeated clips share one file). Nil
     /// when the reference no longer resolves — the clip then renders unmasked.
-    static func maskFile(reference: String?, in directory: URL) -> URL? {
+    static func maskFile(reference: String?, in directory: URL,
+                         width: Int = RenderEngine.outputWidth, height: Int = RenderEngine.outputHeight) -> URL? {
         guard let reference, let area = area(reference: reference) else { return nil }
+        return maskFile(area: area, name: reference, in: directory, width: width, height: height)
+    }
+
+    static func maskFile(area: ScreenCropArea, name: String, in directory: URL,
+                         width: Int = RenderEngine.outputWidth, height: Int = RenderEngine.outputHeight) -> URL? {
         // The polygon is part of the name: the renderer caches masks next
         // to its output, and an edited layout must not reuse the old shape.
         let shape = area.points.map { String(format: "%.4f,%.4f", $0.x, $0.y) }.joined(separator: ";")
         let digest = SHA256.hash(data: Data(shape.utf8)).prefix(6).map { String(format: "%02x", $0) }.joined()
         let file = directory.appendingPathComponent(
-            "mask_" + ProfileStore.sanitize(reference.replacingOccurrences(of: "/", with: "_"))
-                + "_" + digest + ".png")
+            "mask_" + ProfileStore.sanitize(name.replacingOccurrences(of: "/", with: "_"))
+                + "_\(width)x\(height)_" + digest + ".png")
         if FileManager.default.fileExists(atPath: file.path) { return file }
-        return try? writeMask(for: area, to: file)
+        return try? writeMask(for: area, to: file, width: width, height: height)
     }
+
+    /// A white RGBA image whose alpha fades only toward the exposed bars.
+    /// Used directly by the preview and as alphaextract → alphamerge in ffmpeg.
+    static func gradientMask(spec: FitSpec) throws -> CGImage {
+        let width = max(2, Int(spec.foreground.width)), height = max(2, Int(spec.foreground.height))
+        let ramp = Double(spec.featherPixels)
+        var pixels = [UInt8](repeating: 255, count: width * height * 4)
+        if ramp > 0 {
+            for y in 0..<height {
+                for x in 0..<width {
+                    var alpha = 1.0
+                    if spec.horizontalBars { alpha = min(alpha, Double(min(y, height - 1 - y)) / ramp) }
+                    if spec.verticalBars { alpha = min(alpha, Double(min(x, width - 1 - x)) / ramp) }
+                    let value = UInt8((min(1, max(0, alpha)) * 255).rounded())
+                    let offset = (y * width + x) * 4
+                    // Premultiplied white: the RGB channels equal alpha.
+                    pixels[offset] = value; pixels[offset + 1] = value; pixels[offset + 2] = value
+                    pixels[offset + 3] = value
+                }
+            }
+        }
+        guard let provider = CGDataProvider(data: Data(pixels) as CFData),
+              let image = CGImage(width: width, height: height, bitsPerComponent: 8, bitsPerPixel: 32,
+                bytesPerRow: width * 4, space: CGColorSpaceCreateDeviceRGB(),
+                bitmapInfo: CGBitmapInfo(rawValue: CGImageAlphaInfo.premultipliedLast.rawValue),
+                provider: provider, decode: nil, shouldInterpolate: false, intent: .defaultIntent) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        return image
+    }
+
+    static func gradientMaskFile(spec: FitSpec, in directory: URL = FileManager.default.temporaryDirectory
+        .appendingPathComponent("ClipBuilderFitMasks", isDirectory: true)) throws -> URL {
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let width = Int(spec.foreground.width), height = Int(spec.foreground.height)
+        let identity = "\(spec.destination.width),\(spec.destination.height),\(spec.featherFraction),\(spec.horizontalBars),\(spec.verticalBars)"
+        let digest = SHA256.hash(data: Data(identity.utf8)).prefix(8).map { String(format: "%02x", $0) }.joined()
+        let feather = String(format: "%.6f", locale: Locale(identifier: "en_US_POSIX"), spec.featherFraction)
+        let file = directory.appendingPathComponent("fit_\(Int(spec.canvasSize.width))x\(Int(spec.canvasSize.height))"
+            + "_dst\(Int(spec.destination.width))x\(Int(spec.destination.height))_fg\(width)x\(height)_feather\(feather)_\(digest).png")
+        if !FileManager.default.fileExists(atPath: file.path) {
+            try writeMaskImage(gradientMask(spec: spec), to: file)
+        }
+        return file
+    }
+
+    static func cachedMaskFile(for area: ScreenCropArea, width: Int, height: Int) throws -> URL {
+        let directory = FileManager.default.temporaryDirectory.appendingPathComponent("ClipBuilderFitMasks", isDirectory: true)
+        try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+        let shape = try JSONEncoder().encode(area.points)
+        let digest = SHA256.hash(data: shape).prefix(8).map { String(format: "%02x", $0) }.joined()
+        let file = directory.appendingPathComponent("polygon_\(width)x\(height)_\(digest).png")
+        if !FileManager.default.fileExists(atPath: file.path) { try writeMask(for: area, to: file, width: width, height: height) }
+        return file
+    }
+
+    private static func writeMaskImage(_ image: CGImage, to url: URL) throws {
+        let data = NSMutableData()
+        guard let destination = CGImageDestinationCreateWithData(data, UTType.png.identifier as CFString, 1, nil) else {
+            throw CocoaError(.fileWriteUnknown)
+        }
+        CGImageDestinationAddImage(destination, image, nil)
+        guard CGImageDestinationFinalize(destination) else { throw CocoaError(.fileWriteUnknown) }
+        try (data as Data).write(to: url, options: .atomic)
+    }
+
 }

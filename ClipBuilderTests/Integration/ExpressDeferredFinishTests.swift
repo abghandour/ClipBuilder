@@ -38,7 +38,7 @@ struct ExpressDeferredFinishTests {
         options.includeWatermark = false
         options.includeOutro = false
         options.enableTextOverlays = false
-        options.podcastFraming = .original
+        options.framing = Framing(subject: .original)
         options.allowedTransitions = ["cut"]
         let plan = Fixtures.plan(clips: scenes.map { WizardPlanClip(sceneID: $0.id, start: $0.startTime, end: $0.endTime) })
         let take = try await database.recordWizardTake(projectID: projectID, options: options.step1, plan: plan)
@@ -120,7 +120,7 @@ struct ExpressDeferredFinishTests {
         options.includeWatermark = false
         options.includeOutro = false
         options.enableTextOverlays = false
-        options.podcastFraming = .original
+        options.framing = Framing(subject: .original)
         let take = try await database.recordWizardTake(projectID: projectID, options: options.step1,
             plan: Fixtures.plan(clips: [WizardPlanClip(sceneID: scene.id, start: 0, end: 2)]))
         // No model is reachable: the render needs none and the reel stays.

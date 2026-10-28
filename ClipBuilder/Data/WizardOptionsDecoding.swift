@@ -102,6 +102,11 @@ nonisolated extension WizardOptions {
         fixedOverlayDuration = try values.decodeIfPresent(Double.self, forKey: .fixedOverlayDuration)
         fixedOverlayTexts = try values.decodeIfPresent([String].self, forKey: .fixedOverlayTexts)
         fixedOverlayPosition = try values.decodeIfPresent(String.self, forKey: .fixedOverlayPosition)
+        if let stored = try? values.decodeIfPresent(String.self, forKey: .framing) {
+            framing = Framing.split(stored)
+        } else {
+            framing = try values.decodeIfPresent(Framing.self, forKey: .framing)
+        }
         fixedOverlayEdits = try values.decodeIfPresent(OverlayEdits.self, forKey: .fixedOverlayEdits)
         introBumperPath = try values.decodeIfPresent(String.self, forKey: .introBumperPath)
         outroBumperPath = try values.decodeIfPresent(String.self, forKey: .outroBumperPath)

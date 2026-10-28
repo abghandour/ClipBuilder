@@ -10,18 +10,20 @@ struct DubLanguagePicker: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 6) {
-            Picker("Voices", selection: Binding(get: { store.dubEngine }, set: { choose($0) })) {
-                ForEach(DubVoiceEngine.allCases, id: \.self) { engine in
-                    Text(engine.title).tag(engine)
+            SettingsRow("Voices") {
+                Picker("Voices", selection: Binding(get: { store.dubEngine }, set: { choose($0) })) {
+                    ForEach(DubVoiceEngine.allCases, id: \.self) { engine in
+                        Text(engine.title).lineLimit(1).fixedSize().tag(engine)
+                    }
                 }
             }
-            .lineLimit(1)
-            Picker("Language", selection: Binding(get: { selectedLanguage }, set: { language = $0 })) {
-                ForEach(DubLanguageChoices.languages(voices: voices ?? [], selected: language), id: \.self) { code in
-                    Text(DubLanguageChoices.name(code)).tag(code)
+            SettingsRow("Language") {
+                Picker("Language", selection: Binding(get: { selectedLanguage }, set: { language = $0 })) {
+                    ForEach(DubLanguageChoices.languages(voices: voices ?? [], selected: language), id: \.self) { code in
+                        Text(DubLanguageChoices.name(code)).lineLimit(1).fixedSize().tag(code)
+                    }
                 }
             }
-            .lineLimit(1)
             if let voices {
                 let count = voices.filter { DubLanguageChoices.matches($0.language, requested: selectedLanguage) }.count
                 HStack(spacing: 8) {

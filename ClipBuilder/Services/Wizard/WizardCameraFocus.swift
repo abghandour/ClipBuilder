@@ -26,11 +26,15 @@ nonisolated enum WizardCameraFocus {
         guard !defaults.bool(forKey: migrationKey) else { return }
         let selection = migratedSelection(cameraFocus: defaults.string(forKey: "wizard.highlightFraming") ?? "",
             legacyPodcastFraming: defaults.string(forKey: "wizard.podcastFraming"))
-        if selection != original, !selection.isEmpty {
-            defaults.set(selection, forKey: "wizard.highlightFraming")
+        if defaults.string(forKey: WizardExpressExtras.framingKey) == nil,
+           defaults.object(forKey: "wizard.highlightFraming") != nil || defaults.object(forKey: "wizard.podcastFraming") != nil {
+            var old = WizardOptions()
+            old.highlightFraming = CropRecipe.Kind(rawValue: selection)
+            old.podcastFraming = selection == original ? .original : .followSpeaker
+            old.interviewZoom = defaults.double(forKey: "wizard.interviewZoom")
+            old.interviewCuts = defaults.bool(forKey: "wizard.interviewCuts")
+            defaults.set(Framing.legacy(from: old).joined, forKey: WizardExpressExtras.framingKey)
         }
-        defaults.set(selection == original ? PodcastFramingMode.original.rawValue : PodcastFramingMode.followSpeaker.rawValue,
-                     forKey: "wizard.podcastFraming")
         defaults.set(true, forKey: migrationKey)
     }
 }

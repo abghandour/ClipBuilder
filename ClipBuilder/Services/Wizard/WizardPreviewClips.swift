@@ -8,6 +8,7 @@ nonisolated struct WizardPreviewClip: Identifiable, Sendable, Hashable {
     var scene: SceneRecord
     var start: Double
     var end: Double
+    var brollCuts: [BRollCut]? = nil
 
     var range: ClosedRange<Double> { start...max(start, end) }
     var duration: Double { max(0, end - start) }
@@ -27,8 +28,21 @@ nonisolated enum WizardPreviewClips {
         // Q&A, Transcript and Fight picks are the live footage the user edits;
         // their saved takes lag until Settings records them again, so the
         // picks come first and the takes only stand in when there are none.
-        let picked = pickClips(run: run, scenes: scenes, byID: byID)
-        if !picked.isEmpty { return picked }
+        var picked = pickClips(run: run, scenes: scenes, byID: byID)
+        if !picked.isEmpty {
+            let saved = run.candidates.flatMap { $0.take.plan.clips }
+            for index in picked.indices {
+                let piece = picked[index]
+                let exact = saved.first { clip in
+                    if let pickID = clip.miniPickID {
+                        return piece.id == "pick-\(pickID)" || piece.id == "fight-\(pickID)"
+                    }
+                    return clip.sceneID == piece.scene.id && abs(clip.start - piece.start) < 0.001 && abs(clip.end - piece.end) < 0.001
+                }
+                picked[index].brollCuts = exact?.brollCuts
+            }
+            return picked
+        }
         let takes = run.candidates.filter { $0.kept && !$0.take.plan.clips.isEmpty }
         if !takes.isEmpty {
             for candidate in takes {
@@ -37,7 +51,7 @@ nonisolated enum WizardPreviewClips {
                     let title = candidate.take.plan.clips.count > 1
                         ? "\(candidate.selection.name) · \(index + 1)" : candidate.selection.name
                     result.append(.init(id: "take-\(candidate.id)-\(index)", title: title,
-                                        scene: scene, start: clip.start, end: clip.end))
+                                        scene: scene, start: clip.start, end: clip.end, brollCuts: clip.brollCuts))
                 }
             }
             return result

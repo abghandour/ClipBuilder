@@ -296,7 +296,7 @@ extension MiniWizardFlowTests {
         let card = flow.runSummaryCard(candidates: candidates, exchangeCount: 0, settings: settings)
         #expect(card.headline == "One reel from Guard pass that ended it, Take 2 + 2 more" && card.length == "15 s" && card.hasFootage)
         #expect(card.sections.map(\.title) == ["Picture", "Overlays", "Package"], "no Audio row for an untyped video")
-        #expect(card.sections[0].items == ["Balanced", "9:16 · 1080p", "Random transitions"])
+        #expect(card.sections[0].items == ["Balanced", "9:16 · 1080p", "Auto", "Random transitions"])
         #expect(card.sections[1].items == ["Captions", "Watermark"])
         #expect(card.sections[2].items.isEmpty)
         var fight = Fixtures.video()

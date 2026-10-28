@@ -118,7 +118,10 @@ struct MiniWizardView: View {
                     },
                     onPlaceOverlay: { component, box in
                         miniSettings.overlayEdits.place(component, at: box)
-                    })
+                    },
+                    onPlaceFocusFrame: flow.visibleCard == .settings && flow.canExpand(.settings) && settingsProfile == profileName
+                        && !store.isWizardRunning && flow.effectiveSettingsTab(settingsTab) == .picture
+                        ? { miniSettings.framing.focusFrame = $0 } : nil)
                     .id("\(store.profileGeneration):\(store.activeProjectID ?? 0):\(video.id)")
                     .rememberedPaneWidth("pane.express.preview", min: 240, initial: 320, max: 480)
             }

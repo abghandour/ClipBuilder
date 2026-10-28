@@ -10,24 +10,30 @@ struct RenderEngineTests {
     @Test("hardware intermediate passes match software; final audio still encodes", arguments: ["extract", "areas"])
     func intermediateExtractParity(pass: String) async throws {
         guard FFmpeg.hasVideoToolboxDecode else { return }
-        let temp = try TempDirectory(prefix: "IntermediateExtract")
-        let fixture = try await FixtureVideo.make(in: temp.url)
+        let temp = try TempDatabase()
+        let fixture = try await FixtureVideo.make(in: temp.directory.url)
         let render = RenderEngine()
-        let source = temp.url.appendingPathComponent("normalized.mp4")
+        let source = temp.directory.url.appendingPathComponent("normalized.mp4")
         try await render.extractClip(source: fixture, start: 0, duration: 1, output: source)
-        let mask = temp.url.appendingPathComponent("mask.png")
-        try await FFmpeg.run(["-y", "-f", "lavfi", "-i", "color=white:s=1080x1920",
-            "-frames:v", "1", mask.path], timeout: 60)
         var outputs: [URL] = []
         for hardware in [false, true] {
-            let output = temp.url.appendingPathComponent("hardware-\(hardware).mp4")
+            let output = temp.directory.url.appendingPathComponent("hardware-\(hardware).mp4")
             let commands = Mutex<[[String]]>([])
             let messages = Mutex<[String]>([])
             try await ExpressRenderTesting.$hardwareDecodeIntermediates.withValue(hardware) {
                 try await FFmpeg.$renderLog.withValue({ line in messages.withLock { $0.append(line) } }) {
                     try await FFmpeg.$commandCompleted.withValue({ args in commands.withLock { $0.append(args) } }) {
                         if pass == "areas" {
-                            try await render.compositeAreas([(clip: source, mask: mask)], duration: 1, output: output)
+                            var clip = Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 1)
+                            clip.videoFile = source.path
+                            clip.freeCrops = [FreeCrop(src: FreeCropRect(), dst: FreeCropRect())]
+                            let result = try await MultitrackRenderer(render: render,
+                                segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("cache-\(hardware)"))).render(
+                                    document: Fixtures.timelineDocument(clips: [clip]), scenes: [], profile: Fixtures.brand(),
+                                    database: temp.database, preview: true, prerenderedSources: [source.path],
+                                    emit: { line in messages.withLock { $0.append(line) } })
+                            defer { try? FileManager.default.removeItem(at: result.url) }
+                            try FileManager.default.copyItem(at: result.url, to: output)
                         } else {
                             try await render.extractClip(source: source, start: 0, duration: 1,
                                 effect: EffectSpec(preset: "faded"), intermediateSource: true, output: output)
@@ -36,7 +42,9 @@ struct RenderEngineTests {
                 }
             }
             outputs.append(output)
-            let command = try #require(commands.withLock { $0.last })
+            let command = try #require(commands.withLock { commands in
+                pass == "areas" ? commands.first { $0.last?.hasSuffix("_layered.mp4") == true } : commands.last
+            })
             #expect(command.contains("-hwaccel") == hardware)
             let audio = try #require(command.firstIndex(of: "-c:a"))
             #expect(command[audio + 1] == "aac")
@@ -77,9 +85,17 @@ struct RenderEngineTests {
         let temp = try TempDirectory(prefix: "ClipBuilderRenderTest")
         let source = try await FixtureVideo.make(in: temp.url, wide: true)
         let output = temp.url.appendingPathComponent("output.mp4")
-        let render = RenderEngine()
-        try await render.extractClip(source: source, start: 0, duration: 2,
-                                     wide: .autoCrop(0.5), speed: 0.5, output: output)
+        let database = try TempDatabase()
+        var scene = Fixtures.scene(start: 0, end: 3)
+        scene.videoPath = source.path
+        var clip = Fixtures.planClip(start: 0, end: 1)
+        clip.speed = 0.5
+        let document = WizardOrdinaryTimeline.cutDocument(clip: clip, sceneMap: [scene.id: scene],
+            settings: RenderSettings(), framingPlan: nil)
+        try await ExpressPodcastRenderer.extract(document: document, scenes: [scene], profile: Fixtures.brand(),
+            database: database.database, render: RenderEngine(), camera: "balanced", overlays: [],
+            look: nil, mute: false, clipNumber: 1, duration: 2, output: output,
+            cache: RenderSegmentCache(directory: temp.url.appendingPathComponent("cache")), emit: { _ in })
         #expect(FileManager.default.fileExists(atPath: output.path))
         let duration = await FFmpeg.duration(of: output)
         #expect(abs(duration - 2) < 0.15)

@@ -385,19 +385,23 @@ struct PodcastAnalysisTests {
         #expect(capped.clips[0].end - capped.clips[0].start <= 20)
     }
 
-    @Test("split Zoom timeline creates pinned synchronized tracks")
-    func splitTimeline() {
-        var scene = Fixtures.scene(start: 0, end: 10)
-        scene.tags = ["podcast", "podcast:split", "reel-highlight"]
-        let document = WizardEngine.timelineDocument(
-            from: Fixtures.plan(clips: [Fixtures.planClip(start: 0, end: 10)], targetDuration: 10),
-            sceneMap: [scene.id: scene], podcastFraming: .splitZoom)
+    @MainActor @Test("layout timeline creates pinned synchronized tracks")
+    func splitTimeline() throws {
+        var video = Fixtures.video()
+        video.podcastLayout = PodcastLayout.splitHorizontal.rawValue
+        video.podcastSeamX = 0.5
+        var options = WizardOptions()
+        options.framing = Framing(subject: .layout, layout: "Split")
+        let document = PodcastRecipeTimeline.build(video: video, range: 0...10, sourceScene: nil,
+            turns: [], roster: [], layouts: ScreenCropStore.builtIn, settings: RenderSettings(), options: options, tagText: [:])
         #expect(document.videoTrack.count == 2)
         #expect(document.videoTrack.map(\.track) == [0, 1])
-        #expect(document.videoTrack[0].areaWindow?.xFrac == 0)
-        #expect(document.videoTrack[1].areaWindow?.xFrac == 0.5)
         #expect(document.videoTrack[1].muted)
-        #expect(document.cropBlocks.first?.layout.name == "50-50 Horizontal")
+        #expect(document.videoTrack.allSatisfy {
+            if case .composed(let layout, _, _) = $0.framingPlan { return layout.name == "Split" }
+            return false
+        })
+        #expect(document.videoTrack[0].framingProgramAudio?.path == video.url.path)
     }
     @Test("unpunctuated alternating turns produce complete question-answer exchanges")
     func unpunctuatedTurns() {
@@ -640,14 +644,13 @@ struct PodcastAnalysisTests {
             scene.tags = ["podcast", "podcast:split"]
             scene.videoWidth = width
             scene.videoHeight = height
-            let document = WizardEngine.timelineDocument(
-                from: Fixtures.plan(clips: [Fixtures.planClip(start: 0, end: 10)]),
-                sceneMap: [scene.id: scene], podcastFraming: .splitZoom)
+            let context = FramingContext(scene: scene, range: 0...10, canvasAspect: 9.0 / 16)
+            #expect(context.width == width && context.height == height)
+            let windows = PodcastFramingService.splitFeedWindows(sourceAspect: Double(context.width) / Double(context.height))
             let expectedHeight = min(1, 0.5 * Double(width) / Double(height) / 1.125)
-            let left = try #require(document.videoTrack.first?.areaWindow)
-            #expect(abs(left.hFrac - expectedHeight) < 0.00001)
-            #expect(abs(left.yFrac - (1 - expectedHeight) / 2) < 0.00001)
-            #expect(document.videoTrack[1].areaWindow?.hFrac == left.hFrac)
+            #expect(abs(windows.left.hFrac - expectedHeight) < 0.00001)
+            #expect(abs(windows.left.yFrac - (1 - expectedHeight) / 2) < 0.00001)
+            #expect(windows.right.hFrac == windows.left.hFrac)
         }
     }
 

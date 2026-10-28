@@ -61,14 +61,14 @@ actor FeedPathCache {
     /// Preview/scoring can consume an enclosing span; never borrow another feed,
     /// camera preset, source revision or canvas aspect. Prefer the tightest span.
     func covering(source: URL, region: FreeCropRect, start: Double, duration: Double,
-                  aspect: Double? = nil, focus: AreaFocus? = nil) async -> Record? {
+                  tuning: String = "conversation", aspect: Double? = nil, focus: AreaFocus? = nil) async -> Record? {
         guard let fingerprint = try? SourceIdentityCache.shared.fingerprint(of: source) else { return nil }
         let records = await cache.readJSONRecords(Record.self, prefix: "feed-")
         return records.filter {
             let key = $0.identity
             return key.fingerprint == fingerprint && key.region == region
                 && key.start <= start + 1e-6 && key.start + key.duration >= start + duration - 1e-6
-                && key.tuning == "conversation" && key.version == MultitrackRenderer.framingVersion
+                && key.tuning == tuning && key.version == MultitrackRenderer.framingVersion
                 && (aspect.map { abs(key.aspect - $0) < 1e-6 } ?? true)
                 && (aspect == nil || key.focus == focus)
         }.min { $0.identity.duration < $1.identity.duration }

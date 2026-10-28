@@ -17,19 +17,17 @@ nonisolated enum CameraFocusChooser {
         var vipNames: [String] = []
         var nonVIPPeople: Int = 0
         var transcript: String
+        var type: VideoType = .podcast
     }
 
-    static func allowedLayouts(feeds: Int, hasVIP: Bool = false, nonVIPPeople: Int = 0) -> [CropRecipe.Kind] {
-        CropRecipe.Kind.allCases.filter {
-            if $0 == .interview { return hasVIP && (1...2).contains(nonVIPPeople) }
-            return ($0 == .vip || $0 == .vipBRoll) ? hasVIP : ($0 == .talker || (feeds >= 2 && CropRecipePlanner.layoutName(kind: $0, people: feeds) != nil))
-        }
+    static func allowedSubjects(type: VideoType, hasTurns: Bool, hasVIP: Bool) -> [Framing.Subject] {
+        FramingPlanner.available(type: type, hasTurns: hasTurns, hasVIP: hasVIP)
     }
 
-    static func fallback(speakers: Int, allowed: [CropRecipe.Kind]) -> CropRecipe.Kind {
-        let choice: CropRecipe.Kind = speakers >= 3 ? .talkerAndRotation
-            : (speakers == 2 ? .talkerAndPrevious : .talker)
-        return allowed.contains(choice) ? choice : .talker
+    static func fallback(type: VideoType, allowed: [Framing.Subject]) -> Framing.Subject {
+        let preferred = FramingMenu.default(type: type).subject
+        let choice: Framing.Subject = preferred == .auto ? .speakerFocus : preferred
+        return allowed.contains(choice) ? choice : (allowed.contains(.centerStage) ? .centerStage : .original)
     }
 
     /// Count only speech overlapping the selected source ranges, including hand trims.
@@ -87,19 +85,17 @@ nonisolated enum CameraFocusChooser {
 
     /// Feeds are keyed by take ID. Mixed-source takes use the most restrictive available feed count.
     static func prompt(exchanges: [Exchange], feeds: [Int64: Int], options: WizardOptions) -> String {
-        let layouts = CropRecipe.Kind.allCases.filter { kind in
-            exchanges.contains { allowedLayouts(feeds: feeds[$0.id] ?? 1, hasVIP: !$0.vipNames.isEmpty,
-                                                nonVIPPeople: $0.nonVIPPeople).contains(kind) }
+        let layouts = Framing.Subject.allCases.filter { kind in
+            exchanges.contains { allowedSubjects(type: $0.type, hasTurns: !$0.speakers.isEmpty, hasVIP: !$0.vipNames.isEmpty).contains(kind) }
         }
-        let descriptions = layouts.map { "\($0.rawValue) — \($0.name): \($0.summary)" }.joined(separator: "\n")
+        let descriptions = layouts.map { "\($0.rawValue) — \($0.label(type: .podcast))" }.joined(separator: "\n")
         let lines = exchanges.map { exchange in
             let total = exchange.speakers.reduce(0) { $0 + $1.seconds }
             let speakers = exchange.speakers.map {
                 "\($0.name): \(Int(($0.seconds / max(total, 0.001) * 100).rounded()))% talk time, \($0.turns) turns"
             }.joined(separator: "; ")
             let count = feeds[exchange.id] ?? 1
-            let allowed = allowedLayouts(feeds: count, hasVIP: !exchange.vipNames.isEmpty,
-                                         nonVIPPeople: exchange.nonVIPPeople).map(\.rawValue).joined(separator: ", ")
+            let allowed = allowedSubjects(type: exchange.type, hasTurns: !exchange.speakers.isEmpty, hasVIP: !exchange.vipNames.isEmpty).map(\.rawValue).joined(separator: ", ")
             let roles = [exchange.asker.map { "asks: \($0)" }, exchange.answerer.map { "answers: \($0)" }]
                 .compactMap { $0 }.joined(separator: "; ")
             return "id: \(exchange.id) | duration: \(String(format: "%.1f", exchange.duration))s | recording feeds/tiles: \(count) | allowed: \(allowed) | VIP people: \(exchange.vipNames.joined(separator: ", ")) | speakers: \(speakers) | \(roles) | original transcript: \(excerpt(exchange.transcript))"
@@ -118,15 +114,15 @@ nonisolated enum CameraFocusChooser {
         """
     }
 
-    static func parse(_ text: String, ids: Set<Int64>, allowed: [CropRecipe.Kind])
-        -> [Int64: (kind: CropRecipe.Kind, reason: String)] {
+    static func parse(_ text: String, ids: Set<Int64>, allowed: [Framing.Subject])
+        -> [Int64: (kind: Framing.Subject, reason: String)] {
         guard let object = AIResponseParser.jsonObject(from: text),
               let choices = object["choices"] as? [[String: Any]] else { return [:] }
-        var result: [Int64: (kind: CropRecipe.Kind, reason: String)] = [:]
+        var result: [Int64: (kind: Framing.Subject, reason: String)] = [:]
         for choice in choices {
             guard let id = choice["id"] as? Int64, ids.contains(id),
                   let raw = choice["framing"] as? String,
-                  let kind = CropRecipe.Kind(rawValue: raw), allowed.contains(kind),
+                  let kind = Framing.Subject(rawValue: raw), kind != .auto, allowed.contains(kind),
                   let reason = choice["reason"] as? String,
                   !reason.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { continue }
             result[id] = (kind, reason.split(whereSeparator: \.isWhitespace).joined(separator: " "))

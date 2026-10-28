@@ -179,7 +179,7 @@ nonisolated struct MiniWizardFlow: Sendable {
             : picks ? "\(count) \(count == 1 ? "pick" : "picks")"
             : "\(kept[0].selection.name), Take \(kept[0].take.ordinal)" + (count > 1 ? " + \(count - 1) more" : "")
         var picture = [settings.quality.label, settings.preset.label]
-        if showsCameraFocus, !settings.cameraFocus.isEmpty { picture.append(WizardCameraFocus.summary(settings.cameraFocus)) }
+        picture.append(settings.framing.subject.label(type: video?.type ?? .other))
         if let look = settings.lookName {
             picture.append(EffectCatalog.preset(for: look)?.name ?? look.replacingOccurrences(of: "lut:", with: ""))
         }

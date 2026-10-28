@@ -5,8 +5,8 @@ import Testing
 
 @Suite("Wizard engine")
 struct WizardEngineTests {
-    @Test("Builder draft neutralizes stale split zoom for fight recipes")
-    func fightDraftIgnoresPodcastFraming() {
+    @Test("Builder draft expands migrated split layouts through the role model")
+    func migratedSplitDraftUsesLayoutSnapshot() {
         var scene = Fixtures.scene(id: 1)
         scene.tags = ["podcast:split"]
         let plan = Fixtures.plan(clips: [Fixtures.planClip(sceneID: 1)])
@@ -15,14 +15,14 @@ struct WizardEngineTests {
         persisted.podcastFraming = .splitZoom
         let options = persisted.neutralized(for: .mmaFinish)
         let draft = WizardEngine.timelineDocument(from: plan, sceneMap: [1: scene],
-            renderSettings: options.renderSettings, pacing: options.pacing, podcastFraming: options.podcastFraming)
-        #expect(draft.videoTrack.count == 1)
+            renderSettings: options.renderSettings, pacing: options.pacing, framing: options.requestedFraming)
+        #expect(draft.videoTrack.count == 2)
         #expect(draft.cropBlocks.isEmpty)
-        #expect(draft.videoTrack.allSatisfy { $0.track == 0 && $0.screenCrop == nil && !$0.centerStage })
-        // This source exercises split zoom when the recipe actually allows it.
-        let podcast = WizardEngine.timelineDocument(from: plan, sceneMap: [1: scene], podcastFraming: .splitZoom)
-        #expect(podcast.videoTrack.count == 2)
-        #expect(!podcast.cropBlocks.isEmpty)
+        #expect(Set(draft.videoTrack.map(\.track)) == [0, 1])
+        #expect(draft.videoTrack.allSatisfy { $0.screenCrop == nil && !$0.centerStage })
+        if case .composed(let layout, _, _) = draft.videoTrack.first?.framingPlan {
+            #expect(layout.name == "Split")
+        } else { Issue.record("Legacy layout metadata should survive as a snapshot") }
     }
 
     @Test("a favorite gets exactly one two-point boost and remains must-keep past the budget")
@@ -632,7 +632,7 @@ extension WizardEngineTests {
         options.nameTagsOnly = nameTagsOnly ? true : nil
         options.nameTags = nameTagsOnly
         options.enableTextOverlays = true
-        options.podcastFraming = .original
+        options.framing = Framing(subject: .original)
         options.addCaptions = true
         options.includeIntroBumper = true
         var clip = Fixtures.planClip(sceneID: scene.id)
@@ -664,7 +664,7 @@ extension WizardEngineTests {
                 #expect(rendered.clips.first?.overlayKicker == (nameTagsOnly ? nil : "Context"))
                 if nameTagsOnly { #expect(rendered.clips.first?.overlayStyle == nil) }
                 #expect(renderOptions.addCaptions && renderOptions.includeIntroBumper)
-                #expect(renderOptions.podcastFraming == .original)
+                #expect(renderOptions.requestedFraming.subject == .original)
                 let output = try await database.insertGeneratedVideo(path: "/tmp/accepted.mp4", duration: 4,
                     timelineJSON: "{}", wizardProvider: nil, wizardModel: nil, projectID: projectID, selectionTakeID: accepted.id)
                 let critique = try ReelCritic.parse(#"{"score":40,"regenerate":true,"notes":["Fix contrast"]}"#,
@@ -923,7 +923,7 @@ extension WizardEngineTests {
                     rendered.append("render")
                     let fallbacks = WizardCaptionFallbackLog()
                     for _ in 0..<2 {
-                        // Exercise the same fetch used by extractPlannedClip, without encoding.
+                        // Exercise the same fetch used by renderPlannedClip, without encoding.
                         let captions = try await engine.captionSegments(videoID: videoID, filename: scene.videoFilename,
                             start: 0, end: 4, language: "en", database: database, fallbacks: fallbacks,
                             emit: { log.append($0) })
@@ -1128,30 +1128,30 @@ extension WizardEngineTests {
         let calls = WizardCaptionTestLog()
         let logs = WizardCaptionTestLog()
         let engine = WizardEngine(ai: cameraFocusService(calls: calls,
-            reply: #"{"choices":[{"id":\#(take.id),"framing":"grid","reason":"Show both reactions."}]}"#),
+            reply: #"{"choices":[{"id":\#(take.id),"framing":"layout","reason":"Show both reactions."}]}"#),
             render: RenderEngine())
         for _ in 0..<2 {
             // Deliberately reuse the original nil-framing snapshot, like a reopened review.
             try await engine.makeReel(take: take, options: options, profile: Fixtures.brand(), database: temp.database,
                 emit: { logs.append($0) }, renderPlan: { plan, _ in
-                    #expect(plan.framing == .grid)
+                    #expect(plan.framing == .layout)
                     #expect(plan.framingProvenance?.task == "framing")
                     #expect(plan.framingProvenance?.model == "fixture")
                 })
         }
         #expect(calls.lines().count == 1)
         let saved = try #require(try await temp.database.wizardSelectionTake(id: take.id))
-        #expect(saved.plan.framing == .grid)
+        #expect(saved.plan.framing == .layout)
         #expect(saved.plan.framingProvenance?.provider == "claude")
-        #expect(logs.lines().contains { $0.contains("Camera focus: Everyone in a grid — Show both reactions.") })
+        #expect(logs.lines().contains { $0.contains("Camera focus: Layout — Show both reactions.") })
     }
 
     @Test(arguments: [false, true])
     func explicitCameraFocusAndOriginalSkipAI(original: Bool) async throws {
         let (temp, base, take) = try await cameraFocusFixture()
         var options = base
-        if original { options.podcastFraming = .original }
-        else { options.highlightFraming = .talkerAndRest }
+        if original { options.framing = Framing(subject: .original) }
+        else { options.framing = Framing(subject: .speakerFocus) }
         let calls = WizardCaptionTestLog()
         let engine = WizardEngine(ai: cameraFocusService(calls: calls, reply: "{}"), render: RenderEngine())
         try await engine.makeReel(take: take, options: options, profile: Fixtures.brand(), database: temp.database,
@@ -1168,13 +1168,13 @@ extension WizardEngineTests {
         let engine = WizardEngine(ai: cameraFocusService(calls: calls, reply: "{}", failure: failure), render: RenderEngine())
         try await engine.makeReel(take: take, options: options, profile: Fixtures.brand(), database: temp.database,
             emit: { logs.append($0) }, renderPlan: { plan, _ in
-                #expect(plan.framing == .talkerAndPrevious)
+                #expect(plan.framing == .speakerFocus)
                 #expect(plan.framingProvenance?.provider == "local")
                 #expect(plan.framingProvenance?.fellBack == true)
             })
         let saved = try #require(try await temp.database.wizardSelectionTake(id: take.id))
-        #expect(saved.plan.framing == .talkerAndPrevious)
-        #expect(logs.lines().contains { $0.contains("Camera focus: Talker and previous — chosen by rule (the model did not answer)") })
+        #expect(saved.plan.framing == .speakerFocus)
+        #expect(logs.lines().contains { $0.contains("Camera focus: Speaker focus — chosen by rule (the model did not answer)") })
         #expect(!calls.lines().isEmpty)
     }
 
@@ -1184,17 +1184,17 @@ extension WizardEngineTests {
             options: options.step1, plan: first.plan)
         let calls = WizardCaptionTestLog()
         let engine = WizardEngine(ai: cameraFocusService(calls: calls, reply: """
-            {"choices":[{"id":\(first.id),"framing":"grid","reason":"Both people."},
-                        {"id":\(second.id),"framing":"talker","reason":"Focus on the answer."}]}
+            {"choices":[{"id":\(first.id),"framing":"layout","reason":"Both people."},
+                        {"id":\(second.id),"framing":"speakerFocus","reason":"Focus on the answer."}]}
             """), render: RenderEngine())
         let chosen = try await engine.chooseCameraFocus(takes: [first, second], options: options,
             profile: Fixtures.brand(), database: temp.database, emit: { _ in })
         #expect(calls.lines().count == 1)
-        #expect(chosen.map(\.plan.framing) == [.grid, .talker])
+        #expect(chosen.map(\.plan.framing) == [.layout, .speakerFocus])
         let combined = WizardPlanRules.combinedPlan(chosen)
-        #expect(combined.framing == .grid)
+        #expect(combined.framing == .layout)
         #expect(combined.framingProvenance == chosen[0].plan.framingProvenance)
-        #expect(try await temp.database.wizardSelectionTake(id: second.id)?.plan.framing == .talker)
+        #expect(try await temp.database.wizardSelectionTake(id: second.id)?.plan.framing == .speakerFocus)
     }
 
     @Test func cancellingCameraFocusDoesNotPersistFallback() async throws {
@@ -1210,17 +1210,17 @@ extension WizardEngineTests {
 }
 
 extension WizardEngineTests {
-    @Test func cameraFocusRejectsMultiCellResponseForASingleFeed() async throws {
+    @Test func cameraFocusRejectsASubjectOutsideTheKindMenu() async throws {
         let (temp, options, take) = try await cameraFocusFixture()
         let scene = try #require(try await temp.database.fetchScenes(projectID: options.projectID).first)
         try await temp.database.setPodcastLayout(videoID: scene.videoID, transcriptionKey: nil, layout: .singleCamera, seamX: nil, confidence: 1)
         let calls = WizardCaptionTestLog()
         let engine = WizardEngine(ai: cameraFocusService(calls: calls,
-            reply: #"{"choices":[{"id":\#(take.id),"framing":"grid","reason":"Invalid for this recording."}]}"#),
+            reply: #"{"choices":[{"id":\#(take.id),"framing":"vipFocus","reason":"Invalid for this recording."}]}"#),
             render: RenderEngine())
         let chosen = try await engine.chooseCameraFocus(takes: [take], options: options,
             profile: Fixtures.brand(), database: temp.database, emit: { _ in })
-        #expect(chosen[0].plan.framing == .talker)
+        #expect(chosen[0].plan.framing == .speakerFocus)
         #expect(chosen[0].plan.framingProvenance?.provider == "local")
     }
 

@@ -5,6 +5,55 @@ import Testing
 @testable import Clip_Builder
 
 struct FeedPathCacheTests {
+    @Test(arguments: [100.0, 200.0, 400.0])
+    func focusedPreviewTracksOnlyAClampedWindowAndReusesNearbyMoments(time: Double) async throws {
+        let temp = try TempDirectory()
+        let source = temp.url.appendingPathComponent("source.mp4")
+        try Data(repeating: 3, count: 100).write(to: source)
+        let cache = FeedPathCache(cache: RenderSegmentCache(directory: temp.url.appendingPathComponent("cache")))
+        var video = Fixtures.video()
+        video.path = source.path
+        video.duration = 500
+        video.videoType = VideoType.training.rawValue
+        var scene = Fixtures.scene(start: 100, end: 400)
+        scene.videoPath = source.path
+        var options = WizardOptions()
+        options.framing = Framing(subject: .centerStage,
+            focusFrame: FreeCropRect(xFrac: 0.1, yFrac: 0.1, wFrac: 0.8, hFrac: 0.8))
+        let calls = Mutex<[FeedPathCache.Identity]>([])
+        let tracker: WizardPreviewFraming.FocusTracker = { _, identity in
+            calls.withLock { $0.append(identity) }
+            return FeedCameraPath(keyframes: [
+                .init(t: 0, x: 0.2, y: 0.2, w: 0.3, h: 0.5),
+                .init(t: identity.duration, x: 0.3, y: 0.2, w: 0.3, h: 0.5)],
+                samples: [], trackedShare: 1, sourceSize: CGSize(width: 1920, height: 1080), usedFallback: false)
+        }
+        _ = await WizardPreviewFraming.resolveCached(options: options, record: scene, video: video,
+            face: nil, turns: [], roster: [], people: [], layouts: [], cache: cache, track: tracker, time: time)
+        let identity = try #require(calls.withLock { $0.first })
+        #expect(identity.start == max(100, time - 2))
+        #expect(identity.duration == min(400, time + 2) - identity.start)
+        #expect(identity.duration <= 4)
+        #expect(identity.tuning == "balanced")
+        #expect(await cache.read(identity) != nil)
+
+        let nearby = time == 400 ? time - 0.5 : time + 0.5
+        let result = await WizardPreviewFraming.resolveCached(options: options, record: scene, video: video,
+            face: nil, turns: [], roster: [], people: [], layouts: [], cache: cache, track: tracker, time: nearby)
+        #expect(calls.withLock { $0.count } == 1)
+        let cached = try #require(await cache.covering(source: source, region: identity.region,
+            start: nearby, duration: 0, tuning: "balanced", aspect: identity.aspect, focus: identity.focus))
+        #expect(cached.identity == identity)
+        // A balanced preview path must not leak into conversation tracking.
+        #expect(await cache.covering(source: source, region: identity.region, start: nearby,
+            duration: 0, aspect: identity.aspect, focus: identity.focus) == nil)
+        guard case .cells(let cells) = result.framing else {
+            Issue.record("Expected focused preview cells"); return
+        }
+        let expectedX = 0.2 + 0.1 * (nearby - identity.start) / identity.duration
+        #expect(abs(try #require(cells.first).source.minX - expectedX) < 1e-9)
+    }
+
     @Test func identityAndJSONPersistence() async throws {
         let temp = try TempDirectory()
         let source = temp.url.appendingPathComponent("source.mp4")
@@ -47,7 +96,7 @@ struct FeedPathCacheTests {
         var scene = Fixtures.scene(start: 0, end: 4)
         scene.videoPath = source.path
         var options = WizardOptions()
-        options.highlightFraming = .grid
+        options.framing = Framing(subject: .layout)
         let plan = try CropRecipePlanner.plan(CropRecipe(kind: .grid), video: video, range: 0...4,
             turns: [], roster: [], layouts: ScreenCropStore.builtIn, canvasAspect: options.renderSettings.aspectRatio)
         let slot = try #require(plan.slots.first)

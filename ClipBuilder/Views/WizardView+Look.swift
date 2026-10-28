@@ -212,39 +212,9 @@ extension WizardView {
         }
 
         transitionControls
-        if lookFormPlan.step2Controls.contains(.cameraFocus) {
-            FormGroupHeader("Camera focus")
-            WizardCameraFocusPicker(selection: cameraFocusBinding, allowsOriginal: lookCapabilities.offersOriginalFraming)
-            if cameraFocusBinding.wrappedValue == CropRecipe.Kind.interview.rawValue {
-                WizardControlRow("Shot changes") {
-                    InterviewShotChangesPicker(cuts: $interviewCuts)
-                }
-                FormCaption(InterviewShotChangesPicker.caption)
-                WizardControlRow("Punch in on") {
-                    InterviewPunchInPicker(selection: $interviewPunchIn)
-                }
-                FormCaption(InterviewPunchInPicker.caption)
-                WizardControlRow("Zoom in/out for focus") {
-                    InterviewZoomMovesToggle(isOn: $interviewZoomMoves)
-                }
-                FormCaption(InterviewZoomMovesToggle.caption)
-                if !interviewZoomMoves {
-                    WizardControlRow("Pull back") {
-                        InterviewZoomSlider(zoom: $interviewZoom)
-                    }
-                    FormCaption(InterviewZoomSlider.caption)
-                }
-            }
-        }
-        if lookFormPlan.step2Controls.contains(.framingCamera) {
-            WizardControlRow("Framing camera") {
-                Picker("Framing camera", selection: $framingCameraRaw) {
-                    Text("Smooth").tag("smooth")
-                    Text("Balanced").tag("balanced")
-                    Text("Fast").tag("fast")
-                }
-            }
-        }
+        FramingRows(framing: framingBinding, type: framingVideo?.type ?? .other,
+                    videoIDs: framingVideo.map { [$0.id] } ?? [],
+                    canvasAspect: renderSettingsBinding.wrappedValue.aspectRatio)
         if lookFormPlan.step2Controls.contains(.bRoll) {
             FormGroupHeader("B-roll")
             WizardPodcastControls(plan: lookFormPlan, useBRoll: $useBRoll, instructions: $brollInstructions)
@@ -323,7 +293,7 @@ extension WizardView {
             : transitionChoiceRaw == WizardPlanRules.randomTransitionChoice ? "Random transitions"
             : (TransitionCatalog.all.first { $0.name == transitionChoiceRaw }?.title ?? transitionChoiceRaw) + " transitions")
         if lookFormPlan.step2Controls.contains(.cameraFocus) {
-            picture.append(WizardCameraFocus.name(cameraFocusBinding.wrappedValue))
+            picture.append(framingBinding.wrappedValue.subject.label(type: framingVideo?.type ?? .other))
         }
         var audio: [String] = []
         if lookCapabilities.audioMusic {
