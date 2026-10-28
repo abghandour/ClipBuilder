@@ -5,6 +5,18 @@ nonisolated enum PlaybackSpeed {
     static let range: ClosedRange<Double> = 0.25...3
     static let step = 0.25
     static let key = "playback.trimSpeed"
+    /// The choices in the speed menu beside the slider.
+    static let presets: [Double] = [0.25, 0.5, 0.75, 1, 1.25, 1.5, 2, 3]
+
+    /// The speedometer needle sits low for slow speeds and high for fast ones.
+    static func symbol(_ rate: Double) -> String {
+        switch rate {
+        case ..<1: "gauge.with.dots.needle.0percent"
+        case 1: "gauge.with.dots.needle.33percent"
+        case ..<2: "gauge.with.dots.needle.67percent"
+        default: "gauge.with.dots.needle.100percent"
+        }
+    }
 
     static func label(_ rate: Double) -> String {
         let text = rate == rate.rounded() ? String(Int(rate)) : String(format: "%g", rate)

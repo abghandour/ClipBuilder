@@ -25,4 +25,12 @@ struct PlaybackSpeedTests {
         PlaybackSpeed.store(1.75, defaults)
         #expect(PlaybackSpeed.stored(defaults) == 1.75)
     }
+
+    @Test func presetsSitOnSliderStopsInsideTheRange() {
+        for value in PlaybackSpeed.presets {
+            #expect(PlaybackSpeed.nearest(value) == value)
+        }
+        #expect(PlaybackSpeed.presets.contains(1))
+        #expect(PlaybackSpeed.presets == PlaybackSpeed.presets.sorted())
+    }
 }

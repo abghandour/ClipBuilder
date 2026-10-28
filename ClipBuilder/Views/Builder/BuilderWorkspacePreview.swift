@@ -52,6 +52,7 @@ struct BuilderWorkspacePreview: View {
 /// controls bar so the monitor keeps its full height.
 struct BuilderPreviewControls: View {
     @Environment(AppStore.self) private var store
+    @AppStorage(PlaybackSpeed.key) private var speed = 1.0
 
     var body: some View {
         let model = store.builder
@@ -86,6 +87,7 @@ struct BuilderPreviewControls: View {
                           ? "Wait for the render to Exports to finish."
                           : "Render \(seconds) seconds of the final video from the playhead and play it in the monitor. Cached slices play at once. Nothing is added to the Library.")
             }
+            PlaybackSpeedControl(rate: $speed)
         }
     }
 }

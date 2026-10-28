@@ -712,7 +712,7 @@ struct RangeReviewView<Footer: View>: View {
             .labelStyle(.iconOnly).fixedSize()
             .disabled(playback.player == nil)
             .help(playback.isPlaying ? "Pause (Space)" : "Play the section (Space)")
-            PlaybackSpeedSlider(playback: playback)
+            PlaybackSpeedControl(playback: playback)
         }
     }
 

@@ -79,6 +79,7 @@ struct TranscriptSheet: View {
     /// play button (or a tag chip) seeks it to the range and a boundary
     /// observer stops it at the range's end.
     @State private var player: AVPlayer?
+    @AppStorage(PlaybackSpeed.key) private var speed = 1.0
     @State private var boundaryObserver: Any?
     @State private var endObserver: NSObjectProtocol?
     /// The player being opened, shared by every request that arrives meanwhile.
@@ -858,6 +859,8 @@ struct TranscriptSheet: View {
                             .foregroundStyle(.secondary)
                     }
                     Spacer()
+                    PlaybackSpeedControl(rate: $speed)
+                        .onChange(of: speed) { _, speed in player?.setReviewSpeed(speed) }
                     Button("Stop") { stopPlayback(releasePlayer: false) }
                         .controlSize(.small)
                 }
@@ -1156,6 +1159,7 @@ struct TranscriptSheet: View {
             }
             let item = AVPlayerItem(asset: asset)
             let player = AVPlayer(playerItem: item)
+            player.setReviewSpeed(speed)
             for _ in 0..<100 where item.status != .readyToPlay {
                 if item.status == .failed {
                     if epoch == playerEpoch { playbackUnavailable = true }

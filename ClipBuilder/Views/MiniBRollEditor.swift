@@ -31,11 +31,17 @@ struct MiniBRollEditor: View {
                 PlayerView(player: playback.player, controlsStyle: .none)
                     .aspectRatio(16 / 9, contentMode: .fit)
                     .frame(minHeight: 100)
-                Button(playback.isPlaying ? "Pause" : "Play", systemImage: playback.isPlaying ? "pause.fill" : "play.fill") {
-                    togglePlay()
+                HStack {
+                    Button(playback.isPlaying ? "Pause" : "Play", systemImage: playback.isPlaying ? "pause.fill" : "play.fill") {
+                        togglePlay()
+                    }
+                    .lineLimit(1).fixedSize().disabled(playback.player == nil)
+                    .help("Play the B-roll with the podcast audio it covers")
+                    // Scene and voice must run at the same speed to stay in step.
+                    PlaybackSpeedControl(rate: Binding(get: { playback.rate },
+                                                      set: { playback.setRate($0); voice.setRate($0) }))
+                        .disabled(playback.player == nil)
                 }
-                .lineLimit(1).fixedSize().disabled(playback.player == nil)
-                .help("Play the B-roll with the podcast audio it covers")
                 HStack {
                     Text("Length \(cut.end - cut.start, specifier: "%.1f") s").lineLimit(1).fixedSize()
                     Spacer(minLength: 0)

@@ -47,6 +47,7 @@ struct SceneEditor: View {
     @State private var clock = PlaybackClock()
     @State private var rangeEndObserver: Any?
     @State private var isPlayingRange = false
+    @AppStorage(PlaybackSpeed.key) private var speed = 1.0
     @State private var editStart = 0.0
     @State private var editEnd = 0.0
     @State private var cameraPreset = "balanced"
@@ -284,6 +285,9 @@ struct SceneEditor: View {
                       systemImage: isPlayingRange ? "stop.fill" : "play.fill")
             }
             .help("Play the scene's current range — with a camera path, the real framing rides over the video")
+            PlaybackSpeedControl(rate: $speed)
+                .disabled(player == nil)
+                .onChange(of: speed) { _, speed in player?.setReviewSpeed(speed) }
 
             Spacer()
 
@@ -332,6 +336,7 @@ struct SceneEditor: View {
         guard await DrivePlayback.prepare(video.url) else { return }
         guard let asset = try? await DriveLocalAsset.make(video.url) else { return }
         let newPlayer = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+        newPlayer.setReviewSpeed(speed)
         await newPlayer.seek(to: CMTime(seconds: scene.startTime, preferredTimescale: 600))
         player = newPlayer
         clock.time = scene.startTime

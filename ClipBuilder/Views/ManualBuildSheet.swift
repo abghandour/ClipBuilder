@@ -36,6 +36,8 @@ struct ManualBuildSheet: View {
     // Reel-preview column: the approved picks stitched into one looping
     // composition (cuts only — overlays/music/transitions render at generate).
     @State private var reelPlayer: AVPlayer?
+    /// Review speed for the reel and proposal previews, on top of the edit's own speed.
+    @AppStorage(PlaybackSpeed.key) private var reviewSpeed = 1.0
     @AppStorage("manualBuild.reelAutoplay") private var reelPlaying = true
     @AppStorage("manualBuild.reelMuted") private var reelMuted = true
     @State private var reelEndObserver: NSObjectProtocol?
@@ -110,6 +112,10 @@ struct ManualBuildSheet: View {
         .onChange(of: model.editSpeed) {
             // Retime a playing preview on the spot — no reload needed.
             if previewPlaying, !isScrubbing { player?.rate = previewRate }
+        }
+        .onChange(of: reviewSpeed) {
+            if previewPlaying, !isScrubbing { player?.rate = previewRate }
+            reelPlayer?.setReviewSpeed(reviewSpeed)
         }
         .onChange(of: store.jobs.completionRevision(.cameraPath, successfulOnly: true)) {
             rebuildReelPreview()
@@ -370,6 +376,7 @@ struct ManualBuildSheet: View {
                     } label: {
                         Image(systemName: reelMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
                     }
+                    PlaybackSpeedControl(rate: $reviewSpeed)
                     .help(reelMuted ? "Unmute (mutes the proposal player's audio rival)" : "Mute")
                     Spacer()
                     Text(String(format: "%.1fs", model.totalDuration))
@@ -767,6 +774,7 @@ struct ManualBuildSheet: View {
         }
         let player = reelPlayer ?? AVPlayer()
         player.isMuted = reelMuted
+        player.setReviewSpeed(reviewSpeed)
         player.replaceCurrentItem(with: item)
         reelPlayer = player
         reelEndObserver = NotificationCenter.default.addObserver(
@@ -1463,10 +1471,11 @@ struct ManualBuildSheet: View {
     /// Playback rate for the proposal/overlay preview: the live speed edit
     /// in step 1, the pick's saved speed in the overlay step.
     private var previewRate: Float {
+        let review = Float(PlaybackSpeed.nearest(reviewSpeed))
         switch model.step {
-        case .scenes: return Float(model.editSpeed)
-        case .overlays: return Float(model.selectedPickIndex.map { model.picks[$0].speed } ?? 1)
-        default: return 1
+        case .scenes: return Float(model.editSpeed) * review
+        case .overlays: return Float(model.selectedPickIndex.map { model.picks[$0].speed } ?? 1) * review
+        default: return review
         }
     }
 
@@ -1488,6 +1497,7 @@ struct ManualBuildSheet: View {
                 Image(systemName: previewMuted ? "speaker.slash.fill" : "speaker.wave.2.fill")
             }
             .help(previewMuted ? "Unmute the preview" : "Mute the preview")
+            PlaybackSpeedControl(rate: $reviewSpeed)
         }
     }
 

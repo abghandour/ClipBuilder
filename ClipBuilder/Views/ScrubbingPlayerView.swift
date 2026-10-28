@@ -15,6 +15,7 @@ struct ScrubbingPlayerView<Overlay: View>: View {
 
     @State private var transport = PlayerTransport()
     @State private var scrubbing: Double?
+    @AppStorage(PlaybackSpeed.key) private var speed = 1.0
 
     var body: some View {
         VStack(spacing: Theme.spaceXS) {
@@ -50,9 +51,15 @@ struct ScrubbingPlayerView<Overlay: View>: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1).fixedSize()
             }
+            // Its own row: a reel card is too narrow for the scrubber and
+            // the speed control side by side.
+            PlaybackSpeedControl(rate: $speed)
+                .disabled(player == nil)
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
-        .onAppear { transport.attach(player) }
-        .onChange(of: player) { _, player in transport.attach(player) }
+        .onAppear { transport.attach(player); player?.setReviewSpeed(speed) }
+        .onChange(of: player) { _, player in transport.attach(player); player?.setReviewSpeed(speed) }
+        .onChange(of: speed) { _, speed in player?.setReviewSpeed(speed) }
         .onDisappear { transport.attach(nil) }
     }
 }

@@ -183,7 +183,7 @@ struct PodcastHighlightTrimView: View {
                     }
                     .labelStyle(.iconOnly)
                     .help(playback.isPlaying ? "Pause (Space)" : "Play the reel from its start (Space)")
-                    PlaybackSpeedSlider(playback: playback)
+                    PlaybackSpeedControl(playback: playback)
                     Text("\(editStart.timecode)–\(editEnd.timecode) · \(editEnd - editStart, format: .number.precision(.fractionLength(1)))s")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)

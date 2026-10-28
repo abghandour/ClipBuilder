@@ -1015,6 +1015,7 @@ private struct VideoNotesPanel: View {
     @State private var timeObserver: Any?
     @State private var sectionEndObserver: Any?
     @State private var isPlayingSection = false
+    @AppStorage(PlaybackSpeed.key) private var speed = 1.0
     @State private var videoPeople: [VideoPersonRecord] = []
     @State private var loudness: [Double] = []
     // Framing mode: pinned hints plus the live computed suggestion for the
@@ -1318,6 +1319,9 @@ private struct VideoNotesPanel: View {
                         }
                         .controlSize(.small)
                         .help("Play just the selected section in the player above")
+                        PlaybackSpeedControl(rate: $speed)
+                            .disabled(player == nil)
+                            .onChange(of: speed) { _, speed in player?.setReviewSpeed(speed) }
                     }
                     VideoTrimSlider(url: video.url, duration: video.duration,
                                     start: $trimStart, end: $trimEnd,
@@ -1487,6 +1491,7 @@ private struct VideoNotesPanel: View {
             guard await DrivePlayback.prepare(video.url) else { return }
             guard let asset = try? await DriveLocalAsset.make(video.url) else { return }
             let newPlayer = AVPlayer(playerItem: AVPlayerItem(asset: asset))
+            newPlayer.setReviewSpeed(speed)
             player = newPlayer
             clock.time = 0
             let clock = clock
