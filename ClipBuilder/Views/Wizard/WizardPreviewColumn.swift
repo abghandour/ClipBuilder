@@ -123,6 +123,66 @@ struct WizardPreviewColumn: View {
     }
 
     var body: some View {
+        Group {
+            if let footer {
+                // The divider between the preview and the footer is draggable,
+                // so the preview can take the height it needs. The footer
+                // scrolls when squeezed.
+                VSplitView {
+                    previewArea
+                        .rememberedPaneHeight("pane.wizard.previewArea", min: 260, initial: 560)
+                    ScrollView { footer.padding(Theme.spaceM) }
+                        .frame(minHeight: 96)
+                }
+            } else {
+                previewArea
+            }
+        }
+        .onChange(of: shownSpeakersKey, initial: true) { _, key in
+            // While no recording is resolved the key is a placeholder; keep the
+            // chips as they are rather than resetting them to "everyone".
+            guard previewRecord != nil else { return }
+            shownSpeakers = UserDefaults.standard.string(forKey: key).map {
+                Set($0.split(separator: "\n").map(String.init))
+            }
+        }
+        .onChange(of: scenes, initial: true) { _, values in model.setScenes(values) }
+        .onChange(of: clips.map(\.id)) { _, ids in
+            if clipIndex >= ids.count { clipIndex = 0 }
+            scrubTime = nil
+        }
+        .task(id: contentKey) {
+            let requestedContent = contentKey
+            loadedContentKey = nil
+            model.cancel()
+            // A dragged scrubber changes the key many times a second; load
+            // once the hand pauses.
+            if contentKey.time != nil {
+                try? await Task.sleep(for: .milliseconds(120))
+                if Task.isCancelled { return }
+            }
+            await model.loadScene(previewRecord, database: store.database, people: store.people,
+                                  language: options.effectiveCaptionLanguage, tagStyleID: options.nameTagStyleID, profile: profile, options: options,
+                                  range: currentClip?.range, time: previewTime, snapshotKey: snapshotKey, reviewedBRoll: currentClip?.brollCuts)
+            if !Task.isCancelled, model.isSceneCurrent {
+                loadedContentKey = requestedContent
+            }
+        }
+        // Use the current view's options: composite controls may have changed
+        // while the content task was loading with its earlier options snapshot.
+        .onChange(of: loadedContentKey) { _, _ in refresh() }
+        // The cache key includes the text snapshot used by the next render.
+        .onChange(of: key(overlayTexts: []), initial: true) { _, _ in refresh() }
+        // Typed replacement texts re-render after a short pause so the preview
+        // shows what the user wrote without rendering on every keystroke.
+        .task(id: options.fixedOverlayTexts ?? []) {
+            try? await Task.sleep(for: .milliseconds(400))
+            if !Task.isCancelled { refresh() }
+        }
+        .onDisappear { model.cancel() }
+    }
+
+    private var previewArea: some View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: Theme.spaceS) {
@@ -172,54 +232,8 @@ struct WizardPreviewColumn: View {
                 }
                 .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
             }
-            if let footer {
-                Divider()
-                footer
-            }
         }
         .padding(Theme.spaceM)
-        .onChange(of: shownSpeakersKey, initial: true) { _, key in
-            // While no recording is resolved the key is a placeholder; keep the
-            // chips as they are rather than resetting them to "everyone".
-            guard previewRecord != nil else { return }
-            shownSpeakers = UserDefaults.standard.string(forKey: key).map {
-                Set($0.split(separator: "\n").map(String.init))
-            }
-        }
-        .onChange(of: scenes, initial: true) { _, values in model.setScenes(values) }
-        .onChange(of: clips.map(\.id)) { _, ids in
-            if clipIndex >= ids.count { clipIndex = 0 }
-            scrubTime = nil
-        }
-        .task(id: contentKey) {
-            let requestedContent = contentKey
-            loadedContentKey = nil
-            model.cancel()
-            // A dragged scrubber changes the key many times a second; load
-            // once the hand pauses.
-            if contentKey.time != nil {
-                try? await Task.sleep(for: .milliseconds(120))
-                if Task.isCancelled { return }
-            }
-            await model.loadScene(previewRecord, database: store.database, people: store.people,
-                                  language: options.effectiveCaptionLanguage, tagStyleID: options.nameTagStyleID, profile: profile, options: options,
-                                  range: currentClip?.range, time: previewTime, snapshotKey: snapshotKey, reviewedBRoll: currentClip?.brollCuts)
-            if !Task.isCancelled, model.isSceneCurrent {
-                loadedContentKey = requestedContent
-            }
-        }
-        // Use the current view's options: composite controls may have changed
-        // while the content task was loading with its earlier options snapshot.
-        .onChange(of: loadedContentKey) { _, _ in refresh() }
-        // The cache key includes the text snapshot used by the next render.
-        .onChange(of: key(overlayTexts: []), initial: true) { _, _ in refresh() }
-        // Typed replacement texts re-render after a short pause so the preview
-        // shows what the user wrote without rendering on every keystroke.
-        .task(id: options.fixedOverlayTexts ?? []) {
-            try? await Task.sleep(for: .milliseconds(400))
-            if !Task.isCancelled { refresh() }
-        }
-        .onDisappear { model.cancel() }
     }
 
     private var shownSpeakersKey: String {

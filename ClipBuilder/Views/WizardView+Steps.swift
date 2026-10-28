@@ -98,7 +98,7 @@ extension WizardView {
                         framingBinding.wrappedValue = value
                     } : nil)
                 .id("\(store.profileGeneration):\(store.activeProjectID ?? 0)")
-                .rememberedPaneWidth("pane.wizard.preview", min: 240, initial: 320, max: 480)
+                .rememberedPaneWidth("pane.wizard.preview", min: 240, initial: 320, max: 900)
         }
         .task(id: "\(store.profileGeneration)|\(store.transcriptCountsVersion)|\(sourceVideoIDs.sorted())") {
             await loadCaptionOrdinals()

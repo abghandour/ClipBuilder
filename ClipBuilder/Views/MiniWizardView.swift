@@ -123,7 +123,7 @@ struct MiniWizardView: View {
                         && !store.isWizardRunning && flow.effectiveSettingsTab(settingsTab) == .picture
                         ? { miniSettings.framing.focusFrame = $0 } : nil)
                     .id("\(store.profileGeneration):\(store.activeProjectID ?? 0):\(video.id)")
-                    .rememberedPaneWidth("pane.express.preview", min: 240, initial: 320, max: 480)
+                    .rememberedPaneWidth("pane.express.preview", min: 240, initial: 320, max: 900)
             }
         }
         .screenTitle("AI Wizard", subtitle: "Express")
