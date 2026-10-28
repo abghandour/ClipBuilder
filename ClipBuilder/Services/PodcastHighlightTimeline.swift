@@ -21,7 +21,7 @@ enum PodcastHighlightTimeline {
             range: candidate.sourceStart...candidate.sourceEnd, sourceScene: sourceScene,
             turns: turns, roster: roster, layouts: layouts, settings: settings, options: options, hasBRoll: !cuts.isEmpty,
             brollCuts: cuts, scenes: scenes, people: people, tagText: tagText,
-            captionStyle: profile.captionStyle(id: options.captionStyleID), profile: profile, imageAspects: imageAspects)
+            captionStyle: profile.renderCaptionStyle(id: options.captionStyleID), profile: profile, imageAspects: imageAspects)
         if builder.document.videoTrack.contains(where: { $0.framingPlan?.isComposed == true }) { return builder.document }
         guard options.useBRoll else { log("B-roll off"); return builder.document }
         add(cuts: cuts, to: builder, video: video, tiles: tiles, scenes: scenes, roster: roster, log: log)

@@ -593,7 +593,7 @@ actor MultitrackRenderer {
         var clipPaths: [URL] = []
 
         let captionRenderer = CaptionRenderer(videoWidth: Self.width, videoHeight: Self.height,
-                                              style: profile.captions)
+                                              style: profile.captions.applyingSharedStyle(profile.textStyles ?? []))
         let captionRenderers = CaptionRendererSet(base: captionRenderer,
             speakerStyles: profile.speakerCaptionStyles(runStyleID: nil))
         let captionCache = CaptionPNGCache(renderers: captionRenderers, directory: scratch)
@@ -609,7 +609,7 @@ actor MultitrackRenderer {
         // The document's own safe-area choice, handed to the renderers
         // explicitly rather than read back from the task-local context.
         let safeArea = PlatformSafeArea.resolve(document.renderSettings)
-        let textRenderer = TextOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height, safeArea: safeArea)
+        let textRenderer = TextOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height, safeArea: safeArea, textStyles: profile.textStyles ?? [])
         let imageRenderer = ImageOverlayRenderer(videoWidth: Self.width, videoHeight: Self.height, safeArea: safeArea)
         var overlays: [TimedOverlayPNG] = []
         if let safeArea {
@@ -695,7 +695,7 @@ actor MultitrackRenderer {
                                          captionRenderers: captionRenderers,
                                          captionCache: captionCache, captionEvidence: captionEvidence,
                                          dedupe: segmentDedupe,
-                                         captionStyle: profile.captions,
+                                         captionStyle: profile.captions.applyingSharedStyle(profile.textStyles ?? []),
                                          fontFingerprints: fontFingerprints,
                                          overlays: overlayPlan.bySegment[index] ?? [],
                                          prerendered: prerenderedSources,

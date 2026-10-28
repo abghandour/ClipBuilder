@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct TagStyleEditor: View {
+    @Environment(AppStore.self) private var store
     @Binding var name: String
     @Binding var style: TagStyle
     let isDefault: Bool
@@ -45,29 +46,16 @@ struct TagStyleEditor: View {
             Section {
                 FormGroupHeader("Name tag style")
                 TextField("Name", text: $name).disabled(isDefault)
-                Picker("Alignment", selection: $style.alignment) {
-                    Text("Leading").lineLimit(1).fixedSize().tag("leading")
-                    Text("Center").lineLimit(1).fixedSize().tag("center")
-                    Text("Trailing").lineLimit(1).fixedSize().tag("trailing")
-                }
-                .pickerStyle(.segmented)
-                Toggle("Background", isOn: $style.bgOn)
-                if style.bgOn {
-                    ColorPicker("Background colour", selection: overlayColorBinding($style.bgColor), supportsOpacity: false)
-                        .formDependent()
-                    Slider(value: $style.bgOpacity, in: 0...1) {
-                        Text("Opacity").lineLimit(1).fixedSize()
-                    }.formDependent()
-                    Slider(value: $style.cornerRadius, in: 0...80) {
-                        Text("Corner radius").lineLimit(1).fixedSize()
-                    }.formDependent()
-                }
+                SharedTextStylePicker(selection: $style.sharedStyleID)
+                TextDecorControls(decor: $style.decor, fontFamily: .constant(nil),
+                    inherited: style.applyingSharedStyle(store.activeProfile.textStyles ?? []).boxDecor, boxOnly: true,
+                    sourceLabel: "name tag box")
                 FormCaption("Available in this profile’s Express and full Wizard. Changes save automatically.")
             }
             Section {
                 FormGroupHeader("Name line")
                 LabeledContent("Field", value: "Name")
-                TagLineControls(style: $style.name)
+                TagLineControls(style: $style.name, inherited: style.applyingSharedStyle(store.activeProfile.textStyles ?? []).lineDecor, label: "name line")
             }
             Section {
                 FormGroupHeader("Description line")
@@ -80,7 +68,7 @@ struct TagStyleEditor: View {
                     }.lineLimit(1).fixedSize()
                 }
                 FormCaption("Shows what People has saved for this field. For people without it, AI fills the field from the reel’s context; edit it in People.")
-                TagLineControls(style: $style.description)
+                TagLineControls(style: $style.description, inherited: style.applyingSharedStyle(store.activeProfile.textStyles ?? []).lineDecor, label: "description line")
             }
             Section {
                 FormGroupHeader("Images")
@@ -105,57 +93,12 @@ struct TagStyleEditor: View {
 
 private struct TagLineControls: View {
     @Binding var style: TagLineStyle
-
-    private func setting<Value>(_ key: WritableKeyPath<TagLineStyle, Value?>, default fallback: Value) -> Binding<Value> {
-        Binding(get: { style[keyPath: key] ?? fallback }, set: { style[keyPath: key] = $0 })
-    }
+    var inherited: TextDecor
+    var label = "name tag line"
 
     var body: some View {
-        FontFamilyPicker(family: $style.font)
-        Slider(value: $style.scale, in: 0.3...2) {
-            Text("Size").lineLimit(1).fixedSize()
-        }
-        ColorPicker("Text colour", selection: overlayColorBinding($style.color), supportsOpacity: false)
-        LabeledContent {
-            TextStyleBar(bold: $style.bold, italic: $style.italic, underline: $style.underline,
-                         strikethrough: setting(\.strikethrough, default: false))
-        } label: {
-            Text("Style").lineLimit(1).fixedSize()
-        }
-        .help("Bold, italic, underline and strikethrough for this line.")
-        Toggle("Caps", isOn: $style.uppercase)
-        if style.underline {
-            Toggle("Use text colour", isOn: Binding(get: { style.underlineColor == nil }, set: {
-                style.underlineColor = $0 ? nil : style.color
-            })).formDependent()
-            if style.underlineColor != nil {
-                ColorPicker("Underline colour", selection: overlayColorBinding(Binding(
-                    get: { style.underlineColor ?? style.color }, set: { style.underlineColor = $0 })), supportsOpacity: false)
-                    .formDependent()
-            }
-            Slider(value: $style.underlineThickness, in: 0.02...0.2) {
-                Text("Thickness").lineLimit(1).fixedSize()
-            }.formDependent()
-        }
-        Toggle(isOn: setting(\.bgOn, default: false)) { Text("Line background").lineLimit(1).fixedSize() }
-            .help("Fill a padded background behind this line, independently of the block background.")
-        if style.resolvedBackground {
-            ColorPicker(selection: overlayColorBinding(setting(\.bgColor, default: "#000000")), supportsOpacity: false) {
-                Text("Line background colour").lineLimit(1).fixedSize()
-            }
-            .help("Colour of this line’s background.")
-            .formDependent()
-            Slider(value: setting(\.bgOpacity, default: 0.82), in: 0...1) {
-                Text("Opacity").lineLimit(1).fixedSize()
-            }
-            .help("Opacity of this line’s background.")
-            .formDependent()
-            Slider(value: setting(\.cornerRadius, default: 4), in: 0...80) {
-                Text("Corner radius").lineLimit(1).fixedSize()
-            }
-            .help("Round this line’s background corners. Zero makes square corners.")
-            .formDependent()
-        }
+        TextDecorControls(decor: $style.decor, fontFamily: $style.fontOverride,
+                          inherited: inherited.merged(over: style.legacyDecor), sourceLabel: label)
     }
 }
 

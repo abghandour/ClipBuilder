@@ -58,3 +58,16 @@ struct TagStyleTests {
         #expect(json["tag_style"] == nil)
     }
 }
+
+extension TagStyleTests {
+    @Test func sharedAndLineDecorRoundTrip() throws {
+        var style = TagStyle()
+        style.sharedStyleID = UUID().uuidString
+        style.decor = TextDecor(bgPaddingX: 0.4, bgPaddingY: 0.2, borderOn: true)
+        style.name.decor = TextDecor(fillEndColor: "#ff0000", casing: "title", strokeOn: true)
+        style.name.fontOverride = "Georgia"
+        let restored = try JSONDecoder().decode(TagStyle.self, from: JSONEncoder().encode(style))
+        #expect(restored == style)
+        #expect(restored.description.decor == nil)
+    }
+}

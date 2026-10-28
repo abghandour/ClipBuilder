@@ -572,6 +572,9 @@ private struct TextOverlayLayer: View {
 
     /// Fractional position at the moment the drag started; nil when idle.
     @State private var dragStart: CGPoint?
+    /// Renderer box (canvas pixels) and the fractional position it was
+    /// rendered at; the raster and hit target follow a drag by the delta.
+    @State private var rendered: (box: CGRect?, position: CGPoint)?
     @FocusState private var isFocused: Bool
 
     var body: some View {
@@ -584,19 +587,46 @@ private struct TextOverlayLayer: View {
             default: return 0.85
             }
         }()
-        Text(overlay.stat.map(StrikeStatsCopy.text) ?? overlay.text)
-            .font(.system(size: CGFloat(overlay.fontsize) * frame.height / 1920,
-                          weight: overlay.bold ? .bold : .regular))
-            .italic(overlay.italic)
-            .underline(overlay.resolvedUnderline)
-            .strikethrough(overlay.resolvedStrikethrough)
-            .foregroundStyle(Color(red: r, green: g, blue: b))
-            .padding(4)
-            .background(overlay.boxOpacity > 0
-                        ? backgroundColor.opacity(overlay.boxOpacity) : .clear,
-                        in: RoundedRectangle(cornerRadius: (overlay.boxRadius ?? 4) * frame.height / 1920))
-            .opacity(overlay.opacity)
-            .position(x: frame.width * x, y: frame.height * y)
+        // Modern styles draw the export raster; the hit target follows the
+        // renderer's box so a click on the drawn text selects it. Legacy items
+        // keep the SwiftUI approximation.
+        let fallback = CGRect(x: frame.width * x - frame.width * (overlay.wFrac ?? 0.6) / 2,
+                              y: frame.height * y - frame.height * (overlay.hFrac ?? 0.1) / 2,
+                              width: frame.width * (overlay.wFrac ?? 0.6), height: frame.height * (overlay.hFrac ?? 0.1))
+        let scale = frame.width / 1080
+        let shift = rendered.map { CGSize(width: (x - $0.position.x) * frame.width, height: (y - $0.position.y) * frame.height) } ?? .zero
+        let box = rendered?.box.map {
+            CGRect(x: $0.minX * scale + shift.width, y: $0.minY * scale + shift.height,
+                   width: $0.width * scale, height: $0.height * scale)
+        } ?? fallback
+        ZStack(alignment: .topLeading) {
+            if overlay.usesTextDecor {
+                TextOverlayRasterPreview(item: overlay, canvas: CGSize(width: 1080, height: 1080 * frame.height / max(1, frame.width)),
+                                         onBox: { box in rendered = (box, CGPoint(x: x, y: y)) })
+                    .frame(width: frame.width, height: frame.height)
+                    .offset(shift)
+                    .allowsHitTesting(false)
+                Color.clear
+                    .contentShape(Rectangle())
+                    .frame(width: max(8, box.width), height: max(8, box.height))
+                    .position(x: box.midX, y: box.midY)
+            } else {
+                Text(overlay.stat.map(StrikeStatsCopy.text) ?? overlay.text)
+                    .font(.system(size: CGFloat(overlay.fontsize) * frame.height / 1920,
+                                  weight: overlay.bold ? .bold : .regular))
+                    .italic(overlay.italic)
+                    .underline(overlay.resolvedUnderline)
+                    .strikethrough(overlay.resolvedStrikethrough)
+                    .foregroundStyle(Color(red: r, green: g, blue: b))
+                    .padding(4)
+                    .background(overlay.boxOpacity > 0
+                                ? backgroundColor.opacity(overlay.boxOpacity) : .clear,
+                                in: RoundedRectangle(cornerRadius: (overlay.boxRadius ?? 4) * frame.height / 1920))
+                    .opacity(overlay.opacity)
+                    .position(x: frame.width * x, y: frame.height * y)
+            }
+        }
+            .frame(width: frame.width, height: frame.height)
             .gesture(
                 DragGesture()
                     .onChanged { value in
@@ -671,12 +701,14 @@ struct InPlacePreviewPlayer: View {
     @State private var endObserver: NSObjectProtocol?
     /// The last playhead value this player wrote; anything else is a scrub.
     @State private var reported: Double?
+    @AppStorage(PlaybackSpeed.key) private var speed = 1.0
 
     var body: some View {
         MonitorPlayerView(player: player)
             .onAppear(perform: start)
             .onDisappear(perform: tearDown)
             .onChange(of: preview.url) { _, _ in tearDown(); start() }
+            .onChange(of: speed) { _, speed in player?.setReviewSpeed(speed) }
             .onChange(of: store.builder.playhead) { _, playhead in
                 guard let reported, abs(playhead - reported) > 0.25 else { return }
                 store.stopBuilderPreview()
@@ -707,6 +739,7 @@ struct InPlacePreviewPlayer: View {
         }
         reported = window.lowerBound
         self.player = player
+        player.setReviewSpeed(speed)
         player.play()
     }
 

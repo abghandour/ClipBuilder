@@ -18,7 +18,7 @@ nonisolated enum ExpressBatchWatermark {
     /// document renderer. Watermark styling removes animation and makes all
     /// items unbounded, so their rasters are independent of each reel's length.
     static func rasterize(_ block: OverlayBlockItem, settings: RenderSettings,
-                          scratch: URL, log: @Sendable (String) -> Void) -> [RenderEngine.ClipOverlay] {
+                          scratch: URL, textStyles: [NamedTextStyle] = [], log: @Sendable (String) -> Void) -> [RenderEngine.ClipOverlay] {
         var document = TimelineDocument()
         document.overlayBlocks = [block]
         document = document.expandingOverlayBlocks()
@@ -27,7 +27,7 @@ nonisolated enum ExpressBatchWatermark {
         guard document.textOverlays.allSatisfy({ $0.stat == nil }) else { return [] }
         let safeArea = PlatformSafeArea.resolve(settings)
         let images = ImageOverlayRenderer(videoWidth: settings.width, videoHeight: settings.height, safeArea: safeArea)
-        let texts = TextOverlayRenderer(videoWidth: settings.width, videoHeight: settings.height, safeArea: safeArea)
+        let texts = TextOverlayRenderer(videoWidth: settings.width, videoHeight: settings.height, safeArea: safeArea, textStyles: textStyles)
         var result: [RenderEngine.ClipOverlay] = []
         for item in document.imageOverlays {
             guard let png = try? images.render(item.keptClear(of: safeArea, frameAspectRatio: settings.aspectRatio), to: scratch) else {

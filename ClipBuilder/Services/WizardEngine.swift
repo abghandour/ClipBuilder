@@ -3936,7 +3936,7 @@ actor WizardEngine {
         if ExpressBatchWatermark.canFold(options: options, plan: plan,
                                         hasPodcastDocument: podcastCuts[0] != nil, batchID: batchID) {
             if let block = WizardFixedOverlay.watermarkBlock(options: options, templates: overlayTemplates, totalDuration: 1) {
-                batchWatermark = ExpressBatchWatermark.rasterize(block, settings: options.renderSettings, scratch: scratch, log: emit)
+                batchWatermark = ExpressBatchWatermark.rasterize(block, settings: options.renderSettings, scratch: scratch, textStyles: profile.textStyles ?? [], log: emit)
             }
         }
         // The logo is already below the clip's captions. A template watermark
@@ -4316,7 +4316,7 @@ actor WizardEngine {
         }
         if options.usesNameTags {
             let renderer = TextOverlayRenderer(videoWidth: RenderEngine.outputWidth,
-                                               videoHeight: RenderEngine.outputHeight)
+                                               videoHeight: RenderEngine.outputHeight, textStyles: profile.textStyles ?? [])
             let imageAspects = await TextOverlayRenderer.tagImageAspects(profile.tagStyle(id: options.nameTagStyleID))
             let tags = plannedNameTags
                 ?? WizardNameTags.ordinary(scene: scene, duration: duration, people: nameTagPeople, tagText: tagText,
@@ -4329,7 +4329,7 @@ actor WizardEngine {
         }
         if options.enableTextOverlays && !options.usesNameTags {
             let renderer = TextOverlayRenderer(videoWidth: RenderEngine.outputWidth,
-                                               videoHeight: RenderEngine.outputHeight)
+                                               videoHeight: RenderEngine.outputHeight, textStyles: profile.textStyles ?? [])
             for introduction in clip.speakerIntroductions {
                 guard let png = try? renderer.render(introduction, to: scratch) else { continue }
                 overlays.append(RenderEngine.ClipOverlay(png: png, x: 0, y: 0,
@@ -4341,7 +4341,7 @@ actor WizardEngine {
             // Transcript times are in source-video time; shift into clip time.
             let renderer = CaptionRenderer(videoWidth: RenderEngine.outputWidth,
                                            videoHeight: RenderEngine.outputHeight,
-                                           style: captionStyle, safeArea: options.resolvedSafeArea,
+                                           style: captionStyle.applyingSharedStyle(profile.textStyles ?? []), safeArea: options.resolvedSafeArea,
                                            safeAreaOnly: options.safeAreaOnly == true)
             let renderers = CaptionRendererSet(base: renderer,
                 speakerStyles: profile.speakerCaptionStyles(runStyleID: options.captionStyleID))
@@ -4396,7 +4396,7 @@ actor WizardEngine {
             // composition (full-frame PNGs, so x/y are 0).
             let (composition, isTemplate) = wizardPlanOverlay(for: clip, text: overlayText)
             let renderer = TextOverlayRenderer(videoWidth: RenderEngine.outputWidth,
-                                               videoHeight: RenderEngine.outputHeight)
+                                               videoHeight: RenderEngine.outputHeight, textStyles: profile.textStyles ?? [])
             if isTemplate {
                 // Template items keep their own windows within the clip;
                 // enable windows can't animate here, so they hard-cut.

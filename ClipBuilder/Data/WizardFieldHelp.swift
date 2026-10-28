@@ -16,6 +16,49 @@ nonisolated struct FieldHelp: Sendable {
 /// One table for every field in the AI Wizard, so the hover tip, the
 /// caption, and VoiceOver all say the same thing.
 nonisolated enum WizardFieldHelp {
+    static let textDecor: [String: FieldHelp] = [
+        "font": FieldHelp("Font family for this text. A shared style supplies the family until you choose another."),
+        "size": FieldHelp("Size as a multiplier of this surface’s base font size. Padding and shadows scale with it."),
+        "weight": FieldHelp("Choose the font’s regular, bold or heaviest available face."),
+        "style": FieldHelp("Bold, italic, underline and strikethrough for this text. Reset inherits the parent style."),
+        "casing": FieldHelp("Change displayed casing without changing the saved text. As written is the default. Title case leaves short connecting words lowercase."),
+        "color": FieldHelp("The text fill colour, also the starting colour of a gradient."),
+        "gradient": FieldHelp("Blend from the fill colour to an end colour across the letters."),
+        "fillEndColor": FieldHelp("The colour at the end of the text gradient."),
+        "fillAngle": FieldHelp("Gradient direction in degrees: 0 runs left to right; 90 runs top to bottom."),
+        "textOpacity": FieldHelp("Opacity of the text and stroke, independent of the background box."),
+        "strokeOn": FieldHelp("Outline the letters. Stroke can be used with or without a background."),
+        "strokeWidth": FieldHelp("Outline width in pixels at a canvas width of 1080. Scales with the video width."),
+        "strokeColor": FieldHelp("Colour of the outline around letters and text rules."),
+        "strokeOpacity": FieldHelp("Opacity of the text outline."),
+        "shadowOn": FieldHelp("Add a shadow behind the letters and text rules."),
+        "shadowPreset": FieldHelp("Start from a ready-made shadow look. It sets colour, opacity, offset, blur and style; adjust any of them afterwards and the preset reads Custom."),
+        "shadowColor": FieldHelp("Colour of the text shadow."),
+        "shadowOpacity": FieldHelp("Opacity of the text shadow."),
+        "shadowX": FieldHelp("Horizontal shadow offset in em. Positive moves right."),
+        "shadowY": FieldHelp("Vertical shadow offset in em. Positive moves up; negative moves down."),
+        "shadowBlur": FieldHelp("Shadow blur radius in em, relative to font size."),
+        "shadowStyle": FieldHelp("Soft blurs the shadow. Hard draws one sharp copy of the letters at the offset. 3D extrude stacks copies from the offset back to the text so the letters look like solid blocks."),
+        "bgOn": FieldHelp("Draw a box behind the text. Turning it off leaves the border available."),
+        "bgColor": FieldHelp("Fill colour of the background box."),
+        "bgOpacity": FieldHelp("Opacity of the background box, independent of the text."),
+        "bgRadius": FieldHelp("Background corner radius in pixels at a canvas width of 1080."),
+        "bgPaddingX": FieldHelp("Space on each side of the text, in em relative to the font size."),
+        "bgPaddingY": FieldHelp("Space above and below the text, in em relative to the font size."),
+        "bgPerLine": FieldHelp("Draw a separate background for each wrapped line instead of one block."),
+        "borderOn": FieldHelp("Outline the background box. Also works when the background is off."),
+        "borderWidth": FieldHelp("Border thickness outside the box in pixels at a canvas width of 1080."),
+        "borderColor": FieldHelp("Border colour. Inherits the text fill colour until changed."),
+        "letterSpacing": FieldHelp("Extra spacing between letters in pixels at a canvas width of 1080."),
+        "lineHeight": FieldHelp("Vertical line height multiplier. Applies to wrapped text; stat rows retain their layout."),
+        "alignment": FieldHelp("Align text inside its box without moving the box on screen."),
+        "maxWidthFrac": FieldHelp("Maximum text width as a fraction of the video width. Captions wrap at this cap before paging."),
+        "sharedStyle": FieldHelp("Use a named look from this profile. Changes to that look update linked captions, tags and overlays."),
+        "name": FieldHelp("Name of this shared text style in this profile."),
+        "underlineColor": FieldHelp("Colour of the underline; inherit to use the text fill."),
+        "underlineThickness": FieldHelp("Underline thickness as a fraction of font size."),
+    ]
+
     // What should we make?
     static let instructions = FieldHelp(
         "Tell the planner what the reel should achieve: the hook, the moments it must include, the mood.")

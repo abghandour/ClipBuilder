@@ -50,3 +50,13 @@ struct TagLayoutTests {
     }
 
 }
+
+extension TagLayoutTests {
+    @Test func horizontalAndVerticalPaddingAreIndependent() {
+        let line = TagLayout.Line(size: CGSize(width: 100, height: 30))
+        let a = TagLayout.layout(lines: [line], padding: 10, gap: 4, alignment: "leading", images: [], aspects: [:])
+        let b = TagLayout.layout(lines: [line], padding: 10, gap: 4, alignment: "leading", images: [], aspects: [:], paddingY: 25)
+        #expect(a.textBlock.width == b.textBlock.width)
+        #expect(b.textBlock.height == a.textBlock.height + 30)
+    }
+}

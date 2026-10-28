@@ -38,7 +38,7 @@ nonisolated struct CaptionRenderer: Sendable {
     /// and the lit or emphasised word may ask for its own.
     private func resolveFont(size: CGFloat, family: String? = nil, italic: Bool = false,
                              weight: String? = nil) -> CTFont {
-        let family = family ?? style.font
+        let family = family ?? style.fontOverride ?? style.font
         let weight = weight ?? style.resolvedWeight
         let familyNames: [String]
         switch family.lowercased() {
@@ -83,11 +83,12 @@ nonisolated struct CaptionRenderer: Sendable {
         var font: CTFont
         var padding: CGFloat
         var kern: CGFloat = 0
+        var casing: String? = nil
     }
 
     /// Letter spacing of a word state in canvas pixels.
     private func kern(for state: CaptionStyle.WordState) -> CGFloat {
-        style.resolvedDecor(for: state).resolvedLetterSpacing * CGFloat(videoWidth) / 1080
+        (style.resolvedTextDecor(for: state).letterSpacing ?? 0) * CGFloat(videoWidth) / 1080
     }
 
     /// Preserve historical sizing when an old profile has no explicit text size.
@@ -97,13 +98,13 @@ nonisolated struct CaptionRenderer: Sendable {
     }
 
     private var usesLegacyDecorations: Bool {
-        style.text == nil && style.highlightDecor == nil && style.emphasisDecor == nil
+        !style.hasTextDecor && style.text == nil && style.highlightDecor == nil && style.emphasisDecor == nil
     }
 
     private func stateFont(_ state: CaptionStyle.WordState, size: CGFloat) -> CTFont {
         let family: String
         switch state {
-        case .text: family = style.font
+        case .text: family = style.fontOverride ?? style.font
         case .highlight: family = style.resolvedHighlightFont
         case .emphasis: family = style.resolvedEmphasisFont
         }
@@ -118,8 +119,8 @@ nonisolated struct CaptionRenderer: Sendable {
         let pixels = ownSize != nil
             ? style.resolvedSize(for: state) * CGFloat(videoWidth) / 1080 * size / baseSize
             : size * style.resolvedSize(for: state) / style.resolvedSize(for: .text)
-        let decor = style.resolvedDecor(for: state)
-        return resolveFont(size: pixels, family: family, italic: decor.resolvedItalic, weight: decor.resolvedWeight)
+        let decor = style.resolvedTextDecor(for: state)
+        return resolveFont(size: pixels * (decor.size ?? 1), family: family, italic: decor.italic ?? false, weight: decor.weight)
     }
 
     /// Include padding and italic ink overhang in each state's reserved slot.
@@ -133,15 +134,16 @@ nonisolated struct CaptionRenderer: Sendable {
             let scale: CGFloat = style.resolvedHighlight == "scale" || ["scale", "both"].contains(style.resolvedEmphasis) ? 1.12 : 1
             return states.map { state in
                 let family = state == .highlight ? style.resolvedHighlightFont
-                    : state == .emphasis ? style.resolvedEmphasisFont : style.font
+                    : state == .emphasis ? style.resolvedEmphasisFont : style.fontOverride ?? style.font
                 return MeasuredFont(font: resolveFont(size: size * scale, family: family), padding: 0,
-                                    kern: kern(for: .text))
+                                    kern: kern(for: .text), casing: style.resolvedTextDecor(for: .text).casing)
             }
         }
         return states.map { state in
             let font = stateFont(state, size: size)
-            return MeasuredFont(font: font, padding: style.resolvedDecor(for: state).resolvedBackground ? CTFontGetSize(font) / 8 : 0,
-                                kern: kern(for: state))
+            let decor = style.resolvedTextDecor(for: state)
+            let padding = decor.bgOn == true || decor.borderOn == true ? CTFontGetSize(font) * max(decor.bgPaddingX ?? 0.125, decor.bgPaddingY ?? 0.125) : 0
+            return MeasuredFont(font: font, padding: padding, kern: kern(for: state), casing: decor.casing)
         }
     }
 
@@ -158,7 +160,7 @@ nonisolated struct CaptionRenderer: Sendable {
     }
 
     private func reservedWidth(_ token: String, fonts: [MeasuredFont]) -> CGFloat {
-        fonts.map { wordBounds(token, font: $0.font, kern: $0.kern).width + $0.padding * 2 }.max() ?? 0
+        fonts.map { wordBounds(TextCasing.apply(token, casing: $0.casing), font: $0.font, kern: $0.kern).width + $0.padding * 2 }.max() ?? 0
     }
 
     private func spaceWidth(_ fonts: [MeasuredFont]) -> CGFloat {
@@ -219,11 +221,11 @@ nonisolated struct CaptionRenderer: Sendable {
         // Reserve pop's overshoot inside the available width, including the
         // fixed raster envelope and rounding at both edges.
         let contentWidth = style.resolvedAnimation == "pop" ? (outerWidth - 2) / 1.08 : outerWidth
-        return min(CGFloat(videoWidth) * 0.86, contentWidth - padding)
+        return min(CGFloat(videoWidth) * (style.resolvedTextDecor(for: .text).maxWidthFrac ?? 0.86), contentWidth - padding)
     }
 
     func rowCount(for text: String) -> Int {
-        wrap(style.resolvedUppercase ? text.uppercased() : text, fonts: measureFonts(size: baseSize)).count
+        wrap(text, fonts: measureFonts(size: baseSize)).count
     }
 
     func pages(for segment: TranscriptSegment) -> [CaptionPage] {
@@ -263,7 +265,6 @@ nonisolated struct CaptionRenderer: Sendable {
     func render(text: String, activeIndex: Int? = nil, emphasis: [Int] = [],
                 textColor: String? = nil, frame: CaptionAnimation.Frame = .init(), to directory: URL,
                 fontSize explicitSize: CGFloat? = nil) throws -> RenderedCaption {
-        let text = style.resolvedUppercase ? text.uppercased() : text
         var fontSize = explicitSize ?? baseSize
         let initialFonts = measureFonts(size: fontSize)
         let longest = text.split(whereSeparator: \.isWhitespace)
@@ -279,9 +280,9 @@ nonisolated struct CaptionRenderer: Sendable {
             lines = wrap(text, fonts: fonts)
         }
 
-        let padX = max(18, videoWidth / 60)
-        let padY = max(10, Int(fontSize) / 4)
-        let lineGap = max(4, Int(fontSize) / 6)
+        let padX = (style.text?.decor?.bgPaddingX ?? style.decor?.bgPaddingX).map { Int(ceil(fontSize * $0)) } ?? max(18, videoWidth / 60)
+        let padY = (style.text?.decor?.bgPaddingY ?? style.decor?.bgPaddingY).map { Int(ceil(fontSize * $0)) } ?? max(10, Int(fontSize) / 4)
+        let lineGap = max(4, Int(fontSize) / 6) + Int(fontSize * ((style.resolvedTextDecor(for: .text).lineHeight ?? 1) - 1))
         let ascent = Self.maxAscent(fonts)
         let descent = Self.maxDescent(fonts)
         let lineHeight = Int((ascent + descent).rounded(.up))
@@ -294,8 +295,16 @@ nonisolated struct CaptionRenderer: Sendable {
         let motionX = style.resolvedAnimation == "pop" ? Int(ceil(Double(contentWidth) * 0.04)) : 0
         let motionY = style.resolvedAnimation == "pop" ? Int(ceil(Double(contentHeight) * 0.04))
             : (style.resolvedAnimation == "slide-up" ? Int(ceil(24 * Double(videoWidth) / 1080)) : 0)
-        let boxWidth = contentWidth + motionX * 2
-        let boxHeight = contentHeight + motionY * 2
+        let effects = CaptionStyle.WordState.allCases.map { style.resolvedTextDecor(for: $0) } + [style.pageDecor]
+        let effectFontSize = fonts.map { CTFontGetSize($0.font) }.max() ?? fontSize
+        let effectInset = style.hasTextDecor ? Int(ceil(effects.map { d in
+            let border = d.borderOn == true ? (d.borderWidth ?? 2) * CGFloat(videoWidth) / 1080 : 0
+            let blur = d.shadowStyle == "soft" ? (d.shadowBlur ?? 0) * 2 : 0 // hard and extrude ignore blur
+            let shadow = d.shadowOn == true ? effectFontSize * (max(abs(d.shadowX ?? 0), abs(d.shadowY ?? 0)) + blur) : 0
+            return border + shadow + (d.strokeOn == true ? (d.strokeWidth ?? 1) * CGFloat(videoWidth) / 1080 : 0)
+        }.max() ?? 0)) : 0
+        let boxWidth = contentWidth + (motionX + effectInset) * 2
+        let boxHeight = contentHeight + (motionY + effectInset) * 2
 
         let colorSpace = CGColorSpaceCreateDeviceRGB()
         guard let context = CGContext(data: nil, width: boxWidth, height: boxHeight,
@@ -309,26 +318,32 @@ nonisolated struct CaptionRenderer: Sendable {
         context.scaleBy(x: frame.scale, y: frame.scale)
         context.translateBy(x: -CGFloat(contentWidth) / 2, y: -CGFloat(contentHeight) / 2)
         context.setAlpha(frame.alpha)
+        if frame.alpha < 1 { context.beginTransparencyLayer(auxiliaryInfo: nil) }
 
         func color(_ hex: String, alpha: CGFloat = 1) -> CGColor {
             let (r, g, b) = Self.parseHexColor(hex, fallback: (1, 1, 1))
             return CGColor(red: r, green: g, blue: b, alpha: alpha)
         }
-        if style.bgOn {
-            let radius = style.bgRadius == nil ? CGFloat(max(6, Int(fontSize) / 6))
-                : style.resolvedPageRadius * CGFloat(videoWidth) / 1080
-            let rect = CGRect(x: 0, y: 0, width: contentWidth, height: contentHeight)
-            context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
-            context.setFillColor(color(style.bgColor, alpha: 0.7))
-            context.fillPath()
+        let painter = TextDecorPainter(scale: CGFloat(videoWidth) / 1080)
+        let pageDecor = style.pageDecor
+        if pageDecor.bgPerLine != true {
+            painter.background(in: context, rect: CGRect(x: 0, y: 0, width: contentWidth, height: contentHeight),
+                decor: pageDecor, radius: style.decor?.bgRadius == nil && style.bgRadius == nil
+                    ? CGFloat(max(6, Int(fontSize) / 6)) : nil)
         }
 
         var tokenIndex = 0
         for (lineIndex, lineText) in lines.enumerated() {
             let width = reservedLineWidth(lineText, fonts: fonts)
             let x = Self.lineOrigin(width: width, boxWidth: CGFloat(contentWidth),
-                                    padding: CGFloat(padX), alignment: style.alignment)
+                                    padding: CGFloat(padX), alignment: style.resolvedTextDecor(for: .text).alignment)
             let baselineY = CGFloat(contentHeight - padY - (lineIndex + 1) * lineHeight - lineIndex * lineGap) + descent
+            if pageDecor.bgPerLine == true {
+                painter.background(in: context,
+                    rect: CGRect(x: x, y: baselineY - descent, width: width, height: CGFloat(lineHeight))
+                        .insetBy(dx: -fontSize * (pageDecor.bgPaddingX ?? 0.125), dy: -fontSize * (pageDecor.bgPaddingY ?? 0.125)),
+                    decor: pageDecor)
+            }
             let space = spaceWidth(fonts)
             var cursor = x
             for token in lineText.split(separator: " ").map(String.init) {
@@ -343,9 +358,8 @@ nonisolated struct CaptionRenderer: Sendable {
                     drawFont = resolveFont(size: fontSize * 1.12, family: style.resolvedHighlightFont)
                 }
                 let wordKern = usesLegacyDecorations ? kern(for: .text) : kern(for: state)
-                let strokeWidth = usesLegacyDecorations ? style.resolvedStrokeWidth : decor.resolvedStrokeWidth
-                let shadow = usesLegacyDecorations ? style.resolvedShadow : decor.resolvedShadow
                 let reserved = reservedWidth(token, fonts: fonts)
+                let token = TextCasing.apply(token, casing: style.resolvedTextDecor(for: state).casing, firstWord: tokenIndex == 0)
                 let bounds = wordBounds(token, font: drawFont, kern: wordKern)
                 let drawWidth = lineWidth(token, font: drawFont, kern: wordKern)
                 let tokenX = cursor + (reserved - bounds.width) / 2 - bounds.minX
@@ -354,62 +368,37 @@ nonisolated struct CaptionRenderer: Sendable {
                 if active && style.resolvedHighlight == "color" { fill = style.resolvedHighlightColor }
                 let box = state == .highlight && style.resolvedHighlight == "box"
                 if box { fill = style.resolvedHighlightColor }
-                if decor.resolvedBackground {
-                    let padding = CTFontGetSize(drawFont) / 8
-                    let rect = usesLegacyDecorations && box
-                        ? CGRect(x: tokenX - 3, y: baselineY - descent - 3, width: drawWidth + 6, height: ascent + descent + 6)
-                        : bounds.offsetBy(dx: tokenX, dy: baselineY).insetBy(dx: -padding, dy: -padding)
-                    let radius = usesLegacyDecorations && box ? 5 : CGFloat(decor.resolvedRadius) * CGFloat(videoWidth) / 1080
-                    context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
-                    context.setFillColor(color(decor.bgColor ?? fill, alpha: box || decor.bgColor != nil ? 1 : 0.25))
-                    context.fillPath()
-                    if box && decor.bgColor == nil {
-                        let (r, g, b) = Self.parseHexColor(style.resolvedHighlightColor, fallback: (1, 0.84, 0))
-                        fill = 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.55 ? "#000000" : "#ffffff"
-                    }
+                var paint = style.resolvedTextDecor(for: state)
+                if !style.hasTextDecor { paint.color = fill }
+                else if let textColor, state == .text { paint.color = textColor }
+                var backgroundRect: CGRect?
+                var radius: CGFloat?
+                if !style.hasTextDecor {
+                    paint.shadowY = -2 / CTFontGetSize(drawFont)
+                    paint.shadowBlur = 4 / CTFontGetSize(drawFont)
                 }
-                var attributes: [NSAttributedString.Key: Any] = [
-                    NSAttributedString.Key(kCTFontAttributeName as String): drawFont,
-                    NSAttributedString.Key(kCTForegroundColorAttributeName as String): color(fill),
-                    NSAttributedString.Key(kCTKernAttributeName as String): wordKern,
-                ]
-                if !style.bgOn && strokeWidth > 0 {
-                    attributes[NSAttributedString.Key(kCTStrokeColorAttributeName as String)] = CGColor(gray: 0, alpha: 0.86)
-                    attributes[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] =
-                        -100 * strokeWidth * Double(videoWidth) / 1080 / Double(CTFontGetSize(drawFont))
+                if box && decor.bgColor == nil && (state == .highlight ? style.highlightDecor?.decor?.bgColor : nil) == nil {
+                    paint.bgColor = style.resolvedHighlightColor
+                    paint.bgOpacity = 1
+                    let (r, g, b) = Self.parseHexColor(style.resolvedHighlightColor, fallback: (1, 0.84, 0))
+                    paint.color = 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.55 ? "#000000" : "#ffffff"
+                } else if !style.hasTextDecor { paint.bgColor = decor.bgColor ?? fill }
+                if usesLegacyDecorations && box {
+                    backgroundRect = CGRect(x: tokenX - 3, y: baselineY - descent - 3, width: drawWidth + 6, height: ascent + descent + 6)
+                    radius = 5
+                } else {
+                    backgroundRect = bounds.offsetBy(dx: tokenX, dy: baselineY).insetBy(
+                        dx: -CTFontGetSize(drawFont) * (paint.bgPaddingX ?? 0.125),
+                        dy: -CTFontGetSize(drawFont) * (paint.bgPaddingY ?? 0.125))
                 }
-                context.saveGState()
-                if shadow {
-                    context.setShadow(offset: CGSize(width: 0, height: -2), blur: 4,
-                                      color: CGColor(gray: 0, alpha: 0.75))
-                }
-                context.textPosition = CGPoint(x: tokenX, y: baselineY)
-                CTLineDraw(CTLineCreateWithAttributedString(NSAttributedString(string: token, attributes: attributes)), context)
-                let thickness = max(1, CTFontGetUnderlineThickness(drawFont))
-                var decorations: [CGRect] = []
-                if decor.resolvedUnderline {
-                    decorations.append(CGRect(x: tokenX, y: baselineY + CTFontGetUnderlinePosition(drawFont),
-                                              width: drawWidth, height: thickness))
-                }
-                if decor.resolvedStrikethrough {
-                    decorations.append(CGRect(x: tokenX, y: baselineY + CTFontGetXHeight(drawFont) / 2,
-                                              width: drawWidth, height: thickness))
-                }
-                // Outline first, then the fill on top, so a thin rule keeps
-                // its colour inside the same outline width as the glyphs.
-                if !style.bgOn && strokeWidth > 0 {
-                    context.setStrokeColor(CGColor(gray: 0, alpha: 0.86))
-                    context.setLineWidth(2 * strokeWidth * CGFloat(videoWidth) / 1080)
-                    for rect in decorations { context.stroke(rect) }
-                }
-                context.setFillColor(color(fill))
-                for rect in decorations { context.fill(rect) }
-                context.restoreGState()
+                painter.draw(token, font: drawFont, at: CGPoint(x: tokenX, y: baselineY), decor: paint,
+                             in: context, backgroundRect: backgroundRect, radius: radius)
                 cursor += reserved + space
                 tokenIndex += 1
             }
         }
 
+        if frame.alpha < 1 { context.endTransparencyLayer() }
         guard let image = context.makeImage() else { throw CocoaError(.fileWriteUnknown) }
         let pngURL = directory.appendingPathComponent("caption_\(UUID().uuidString).png")
         guard let destination = CGImageDestinationCreateWithURL(

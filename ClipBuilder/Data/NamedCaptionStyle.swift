@@ -7,6 +7,10 @@ nonisolated struct NamedCaptionStyle: Codable, Identifiable, Sendable, Hashable 
 }
 
 nonisolated extension BrandProfile {
+    func renderCaptionStyle(id: String?) -> CaptionStyle {
+        captionStyle(id: id).applyingSharedStyle(textStyles ?? [])
+    }
+
     func withCaptionStyle(id: String?) -> Self {
         var copy = self
         copy.captions = captionStyle(id: id)
@@ -35,7 +39,7 @@ nonisolated extension BrandProfile {
             guard let uuid = UUID(uuidString: id),
                   let named = captionStyles?.first(where: { $0.id == uuid }),
                   named.style != runStyle else { continue }
-            styles[key] = named.style
+            styles[key] = named.style.applyingSharedStyle(textStyles ?? [])
         }
         return styles
     }

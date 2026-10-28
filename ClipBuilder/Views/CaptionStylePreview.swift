@@ -2,6 +2,8 @@ import SwiftUI
 
 struct CaptionStylePreview: View {
     let style: CaptionStyle
+    @Environment(AppStore.self) private var store
+    private var renderStyle: CaptionStyle { style.applyingSharedStyle(store.activeProfile.textStyles ?? []) }
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @State private var frames: [CaptionPreviewImage] = []
     @State private var images: [NSImage?] = []
@@ -60,16 +62,16 @@ struct CaptionStylePreview: View {
             guard !Task.isCancelled else { return }
             debouncedText = previewText
         }
-        .task(id: style) {
-            let previewStyle = style
+        .task(id: renderStyle) {
+            let previewStyle = renderStyle
             let task = Task.detached(priority: .userInitiated) { try CaptionPreviewImage.wordStates(style: previewStyle) }
             guard let values = try? await withTaskCancellationHandler(operation: { try await task.value },
                                                                       onCancel: { task.cancel() }),
                   !Task.isCancelled else { return }
             states = values.compactMap { state in NSImage(data: state.image.data).map { (state, $0) } }
         }
-        .task(id: PreviewInput(style: style, text: debouncedText)) {
-            let previewStyle = style, text = debouncedText
+        .task(id: PreviewInput(style: renderStyle, text: debouncedText)) {
+            let previewStyle = renderStyle, text = debouncedText
             let task = Task.detached(priority: .userInitiated) { try CaptionPreviewImage.frames(style: previewStyle, text: text) }
             do {
                 let values = try await withTaskCancellationHandler {

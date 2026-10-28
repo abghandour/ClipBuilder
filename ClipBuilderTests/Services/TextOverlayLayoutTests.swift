@@ -165,13 +165,19 @@ struct TextOverlayLayoutTests {
         #expect(placed.resolvedLockedWidth && abs((placed.wFrac ?? 0) - 0.48) < 0.0001)
         let after = try #require(renderer.renderedBox(placed))
         let paint = try render(placed)
-        #expect(abs(after.minX - paint.minX) <= 1 && abs(after.maxX - paint.maxX) <= 1, "selector and painted box share edges")
+        // A missing optional font can make an indivisible token wider than
+        // the placed box. The raster is necessarily clipped to the canvas.
+        let visibleAfter = after.intersection(CGRect(x: 0, y: 0, width: 1080, height: 1920))
+        #expect(abs(visibleAfter.minX - paint.minX) <= 1 && abs(visibleAfter.maxX - paint.maxX) <= 1,
+                "selector and painted box share visible edges")
         #expect(abs(after.minY - paint.minY) <= 1 && abs(after.maxY - paint.maxY) <= 1)
         #expect(after.width >= 0.48 * 1080 - 1 && after.midX > 0.42 * 1080 && after.midX < 0.9 * 1080,
                 "the placed width is kept, widened only when one word at 194 pt cannot fit")
         #expect(after.height > 0.13 * 1920, "rows wrapped below the placed height at the design size")
         var narrowWords = placed
-        narrowWords.text = "Subject fits in a box"
+        // Keep this subcase genuinely narrow even when the optional Bebas
+        // asset is unavailable and CoreText falls back to Helvetica.
+        narrowWords.text = "Fits in a box"
         let kept = try #require(renderer.renderedBox(narrowWords))
         #expect(abs(kept.minX - 0.42 * 1080) <= 1 && abs(kept.width - 0.48 * 1080) <= 1, "words that fit keep the placed width exactly")
         var bare = placed
@@ -415,5 +421,29 @@ struct TextOverlayLayoutTests {
         widthOnly.wordsPerLine = 0
         #expect(item != widthOnly)
         #expect(OverlayComposition(texts: [item]) != OverlayComposition(texts: [changed]))
+    }
+}
+
+extension TextOverlayLayoutTests {
+    @Test func sharedDecorChangesRenderBoxAndLocalFontWins() {
+        let shared = NamedTextStyle(name: "Wide", decor: TextDecor(size: 2, maxWidthFrac: 0.3), fontFamily: "Georgia")
+        var item = TextOverlayItem(text: "A long headline with several words")
+        item.sharedStyleID = shared.id.uuidString
+        item.fontOverride = "Menlo"
+        let styled = item.applyingSharedStyle([shared])
+        #expect(styled.fontfamily == "Menlo")
+        #expect(styled.textLayoutItem.fontsize == item.fontsize * 2)
+        let renderer = TextOverlayRenderer(videoWidth: 1080, videoHeight: 1920, safeArea: nil, textStyles: [shared])
+        #expect(renderer.renderedBox(item) != TextOverlayRenderer(videoWidth: 1080, videoHeight: 1920, safeArea: nil).renderedBox(item))
+    }
+}
+
+extension TextOverlayLayoutTests {
+    @Test func inspectorCropPadsTheBoxAndStaysOnCanvas() {
+        let box = CGRect(x: 100, y: 1800, width: 400, height: 80)
+        let rect = TextOverlayPreviewImage.cropRect(box: box, width: 1080, height: 1920)
+        #expect(rect == CGRect(x: 72, y: 1772, width: 456, height: 136))
+        #expect(TextOverlayPreviewImage.cropRect(box: nil, width: 1080, height: 1920) == nil)
+        #expect(TextOverlayPreviewImage.cropRect(box: .zero, width: 1080, height: 1920) == nil)
     }
 }

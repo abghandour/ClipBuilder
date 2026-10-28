@@ -42,6 +42,7 @@ nonisolated struct TasteCategory: Codable, Sendable, Hashable, Identifiable {
 /// Brand profile — mirrors the JSON files the Python app keeps at
 /// `~/Documents/ClipBuilder/<name>.json` so both apps can share profiles.
 nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
+    var textStyles: [NamedTextStyle]?
     var profileID: UUID?
     var teamID: UUID?
     var teamSyncPaused: Bool?
@@ -122,6 +123,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var id: String { profileName }
 
     enum CodingKeys: String, CodingKey {
+        case textStyles = "text_styles"
         case profileID = "profile_id"
         case teamID = "team_id"
         case teamSyncPaused = "team_sync_paused"
@@ -168,6 +170,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        textStyles = try container.decodeIfPresent([NamedTextStyle].self, forKey: .textStyles)
         profileID = try container.decodeIfPresent(UUID.self, forKey: .profileID)
         teamID = try container.decodeIfPresent(UUID.self, forKey: .teamID)
         teamSyncPaused = try container.decodeIfPresent(Bool.self, forKey: .teamSyncPaused)
@@ -330,6 +333,9 @@ nonisolated struct SocialSlot: Codable, Sendable, Hashable {
 
 /// Burn-in caption style persisted with the profile (captions key).
 nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
+    var fontOverride: String?
+    var decor: TextDecor?
+    var sharedStyleID: String?
     var alignment: String?
     var font: String = "sans"          // sans | serif | mono | asset font name
     var color: String = "#ffffff"
@@ -411,10 +417,13 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
     var resolvedRevealMotion: Bool { revealMotion ?? false }
     var resolvedEmoji: Bool { emoji ?? false }
     var resolvedSpeakerColors: Bool { speakerColors ?? false }
-    var resolvedHighlightFont: String { highlightFont?.isEmpty == false ? highlightFont! : font }
-    var resolvedEmphasisFont: String { emphasisFont?.isEmpty == false ? emphasisFont! : font }
+    var resolvedHighlightFont: String { highlightFont?.isEmpty == false ? highlightFont! : fontOverride ?? font }
+    var resolvedEmphasisFont: String { emphasisFont?.isEmpty == false ? emphasisFont! : fontOverride ?? font }
 
     enum CodingKeys: String, CodingKey {
+        case fontOverride = "font_override"
+        case decor = "decor"
+        case sharedStyleID = "shared_style_id"
         case font, color, alignment
         case wordsPerPage = "words_per_page"
         case highlight, emphasis, uppercase, weight, shadow, animation, emoji
@@ -440,6 +449,9 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        fontOverride = try container.decodeIfPresent(String.self, forKey: .fontOverride)
+        decor = try container.decodeIfPresent(TextDecor.self, forKey: .decor)
+        sharedStyleID = try container.decodeIfPresent(String.self, forKey: .sharedStyleID)
         text = try container.decodeIfPresent(CaptionWordDecor.self, forKey: .text)
         highlightDecor = try container.decodeIfPresent(CaptionWordDecor.self, forKey: .highlightDecor)
         emphasisDecor = try container.decodeIfPresent(CaptionWordDecor.self, forKey: .emphasisDecor)

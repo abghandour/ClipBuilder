@@ -168,7 +168,7 @@ nonisolated enum WizardPreviewComposite {
                 }
                 context.draw(image, in: rect ?? canvas)
             }
-            let textRenderer = TextOverlayRenderer(videoWidth: settings.width, videoHeight: settings.height)
+            let textRenderer = TextOverlayRenderer(videoWidth: settings.width, videoHeight: settings.height, textStyles: input.profile.textStyles ?? [])
             let imageRenderer = ImageOverlayRenderer(videoWidth: settings.width, videoHeight: settings.height)
             func drawBlock(_ block: OverlayBlockItem, at time: Double) throws {
                 var document = TimelineDocument()
@@ -226,7 +226,7 @@ nonisolated enum WizardPreviewComposite {
                     layout.overlayShift = CGPoint(x: shift.x * canvas.width, y: shift.y * canvas.height)
                 }
             }
-            let style = input.profile.captionStyle(id: options.captionStyleID)
+            let style = input.profile.renderCaptionStyle(id: options.captionStyleID)
             if options.addCaptions {
                 let base = CaptionRenderer(videoWidth: settings.width, videoHeight: settings.height, style: style,
                     safeArea: options.resolvedSafeArea, safeAreaOnly: options.safeAreaOnly == true)
@@ -305,7 +305,7 @@ nonisolated enum WizardPreviewComposite {
                 let tagStyle = input.profile.tagStyle(id: options.nameTagStyleID)
                 let imageAspects = TextOverlayRenderer.tagImages(tagStyle).mapValues { CGFloat($0.width) / CGFloat($0.height) }
                 let tags = NameTagPlanner.plan(areas: geometry.areas, people: geometry.people,
-                    settings: WizardNameTags.settings(options: options, captionStyle: style), style: tagStyle,
+                    settings: WizardNameTags.settings(options: options, captionStyle: style), style: tagStyle.applyingSharedStyle(input.profile.textStyles ?? []),
                     imageAspects: imageAspects)
                 for tag in tags {
                     layout.tags.append(tag.rect)

@@ -1222,6 +1222,9 @@ nonisolated struct ImageOverlayItem: Codable, Sendable, Equatable, Identifiable 
 /// One text overlay. Optional keys are encoded only when meaningful, matching
 /// the web serializer (bold/italic only when true, fractions only when set).
 nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
+    var fontOverride: String?
+    var decor: TextDecor?
+    var sharedStyleID: String?
     var uid = UUID()
     var stat: StrikeStatPayload?
     var text: String = ""
@@ -1293,6 +1296,9 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
     static let transitionChoices = ["fade", "slide_left", "slide_right", "slide_up", "slide_down", "pop", "cut"]
 
     enum CodingKeys: String, CodingKey {
+        case fontOverride = "font_override"
+        case decor = "decor"
+        case sharedStyleID = "shared_style_id"
         case stat
         case text, fontsize, fontcolor, fontfamily, bold, italic, underline, strikethrough, bgcolor, position
         case startTime = "start_time"
@@ -1327,6 +1333,9 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        fontOverride = try container.decodeIfPresent(String.self, forKey: .fontOverride)
+        decor = try container.decodeIfPresent(TextDecor.self, forKey: .decor)
+        sharedStyleID = try container.decodeIfPresent(String.self, forKey: .sharedStyleID)
         stat = try container.decodeIfPresent(StrikeStatPayload.self, forKey: .stat)
         text = try container.decodeIfPresent(String.self, forKey: .text) ?? ""
         startTime = try container.decodeIfPresent(Double.self, forKey: .startTime) ?? 0
@@ -1367,6 +1376,9 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(fontOverride, forKey: .fontOverride)
+        try container.encodeIfPresent(decor, forKey: .decor)
+        try container.encodeIfPresent(sharedStyleID, forKey: .sharedStyleID)
         try container.encodeIfPresent(stat, forKey: .stat)
         try container.encode(text, forKey: .text)
         try container.encode(startTime, forKey: .startTime)
@@ -1412,7 +1424,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
     }
 
     static func == (lhs: TextOverlayItem, rhs: TextOverlayItem) -> Bool {
-        lhs.stat == rhs.stat && lhs.uid == rhs.uid && lhs.text == rhs.text && lhs.startTime == rhs.startTime
+        lhs.fontOverride == rhs.fontOverride && lhs.decor == rhs.decor && lhs.sharedStyleID == rhs.sharedStyleID && lhs.stat == rhs.stat && lhs.uid == rhs.uid && lhs.text == rhs.text && lhs.startTime == rhs.startTime
             && lhs.endTime == rhs.endTime && lhs.fontsize == rhs.fontsize
             && lhs.fontcolor == rhs.fontcolor && lhs.fontfamily == rhs.fontfamily
             && lhs.boxOpacity == rhs.boxOpacity && lhs.bold == rhs.bold && lhs.italic == rhs.italic

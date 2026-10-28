@@ -2,6 +2,7 @@ import Foundation
 
 /// Optional fields keep old profiles intact and allow state decorations to inherit.
 nonisolated struct CaptionWordDecor: Codable, Sendable, Hashable {
+    var decor: TextDecor?
     var italic: Bool?
     var underline: Bool?
     var strikethrough: Bool?
@@ -29,6 +30,7 @@ nonisolated struct CaptionWordDecor: Codable, Sendable, Hashable {
 
     // Synthesized Optional decoding uses decodeIfPresent for every field.
     enum CodingKeys: String, CodingKey {
+        case decor = "decor"
         case italic, underline, strikethrough, size
         case bgOn = "bg_on"
         case bgColor = "bg_color"

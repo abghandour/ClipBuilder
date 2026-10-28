@@ -1,0 +1,26 @@
+{
+  "profile_name": "Text Style Fixture",
+  "brand_name": "Fixture",
+  "captions": {
+    "bg_color": "#000000",
+    "stroke_width": 1,
+    "weight": "bold",
+    "font": "sans",
+    "bg_on": true,
+    "color": "#ffffff",
+    "position": "bottom"
+  },
+  "tag_style": {
+    "name": {
+      "field": "Name",
+      "font": "Archivo Black",
+      "scale": 1,
+      "color": "#ffffff",
+      "bold": true,
+      "italic": false,
+      "uppercase": false,
+      "underline": false,
+      "underline_thickness": 0.06
+    }
+  }
+}

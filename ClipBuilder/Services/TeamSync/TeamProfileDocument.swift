@@ -5,7 +5,7 @@ import Foundation
 nonisolated enum TeamProfileDocument {
     static let keys: Set<String> = [
         "brand_name", "content_domain", "tag_schema", "socials", "hashtags", "captions",
-        "caption_styles", "tag_style", "tag_styles", "accent_color", "tagline", "caption_languages",
+        "text_styles", "caption_styles", "tag_style", "tag_styles", "accent_color", "tagline", "caption_languages",
         "default_pacing", "default_music_volume", "use_learned_editing_defaults", "learned_hook_style",
         "learned_layout_preference", "taste_rubric", "taste_categories", "house_style", "critic_brief_use",
         "editing", "ai_routing", "default_render_settings", "buzz_sources", "buzz_extra_sources", "mini_instructions", "express_presets",

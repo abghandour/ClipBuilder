@@ -108,7 +108,7 @@ struct CaptionStyleTests {
     @Test func presetsAreIndependentCopies() {
         let first = CaptionPresets.styles
         let second = CaptionPresets.styles
-        #expect(first.count == 7)
+        #expect(first.count == 8)
         #expect(first.map(\.style) == second.map(\.style))
         #expect(Set(first.map(\.id)).isDisjoint(with: second.map(\.id)))
     }

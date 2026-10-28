@@ -434,3 +434,38 @@ extension CaptionRendererTests {
         }.value
     }
 }
+
+extension CaptionRendererTests {
+    @Test func newDecorCanStrokeTextWithPageBackground() async throws {
+        try await Task.detached {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            var style = CaptionStyle()
+            style.bgOn = true
+            style.decor = TextDecor(strokeOn: false)
+            let plain = try CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style, safeArea: nil).render(text: "Box", to: directory)
+            style.decor?.strokeOn = true; style.decor?.strokeColor = "#ff0000"; style.decor?.strokeWidth = 4
+            let stroke = try CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style, safeArea: nil).render(text: "Box", to: directory)
+            #expect(try Data(contentsOf: plain.pngURL) != Data(contentsOf: stroke.pngURL))
+        }.value
+    }
+}
+
+extension CaptionRendererTests {
+    @Test func asWrittenStatePreservesOriginalCasing() async throws {
+        try await Task.detached {
+            let directory = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            defer { try? FileManager.default.removeItem(at: directory) }
+            var style = CaptionStyle()
+            style.uppercase = true
+            style.highlight = "color"
+            style.highlightDecor = CaptionWordDecor(decor: TextDecor(casing: "asWritten"))
+            let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style, safeArea: nil)
+            let mixed = try renderer.render(text: "MiXeD", activeIndex: 0, to: directory)
+            let upper = try renderer.render(text: "MIXED", activeIndex: 0, to: directory)
+            #expect(try Data(contentsOf: mixed.pngURL) != Data(contentsOf: upper.pngURL))
+        }.value
+    }
+}

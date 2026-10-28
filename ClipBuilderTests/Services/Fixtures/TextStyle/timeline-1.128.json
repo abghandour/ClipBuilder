@@ -1,0 +1,16 @@
+{
+  "video_track": [],
+  "text_overlays": [
+    {
+      "text": "*Every* moment",
+      "start_time": 0,
+      "end_time": 3,
+      "fontsize": 42,
+      "fontcolor": "white",
+      "box_opacity": 0.5,
+      "trans_in": "fade",
+      "trans_out": "fade",
+      "position": "bottom"
+    }
+  ]
+}

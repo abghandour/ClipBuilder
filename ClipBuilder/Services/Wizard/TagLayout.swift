@@ -9,6 +9,7 @@ nonisolated enum TagLayout {
         var underlineThickness: CGFloat = 0
         var strikethrough: CGFloat = 0
         var chipPadding: CGFloat = 0
+        var chipPaddingY: CGFloat?
         /// Top-relative half x-height position, when font metrics are available.
         var strikethroughY: CGFloat?
     }
@@ -23,19 +24,21 @@ nonisolated enum TagLayout {
     }
 
     static func layout(lines: [Line], padding: CGFloat, gap: CGFloat,
-                       alignment: String, images: [TagImage], aspects: [UUID: CGFloat]) -> Result {
+                       alignment: String, images: [TagImage], aspects: [UUID: CGFloat], paddingY: CGFloat? = nil) -> Result {
+        let paddingY = paddingY ?? padding
         let width = (lines.map { $0.size.width + max(0, $0.chipPadding) * 2 }.max() ?? 0) + padding * 2
-        let height = lines.reduce(CGFloat.zero) { $0 + $1.size.height + $1.underlineThickness * 2 + max(0, $1.chipPadding) * 2 }
-            + gap * CGFloat(max(0, lines.count - 1)) + padding * 2
+        let height = lines.reduce(CGFloat.zero) { $0 + $1.size.height + $1.underlineThickness * 2 + max(0, $1.chipPaddingY ?? $1.chipPadding) * 2 }
+            + gap * CGFloat(max(0, lines.count - 1)) + paddingY * 2
         let block = CGRect(x: 0, y: 0, width: width, height: height)
-        var top = padding
+        var top = paddingY
         var origins: [CGPoint] = []
         var underlines: [CGRect?] = []
         var chips: [CGRect?] = []
         var strikethroughs: [CGRect?] = []
         for line in lines {
             let chipPadding = max(0, line.chipPadding)
-            top += chipPadding
+            let chipPaddingY = max(0, line.chipPaddingY ?? line.chipPadding)
+            top += chipPaddingY
             let x = alignment == "center" ? (width - line.size.width) / 2
                 : alignment == "trailing" ? width - padding - chipPadding - line.size.width : padding + chipPadding
             origins.append(CGPoint(x: x, y: top))
@@ -43,12 +46,12 @@ nonisolated enum TagLayout {
                 ? CGRect(x: x, y: top + line.size.height + line.underlineThickness,
                          width: line.size.width, height: line.underlineThickness) : nil)
             chips.append(chipPadding > 0
-                ? CGRect(x: x - chipPadding, y: top - chipPadding, width: line.size.width + chipPadding * 2,
-                         height: line.size.height + line.underlineThickness * 2 + chipPadding * 2) : nil)
+                ? CGRect(x: x - chipPadding, y: top - chipPaddingY, width: line.size.width + chipPadding * 2,
+                         height: line.size.height + line.underlineThickness * 2 + chipPaddingY * 2) : nil)
             strikethroughs.append(line.strikethrough > 0
                 ? CGRect(x: x, y: top + (line.strikethroughY ?? line.size.height / 2),
                          width: line.size.width, height: line.strikethrough) : nil)
-            top += line.size.height + line.underlineThickness * 2 + chipPadding + gap
+            top += line.size.height + line.underlineThickness * 2 + chipPaddingY + gap
         }
         var rects: [UUID: CGRect] = [:]
         var bounds = block

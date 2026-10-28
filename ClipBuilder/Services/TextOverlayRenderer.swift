@@ -18,6 +18,8 @@ nonisolated struct TextOverlayRenderer {
     /// Platform chrome to stay clear of; name tags retain their planned placement.
     var safeArea: PlatformSafeArea? = PlatformSafeArea.resolve(RenderContext.settings)
 
+    var textStyles: [NamedTextStyle] = []
+
     /// A box centre and size IN PIXELS moved into the safe area. The safe
     /// area works in frame fractions, so everything converts on the way in
     /// and back out; feeding it pixels clamps every box to the top-left
@@ -72,31 +74,11 @@ nonisolated struct TextOverlayRenderer {
     // MARK: - Color / font
 
     /// Port of _parse_color: #hex, 0xhex, or a small set of names.
-    static func parseColor(_ string: String?, fallback: (CGFloat, CGFloat, CGFloat) = (1, 1, 1))
-        -> (r: CGFloat, g: CGFloat, b: CGFloat) {
-        guard let string else { return fallback }
-        var hex = string.trimmingCharacters(in: .whitespaces).lowercased()
-        if hex.hasPrefix("#") { hex.removeFirst() }
-        else if hex.hasPrefix("0x") { hex.removeFirst(2) }
-        else {
-            switch hex {
-            case "white": return (1, 1, 1)
-            case "black": return (0, 0, 0)
-            case "red": return (1, 0, 0)
-            case "yellow": return (1, 1, 0)
-            default: return fallback
-            }
-        }
-        if hex.count == 3 { hex = hex.map { "\($0)\($0)" }.joined() }
-        guard hex.count >= 6, let value = UInt32(hex.prefix(6), radix: 16) else { return fallback }
-        return (CGFloat((value >> 16) & 0xff) / 255,
-                CGFloat((value >> 8) & 0xff) / 255,
-                CGFloat(value & 0xff) / 255)
+    static func parseColor(_ string: String?, fallback: (CGFloat, CGFloat, CGFloat) = (1, 1, 1)) -> (r: CGFloat, g: CGFloat, b: CGFloat) {
+        TextColor.parseColor(string, fallback: fallback)
     }
-
     static func cgColor(_ string: String?, fallback: (CGFloat, CGFloat, CGFloat) = (1, 1, 1)) -> CGColor {
-        let (r, g, b) = parseColor(string, fallback: fallback)
-        return CGColor(red: r, green: g, blue: b, alpha: 1)
+        TextColor.cgColor(string, fallback: fallback)
     }
 
     func resolveFont(size: CGFloat, family: String?, bold: Bool, italic: Bool) -> CTFont {
@@ -161,6 +143,7 @@ nonisolated struct TextOverlayRenderer {
     /// they hold in the full layout — so successive renders animate a
     /// word-by-word reveal without any reflow.
     func render(_ item: TextOverlayItem, to directory: URL, visibleWords: Int? = nil) throws -> URL {
+        let item = item.applyingSharedStyle(textStyles).textLayoutItem
         if item.keepsPlacement, safeArea != nil {
             // Placed by hand (Express overlay, watermark): never nudged clear of platform chrome.
             var exact = self
@@ -286,7 +269,7 @@ nonisolated struct TextOverlayRenderer {
         defer { context.restoreGState() }
         context.clip(to: CGRect(x: rect.minX, y: CGFloat(videoHeight) - rect.maxY,
                                width: rect.width, height: rect.height))
-        if item.boxOpacity > 0 {
+        if (item.boxOpacity > 0 || item.resolvedTextDecor.borderOn == true) && item.resolvedTextDecor.bgPerLine != true {
             // fillRoundedBackground adds 5px itself; include that in our bounds.
             fillRoundedBackground(in: context, item: item,
                 topLeft: (Int(rect.minX) + 5, Int(rect.minY) + 5),
@@ -320,7 +303,7 @@ nonisolated struct TextOverlayRenderer {
                                        centerX: centerX, centerY: centerY,
                                        videoWidth: videoWidth, videoHeight: videoHeight,
                                        measure: { size, maxWidth in self.metrics(item: item, words: words, size: size, maxWidth: maxWidth) })
-        if item.boxOpacity > 0 {
+        if (item.boxOpacity > 0 || item.resolvedTextDecor.borderOn == true) && item.resolvedTextDecor.bgPerLine != true {
             fillRoundedBackground(in: context, item: item,
                                   topLeft: (layout.boxLeft, layout.boxTop), size: (layout.boxWidth, layout.boxHeight))
         }
@@ -328,7 +311,7 @@ nonisolated struct TextOverlayRenderer {
         var cursorTop = CGFloat(layout.boxTop) + (CGFloat(layout.boxHeight) - m.totalHeight) / 2
         let ascent = CTFontGetAscent(m.font)
         for lineWords in m.lines {
-            let width = lineWidth(Self.plainText(lineWords), font: m.font)
+            let width = TextDecorPainter(scale: CGFloat(videoWidth) / 1080, naturalKerning: true).width(Self.plainText(lineWords), font: m.font, decor: item.resolvedTextDecor)
             let x = Self.alignedX(boxLeft: CGFloat(layout.boxLeft), boxWidth: CGFloat(layout.boxWidth),
                                   lineWidth: width, alignment: item.alignment)
             drawStyledLine(lineWords, font: m.font, item: item, visibleWords: visibleWords,
@@ -347,12 +330,17 @@ nonisolated struct TextOverlayRenderer {
     }
 
     private func metrics(item: TextOverlayItem, words: [Word], size: CGFloat, maxWidth: CGFloat) -> LineMetrics {
-        let font = resolveFont(size: size, family: item.fontfamily, bold: item.bold, italic: item.italic)
-        let lines = wrap(words, font: font, maxWidth: maxWidth, maxWords: item.resolvedWordsPerLine)
-        let lineHeight = CTFontGetAscent(font) + CTFontGetDescent(font)
+        let decor = item.resolvedTextDecor
+        let font = TextDecorPainter.font(family: item.fontfamily, size: size, decor: decor)
+        let painter = TextDecorPainter(scale: CGFloat(videoWidth) / 1080, naturalKerning: true)
+        let cap = decor.maxWidthFrac.map { min(maxWidth, $0 * CGFloat(videoWidth)) } ?? maxWidth
+        let lines = Self.lines(words, maxWords: item.resolvedWordsPerLine) {
+            painter.width(Self.plainText($0), font: font, decor: decor) <= cap
+        }
+        let lineHeight = (CTFontGetAscent(font) + CTFontGetDescent(font)) * (decor.lineHeight ?? 1)
         let spacing = (size * 0.15).rounded(.down)
         let total = lineHeight * CGFloat(lines.count) + spacing * CGFloat(max(0, lines.count - 1))
-        let maxLineWidth = lines.map { lineWidth(Self.plainText($0), font: font) }.max() ?? 0
+        let maxLineWidth = lines.map { painter.width(Self.plainText($0), font: font, decor: decor) }.max() ?? 0
         return LineMetrics(font: font, lines: lines, lineHeight: lineHeight, spacing: spacing,
                            totalHeight: total, maxWidth: maxLineWidth)
     }
@@ -383,6 +371,7 @@ nonisolated struct TextOverlayRenderer {
     /// the headline block plus kicker of a hero, the bar of a tag. nil for
     /// designs that lay themselves out (name tags, strike stats).
     func renderedBox(_ item: TextOverlayItem) -> CGRect? {
+        let item = item.applyingSharedStyle(textStyles).textLayoutItem
         if item.keepsPlacement, safeArea != nil {
             // Mirrors `render`: placed by hand, never nudged clear of platform chrome.
             var exact = self
@@ -575,7 +564,7 @@ nonisolated struct TextOverlayRenderer {
                             words: [Word], visibleWords: Int?) {
         guard !words.isEmpty else { return }
         let line = legacyLayout(item: item, words: words)
-        if item.boxOpacity > 0 {
+        if (item.boxOpacity > 0 || item.resolvedTextDecor.borderOn == true) && item.resolvedTextDecor.bgPerLine != true {
             fillRoundedBackground(in: context, item: item,
                                   topLeft: (Int(line.x), Int(line.top)),
                                   size: (Int(line.width.rounded(.up)), Int(line.height.rounded(.up))))
@@ -584,7 +573,7 @@ nonisolated struct TextOverlayRenderer {
         var cursorTop = line.top
         let ascent = CTFontGetAscent(m.font)
         for lineWords in m.lines {
-            let width = lineWidth(Self.plainText(lineWords), font: m.font)
+            let width = TextDecorPainter(scale: CGFloat(videoWidth) / 1080, naturalKerning: true).width(Self.plainText(lineWords), font: m.font, decor: item.resolvedTextDecor)
             let x = Self.alignedX(boxLeft: line.x, boxWidth: line.width, lineWidth: width, alignment: item.alignment)
             drawStyledLine(lineWords, font: m.font, item: item, visibleWords: visibleWords,
                            in: context, x: x, baselineFromTop: cursorTop + ascent)
@@ -649,18 +638,16 @@ nonisolated struct TextOverlayRenderer {
     /// radii still produce a valid capsule.
     private func fillRoundedBackground(in context: CGContext, item: TextOverlayItem,
                                        topLeft: (x: Int, y: Int), size: (w: Int, h: Int)) {
-        let (br, bg, bb) = Self.parseColor(item.bgcolor, fallback: (0, 0, 0))
-        let pad = Self.boxPadding
-        let rect = CGRect(x: CGFloat(topLeft.x - pad),
-                          y: CGFloat(videoHeight - topLeft.y - size.h - pad),
-                          width: CGFloat(size.w + pad * 2),
-                          height: CGFloat(size.h + pad * 2))
-        let radius = min(CGFloat(item.boxRadius ?? 4), rect.width / 2, rect.height / 2)
-        let path = CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil)
-        context.addPath(path)
-        context.setFillColor(CGColor(red: br, green: bg, blue: bb,
-                                     alpha: CGFloat(min(1, max(0, item.boxOpacity)))))
-        context.fillPath()
+        let decor = item.resolvedTextDecor
+        let painter = TextDecorPainter(scale: CGFloat(videoWidth) / 1080, naturalKerning: true)
+        let fontSize = CGFloat(item.fontsize) * CGFloat(videoHeight) / 1920
+        let padX = item.decor == nil ? CGFloat(Self.boxPadding) : fontSize * (decor.bgPaddingX ?? 0.125)
+        let padY = item.decor == nil ? CGFloat(Self.boxPadding) : fontSize * (decor.bgPaddingY ?? 0.125)
+        let rect = CGRect(x: CGFloat(topLeft.x) - padX,
+                          y: CGFloat(videoHeight - topLeft.y - size.h) - padY,
+                          width: CGFloat(size.w) + padX * 2, height: CGFloat(size.h) + padY * 2)
+        painter.background(in: context, rect: rect, decor: decor,
+                           radius: item.decor == nil ? CGFloat(item.boxRadius ?? 4) : nil)
     }
 
     // MARK: - Pro compositions
@@ -725,12 +712,13 @@ nonisolated struct TextOverlayRenderer {
     /// The hero headline auto-fitted to its box exactly like the fitted-box
     /// path (0.08em line spacing, Anton by default).
     func heroGeometry(item: TextOverlayItem, words: [Word]) -> HeroGeometry {
-        let boxWidth = Double(videoWidth) * (item.wFrac ?? 0.82)
+        let boxWidth = Double(videoWidth) * min(item.wFrac ?? 0.82, item.resolvedTextDecor.maxWidthFrac ?? 1)
         let boxHeight = Double(videoHeight) * (item.hFrac ?? 0.12)
         let (centerX, centerY) = clamped(centerX: Double(videoWidth) * (item.xFrac ?? 0.5),
                                          centerY: Double(videoHeight) * (item.yFrac ?? 0.2),
                                          width: boxWidth, height: boxHeight)
         func metrics(for size: CGFloat) -> LineMetrics {
+            if item.decor != nil { return self.metrics(item: item, words: words, size: size, maxWidth: boxWidth) }
             let font = resolveFont(size: size, family: item.fontfamily ?? "Anton",
                                    bold: item.bold, italic: item.italic)
             let lines = wrap(words, font: font, maxWidth: boxWidth, maxWords: item.resolvedWordsPerLine)
@@ -741,7 +729,7 @@ nonisolated struct TextOverlayRenderer {
             return LineMetrics(font: font, lines: lines, lineHeight: lineHeight, spacing: spacing,
                                totalHeight: total, maxWidth: maxLineWidth)
         }
-        var low = 6, high = Int(max(boxWidth, boxHeight)), best = 6
+        var low = 6, high = item.decor == nil ? Int(max(boxWidth, boxHeight)) : max(6, item.fontsize * videoHeight / 1920), best = 6
         while low <= high {
             let mid = (low + high) / 2
             let m = metrics(for: CGFloat(mid))
@@ -796,7 +784,30 @@ nonisolated struct TextOverlayRenderer {
             let kern = CTFontGetSize(kickerFont) * 0.14
             context.textPosition = CGPoint(x: centerX - Double(textWidth - kern) / 2,
                                            y: barCenterY - (ascent - descent) / 2)
-            CTLineDraw(kickerLine, context)
+            if item.decor != nil {
+                var decor = item.resolvedTextDecor
+                decor.bgOn = false; decor.borderOn = false
+                TextDecorPainter(scale: CGFloat(videoWidth) / 1080, naturalKerning: true).draw(
+                    TextCasing.apply(item.kicker ?? "", casing: decor.casing), font: kickerFont,
+                    at: context.textPosition, decor: decor, in: context, drawBackground: false)
+            } else { CTLineDraw(kickerLine, context) }
+        }
+
+        if item.decor != nil {
+            if item.resolvedTextDecor.bgPerLine != true {
+                fillRoundedBackground(in: context, item: item,
+                    topLeft: (Int(centerX - Double(m.maxWidth) / 2), Int(blockTop)),
+                    size: (Int(m.maxWidth), Int(m.totalHeight)))
+            }
+            var top = CGFloat(blockTop)
+            for row in m.lines {
+                let width = TextDecorPainter(scale: CGFloat(videoWidth) / 1080, naturalKerning: true).width(Self.plainText(row), font: m.font, decor: item.resolvedTextDecor)
+                let x = Self.alignedX(boxLeft: CGFloat(centerX) - m.maxWidth / 2, boxWidth: m.maxWidth, lineWidth: width, alignment: item.alignment)
+                drawStyledLine(row, font: m.font, item: item, visibleWords: visibleWords, in: context,
+                               x: x, baselineFromTop: top + CTFontGetAscent(m.font))
+                top += m.lineHeight + m.spacing
+            }
+            return
         }
 
         // Headline lines: outline with ambient shadow, solid fill with a
@@ -894,29 +905,31 @@ nonisolated struct TextOverlayRenderer {
     /// The tag chip: the largest font whose line fits the box minus the
     /// bar's padding, and the bar around it.
     func tagGeometry(item: TextOverlayItem, words: [Word]) -> TagGeometry {
-        let maxWidth = Double(videoWidth) * (item.wFrac ?? 0.8)
+        let maxWidth = Double(videoWidth) * min(item.wFrac ?? 0.8, item.resolvedTextDecor.maxWidthFrac ?? 1)
         let maxHeight = Double(videoHeight) * (item.hFrac ?? 0.06)
         let (centerX, centerY) = clamped(centerX: Double(videoWidth) * (item.xFrac ?? 0.5),
                                          centerY: Double(videoHeight) * (item.yFrac ?? 0.2),
                                          width: maxWidth, height: maxHeight)
         let plain = Self.plainText(words)
 
-        var low = 6, high = Int(maxHeight), best = 6
+        var low = 6, high = item.decor == nil ? Int(maxHeight) : min(Int(maxHeight), max(6, item.fontsize * videoHeight / 1920)), best = 6
         while low <= high {
             let mid = (low + high) / 2
             let font = resolveFont(size: CGFloat(mid), family: item.fontfamily ?? "Archivo Black",
                                    bold: item.bold, italic: item.italic)
             // Bar padding eats into the width budget.
-            if lineWidth(plain, font: font) <= maxWidth - Double(CGFloat(mid)) * 2.4 { best = mid; low = mid + 1 }
+            if TextDecorPainter(scale: CGFloat(videoWidth) / 1080, naturalKerning: true).width(plain, font: font, decor: item.resolvedTextDecor) <= maxWidth - Double(CGFloat(mid)) * 2.4 { best = mid; low = mid + 1 }
             else { high = mid - 1 }
         }
-        let font = resolveFont(size: CGFloat(best), family: item.fontfamily ?? "Archivo Black",
-                               bold: item.bold, italic: item.italic)
+        let font = item.decor == nil
+            ? resolveFont(size: CGFloat(best), family: item.fontfamily ?? "Archivo Black", bold: item.bold, italic: item.italic)
+            : TextDecorPainter.font(family: item.fontfamily ?? "Archivo Black", size: CGFloat(best), decor: item.resolvedTextDecor)
         let white = CGColor(red: 1, green: 1, blue: 1, alpha: 1)
         let attributes = kernedAttributes(font: font, color: white, trackingEm: 0.03)
         let tagLine = CTLineCreateWithAttributedString(
             NSAttributedString(string: plain, attributes: attributes))
-        let textWidth = CGFloat(CTLineGetTypographicBounds(tagLine, nil, nil, nil))
+        let textWidth = item.decor == nil ? CGFloat(CTLineGetTypographicBounds(tagLine, nil, nil, nil))
+            : TextDecorPainter(scale: CGFloat(videoWidth) / 1080, naturalKerning: true).width(plain, font: font, decor: item.resolvedTextDecor)
         let barHeight = (CTFontGetAscent(font) + CTFontGetDescent(font)) * 1.7
         return TagGeometry(centerX: centerX, centerY: centerY, font: font, line: tagLine, attributes: attributes,
                            textWidth: textWidth, barWidth: textWidth + barHeight * 1.2, barHeight: barHeight)
@@ -933,6 +946,11 @@ nonisolated struct TextOverlayRenderer {
         let dark = Self.cgColor(item.bgcolor, fallback: (0.07, 0.07, 0.09))
         let accent = Self.cgColor(item.accentColor, fallback: (1, 0.84, 0))
 
+        if item.decor != nil {
+            TextDecorPainter(scale: CGFloat(videoWidth) / 1080, naturalKerning: true).background(in: context,
+                rect: CGRect(x: center.x - barWidth / 2, y: center.y - barHeight / 2, width: barWidth, height: barHeight),
+                decor: item.resolvedTextDecor)
+        } else {
         // Bar with a soft lift shadow.
         context.saveGState()
         context.setShadow(offset: CGSize(width: 0, height: -6), blur: 22,
@@ -941,6 +959,8 @@ nonisolated struct TextOverlayRenderer {
         context.setFillColor(dark)
         context.fillPath()
         context.restoreGState()
+
+        }
 
         // Accent stripe hugging the leading edge (same skew).
         let stripeWidth = barHeight * 0.16
@@ -953,6 +973,11 @@ nonisolated struct TextOverlayRenderer {
         let kern = CTFontGetSize(font) * 0.03
         let textX = center.x - (textWidth - kern) / 2
         let baselineY = center.y - (ascent - descent) / 2
+        if item.decor != nil {
+            drawStyledLine(words, font: font, item: item, visibleWords: visibleWords, in: context,
+                           x: textX, baselineFromTop: CGFloat(videoHeight) - baselineY)
+            return
+        }
         if let visibleWords, visibleWords < words.count {
             let offsets = wordOffsets(words, font: font)
             for (position, word) in words.enumerated() where word.index < visibleWords {
@@ -1051,45 +1076,34 @@ nonisolated struct TextOverlayRenderer {
     private func drawStyledLine(_ words: [Word], font: CTFont, item: TextOverlayItem,
                                 visibleWords: Int?, in context: CGContext,
                                 x: CGFloat, baselineFromTop: CGFloat) {
-        let position = CGPoint(x: x, y: CGFloat(videoHeight) - baselineFromTop)
-        let fontSize = CTFontGetSize(font)
-        // CT stroke width is a percentage of the font size; the stroke is
-        // centered on the glyph edge, so double it to get the requested
-        // outward thickness once the fill pass covers the inner half.
-        let strokePercent = item.strokeColor != nil && item.strokeWidthEm > 0
-            ? CGFloat(item.strokeWidthEm) * 200 : 0
-
-        context.saveGState()
-        if item.shadowOpacity > 0 {
-            context.setShadow(offset: CGSize(width: 0, height: -fontSize * 0.05),
-                              blur: fontSize * 0.15,
-                              color: CGColor(red: 0, green: 0, blue: 0,
-                                             alpha: CGFloat(min(1, item.shadowOpacity))))
+        let painter = TextDecorPainter(scale: CGFloat(videoWidth) / 1080, naturalKerning: true)
+        var decor = item.resolvedTextDecor
+        let origin = CGPoint(x: x, y: CGFloat(videoHeight) - baselineFromTop)
+        if decor.bgPerLine == true {
+            let rect = CGRect(x: x, y: origin.y - CTFontGetDescent(font),
+                width: painter.width(Self.plainText(words), font: font, decor: decor),
+                height: CTFontGetAscent(font) + CTFontGetDescent(font))
+                .insetBy(dx: -CTFontGetSize(font) * (decor.bgPaddingX ?? 0.125),
+                         dy: -CTFontGetSize(font) * (decor.bgPaddingY ?? 0.125))
+            painter.background(in: context, rect: rect, decor: decor)
         }
-        if strokePercent > 0 {
-            // Round joins: sharp glyph corners (W, V, A) grow miter spikes
-            // at these stroke widths otherwise.
-            context.setLineJoin(.round)
-            context.setLineCap(.round)
-            let stroke = CTLineCreateWithAttributedString(
-                attributedLine(words, font: font, item: item,
-                               visibleWords: visibleWords, strokeWidthPercent: strokePercent))
-            context.textPosition = position
-            CTLineDraw(stroke, context)
-            drawDecorations(words, font: font, item: item, visibleWords: visibleWords,
-                            in: context, position: position, stroke: true)
-            // The fill draws on top without a shadow of its own — otherwise
-            // it would shade the stroke it sits on.
-            context.restoreGState()
-            context.saveGState()
+        decor.bgOn = false; decor.borderOn = false
+        let fullText = Self.plainText(words)
+        if (visibleWords == nil || words.allSatisfy({ $0.index < visibleWords! })) && !words.contains(where: { $0.highlighted && item.highlightColor != nil }) {
+            painter.draw(fullText, font: font, at: origin, decor: decor, in: context, drawBackground: false)
+            return
         }
-        let fill = CTLineCreateWithAttributedString(
-            attributedLine(words, font: font, item: item,
-                           visibleWords: visibleWords, strokeWidthPercent: 0))
-        context.textPosition = position
-        CTLineDraw(fill, context)
-        drawDecorations(words, font: font, item: item, visibleWords: visibleWords,
-                        in: context, position: position)
-        context.restoreGState()
+        let fullLine = painter.line(fullText, font: font, decor: decor)
+        var characterIndex = 0
+        for word in words {
+            let offset = CTLineGetOffsetForStringIndex(fullLine, characterIndex, nil)
+            characterIndex += word.text.utf16.count + 1
+            var wordDecor = decor
+            if word.highlighted, let color = item.highlightColor { wordDecor.color = color; wordDecor.fillEndColor = nil }
+            if visibleWords == nil || word.index < visibleWords! {
+                painter.draw(word.text, font: font, at: CGPoint(x: x + offset, y: origin.y), decor: wordDecor,
+                             in: context, drawBackground: false)
+            }
+        }
     }
 }

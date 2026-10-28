@@ -207,6 +207,7 @@ private struct ProfileSettingsTab: View {
     @Environment(AppStore.self) private var store
     @State private var newProfileName = ""
     @State private var showDeleteConfirmation = false
+    @State private var showingTextStyles = false
 
     var body: some View {
         @Bindable var store = store
@@ -234,6 +235,11 @@ private struct ProfileSettingsTab: View {
                 .disabled(store.activeProfile.profileName == "Default")
             }
 
+            Section("Text styles") {
+                Button("Named Text Styles…") { showingTextStyles = true }.lineLimit(1).fixedSize()
+                    .help(WizardFieldHelp.textDecor["sharedStyle"]!.tooltip)
+                    .sheet(isPresented: $showingTextStyles) { NamedTextStylesView() }
+            }
             Section("Brand") {
                 TextField("Brand name", text: $store.activeProfile.brandName)
                 TextField("Content domain", text: $store.activeProfile.contentDomain,

@@ -5,7 +5,12 @@ import Foundation
 actor CaptionPNGCache {
     private nonisolated let renderers: CaptionRendererSet
     private let directory: URL
-    private var cache: [CaptionOverlayPlan.Raster: CaptionRenderer.RenderedCaption] = [:]
+    private struct Key: Hashable {
+        var raster: CaptionOverlayPlan.Raster
+        var decor: [TextDecor]
+        var style: CaptionStyle
+    }
+    private var cache: [Key: CaptionRenderer.RenderedCaption] = [:]
 
     init(renderer: CaptionRenderer, directory: URL) {
         self.renderers = CaptionRendererSet(base: renderer)
@@ -22,12 +27,14 @@ actor CaptionPNGCache {
     }
 
     func rendered(_ raster: CaptionOverlayPlan.Raster) throws -> CaptionRenderer.RenderedCaption {
-        if let hit = cache[raster] { return hit }
         let renderer = renderer(styleID: raster.styleID)
+        let key = Key(raster: raster, decor: CaptionStyle.WordState.allCases.map { renderer.style.resolvedTextDecor(for: $0) }
+            + [renderer.style.pageDecor], style: renderer.style)
+        if let hit = cache[key] { return hit }
         let rendered = try renderer.render(text: raster.text, activeIndex: raster.activeIndex,
                                           emphasis: raster.emphasis, textColor: raster.textColor,
                                           frame: raster.frame, to: directory)
-        cache[raster] = rendered
+        cache[key] = rendered
         return rendered
     }
 }

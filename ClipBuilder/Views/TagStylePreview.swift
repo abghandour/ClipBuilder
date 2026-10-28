@@ -2,6 +2,8 @@ import SwiftUI
 
 struct TagStylePreview: View {
     @Binding var style: TagStyle
+    @Environment(AppStore.self) private var store
+    private var renderStyle: TagStyle { liveStyle.applyingSharedStyle(store.activeProfile.textStyles ?? []) }
     @Binding var selection: UUID?
     @State private var preview: TagPreviewImage?
     @State private var error: String?
@@ -55,10 +57,10 @@ struct TagStylePreview: View {
             .accessibilityLabel("Tag preview: Alex Morgan")
             if let error { FormCaption(error, tone: .warning) }
         }
-        .task(id: liveStyle) {
+        .task(id: renderStyle) {
             do {
                 try await Task.sleep(for: .milliseconds(150))
-                let snapshot = liveStyle
+                let snapshot = renderStyle
                 let value = try await Task.detached(priority: .userInitiated) {
                     try TagPreviewImage.render(style: snapshot)
                 }.value

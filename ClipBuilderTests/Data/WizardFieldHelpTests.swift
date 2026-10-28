@@ -55,3 +55,16 @@ struct WizardFieldHelpTests {
         for option in EncodeQuality.allCases where option != .custom { #expect(quality.contains(option.label)) }
     }
 }
+
+extension WizardFieldHelpTests {
+    @Test func textDecorationRowsHaveHelp() {
+        let rows = ["font", "size", "weight", "style", "casing", "color", "gradient", "fillEndColor", "fillAngle",
+                    "textOpacity", "strokeOn", "strokeWidth", "strokeColor", "strokeOpacity", "shadowOn",
+                    "shadowColor", "shadowOpacity", "shadowX", "shadowY", "shadowBlur", "shadowStyle", "shadowPreset", "bgOn", "bgColor",
+                    "bgOpacity", "bgRadius", "bgPaddingX", "bgPaddingY", "bgPerLine", "borderOn", "borderWidth",
+                    "borderColor", "letterSpacing", "lineHeight", "alignment", "maxWidthFrac", "sharedStyle", "name"]
+        for row in rows {
+            #expect((WizardFieldHelp.textDecor[row]?.tooltip.count ?? 0) > 20, "Missing copy for \(row)")
+        }
+    }
+}

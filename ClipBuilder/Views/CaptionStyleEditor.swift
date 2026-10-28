@@ -19,6 +19,7 @@ struct CaptionStyleEditor: View {
             Section {
                 FormGroupHeader(isDefault ? "Profile default" : "Caption style")
                 TextField("Name", text: $name).disabled(isDefault)
+                SharedTextStylePicker(selection: $style.sharedStyleID)
             }
             Section {
                 FormGroupHeader("Captions")
@@ -31,26 +32,8 @@ struct CaptionStyleEditor: View {
                     Text("Middle").tag("middle")
                     Text("Bottom").tag("bottom")
                 }.help("Default caption position; individual clips can override it.")
-                Picker("Alignment", selection: alignment) {
-                    Text("Leading").lineLimit(1).fixedSize().tag("leading")
-                    Text("Center").lineLimit(1).fixedSize().tag("center")
-                    Text("Trailing").lineLimit(1).fixedSize().tag("trailing")
-                }
-                .pickerStyle(.segmented)
-                Toggle("Uppercase", isOn: setting(\.uppercase, default: false))
-                    .help("Display captions in uppercase without changing the transcript.")
-                Toggle("Background", isOn: $style.bgOn)
-                    .help("Fill a background behind the whole caption page.")
-                if style.bgOn {
-                    ColorPicker("Background colour", selection: overlayColorBinding($style.bgColor), supportsOpacity: false)
-                        .help("Colour of the caption page background.")
-                        .formDependent()
-                    Slider(value: setting(\.bgRadius, default: style.resolvedPageRadius), in: 0...60, step: 1) {
-                        Text("Corner radius: \(Int(style.resolvedPageRadius)) pt").lineLimit(1).fixedSize()
-                    }
-                    .help("Round the page background corners at 1080 pixels wide. Zero makes square corners.")
-                    .formDependent()
-                }
+                TextDecorControls(decor: $style.decor, fontFamily: .constant(nil), inherited: style.legacyDecor, boxOnly: true,
+                                  sourceLabel: "caption page")
                 Picker(selection: setting(\.reveal, default: style.resolvedReveal)) {
                     Text("All at once").lineLimit(1).fixedSize().tag("none")
                     Text("As spoken").lineLimit(1).fixedSize().tag("word")

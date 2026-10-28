@@ -112,7 +112,7 @@ extension WizardEngine {
                                              log: @escaping @Sendable (String) -> Void) async throws -> TimelineDocument {
         let sourceCuts = try await WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: sceneMap,
             options: options, database: database, profile: profile,
-            captionStyle: profile.captionStyle(id: options.captionStyleID), log: log)
+            captionStyle: profile.renderCaptionStyle(id: options.captionStyleID), log: log)
         let cuts = sourceCuts.reduce(into: [Int: TimelineDocument]()) { result, entry in
             result[entry.key] = WizardOrdinaryTimeline.retimed(entry.value, speed: plan.clips[entry.key].speed)
         }
@@ -131,7 +131,7 @@ extension WizardEngine {
             let duration = (clip.end - clip.start) / clip.speed
             if cuts[index] == nil {
                 for var item in WizardNameTags.ordinary(scene: scene, duration: duration, people: people, tagText: tagText,
-                                                       options: options, captionStyle: profile.captionStyle(id: options.captionStyleID),
+                                                       options: options, captionStyle: profile.renderCaptionStyle(id: options.captionStyleID),
                                                        profile: profile, imageAspects: imageAspects) {
                     item.startTime += cursor
                     item.endTime += cursor
@@ -142,7 +142,7 @@ extension WizardEngine {
         }
         for index in document.videoTrack.indices {
             document.videoTrack[index].captions = options.addCaptions && document.videoTrack[index].track == 0
-                ? (options.captionPositionOverride ?? profile.captionStyle(id: options.captionStyleID).position) : "none"
+                ? (options.captionPositionOverride ?? profile.renderCaptionStyle(id: options.captionStyleID).position) : "none"
         }
         return document
     }

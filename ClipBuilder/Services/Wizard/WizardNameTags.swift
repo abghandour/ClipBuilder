@@ -44,7 +44,7 @@ nonisolated enum WizardNameTags {
         }
         let style = profile.tagStyle(id: options.nameTagStyleID)
         let tags = NameTagPlanner.plan(areas: areas, people: names,
-            settings: settings(options: options, captionStyle: captionStyle), style: style, imageAspects: imageAspects)
+            settings: settings(options: options, captionStyle: captionStyle.applyingSharedStyle(profile.textStyles ?? [])), style: style.applyingSharedStyle(profile.textStyles ?? []), imageAspects: imageAspects)
         let canvas = CGSize(width: options.renderSettings.width, height: options.renderSettings.height)
         return tags.map { NameTagPlanner.overlay($0, canvas: canvas, style: style) }
     }

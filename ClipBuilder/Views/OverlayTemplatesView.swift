@@ -287,6 +287,21 @@ struct OverlayTemplateEditor: View {
     @State private var selection: OverlayItemSelection?
     @State private var playbackStart: Date?
     @State private var showingImagePicker = false
+    @Environment(AppStore.self) private var store
+    // A preview aid, not part of the template: remembered across launches.
+    @AppStorage("overlays.stage.backdropMode") private var backdropMode = OverlayStageBackdrop.Mode.black.rawValue
+    @AppStorage("overlays.stage.backdropColor") private var backdropColorHex = "#000000"
+    @AppStorage("overlays.stage.backdropVideo") private var backdropVideoPath = ""
+    @AppStorage("overlays.stage.backdropTime") private var backdropTime = 0.0
+    /// Slider position while scrubbing; the stored time follows after a short pause.
+    @State private var scrubTime = 0.0
+    @State private var scrubTask: Task<Void, Never>?
+
+    private var backdrop: OverlayStageBackdrop {
+        OverlayStageBackdrop(mode: OverlayStageBackdrop.Mode(rawValue: backdropMode) ?? .black, colorHex: backdropColorHex,
+                             videoPath: backdropVideoPath, time: backdropTime)
+    }
+    private var backdropVideo: VideoRecord? { store.videos.first { $0.url.path == backdropVideoPath } }
 
     var body: some View {
         HStack(alignment: .top, spacing: 0) {
@@ -326,11 +341,11 @@ struct OverlayTemplateEditor: View {
                         let time = context.date.timeIntervalSince(playbackStart)
                             .truncatingRemainder(dividingBy: total)
                         OverlayPreviewCanvas(composition: $composition, selection: $selection,
-                                             time: time)
+                                             time: time, backdropColor: backdrop.color, backdropFrame: backdrop.frame)
                     }
                 } else {
                     OverlayPreviewCanvas(composition: $composition, selection: $selection,
-                                         time: nil)
+                                         time: nil, backdropColor: backdrop.color, backdropFrame: backdrop.frame)
                 }
             }
             .frame(width: 270, height: 480)
@@ -354,6 +369,65 @@ struct OverlayTemplateEditor: View {
                 .foregroundStyle(.secondary)
                 .multilineTextAlignment(.center)
                 .frame(width: 270)
+            backdropControls
+                .frame(width: 270)
+        }
+    }
+
+    // MARK: - Stage backdrop
+
+    /// Black, a solid colour, or a frame of a source video at a chosen time,
+    /// so the text can be judged against what it will sit on.
+    private var backdropControls: some View {
+        VStack(alignment: .leading, spacing: 8) {
+            Picker("Background", selection: $backdropMode) {
+                ForEach(OverlayStageBackdrop.Mode.allCases, id: \.rawValue) { mode in
+                    Text(mode.label).lineLimit(1).fixedSize().tag(mode.rawValue)
+                }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .help("What the stage shows behind the overlay. Only a preview aid; it is not saved with the template.")
+            switch backdrop.mode {
+            case .black:
+                EmptyView()
+            case .color:
+                ColorPicker(selection: overlayColorBinding($backdropColorHex), supportsOpacity: false) {
+                    Text("Stage colour").lineLimit(1).fixedSize()
+                }
+                .help("Solid colour behind the overlay.")
+            case .video:
+                Picker(selection: $backdropVideoPath) {
+                    Text("Choose a source").lineLimit(1).fixedSize().tag("")
+                    ForEach(store.videos) { video in
+                        Text(video.filename).lineLimit(1).fixedSize().tag(video.url.path)
+                    }
+                } label: { Text("Source").lineLimit(1).fixedSize() }
+                .help("A video from this profile's sources. The frame at the scrubbed time is drawn behind the overlay.")
+                if let video = backdropVideo {
+                    HStack {
+                        Slider(value: $scrubTime, in: 0...max(0.1, video.duration))
+                            .help("Scrub to the moment the overlay should be judged against.")
+                        Text(WizardPreviewClips.clock(scrubTime))
+                            .font(.caption.monospacedDigit()).lineLimit(1).fixedSize()
+                    }
+                }
+            }
+        }
+        .onAppear { scrubTime = backdropTime }
+        .onChange(of: backdropVideoPath) {
+            scrubTime = 0
+            backdropTime = 0
+        }
+        .onChange(of: scrubTime) {
+            // Frames are generated per distinct time; settle before asking.
+            scrubTask?.cancel()
+            let time = scrubTime
+            scrubTask = Task {
+                try? await Task.sleep(for: .milliseconds(120))
+                guard !Task.isCancelled else { return }
+                backdropTime = time
+            }
         }
     }
 
@@ -553,9 +627,13 @@ struct OverlayPreviewCanvas: View {
     @Binding var composition: OverlayComposition
     @Binding var selection: OverlayItemSelection?
     let time: Double?
-    /// Draw the black stage + thirds grid. False when the canvas sits over
+    /// Draw the stage backdrop + thirds grid. False when the canvas sits over
     /// live video (the manual build's overlay preview).
     var backdrop: Bool = true
+    /// Solid stage colour; a source frame draws over it when set, so text
+    /// can be judged against real footage instead of black.
+    var backdropColor: Color = .black
+    var backdropFrame: OverlayStageBackdrop.Frame? = nil
 
     var body: some View {
         GeometryReader { geo in
@@ -563,7 +641,12 @@ struct OverlayPreviewCanvas: View {
             let total = composition.duration
             ZStack(alignment: .topLeading) {
                 if backdrop {
-                    Rectangle().fill(.black)
+                    Rectangle().fill(backdropColor)
+                    if let backdropFrame {
+                        VideoThumbnail(url: backdropFrame.url, time: backdropFrame.time, cornerRadius: 0)
+                            .frame(width: frame.width, height: frame.height)
+                            .allowsHitTesting(false)
+                    }
                     // Faint thirds grid to help placement.
                     Path { path in
                         for fraction in [1.0 / 3.0, 2.0 / 3.0] {
@@ -697,6 +780,7 @@ private struct OverlayEffect {
 /// A text item on the stage — the same SwiftUI approximation the Builder
 /// preview uses (the render is the source of truth).
 private struct PreviewTextLayer: View {
+    @Environment(AppStore.self) private var store
     @Binding var item: TextOverlayItem
     let frame: CGSize
     let isSelected: Bool
@@ -705,13 +789,91 @@ private struct PreviewTextLayer: View {
 
     @State private var dragStart: CGPoint?
     @State private var resizeBaseFontsize: Int?
+    /// The box the export renderer drew (canvas pixels) and the item's
+    /// fractional position at that render. The frame and raster follow the
+    /// item live between renders by the position delta, so a drag never
+    /// waits on the preview debounce.
+    @State private var rendered: (box: CGRect?, position: CGPoint)?
+
+    private var position: CGPoint { CGPoint(x: item.xFrac ?? 0.5, y: item.yFrac ?? 0.8) }
+
+    private var center: CGPoint {
+        CGPoint(x: frame.width * position.x, y: frame.height * position.y)
+    }
+
+    private var radius: CGFloat { (item.boxRadius ?? 4) * frame.width / 1080 }
+
+    /// Stage-point offset of the current position from the rendered one.
+    private var liveShift: CGSize {
+        guard let rendered else { return .zero }
+        return CGSize(width: (position.x - rendered.position.x) * frame.width,
+                      height: (position.y - rendered.position.y) * frame.height)
+    }
 
     var body: some View {
+        if item.usesTextDecor { rasterBody } else { legacyBody }
+    }
+
+    /// Export-faithful raster with the selection frame on the drawn box, so
+    /// the outline matches the text and a click on the text selects it.
+    private var rasterBody: some View {
+        let fallback = CGRect(x: center.x - frame.width * (item.wFrac ?? 0.6) / 2,
+                              y: center.y - frame.height * (item.hFrac ?? 0.1) / 2,
+                              width: frame.width * (item.wFrac ?? 0.6), height: frame.height * (item.hFrac ?? 0.1))
+        let scale = frame.width / 1080
+        let shift = liveShift
+        let box = rendered?.box.map {
+            CGRect(x: $0.minX * scale + shift.width, y: $0.minY * scale + shift.height,
+                   width: $0.width * scale, height: $0.height * scale)
+        } ?? fallback
+        return ZStack(alignment: .topLeading) {
+            TextOverlayRasterPreview(item: item, canvas: CGSize(width: 1080, height: 1080 * frame.height / max(1, frame.width)),
+                                     onBox: { box in rendered = (box, position) })
+                .frame(width: frame.width, height: frame.height)
+                .offset(shift)
+                .allowsHitTesting(false)
+            Color.clear
+                .contentShape(Rectangle())
+                .frame(width: max(8, box.width), height: max(8, box.height))
+                .overlay {
+                    if isSelected && editable {
+                        RoundedRectangle(cornerRadius: radius)
+                            .strokeBorder(Color.accentColor, lineWidth: 1.5)
+                    }
+                }
+                .overlay(alignment: .bottomTrailing) {
+                    if isSelected && editable {
+                        resizeHandle.offset(x: 6, y: 6)
+                    }
+                }
+                .position(x: box.midX, y: box.midY)
+                .gesture(dragGesture, isEnabled: editable)
+                .onTapGesture(perform: onSelect)
+                .contextMenu { styleClipboardMenu }
+        }
+        .frame(width: frame.width, height: frame.height)
+    }
+
+    /// Copy Style / Paste Style straight from the stage, same payload as the inspector.
+    @ViewBuilder private var styleClipboardMenu: some View {
+        Button("Copy Style") {
+            TextStyleClipboard.write(TextStyleClipboard.payload(
+                stored: item.decor, inherited: item.applyingSharedStyle(store.activeProfile.textStyles ?? []).resolvedTextDecor,
+                fontFamily: item.fontOverride, sharedStyleID: item.sharedStyleID, source: "overlay"))
+        }
+        Button("Paste Style") {
+            guard let payload = TextStyleClipboard.read() else { return }
+            let pasted = TextStyleClipboard.pasted(payload, onto: item.decor, linkShared: true)
+            item.decor = pasted.decor
+            item.sharedStyleID = pasted.sharedStyleID ?? item.sharedStyleID
+            item.fontOverride = pasted.fontFamily
+        }
+        .disabled(TextStyleClipboard.read() == nil)
+    }
+
+    private var legacyBody: some View {
         let (r, g, b) = TextOverlayRenderer.parseColor(item.fontcolor)
-        let radius = (item.boxRadius ?? 4) * frame.width / 1080
-        let center = CGPoint(x: frame.width * (item.xFrac ?? 0.5),
-                             y: frame.height * (item.yFrac ?? 0.8))
-        Text(item.text.isEmpty ? "Text" : item.text)
+        return Text(item.text.isEmpty ? "Text" : item.text)
             .font(font)
             .bold(item.bold)
             .italic(item.italic)
@@ -733,18 +895,21 @@ private struct PreviewTextLayer: View {
             }
             .overlay(alignment: .bottomTrailing) {
                 if isSelected && editable {
-                    ResizeHandle(center: center, onScale: { factor in
-                        if resizeBaseFontsize == nil { resizeBaseFontsize = item.fontsize }
-                        if let base = resizeBaseFontsize {
-                            item.fontsize = min(200, max(10, Int((Double(base) * factor).rounded())))
-                        }
-                    }, onEnd: { resizeBaseFontsize = nil })
-                        .offset(x: 6, y: 6)
+                    resizeHandle.offset(x: 6, y: 6)
                 }
             }
             .position(center)
             .gesture(dragGesture, isEnabled: editable)
             .onTapGesture(perform: onSelect)
+    }
+
+    private var resizeHandle: some View {
+        ResizeHandle(center: center, onScale: { factor in
+            if resizeBaseFontsize == nil { resizeBaseFontsize = item.fontsize }
+            if let base = resizeBaseFontsize {
+                item.fontsize = min(200, max(10, Int((Double(base) * factor).rounded())))
+            }
+        }, onEnd: { resizeBaseFontsize = nil })
     }
 
     private var font: Font {

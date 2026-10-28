@@ -6,66 +6,34 @@ import SwiftUI
 struct TextOverlayForm: View {
     @Binding var item: TextOverlayItem
 
-    private func decoration(_ key: WritableKeyPath<TextOverlayItem, Bool?>) -> Binding<Bool> {
-        Binding(get: { item[keyPath: key] ?? false }, set: { item[keyPath: key] = $0 })
-    }
+    @Environment(AppStore.self) private var store
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             TextEditor(text: $item.text)
                 .frame(minHeight: 48, maxHeight: 80)
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
-
-            HStack(spacing: 12) {
-                TextStyleBar(bold: $item.bold, italic: $item.italic,
-                             underline: decoration(\.underline), strikethrough: decoration(\.strikethrough))
-                    .help("Bold, italic, underline and strikethrough.")
-                PointSizeField(value: Binding(get: { Double(item.fontsize) }, set: { item.fontsize = Int($0) }),
-                               range: 10...200, step: 2)
-                    .help("Font size in points at 1080 by 1920.")
-            }
-            FontFamilyPicker(family: $item.fontfamily)
-            Picker("Alignment", selection: $item.alignment) {
-                Label("Left", systemImage: "text.alignleft").tag("left")
-                Label("Center", systemImage: "text.aligncenter").tag("center")
-                Label("Right", systemImage: "text.alignright").tag("right")
-            }
-            .pickerStyle(.segmented)
-            .labelStyle(.iconOnly)
-            .help("Where the text sits in its box. Text that outgrows the box extends toward the other side, then wraps.")
-            Picker("Words per line", selection: Binding(
-                get: { item.wordsPerLine ?? TextOverlayItem.defaultWordsPerLine },
-                set: { item.wordsPerLine = $0 == TextOverlayItem.defaultWordsPerLine ? nil : $0 })) {
-                Text("Width only").tag(0)
+            // Cropped to the text so the decorations read at inspector width;
+            // designs without a box fall back to the whole frame.
+            TextOverlayRasterPreview(item: item, cropToBox: true)
+                .frame(maxWidth: .infinity, minHeight: 96, maxHeight: 220)
+                .background(Color(nsColor: .darkGray), in: RoundedRectangle(cornerRadius: 6))
+            SharedTextStylePicker(selection: $item.sharedStyleID)
+            TextDecorControls(decor: $item.decor, fontFamily: $item.fontOverride,
+                inherited: item.applyingSharedStyle(store.activeProfile.textStyles ?? []).resolvedTextDecor,
+                sharedStyleID: $item.sharedStyleID, sourceLabel: "overlay")
+            Picker(selection: Binding(get: { item.wordsPerLine ?? TextOverlayItem.defaultWordsPerLine }, set: { item.wordsPerLine = $0 })) {
+                Text("Width only").lineLimit(1).fixedSize().tag(0)
                 ForEach([3, 4, 5, 6, 7, 8, 10, 12], id: \.self) { count in
-                    Text(count == TextOverlayItem.defaultWordsPerLine ? "\(count) (default)" : String(count)).tag(count)
+                    Text(String(count)).lineLimit(1).fixedSize().tag(count)
                 }
-            }
-            .help("Start a new line after this many words even when more would fit the width, like Words per page for captions. Width only wraps on width alone.")
-
-            ColorPicker("Text color",
-                        selection: overlayColorBinding($item.fontcolor),
-                        supportsOpacity: false)
-            ColorPicker("Background color",
-                        selection: overlayOptionalColorBinding($item.bgcolor, fallback: "#000000"),
-                        supportsOpacity: false)
-
-            VStack(alignment: .leading, spacing: 2) {
-                Text(String(format: "Background opacity: %.0f%%", item.boxOpacity * 100))
-                    .font(.caption)
-                Slider(value: $item.boxOpacity, in: 0...1)
-                Text(String(format: "Background corner radius: %.0f", item.boxRadius ?? 4))
-                    .font(.caption)
-                Slider(value: Binding(
-                    get: { item.boxRadius ?? 4 },
-                    set: { item.boxRadius = $0 }), in: 0...60, step: 1)
-                Text(String(format: "Element opacity: %.0f%%", item.opacity * 100))
-                    .font(.caption)
-                Slider(value: $item.opacity, in: 0.05...1)
-            }
+            } label: { Text("Words per line").lineLimit(1).fixedSize() }
+            .help("Wrap after this many words, or use only the width cap.")
+            Slider(value: $item.opacity, in: 0...1) {
+                Text("Element opacity").lineLimit(1).fixedSize()
+            }.help("Opacity of the text, box and shadow together.")
         }
     }
-
 }
 
 /// The image-overlay style editor shared by the Builder inspector and the
@@ -114,7 +82,7 @@ func overlayOptionalColorBinding(_ string: Binding<String?>, fallback: String) -
         set: { string.wrappedValue = overlayHexString($0) })
 }
 
-private func overlayColor(_ string: String?) -> Color {
+func overlayColor(_ string: String?) -> Color {
     let (r, g, b) = TextOverlayRenderer.parseColor(string)
     return Color(red: r, green: g, blue: b)
 }

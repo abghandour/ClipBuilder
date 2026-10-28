@@ -1,6 +1,8 @@
 import Foundation
 
 nonisolated struct TagLineStyle: Codable, Sendable, Hashable {
+    var fontOverride: String?
+    var decor: TextDecor?
     var field: String = "Name"
     var font: String? = nil
     var scale: Double = 1
@@ -25,6 +27,8 @@ nonisolated struct TagLineStyle: Codable, Sendable, Hashable {
     var resolvedCornerRadius: Double { min(80, max(0, cornerRadius ?? 4)) }
 
     enum CodingKeys: String, CodingKey {
+        case fontOverride = "font_override"
+        case decor = "decor"
         case field
         case font
         case scale
@@ -59,6 +63,8 @@ nonisolated struct TagLineStyle: Codable, Sendable, Hashable {
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        fontOverride = try values.decodeIfPresent(String.self, forKey: .fontOverride)
+        decor = try values.decodeIfPresent(TextDecor.self, forKey: .decor)
         strikethrough = try values.decodeIfPresent(Bool.self, forKey: .strikethrough)
         bgOn = try values.decodeIfPresent(Bool.self, forKey: .bgOn)
         bgColor = try values.decodeIfPresent(String.self, forKey: .bgColor)
@@ -120,6 +126,8 @@ nonisolated struct TagImage: Codable, Sendable, Hashable, Identifiable {
 }
 
 nonisolated struct TagStyle: Codable, Sendable, Hashable {
+    var decor: TextDecor?
+    var sharedStyleID: String?
     var name: TagLineStyle = TagLineStyle(font: "Archivo Black")
     var description: TagLineStyle = TagLineStyle(field: "Role", font: "Archivo Black", scale: 0.72)
     var alignment: String = "leading"
@@ -130,6 +138,8 @@ nonisolated struct TagStyle: Codable, Sendable, Hashable {
     var images: [TagImage] = []
 
     enum CodingKeys: String, CodingKey {
+        case decor = "decor"
+        case sharedStyleID = "shared_style_id"
         case name
         case description
         case alignment
@@ -157,6 +167,8 @@ nonisolated struct TagStyle: Codable, Sendable, Hashable {
 
     init(from decoder: Decoder) throws {
         let values = try decoder.container(keyedBy: CodingKeys.self)
+        decor = try values.decodeIfPresent(TextDecor.self, forKey: .decor)
+        sharedStyleID = try values.decodeIfPresent(String.self, forKey: .sharedStyleID)
         name = try values.decodeIfPresent(TagLineStyle.self, forKey: .name) ?? TagLineStyle(font: "Archivo Black")
         description = try values.decodeIfPresent(TagLineStyle.self, forKey: .description) ?? TagLineStyle(field: "Role", font: "Archivo Black", scale: 0.72)
         alignment = try values.decodeIfPresent(String.self, forKey: .alignment) ?? "leading"

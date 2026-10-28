@@ -31,30 +31,37 @@ nonisolated extension TextOverlayRenderer {
 
     func styledNameTagLayout(_ item: TextOverlayItem, style: TagStyle, maxWidth: CGFloat,
                              aspects: [UUID: CGFloat]) -> NameTagLayout {
+        let style = style.applyingSharedStyle(textStyles)
         let styles = [style.name, style.description]
         var lines = Array(item.text.components(separatedBy: "\n").prefix(2)).enumerated().map {
-            styles[$0.offset].uppercase ? $0.element.uppercased() : $0.element
+            TextCasing.apply($0.element, casing: styles[$0.offset].resolvedTextDecor(over: style.lineDecor).casing)
         }
         func measure(_ size: Int) -> NameTagLayout {
             let pixels = CGFloat(size) * CGFloat(videoHeight) / 1920
             let fonts = lines.indices.map {
-                resolveFont(size: pixels * max(0.1, styles[$0].scale), family: styles[$0].font,
-                            bold: styles[$0].bold, italic: styles[$0].italic)
+                let decor = styles[$0].resolvedTextDecor(over: style.lineDecor)
+                return TextDecorPainter.font(family: styles[$0].fontOverride ?? styles[$0].font, size: pixels * (decor.size ?? 1), decor: decor)
             }
-            let padding = ceil(pixels * 0.24)
-            let gap = pixels * 0.12
+            let padding = ceil(pixels * (style.boxDecor.bgPaddingX ?? 0.24))
+            let paddingY = ceil(pixels * (style.boxDecor.bgPaddingY ?? 0.24))
+            let gap = pixels * (0.12 + ((style.lineDecor.lineHeight ?? 1) - 1))
             let geometry = TagLayout.layout(lines: lines.indices.map {
-                TagLayout.Line(size: CGSize(width: lineWidth(lines[$0], font: fonts[$0]),
-                    height: CTFontGetAscent(fonts[$0]) + CTFontGetDescent(fonts[$0])),
+                TagLayout.Line(size: CGSize(width: TextDecorPainter(scale: CGFloat(videoWidth) / 1080, naturalKerning: true).width(lines[$0], font: fonts[$0], decor: styles[$0].resolvedTextDecor(over: style.lineDecor)),
+                    height: (CTFontGetAscent(fonts[$0]) + CTFontGetDescent(fonts[$0])) * (styles[$0].resolvedTextDecor(over: style.lineDecor).lineHeight ?? 1)),
                     underlineThickness: styles[$0].underline
                         ? CTFontGetSize(fonts[$0]) * max(0, styles[$0].underlineThickness) : 0,
                     strikethrough: styles[$0].resolvedStrikethrough ? max(1, CTFontGetUnderlineThickness(fonts[$0])) : 0,
-                    chipPadding: styles[$0].resolvedBackground ? CTFontGetSize(fonts[$0]) * 0.18 : 0,
+                    chipPadding: styles[$0].resolvedTextDecor(over: style.lineDecor).bgOn == true
+                        ? CTFontGetSize(fonts[$0]) * (styles[$0].resolvedTextDecor(over: style.lineDecor).bgPaddingX ?? 0.18) : 0,
+                    chipPaddingY: styles[$0].resolvedTextDecor(over: style.lineDecor).bgOn == true
+                        ? CTFontGetSize(fonts[$0]) * (styles[$0].resolvedTextDecor(over: style.lineDecor).bgPaddingY ?? 0.18) : 0,
                     strikethroughY: CTFontGetAscent(fonts[$0]) - CTFontGetXHeight(fonts[$0]) / 2)
-            }, padding: padding, gap: gap, alignment: style.alignment, images: style.images, aspects: aspects)
+            }, padding: padding, gap: gap, alignment: style.boxDecor.alignment ?? style.alignment, images: style.images, aspects: aspects, paddingY: paddingY)
             return NameTagLayout(fontSize: size, lines: lines, fonts: fonts,
                 size: geometry.bounds.size, padding: padding, lineGap: gap, geometry: geometry)
         }
+        let cap = min(style.boxDecor.maxWidthFrac ?? 1, styles.map { $0.resolvedTextDecor(over: style.lineDecor).maxWidthFrac ?? 1 }.min() ?? 1)
+        let maxWidth = min(maxWidth, cap * CGFloat(videoWidth))
         var size = max(22, item.fontsize)
         var result = measure(size)
         while size > 22 && result.size.width > maxWidth {
@@ -100,20 +107,16 @@ nonisolated extension TextOverlayRenderer {
                 context.restoreGState()
             }
         }
-        if style.bgOn {
-            context.saveGState()
-            context.setFillColor(Self.cgColor(style.bgColor))
-            context.setAlpha(min(1, max(0, style.bgOpacity)))
-            let radius = max(0, style.cornerRadius) * Double(videoHeight) / 1920 * fit
-            context.addPath(CGPath(roundedRect: cgRect(geometry.textBlock), cornerWidth: radius,
-                                  cornerHeight: radius, transform: nil))
-            context.fillPath()
-            context.restoreGState()
+        let painter = TextDecorPainter(scale: CGFloat(videoWidth) / 1080 * fit, naturalKerning: true)
+        let boxDecor = style.boxDecor
+        if boxDecor.bgPerLine != true {
+            painter.background(in: context, rect: cgRect(geometry.textBlock), decor: boxDecor,
+                               radius: style.decor == nil ? style.cornerRadius * Double(videoHeight) / 1920 * fit : nil)
         }
         drawImages(behind: true)
         let styles = [style.name, style.description]
         for index in layout.lines.indices {
-            if let chip = geometry.chips[index] {
+            if styles[index].decor == nil && style.decor == nil, let chip = geometry.chips[index] {
                 context.saveGState()
                 context.setFillColor(Self.cgColor(styles[index].resolvedBackgroundColor))
                 context.setAlpha(styles[index].resolvedBackgroundOpacity)
@@ -126,16 +129,31 @@ nonisolated extension TextOverlayRenderer {
         }
         for index in layout.lines.indices {
             let font = CTFontCreateCopyWithAttributes(layout.fonts[index], CTFontGetSize(layout.fonts[index]) * fit, nil, nil)
-            context.setFillColor(Self.cgColor(styles[index].color))
-            context.textMatrix = .identity
-            context.textPosition = CGPoint(x: offset.x + geometry.origins[index].x * fit,
+            let lineDecor = styles[index].resolvedTextDecor(over: style.lineDecor)
+            let lineWidth = painter.width(layout.lines[index], font: font, decor: lineDecor)
+            let explicitAlignment = styles[index].decor?.alignment
+            let localX = explicitAlignment == "center" ? (geometry.textBlock.width * fit - lineWidth) / 2
+                : explicitAlignment == "trailing" ? (geometry.textBlock.width - layout.padding) * fit - lineWidth
+                : explicitAlignment == "leading" ? layout.padding * fit : geometry.origins[index].x * fit
+            let origin = CGPoint(x: offset.x + localX,
                 y: CGFloat(videoHeight) - offset.y - geometry.origins[index].y * fit - CTFontGetAscent(font))
-            CTLineDraw(line(layout.lines[index], font: font), context)
-            if let underline = geometry.underlines[index] {
+            var decor = styles[index].resolvedTextDecor(over: style.lineDecor)
+            let modern = styles[index].decor != nil || style.decor != nil
+            if boxDecor.bgPerLine == true {
+                let rect = CGRect(x: origin.x, y: origin.y - CTFontGetDescent(font),
+                    width: painter.width(layout.lines[index], font: font, decor: decor),
+                    height: CTFontGetAscent(font) + CTFontGetDescent(font))
+                    .insetBy(dx: -CTFontGetSize(font) * (boxDecor.bgPaddingX ?? 0.125),
+                             dy: -CTFontGetSize(font) * (boxDecor.bgPaddingY ?? 0.125))
+                painter.background(in: context, rect: rect, decor: boxDecor)
+            }
+            if !modern { decor.underline = false; decor.strikethrough = false }
+            painter.draw(layout.lines[index], font: font, at: origin, decor: decor, in: context, drawBackground: modern)
+            if !modern, let underline = geometry.underlines[index] {
                 context.setFillColor(Self.cgColor(styles[index].underlineColor ?? styles[index].color))
                 context.fill(cgRect(underline))
             }
-            if let strike = geometry.strikethroughs[index] {
+            if !modern, let strike = geometry.strikethroughs[index] {
                 context.setFillColor(Self.cgColor(styles[index].color))
                 context.fill(cgRect(strike))
             }
