@@ -44,9 +44,14 @@ slices, verify with the compiler.
 
 ## Working agreement
 
-- Codex implements; Claude builds, tests, and reviews. `HANDOFF.md` at the root
-  is the baton between them (Done / Unverified / Next / Do not touch). Read it
-  first, rewrite it before stopping, never commit it.
+- Who writes the code depends on whether a spec exists. Spec exists and the
+  files are named: Codex implements; Claude builds, tests, drives it live, and
+  reviews. No spec yet, or the bug has resisted one attempt: Claude
+  investigates and implements, then asks Codex for a read-only review with the
+  diff and nothing else, so it is not anchored on Claude's reasoning. One agent
+  edits the tree at a time. `HANDOFF.md` at the root is the baton between them
+  (Done / Unverified / Next / Do not touch). Read it first, rewrite it before
+  stopping, never commit it.
 - Never commit or push unless asked. No AI attribution in commits or PRs.
 - Plan docs go in `docs/` as `<Feature>-Plan.md` with a date and status line at
   the top. Implementation follows the plan's phases.
