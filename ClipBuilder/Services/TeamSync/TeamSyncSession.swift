@@ -14,6 +14,20 @@ actor TeamSyncSession {
         base = SupabaseClient(baseURL: url, apiKey: publishableKey)
     }
 
+    /// Whether a session is stored for this server, without touching the
+    /// keychain: a keychain read at launch can block on an access prompt.
+    /// The marker follows every save and sign-out; a session stored before
+    /// the marker existed is recognised on its next restore.
+    nonisolated static func hasStoredSession(url: String, defaults: UserDefaults = .standard) -> Bool {
+        defaults.bool(forKey: markerKey(url: url))
+    }
+
+    nonisolated static func markerKey(url: String) -> String { "teamSync.hasSession.\(url)" }
+
+    private func markStored(_ stored: Bool) {
+        UserDefaults.standard.set(stored, forKey: Self.markerKey(url: base.baseURL.absoluteString))
+    }
+
     private func query() -> [String: Any] {
         [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
          kSecAttrAccount as String: base.baseURL.absoluteString]
@@ -29,6 +43,7 @@ actor TeamSyncSession {
         guard status == errSecSuccess || status == errSecItemNotFound else { throw keychainError(status) }
         if let data = result as? Data { session = try JSONDecoder().decode(SupabaseClient.Session.self, from: data) }
         loaded = true
+        markStored(session != nil)
         return session
     }
 
@@ -45,6 +60,7 @@ actor TeamSyncSession {
         guard status == errSecSuccess else { throw keychainError(status) }
         session = value
         loaded = true
+        markStored(true)
     }
 
     private func keychainError(_ status: OSStatus) -> NSError {
@@ -99,5 +115,6 @@ actor TeamSyncSession {
         guard status == errSecSuccess || status == errSecItemNotFound else { throw keychainError(status) }
         session = nil
         loaded = true
+        markStored(false)
     }
 }

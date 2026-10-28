@@ -10,9 +10,10 @@ enum QATitlebarAccessory {
     private static let identifier = NSUserInterfaceItemIdentifier("com.mokotti-solutions.clipbuilder.qa-accessory")
     private typealias RootView = QATitlebarControls
 
-    static func sync(window: NSWindow, visible: Bool, syncVisible: Bool, store: AppStore) {
+    static func sync(window: NSWindow, visible: Bool, syncVisible: Bool, store: AppStore,
+                     openSettings: @escaping () -> Void) {
         let index = window.titlebarAccessoryViewControllers.firstIndex { $0.identifier == identifier }
-        let rootView = RootView(store: store, visible: visible, syncVisible: syncVisible)
+        let rootView = RootView(store: store, visible: visible, syncVisible: syncVisible, openSettings: openSettings)
         switch (visible || syncVisible, index) {
         case (true, nil):
             let controller = NSTitlebarAccessoryViewController()
@@ -40,13 +41,14 @@ private struct QATitlebarControls: View {
     let store: AppStore
     let visible: Bool
     let syncVisible: Bool
+    let openSettings: () -> Void
 
     var body: some View {
         // Both controls are AppKit bezels of the same control size, so
         // their centres line up; a borderless image next to a bordered
         // popup sat visibly higher.
         HStack(alignment: .center, spacing: 8) {
-            if syncVisible { TeamSyncTitlebarButton().environment(store) }
+            if syncVisible { TeamSyncTitlebarButton(openSettings: openSettings).environment(store) }
             if visible { QAToolbarMenu() }
         }
         .padding(.horizontal, 8)
@@ -58,8 +60,35 @@ private struct QATitlebarControls: View {
 
 struct TeamSyncTitlebarButton: View {
     @Environment(AppStore.self) private var store
+    /// The scene's open-settings action; the accessory's own hosting view
+    /// is outside the scene, so a responder-chain selector does not reach it.
+    var openSettings: () -> Void = {}
 
     var body: some View {
+        if store.teamSync.titlebarMode == .connect {
+            connectButton
+        } else {
+            syncButton
+        }
+    }
+
+    /// Not on a team, or signed out: one click opens Team settings.
+    private var connectButton: some View {
+        Button {
+            UserDefaults.standard.set("team", forKey: "settings.selectedTab")
+            openSettings()
+        } label: {
+            Image(systemName: "link.badge.plus")
+                .font(.system(size: 15, weight: .medium))
+                .frame(width: 22, height: 22)
+        }
+        .buttonStyle(.bordered)
+        .fixedSize()
+        .help(store.teamSync.attached ? "Signed out of the team — click to connect" : "Not on a team — click to connect")
+        .accessibilityLabel("Connect to team")
+    }
+
+    private var syncButton: some View {
         Button { store.teamSync.syncNow() } label: {
             Group {
                 if store.teamSync.syncing {
@@ -88,6 +117,7 @@ struct QATitlebarAccessoryInstaller: NSViewRepresentable {
     let store: AppStore
     let visible: Bool
     let syncVisible: Bool
+    var openSettings: () -> Void = {}
 
     func makeNSView(context: Context) -> NSView {
         let view = NSView()
@@ -101,6 +131,7 @@ struct QATitlebarAccessoryInstaller: NSViewRepresentable {
 
     private func attach(_ view: NSView) {
         guard let window = view.window else { return }
-        QATitlebarAccessory.sync(window: window, visible: visible, syncVisible: syncVisible, store: store)
+        QATitlebarAccessory.sync(window: window, visible: visible, syncVisible: syncVisible, store: store,
+                                 openSettings: openSettings)
     }
 }

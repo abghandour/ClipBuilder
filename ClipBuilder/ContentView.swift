@@ -302,6 +302,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
 
 struct MainWindowView: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.openSettings) private var openSettings
     @AppStorage("qa.toolbarButton") private var showsQAButton = false
     @AppStorage(SettingsStore.dataFolderDefaultsKey) private var dataFolder = ""
     @State private var appeared = false
@@ -467,7 +468,8 @@ struct MainWindowView: View {
         .background(QATitlebarAccessoryInstaller(
             store: store,
             visible: BugReporting.qaButtonVisible(preference: showsQAButton, isDebug: BugReporting.isDebugBuild),
-            syncVisible: store.teamSync.attached))
+            syncVisible: store.teamSync.titlebarMode != .hidden,
+            openSettings: { openSettings() }))
     }
 
     private var jobReviewBlocked: Bool {

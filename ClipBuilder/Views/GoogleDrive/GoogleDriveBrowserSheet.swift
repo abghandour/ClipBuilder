@@ -36,6 +36,10 @@ struct GoogleDriveBrowserSheet: View {
     @State private var requestID = UUID()
     @State private var newFolder = ""
     @State private var uploadFolderLoaded = false
+    /// The remembered folder is being reopened; a failure there falls back to
+    /// the location's root once, and the location change it causes must not
+    /// clear the trail.
+    @State private var restoring = false
     private var isUpload: Bool { !uploadMedia.isEmpty }
     private var isFolderPicker: Bool { isUpload || pickFolder != nil }
     private var client: GoogleDriveClient? { store.googleDrive.client(profile: profile) }
@@ -60,9 +64,16 @@ struct GoogleDriveBrowserSheet: View {
                 await store.googleDrive.attach(profile: store.activeProfile, database: database)
                 alreadyHere = Set((try? await database.fetchVideos())?.compactMap(\.driveFileID) ?? [])
             }
+            if !isUpload, let last = DriveBrowserPosition.load(profile: profile), last.isWorthRestoring {
+                restoring = true
+                location = last.location
+                driveID = last.driveID
+                breadcrumbs = last.breadcrumbs
+            }
             await load()
         }
         .onChange(of: location) {
+            guard !restoring else { return }
             breadcrumbs = []
             driveID = nil
             folderCache = nil
@@ -437,8 +448,21 @@ struct GoogleDriveBrowserSheet: View {
                 if !append { selection = [] }
             }
             offline = false
+            restoring = false
+            if !isUpload {
+                DriveBrowserPosition(location: location, driveID: driveID, breadcrumbs: breadcrumbs).save(profile: profile)
+            }
         } catch {
             guard requestID == token else { return }
+            if restoring, !(error as? GoogleDriveError == .offline) {
+                // The remembered folder is gone or no longer shared: start at the root.
+                restoring = false
+                breadcrumbs = []
+                driveID = nil
+                reload()
+                return
+            }
+            restoring = false
             offline = error as? GoogleDriveError == .offline
             self.error = GoogleDriveError.message(for: error)
             await store.googleDrive.refreshState(profile: profile)

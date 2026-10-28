@@ -40,6 +40,10 @@ final class TeamSyncState {
     var attaching = false
     private var profileReplacements = 0
     var replacingProfile: Bool { profileReplacements > 0 }
+    var titlebarMode: TeamSyncTitlebarMode {
+        TeamSyncTitlebarMode.current(configured: !(store?.settings.teamSyncKey.isEmpty ?? true),
+                                     attached: attached, signedIn: signedIn)
+    }
     var assetMetadataRevision = 0
     @ObservationIgnored weak var store: AppStore?
     @ObservationIgnored private var auth: TeamSyncSession?
@@ -75,6 +79,9 @@ final class TeamSyncState {
         monitor?.cancel()
         monitor = nil
         attached = store.activeProfile.teamID != nil && store.activeProfile.profileID != nil
+        // The stored-session marker decides whether the title bar offers Sync
+        // or Connect; the keychain itself is read when the settings tab opens.
+        signedIn = TeamSyncSession.hasStoredSession(url: store.settings.teamSyncURL)
         paused = store.activeProfile.teamSyncPaused ?? false
         selectedTeamID = store.activeProfile.teamID
         selectedProfileID = store.activeProfile.profileID
