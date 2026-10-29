@@ -191,16 +191,23 @@ struct EffectControlsTests {
             #expect(section.rawValue == value)
             #expect(SidebarSection(rawValue: value) == section)
         }
-        #expect(SidebarSection.allCases.count == existing.count + 1)
+        #expect(SidebarSection.allCases.count == existing.count + 2, "looks and text")
         #expect(SidebarSection.looks.rawValue == "looks")
         #expect(SidebarSection.looks.projectDestination == .looks)
         #expect(SidebarSection.effects.title == "Transitions")
         #expect(SidebarSection.tags.title == "Name Tags" && SidebarSection.tags.systemImage == "tag")
-        // Resources read picture, text and graphics, sound, organizing, lessons.
-        let captions = SidebarSection.resourceSections.firstIndex(of: .captions)!
-        #expect(SidebarSection.resourceSections[captions + 1] == .overlays)
+        // Resources read picture, text and graphics, sound, lessons. The legacy text rows
+        // (captions, tags, overlays, fonts) stay decodable but route to the one Text row.
+        #expect(SidebarSection.text.rawValue == "text" && SidebarSection.text.title == "Text")
+        let text = SidebarSection.resourceSections.firstIndex(of: .text)!
+        #expect(SidebarSection.resourceSections[text - 1] == .bumpers)
+        #expect(SidebarSection.resourceSections[text + 1] == .images)
         #expect(SidebarSection.resourceSections.first == .screenCrops)
-        #expect(SidebarSection.resourceSections.suffix(3) == [.music, .tags, .learned])
+        #expect(SidebarSection.resourceSections.suffix(2) == [.music, .learned])
+        for legacy in [SidebarSection.captions, .tags, .overlays, .fonts] {
+            #expect(!SidebarSection.resourceSections.contains(legacy))
+            #expect(legacy.projectDestination == .text)
+        }
         #expect(SidebarSection.looks.title == "Effects")
         #expect(SidebarSection.looks.shortcut == nil)
         #expect(SidebarSection.wizardMini.title == "AI Wizard Express")
