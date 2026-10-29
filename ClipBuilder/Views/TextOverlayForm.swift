@@ -5,8 +5,15 @@ import SwiftUI
 /// and timing/effects live with the timing controls, so neither appears here.
 struct TextOverlayForm: View {
     @Binding var item: TextOverlayItem
+    var showsPreview = true
 
     @Environment(AppStore.self) private var store
+
+    private var inherited: TextDecor {
+        var parent = item
+        parent.decor = nil
+        return parent.applyingSharedStyle(store.activeProfile.textStyles ?? []).resolvedTextDecor
+    }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
@@ -15,12 +22,13 @@ struct TextOverlayForm: View {
                 .overlay(RoundedRectangle(cornerRadius: 6).strokeBorder(.quaternary))
             // Cropped to the text so the decorations read at inspector width;
             // designs without a box fall back to the whole frame.
-            TextOverlayRasterPreview(item: item, cropToBox: true)
-                .frame(maxWidth: .infinity, minHeight: 96, maxHeight: 220)
-                .background(Color(nsColor: .darkGray), in: RoundedRectangle(cornerRadius: 6))
-            SharedTextStylePicker(selection: $item.sharedStyleID)
-            TextDecorControls(decor: $item.decor, fontFamily: $item.fontOverride,
-                inherited: item.applyingSharedStyle(store.activeProfile.textStyles ?? []).resolvedTextDecor,
+            if showsPreview {
+                TextOverlayRasterPreview(item: item, cropToBox: true)
+                    .frame(maxWidth: .infinity, minHeight: 96, maxHeight: 220)
+                    .background(Color(nsColor: .darkGray), in: RoundedRectangle(cornerRadius: 6))
+            }
+            TextLookInspector(decor: $item.decor, fontFamily: $item.fontOverride,
+                inherited: inherited,
                 sharedStyleID: $item.sharedStyleID, sourceLabel: "overlay")
             Picker(selection: Binding(get: { item.wordsPerLine ?? TextOverlayItem.defaultWordsPerLine }, set: { item.wordsPerLine = $0 })) {
                 Text("Width only").lineLimit(1).fixedSize().tag(0)
@@ -29,6 +37,12 @@ struct TextOverlayForm: View {
                 }
             } label: { Text("Words per line").lineLimit(1).fixedSize() }
             .help("Wrap after this many words, or use only the width cap.")
+            HStack {
+                Text("Element opacity").lineLimit(1).fixedSize()
+                Spacer(minLength: 4)
+                TextField("Opacity", value: clampedTextLookNumber($item.opacity, in: 0...1), format: .number.precision(.fractionLength(0...2)))
+                    .frame(width: 52).textFieldStyle(.roundedBorder)
+            }
             Slider(value: $item.opacity, in: 0...1) {
                 Text("Element opacity").lineLimit(1).fixedSize()
             }.help("Opacity of the text, box and shadow together.")
@@ -108,6 +122,8 @@ struct FontFamilyPicker: View {
 
     @State private var showingList = false
     @State private var search = ""
+    @State private var showingImporter = false
+    @State private var importError: String?
     @State private var libraryFamilies: [String] = []
     @State private var systemFamilies: [String] = []
 
@@ -156,8 +172,31 @@ struct FontFamilyPicker: View {
                 }
                 .padding(.vertical, 4)
             }
+            Divider()
+            HStack {
+                Button("Add Font…", systemImage: "plus") { showingImporter = true }
+                    .lineLimit(1).fixedSize()
+                    .help("Copy TTF, OTF or TTC files into this profile's Fonts library. They render here and on every Mac that syncs the profile.")
+                if let importError {
+                    Text(importError).font(.caption).foregroundStyle(.red).lineLimit(1).truncationMode(.tail)
+                }
+                Spacer(minLength: 0)
+            }
+            .padding(8)
         }
-        .frame(width: 280, height: 360)
+        .frame(width: 280, height: 400)
+        .fileImporter(isPresented: $showingImporter, allowedContentTypes: AssetKind.fonts.contentTypes, allowsMultipleSelection: true) { result in
+            guard case .success(let urls) = result else { return }
+            Task {
+                do {
+                    let count = try await AssetStore.importFiles(urls, of: .fonts, into: AssetKind.fonts.rootURL)
+                    importError = count == 0 ? "No font files were imported." : nil
+                    libraryFamilies = await AssetStore.libraryFontFamiliesAsync()
+                } catch {
+                    importError = error.localizedDescription
+                }
+            }
+        }
         .task {
             let library = await AssetStore.libraryFontFamiliesAsync()
             let system = Self.systemFamilies()

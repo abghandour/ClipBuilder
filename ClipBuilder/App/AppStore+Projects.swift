@@ -325,7 +325,10 @@ extension AppStore {
 
     func selectSection(_ section: SidebarSection) {
         if section == .wizardMini { wizardMode = .express }
-        if activeProjectID != nil || section == .learned { isShowingProjectsHome = false }
+        if let tab = TextLooksTab.tab(for: section) { TextLooksTab.remember(tab) }
+        if activeProjectID != nil || section == .learned || section.projectDestination == .text {
+            isShowingProjectsHome = false
+        }
         selectedSection = section.projectDestination
         persistActiveProjectState()
     }

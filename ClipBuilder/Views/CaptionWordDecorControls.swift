@@ -3,7 +3,7 @@ import SwiftUI
 struct CaptionWordDecorControls: View {
     @Binding var style: CaptionStyle
     let state: CaptionStyle.WordState
-    @Environment(AppStore.self) private var store
+    var sharedStyles: [NamedTextStyle] = []
 
     private var stored: CaptionWordDecor {
         switch state {
@@ -34,7 +34,7 @@ struct CaptionWordDecorControls: View {
     }
 
     private var inherited: TextDecor {
-        var copy = style.applyingSharedStyle(store.activeProfile.textStyles ?? [])
+        var copy = style.applyingSharedStyle(sharedStyles)
         switch state {
         case .text: copy.text?.decor = nil
         case .highlight: copy.highlightDecor?.decor = nil
@@ -43,8 +43,16 @@ struct CaptionWordDecorControls: View {
         return copy.resolvedTextDecor(for: state)
     }
 
+    var lookState: TextLookSurface.State {
+        TextLookSurface.State(id: state == .text ? "Text" : state == .highlight ? "Highlight" : "Emphasis",
+            decor: decoration, fontFamily: family, inherited: inherited,
+            parent: state == .text ? "Inherited" : "Text", maxWidth: 0.86,
+            sharedStyleID: state == .text ? $style.sharedStyleID : nil,
+            source: state == .text ? "caption" : "caption state")
+    }
+
     var body: some View {
-        TextDecorControls(decor: decoration, fontFamily: family, inherited: inherited,
+        TextLookInspector(decor: decoration, fontFamily: family, inherited: inherited,
                           defaultLabel: state == .text ? "Inherited" : "Same as text", defaultMaxWidth: 0.86,
                           sharedStyleID: state == .text ? $style.sharedStyleID : nil,
                           sourceLabel: state == .text ? "caption" : "caption \(state == .highlight ? "highlight" : "emphasis")")

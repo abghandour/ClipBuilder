@@ -58,7 +58,7 @@ struct WizardFieldHelpTests {
 
 extension WizardFieldHelpTests {
     @Test func textDecorationRowsHaveHelp() {
-        let rows = ["font", "size", "weight", "style", "casing", "color", "gradient", "fillEndColor", "fillAngle",
+        let rows = ["look", "shadowOffset", "font", "size", "weight", "style", "casing", "color", "gradient", "fillEndColor", "fillAngle",
                     "textOpacity", "strokeOn", "strokeWidth", "strokeColor", "strokeOpacity", "shadowOn",
                     "shadowColor", "shadowOpacity", "shadowX", "shadowY", "shadowBlur", "shadowStyle", "shadowPreset", "bgOn", "bgColor",
                     "bgOpacity", "bgRadius", "bgPaddingX", "bgPaddingY", "bgPerLine", "borderOn", "borderWidth",

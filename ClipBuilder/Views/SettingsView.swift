@@ -207,7 +207,7 @@ private struct ProfileSettingsTab: View {
     @Environment(AppStore.self) private var store
     @State private var newProfileName = ""
     @State private var showDeleteConfirmation = false
-    @State private var showingTextStyles = false
+    @AppStorage("textLooks.openNamedStyles") private var openNamedStyles = false
 
     var body: some View {
         @Bindable var store = store
@@ -236,9 +236,13 @@ private struct ProfileSettingsTab: View {
             }
 
             Section("Text styles") {
-                Button("Named Text Styles…") { showingTextStyles = true }.lineLimit(1).fixedSize()
+                Button("Open Named Text Styles", systemImage: "textformat") {
+                    openNamedStyles = true
+                    store.selectSection(.text)
+                    store.isShowingProjectsHome = false
+                    NSApp.keyWindow?.close()
+                }.lineLimit(1).fixedSize()
                     .help(WizardFieldHelp.textDecor["sharedStyle"]!.tooltip)
-                    .sheet(isPresented: $showingTextStyles) { NamedTextStylesView() }
             }
             Section("Brand") {
                 TextField("Brand name", text: $store.activeProfile.brandName)

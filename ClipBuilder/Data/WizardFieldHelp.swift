@@ -17,6 +17,8 @@ nonisolated struct FieldHelp: Sendable {
 /// caption, and VoiceOver all say the same thing.
 nonisolated enum WizardFieldHelp {
     static let textDecor: [String: FieldHelp] = [
+        "look": FieldHelp("Choose a thumbnail to apply a look to this state. Copy, paste or save the look with the adjacent buttons."),
+        "shadowOffset": FieldHelp("Drag the pad to position the shadow, or enter X and Y offsets from -3 to 3 in units of the font size."),
         "font": FieldHelp("Font family for this text. A shared style supplies the family until you choose another."),
         "size": FieldHelp("Size as a multiplier of this surface’s base font size. Padding and shadows scale with it."),
         "weight": FieldHelp("Choose the font’s regular, bold or heaviest available face."),

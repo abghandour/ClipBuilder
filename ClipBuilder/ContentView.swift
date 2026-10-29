@@ -153,7 +153,8 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     case music
     case fonts
     case images
-    case overlays
+    case text               // Captions, Name tags, Overlays and Named styles: one Text Looks studio
+    case overlays           // legacy aliases: open Text on that tab
     case captions
     case tags
     case effects
@@ -182,8 +183,8 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     /// graphics, then sound, then organizing, then the lessons.
     static let resourceSections: [SidebarSection] = [
         .screenCrops, .looks, .effects, .bumpers,
-        .captions, .overlays, .fonts, .images,
-        .music, .tags, .learned,
+        .text, .images,
+        .music, .learned,
     ]
     static let visibleSections = projectSections + studioSections + resourceSections
 
@@ -200,7 +201,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .instagram: return "7"
         case .instagramReports: return "8"
         case .projects, .analyze, .builder, .library, .resources, .learned, .wizardMini,
-             .music, .fonts, .images, .overlays, .captions, .tags, .effects, .looks, .screenCrops: return nil
+             .music, .fonts, .images, .text, .overlays, .captions, .tags, .effects, .looks, .screenCrops: return nil
         }
     }
 
@@ -230,6 +231,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .music: return AssetKind.music.title
         case .fonts: return AssetKind.fonts.title
         case .images: return AssetKind.images.title
+        case .text: return "Text"
         case .captions: return "Captions"
         case .tags: return "Name Tags"
         case .overlays: return "Overlays"
@@ -257,6 +259,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .music: return AssetKind.music.systemImage
         case .fonts: return AssetKind.fonts.systemImage
         case .images: return AssetKind.images.systemImage
+        case .text: return "textformat"
         case .captions: return "captions.bubble"
         case .tags: return "tag"
         case .overlays: return "square.on.square"
@@ -280,11 +283,9 @@ enum SidebarSection: String, CaseIterable, Identifiable {
         case .instagram: .instagram
         case .instagramReports: .instagramReports
         case .resources, .music: .music
-        case .fonts: .fonts
+        case .fonts: .text
         case .images: .images
-        case .captions: .captions
-        case .tags: .tags
-        case .overlays: .overlays
+        case .text, .captions, .tags, .overlays: .text
         case .effects: .effects
         case .looks: .looks
         case .bumpers: .bumpers
@@ -295,6 +296,7 @@ enum SidebarSection: String, CaseIterable, Identifiable {
     var help: String {
         switch self {
         case .wizardMini: "Choose one analyzed video, review its footage, then set the look."
+        case .text: "Captions, name tags, overlays, named text styles and the fonts library."
         default: title
         }
     }

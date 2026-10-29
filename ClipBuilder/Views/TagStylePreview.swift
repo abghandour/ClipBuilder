@@ -5,8 +5,11 @@ struct TagStylePreview: View {
     @Environment(AppStore.self) private var store
     private var renderStyle: TagStyle { liveStyle.applyingSharedStyle(store.activeProfile.textStyles ?? []) }
     @Binding var selection: UUID?
+    var transparentBackdrop = false
+    var selectedState: Binding<String>? = nil
     @State private var preview: TagPreviewImage?
     @State private var error: String?
+    @State private var hoveredState: String?
     @State private var gestureStyle: TagStyle?
 
     private var liveStyle: TagStyle { gestureStyle ?? style }
@@ -31,10 +34,35 @@ struct TagStylePreview: View {
             GeometryReader { geo in
                 let scale = geo.size.width / TagPreviewImage.canvas.width
                 ZStack(alignment: .topLeading) {
-                    Color(nsColor: .darkGray)
+                    if !transparentBackdrop { Color(nsColor: .darkGray) }
                     if let preview {
                         Image(decorative: preview.image, scale: 1)
                             .resizable().frame(width: geo.size.width, height: geo.size.height)
+                        if let selectedState {
+                            let block = preview.geometry.textBlock
+                            Rectangle().fill(.clear)
+                                .contentShape(Rectangle())
+                                .overlay { Rectangle().strokeBorder(selectedState.wrappedValue == "Box" ? Color.accentColor : .clear) }
+                                .frame(width: block.width * scale, height: block.height * scale)
+                                .position(x: (block.midX + preview.offset.x) * scale, y: (block.midY + preview.offset.y) * scale)
+                                .onTapGesture { selectedState.wrappedValue = "Box" }
+                                .accessibilityLabel("Name tag box")
+                            ForEach(Array(preview.geometry.origins.enumerated()), id: \.offset) { index, origin in
+                                let end = index + 1 < preview.geometry.origins.count ? preview.geometry.origins[index + 1].y : block.maxY
+                                let state = index == 0 ? "Name" : "Description"
+                                Button { selectedState.wrappedValue = state } label: {
+                                    Rectangle().fill(.clear)
+                                        .overlay { Rectangle().strokeBorder(selectedState.wrappedValue == state || hoveredState == state ? Color.accentColor : .clear) }
+                                }
+                                .buttonStyle(.plain)
+                                .frame(width: block.width * scale, height: max(1, end - origin.y) * scale)
+                                .position(x: (block.midX + preview.offset.x) * scale,
+                                          y: (origin.y + (end - origin.y) / 2 + preview.offset.y) * scale)
+                                .accessibilityLabel("Edit \(state)")
+                                .help("Edit the \(state.lowercased()) line")
+                                .onHover { hoveredState = $0 ? state : nil }
+                            }
+                        }
                         ForEach(liveStyle.images) { item in
                             if let rect = preview.geometry.images[item.id] {
                                 TagPreviewImageHandle(item: imageBinding(item), selection: $selection,

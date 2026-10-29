@@ -7,9 +7,11 @@ import SwiftUI
 /// Templates are inserted from the Builder's Text menu and offered to the AI
 /// Wizard, which rewrites only texts marked dynamic.
 struct OverlayTemplatesView: View {
+    var runCounts: [String: Int] = [:]
     @Environment(AppStore.self) private var store
     @State private var templates: [OverlayTemplate] = []
     @State private var selectedName: String?
+    @State private var itemSelection: OverlayItemSelection?
     @State private var composition = OverlayComposition()
     @State private var watcher: FolderWatcher?
     @State private var saveTask: Task<Void, Never>?
@@ -31,11 +33,27 @@ struct OverlayTemplatesView: View {
                     description: Text("Create a starter template, then add text and images only when you need them. Use the toolbar to create a template or extract one from an image."))
             } else {
                 HSplitView {
-                    templateList
-                        .rememberedPaneWidth("pane.overlays.templates", min: 200, initial: 230, max: 300)
+                    VStack(spacing: 0) {
+                        templateList
+                        ControlGroup {
+                            Button("Rename", systemImage: "pencil") {
+                                renameText = selectedName ?? ""; renamePrompt = true
+                            }
+                            Button("Duplicate", systemImage: "plus.square.on.square") {
+                                if let template = templates.first(where: { $0.name == selectedName }) { duplicate(template) }
+                            }
+                            Button("Delete", systemImage: "trash", role: .destructive) { deleteTarget = selectedName }
+                        }.labelStyle(.iconOnly).disabled(selectedName == nil).padding(8)
+                        Divider()
+                        if selectedName != nil {
+                            OverlayTemplateItems(composition: $composition, selection: $itemSelection)
+                                .frame(maxHeight: 300)
+                        }
+                    }
+                        .rememberedPaneWidth("pane.textLooks.list", min: 200, initial: 232, max: 300)
                         .frame(maxHeight: .infinity)
                     if let selectedName, templates.contains(where: { $0.name == selectedName }) {
-                        OverlayTemplateEditor(name: selectedName, composition: $composition)
+                        OverlayTemplateEditor(name: selectedName, composition: $composition, selection: $itemSelection)
                             .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         ContentUnavailableView("Select a Template", systemImage: "square.on.square",
@@ -46,7 +64,7 @@ struct OverlayTemplatesView: View {
                 .frame(maxWidth: .infinity, maxHeight: .infinity)
             }
         }
-        .screenTitle("Overlays", subtitle: "\(templates.count) template\(templates.count == 1 ? "" : "s")")
+
         .toolbar { overlayToolbarContent }
         .sheet(isPresented: $showOverlayWizard) {
             OverlayWizardSheet()
@@ -91,6 +109,7 @@ struct OverlayTemplatesView: View {
         }
         .onChange(of: selectedName) { _, name in
             flushPendingSave()
+            itemSelection = nil
             loadComposition(named: name)
         }
         .onChange(of: composition) {
@@ -102,7 +121,16 @@ struct OverlayTemplatesView: View {
         List(templates, selection: $selectedName) { template in
             HStack(spacing: 6) {
                 VStack(alignment: .leading, spacing: 2) {
-                    Text(template.name)
+                    HStack {
+                        if let text = template.composition.texts.first {
+                            LookCard(name: template.name, decor: text.applyingSharedStyle(store.activeProfile.textStyles ?? []).resolvedTextDecor,
+                                     fontFamily: text.fontOverride, showsName: false)
+                        }
+                        Spacer(minLength: 0)
+                        Text("\(runCounts[template.name] ?? 0)").font(.caption.monospacedDigit()).lineLimit(1).fixedSize()
+                            .help("Wizard runs referencing this template")
+                    }
+                    Text(template.name).lineLimit(1).fixedSize(horizontal: false, vertical: true)
                     Text(summary(of: template.composition))
                         .font(.caption)
                         .foregroundStyle(.secondary)
@@ -132,7 +160,7 @@ struct OverlayTemplatesView: View {
     private var overlayToolbarContent: some ToolbarContent {
         ToolbarItemGroup {
             Button("New Template", systemImage: "plus", action: createTemplate)
-                .help("Create an overlay template")
+                .lineLimit(1).fixedSize().help("Create an overlay template")
             if selectedName != nil {
                     Label(isSaving ? "Saving…" : "Saved",
                           systemImage: isSaving ? "arrow.triangle.2.circlepath" : "checkmark")
@@ -142,11 +170,11 @@ struct OverlayTemplatesView: View {
             Button("Create from Image…", systemImage: "wand.and.stars") {
                 showOverlayWizard = true
             }
-            .help("Build an overlay template from a reference image")
+            .lineLimit(1).fixedSize().help("Build an overlay template from a reference image")
             Button("Show in Finder", systemImage: "folder") {
                 NSWorkspace.shared.open(OverlayTemplateStore.directory)
             }
-            .help("Reveal the template files in Finder")
+            .lineLimit(1).fixedSize().help("Reveal the template files in Finder")
         }
     }
 
@@ -283,168 +311,38 @@ enum OverlayItemSelection: Equatable {
 struct OverlayTemplateEditor: View {
     let name: String
     @Binding var composition: OverlayComposition
-
-    @State private var selection: OverlayItemSelection?
-    @State private var playbackStart: Date?
-    @State private var showingImagePicker = false
-    @Environment(AppStore.self) private var store
-    // A preview aid, not part of the template: remembered across launches.
-    @AppStorage("overlays.stage.backdropMode") private var backdropMode = OverlayStageBackdrop.Mode.black.rawValue
-    @AppStorage("overlays.stage.backdropColor") private var backdropColorHex = "#000000"
-    @AppStorage("overlays.stage.backdropVideo") private var backdropVideoPath = ""
-    @AppStorage("overlays.stage.backdropTime") private var backdropTime = 0.0
-    /// Slider position while scrubbing; the stored time follows after a short pause.
-    @State private var scrubTime = 0.0
-    @State private var scrubTask: Task<Void, Never>?
-
-    private var backdrop: OverlayStageBackdrop {
-        OverlayStageBackdrop(mode: OverlayStageBackdrop.Mode(rawValue: backdropMode) ?? .black, colorHex: backdropColorHex,
-                             videoPath: backdropVideoPath, time: backdropTime)
-    }
-    private var backdropVideo: VideoRecord? { store.videos.first { $0.url.path == backdropVideoPath } }
+    @Binding var selection: OverlayItemSelection?
 
     var body: some View {
-        HStack(alignment: .top, spacing: 0) {
-            previewColumn
-                .padding()
-            Divider()
-            ScrollView {
-                VStack(alignment: .leading, spacing: 12) {
-                    itemsSection
-                    Divider()
-                    selectedItemForm
-                }
-                .padding()
-                .frame(maxWidth: 440, alignment: .leading)
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
+        HSplitView {
+            TextLooksStage(composition: $composition, selection: $selection)
+                .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
+            TextLooksOverlayInspector(composition: $composition, selection: $selection)
+                .frame(width: 320).frame(maxHeight: .infinity)
         }
-        .onChange(of: name) {
-            selection = nil
-            playbackStart = nil
-        }
+        .id(name)
     }
+}
 
-    // MARK: - Preview
+/// The item list stays beside the template library, leaving the preview pinned.
+private struct OverlayTemplateItems: View {
+    @Binding var composition: OverlayComposition
+    @Binding var selection: OverlayItemSelection?
+    @State private var showingImagePicker = false
 
-    private var previewColumn: some View {
-        VStack(spacing: 10) {
-            Text(name)
-                .font(.headline)
-                .lineLimit(1)
-            Group {
-                if let playbackStart {
-                    // SwiftUI.TimelineView: the app has its own TimelineView
-                    // (the Builder timeline), which shadows the name.
-                    SwiftUI.TimelineView(.animation) { context in
-                        let total = max(0.5, composition.duration)
-                        let time = context.date.timeIntervalSince(playbackStart)
-                            .truncatingRemainder(dividingBy: total)
-                        OverlayPreviewCanvas(composition: $composition, selection: $selection,
-                                             time: time, backdropColor: backdrop.color, backdropFrame: backdrop.frame)
-                    }
-                } else {
-                    OverlayPreviewCanvas(composition: $composition, selection: $selection,
-                                         time: nil, backdropColor: backdrop.color, backdropFrame: backdrop.frame)
-                }
-            }
-            .frame(width: 270, height: 480)
-
-            HStack {
-                Button {
-                    playbackStart = playbackStart == nil ? Date() : nil
-                } label: {
-                    Label(playbackStart == nil ? "Play" : "Stop",
-                          systemImage: playbackStart == nil ? "play.fill" : "stop.fill")
-                }
-                .disabled(composition.isEmpty)
-                Text(String(format: "%.1fs loop", composition.duration))
-                    .font(.caption.monospacedDigit())
-                    .foregroundStyle(.secondary)
-            }
-            Text(playbackStart == nil
-                 ? "Click an item to select it; drag to reposition."
-                 : "Playing the composition with its enter/exit effects.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
-                .frame(width: 270)
-            backdropControls
-                .frame(width: 270)
-        }
-    }
-
-    // MARK: - Stage backdrop
-
-    /// Black, a solid colour, or a frame of a source video at a chosen time,
-    /// so the text can be judged against what it will sit on.
-    private var backdropControls: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            Picker("Background", selection: $backdropMode) {
-                ForEach(OverlayStageBackdrop.Mode.allCases, id: \.rawValue) { mode in
-                    Text(mode.label).lineLimit(1).fixedSize().tag(mode.rawValue)
-                }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .help("What the stage shows behind the overlay. Only a preview aid; it is not saved with the template.")
-            switch backdrop.mode {
-            case .black:
-                EmptyView()
-            case .color:
-                ColorPicker(selection: overlayColorBinding($backdropColorHex), supportsOpacity: false) {
-                    Text("Stage colour").lineLimit(1).fixedSize()
-                }
-                .help("Solid colour behind the overlay.")
-            case .video:
-                Picker(selection: $backdropVideoPath) {
-                    Text("Choose a source").lineLimit(1).fixedSize().tag("")
-                    ForEach(store.videos) { video in
-                        Text(video.filename).lineLimit(1).fixedSize().tag(video.url.path)
-                    }
-                } label: { Text("Source").lineLimit(1).fixedSize() }
-                .help("A video from this profile's sources. The frame at the scrubbed time is drawn behind the overlay.")
-                if let video = backdropVideo {
-                    HStack {
-                        Slider(value: $scrubTime, in: 0...max(0.1, video.duration))
-                            .help("Scrub to the moment the overlay should be judged against.")
-                        Text(WizardPreviewClips.clock(scrubTime))
-                            .font(.caption.monospacedDigit()).lineLimit(1).fixedSize()
-                    }
-                }
-            }
-        }
-        .onAppear { scrubTime = backdropTime }
-        .onChange(of: backdropVideoPath) {
-            scrubTime = 0
-            backdropTime = 0
-        }
-        .onChange(of: scrubTime) {
-            // Frames are generated per distinct time; settle before asking.
-            scrubTask?.cancel()
-            let time = scrubTime
-            scrubTask = Task {
-                try? await Task.sleep(for: .milliseconds(120))
-                guard !Task.isCancelled else { return }
-                backdropTime = time
-            }
-        }
-    }
-
-    // MARK: - Item list
+    var body: some View { ScrollView { itemsSection.padding(8) } }
 
     private var itemsSection: some View {
         VStack(alignment: .leading, spacing: 8) {
-            HStack {
+            VStack(alignment: .leading, spacing: 8) {
                 Text("Items")
                     .font(.headline)
-                Spacer()
                 Button("Add Text", systemImage: "textformat", action: addText)
-                    .controlSize(.small)
+                    .controlSize(.small).lineLimit(1).fixedSize()
                 Button("Add Image", systemImage: "photo") {
                     showingImagePicker = true
                 }
-                .controlSize(.small)
+                .controlSize(.small).lineLimit(1).fixedSize()
                 .sheet(isPresented: $showingImagePicker) {
                     ImagePickerSheet { urls in
                         for url in urls { addImage(path: url.path) }
@@ -494,8 +392,8 @@ struct OverlayTemplateEditor: View {
                 .frame(width: 16)
                 .foregroundStyle(selected ? Color.accentColor : .secondary)
             VStack(alignment: .leading, spacing: 1) {
-                Text(title).lineLimit(1)
-                Text(subtitle)
+                Text(title).lineLimit(1).fixedSize(horizontal: false, vertical: true)
+                Text(subtitle).lineLimit(1).fixedSize(horizontal: false, vertical: true)
                     .font(.caption2)
                     .foregroundStyle(.secondary)
             }
@@ -511,94 +409,6 @@ struct OverlayTemplateEditor: View {
         .contentShape(Rectangle())
         .onTapGesture(perform: onSelect)
     }
-
-    // MARK: - Selected item form
-
-    @ViewBuilder
-    private var selectedItemForm: some View {
-        switch selection {
-        case .text(let uid):
-            if let index = composition.texts.firstIndex(where: { $0.uid == uid }) {
-                let binding = $composition.texts[index]
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Text Item")
-                        .font(.headline)
-                    timingControls(start: binding.startTime, end: binding.endTime,
-                                   transIn: binding.transIn, transOut: binding.transOut,
-                                   unbounded: binding.unbounded)
-                    Toggle("AI Wizard may replace this text", isOn: binding.isDynamic)
-                        .help("When on, the wizard writes its own copy into this text; static texts and images always render exactly as designed")
-                    TextOverlayForm(item: binding)
-                }
-            }
-        case .image(let uid):
-            if let index = composition.images.firstIndex(where: { $0.uid == uid }) {
-                let binding = $composition.images[index]
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Image Item")
-                        .font(.headline)
-                    timingControls(start: binding.startTime, end: binding.endTime,
-                                   transIn: binding.transIn, transOut: binding.transOut,
-                                   unbounded: binding.unbounded)
-                    ImageOverlayControls(item: binding, name: composition.images[index].displayName)
-                }
-            }
-        case nil:
-            Text("Select an item to edit its look, timing, and effects.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-        }
-    }
-
-    /// Timing on the composition's own clock (t=0 is when the overlay begins
-    /// in the video), with the matching effect beside each field: the appear
-    /// effect plays at Start, the disappear effect as the duration ends.
-    private func timingControls(start: Binding<Double>, end: Binding<Double>,
-                                transIn: Binding<String>, transOut: Binding<String>,
-                                unbounded: Binding<Bool>) -> some View {
-        VStack(alignment: .leading, spacing: 6) {
-            HStack(spacing: 12) {
-                Stepper(String(format: "Start: %.1fs", start.wrappedValue),
-                        value: Binding(
-                            get: { start.wrappedValue },
-                            set: { newStart in
-                                let duration = end.wrappedValue - start.wrappedValue
-                                start.wrappedValue = max(0, newStart)
-                                end.wrappedValue = start.wrappedValue + duration
-                            }),
-                        in: 0...120, step: 0.5)
-                Spacer()
-                effectPicker("Appear", selection: transIn)
-            }
-            HStack(spacing: 12) {
-                if unbounded.wrappedValue {
-                    Text("Duration: unbounded")
-                } else {
-                    Stepper(String(format: "Duration: %.1fs", end.wrappedValue - start.wrappedValue),
-                            value: Binding(
-                                get: { end.wrappedValue - start.wrappedValue },
-                                set: { end.wrappedValue = start.wrappedValue + max(0.5, $0) }),
-                            in: 0.5...120, step: 0.5)
-                }
-                Spacer()
-                effectPicker("Disappear", selection: transOut)
-            }
-            Toggle("Unbounded — stays as long as the overlay is visible", isOn: unbounded)
-                .font(.caption)
-        }
-        .font(.callout)
-    }
-
-    private func effectPicker(_ label: String, selection: Binding<String>) -> some View {
-        Picker(label, selection: selection) {
-            ForEach(TextOverlayItem.transitionChoices, id: \.self) { name in
-                Text(name).tag(name)
-            }
-        }
-        .fixedSize()
-    }
-
-    // MARK: - Add items
 
     private func addText() {
         var item = TextOverlayItem(text: "Text", startTime: 0,
@@ -634,6 +444,7 @@ struct OverlayPreviewCanvas: View {
     /// can be judged against real footage instead of black.
     var backdropColor: Color = .black
     var backdropFrame: OverlayStageBackdrop.Frame? = nil
+    var dimUnselected = false
 
     var body: some View {
         GeometryReader { geo in
@@ -668,7 +479,7 @@ struct OverlayPreviewCanvas: View {
                                           isSelected: selection == .image(item.uid),
                                           editable: time == nil,
                                           onSelect: { selection = .image(item.uid) })
-                            .opacity(effect.opacity)
+                            .opacity(effect.opacity * (dimUnselected && time == nil && selection != nil && selection != .image(item.uid) ? 0.35 : 1))
                             .offset(effect.offset)
                     }
                 }
@@ -681,7 +492,7 @@ struct OverlayPreviewCanvas: View {
                                          isSelected: selection == .text(item.uid),
                                          editable: time == nil,
                                          onSelect: { selection = .text(item.uid) })
-                            .opacity(effect.opacity)
+                            .opacity(effect.opacity * (dimUnselected && time == nil && selection != nil && selection != .text(item.uid) ? 0.35 : 1))
                             .offset(effect.offset)
                     }
                 }
