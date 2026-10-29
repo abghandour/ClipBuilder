@@ -37,13 +37,15 @@ struct TagStyleEditor: View {
                     .help(WizardFieldHelp.textDecor["name"]!.tooltip)
                 TextLookInspector(surface: surface) {
                     if selectedState == "Description" {
-                        TextField("Field", text: $style.description.field)
-                            .help("Shows the saved People field, or AI fills it from the reel's context.")
-                        Menu("Suggestions") {
-                            ForEach(TagTextWriter.profileFields, id: \.self) { field in
-                                Button(field) { style.description.field = field }
-                            }
-                        }.lineLimit(1).fixedSize()
+                        TextLookRow("Field") {
+                            TextField("Field", text: $style.description.field)
+                                .help("Shows the saved People field, or AI fills it from the reel's context.")
+                            Menu("Suggestions") {
+                                ForEach(TagTextWriter.profileFields, id: \.self) { field in
+                                    Button(field) { style.description.field = field }
+                                }
+                            }.lineLimit(1).fixedSize()
+                        }
                     }
                 }
                 if selectedState == "Box" {
