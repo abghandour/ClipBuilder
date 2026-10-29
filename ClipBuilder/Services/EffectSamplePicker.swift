@@ -73,6 +73,7 @@ nonisolated enum EffectSamplePicker {
         let url: URL
         let filename: String
         let duration: Double
+        var typeLabel: String? = nil
     }
 
     /// Check the actual local path, not synced availability or Drive metadata.
@@ -84,7 +85,7 @@ nonisolated enum EffectSamplePicker {
             guard FileManager.default.fileExists(atPath: path, isDirectory: &isDirectory),
                   !isDirectory.boolValue else { return nil }
             return Source(id: video.id, url: URL(fileURLWithPath: path),
-                          filename: video.filename, duration: video.duration)
+                          filename: video.filename, duration: video.duration, typeLabel: video.type?.label)
         }
     }
 

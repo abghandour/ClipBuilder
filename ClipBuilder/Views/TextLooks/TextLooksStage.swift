@@ -155,14 +155,15 @@ struct TextLooksStage: View {
                 Text("Stage colour").lineLimit(1).fixedSize()
             }.help("Solid colour behind the preview")
         case .video:
-            Picker(selection: $backdropVideoPath) {
-                Text("Choose a source").tag("")
-                ForEach(store.videos) { video in Text(video.filename).lineLimit(1).tag(video.url.path) }
-                if !backdropVideoPath.isEmpty, !store.videos.contains(where: { $0.url.path == backdropVideoPath }) {
-                    Text("Not in this profile").lineLimit(1).fixedSize().tag(backdropVideoPath)
-                }
-            } label: {
+            HStack(spacing: Theme.spaceS) {
                 Text("Source").lineLimit(1).fixedSize()
+                SourcePickerButton(
+                    title: "Source", choices: store.videos.map(SourceChoice.init),
+                    selection: store.videos.first { $0.url.path == backdropVideoPath }.map(SourceChoice.init)
+                        ?? (backdropVideoPath.isEmpty ? nil : SourceChoice(otherFile: URL(fileURLWithPath: backdropVideoPath))),
+                    placeholder: "Choose a source", caption: "Choose a source frame to judge the look against.",
+                    actions: [SourceAction(title: "No source", systemImage: "xmark.circle", isCurrent: backdropVideoPath.isEmpty) { backdropVideoPath = "" }]
+                ) { backdropVideoPath = $0.id }
             }
             .help("Choose a source frame to judge the look against")
             if let video = store.videos.first(where: { $0.url.path == backdropVideoPath }) {

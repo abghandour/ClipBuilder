@@ -432,41 +432,10 @@ struct MiniWizardView: View {
     }
 
     private func sourceCell(_ video: VideoRecord) -> some View {
-        let selected = selectedVideo?.id == video.id
-        return Button {
+        SourceCell(choice: SourceChoice(video), selected: selectedVideo?.id == video.id) {
             instructionsFocused = false
             videoPath = video.path ?? ""
-        } label: {
-            VStack(alignment: .leading, spacing: Theme.spaceXS) {
-                VideoThumbnail(url: video.url, time: min(1, video.duration / 2), cornerRadius: Theme.mediaRadius)
-                    .aspectRatio(16 / 9, contentMode: .fit)
-                    .overlay {
-                        RoundedRectangle(cornerRadius: Theme.mediaRadius)
-                            .strokeBorder(selected ? Color.accentColor : .clear, lineWidth: 3)
-                    }
-                    .overlay(alignment: .topTrailing) {
-                        if selected {
-                            Image(systemName: "checkmark.circle.fill")
-                                .foregroundStyle(.white, Color.accentColor)
-                                .padding(Theme.spaceXS)
-                        }
-                    }
-                Text(video.filename)
-                    .font(.caption)
-                    .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-                    .truncationMode(.middle)
-                Text("\(video.type?.label ?? "Unknown type") · \(video.duration.timecode)")
-                    .font(.caption2)
-                    .foregroundStyle(.secondary)
-                    .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-            }
-            .contentShape(Rectangle())
         }
-        .buttonStyle(.plain)
-        .accessibilityLabel("\(video.filename), \(video.type?.label ?? "Unknown type"), \(video.duration.timecode)")
-        .accessibilityValue(selected ? "Selected" : "Not selected")
-        .accessibilityAddTraits(selected ? .isSelected : [])
-        .help("Choose \(video.filename)")
     }
 
     private func loadSources() async {

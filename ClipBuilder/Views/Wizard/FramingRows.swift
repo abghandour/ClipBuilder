@@ -265,18 +265,20 @@ struct FramingRows: View {
     private var defaultLayout: String { type == .screen ? "Screen + presenter" : "Split" }
 
     private func sourceRow(_ role: ScreenCropArea.Role) -> some View {
-        SettingsRow(role.label) {
-            Picker(role.label, selection: Binding(get: { framing.sourceRoles?[role.rawValue] ?? "" }, set: { path in
-                var roles = framing.sourceRoles ?? [:]
-                roles[role.rawValue] = path.isEmpty ? nil : path
-                framing.sourceRoles = roles.isEmpty ? nil : roles
-            })) {
-                Text("Main recording").lineLimit(1).fixedSize().tag("")
-                ForEach(store.videos) { video in
-                    Text(video.filename).lineLimit(1).fixedSize().tag(video.url.path)
-                }
-            }
-            .labelsHidden()
+        let path = framing.sourceRoles?[role.rawValue] ?? ""
+        func set(_ path: String) {
+            var roles = framing.sourceRoles ?? [:]
+            roles[role.rawValue] = path.isEmpty ? nil : path
+            framing.sourceRoles = roles.isEmpty ? nil : roles
+        }
+        return SettingsRow(role.label) {
+            SourcePickerButton(
+                title: role.label, choices: store.videos.map(SourceChoice.init),
+                selection: store.videos.first { $0.url.path == path }.map(SourceChoice.init),
+                placeholder: "Main recording", placeholderImage: "video",
+                caption: "Choose the recording that carries the \(role.label.lowercased()).",
+                actions: [SourceAction(title: "Main recording", systemImage: "video", isCurrent: path.isEmpty) { set("") }]
+            ) { set($0.id) }
         }
     }
 
