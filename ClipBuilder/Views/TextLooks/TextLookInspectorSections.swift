@@ -10,7 +10,7 @@ struct TextLookInspectorSections: View {
     private var resolved: TextDecor { (decor ?? TextDecor()).resolved(over: inherited) }
 
     /// Every row puts its label in this column so the controls line up.
-    static let labelWidth: CGFloat = 92
+    static let labelWidth: CGFloat = 100
 
     private func bounded(_ key: WritableKeyPath<TextDecor, Double?>, _ range: ClosedRange<Double>) -> Binding<Double> {
         let binding = setting(key, key == \.maxWidthFrac ? defaultMaxWidth : range.lowerBound)
@@ -53,17 +53,23 @@ struct TextLookInspectorSections: View {
         _ label: String, _ key: WritableKeyPath<TextDecor, Double?>,
         _ id: String, _ range: ClosedRange<Double>
     ) -> some View {
-        VStack(alignment: .leading, spacing: 4) {
-            HStack(spacing: Theme.spaceS) {
-                self.label(label, key)
-                Spacer(minLength: 4)
-                TextField(label, value: bounded(key, range), format: .number.precision(.fractionLength(0...2)))
-                    .textFieldStyle(.roundedBorder).monospacedDigit().frame(width: 52)
-                    .accessibilityLabel(label)
-            }
+        HStack(spacing: Theme.spaceS) {
+            self.label(label, key)
             Slider(value: bounded(key, range), in: range).accessibilityLabel(label)
+            TextField(label, value: bounded(key, range), format: .number.precision(.fractionLength(0...2)))
+                .textFieldStyle(.roundedBorder).monospacedDigit().multilineTextAlignment(.trailing).frame(width: 50)
+                .accessibilityLabel(label)
         }
         .help(help(id))
+    }
+
+    private func offsetField(_ axis: String, _ key: WritableKeyPath<TextDecor, Double?>) -> some View {
+        HStack(spacing: 4) {
+            Text(axis).font(.caption).foregroundStyle(.secondary).frame(width: 12)
+            TextField(axis, value: bounded(key, -3...3), format: .number.precision(.fractionLength(0...2)))
+                .textFieldStyle(.roundedBorder).monospacedDigit().multilineTextAlignment(.trailing).frame(width: 56)
+                .accessibilityLabel("Shadow offset \(axis)")
+        }
     }
 
     private func toggle(_ label: String, _ key: WritableKeyPath<TextDecor, Bool?>, _ id: String) -> some View {
@@ -78,6 +84,9 @@ struct TextLookInspectorSections: View {
         HStack(spacing: Theme.spaceS) {
             self.label(label, key)
             ColorPicker(label, selection: overlayColorBinding(setting(key, "#ffffff")), supportsOpacity: false).labelsHidden()
+            TextField(label, text: setting(key, "#ffffff"))
+                .textFieldStyle(.roundedBorder).monospaced().frame(width: 84)
+                .accessibilityLabel("\(label) hex")
             Spacer(minLength: 0)
         }.help(help(id))
     }
@@ -99,9 +108,9 @@ struct TextLookInspectorSections: View {
 
     var body: some View {
         if !boxOnly {
-            FontSection {
+            TextLookSection("Font") {
                 HStack(spacing: Theme.spaceS) {
-                    OverrideLabel(text: "Font", isSet: fontFamily != nil, parent: defaultLabel) { fontFamily = nil }
+                    OverrideLabel(text: "Family", isSet: fontFamily != nil, parent: defaultLabel) { fontFamily = nil }
                     FontFamilyPicker(family: $fontFamily, label: "", defaultLabel: defaultLabel).labelsHidden().help(help("font"))
                     Spacer(minLength: 0)
                 }
@@ -139,7 +148,7 @@ struct TextLookInspectorSections: View {
                     "Casing", \.casing, "casing",
                     [("asWritten", "As written"), ("upper", "UPPERCASE"), ("lower", "lowercase"), ("title", "Title Case")])
             }
-            ColourSection {
+            TextLookSection("Colour") {
                 color("Fill colour", \.color, "color")
                 HStack(spacing: Theme.spaceS) {
                     label("Gradient", \.gradientOn)
@@ -164,70 +173,91 @@ struct TextLookInspectorSections: View {
                 }
                 number("Text opacity", \.textOpacity, "textOpacity", 0...1)
             }
-            effect("Stroke", \.strokeOn, "strokeOn", TextLookSummary.stroke(resolved)) {
-                number("Stroke width", \.strokeWidth, "strokeWidth", 0...6)
-                color("Stroke colour", \.strokeColor, "strokeColor")
-                number("Stroke opacity", \.strokeOpacity, "strokeOpacity", 0...1)
-            }
-            effect("Shadow", \.shadowOn, "shadowOn", TextLookSummary.shadow(resolved, stored: decor)) {
-                HStack(spacing: Theme.spaceS) {
-                    OverrideLabel(
-                        text: "Preset", isSet: TextLookSummary.overrideCount(decor, prefix: "shadow") > 0, parent: defaultLabel
-                    ) {
-                        var value = decor ?? TextDecor()
-                        TextStyleClipboard.copy(.shadow, from: TextDecor(), into: &value)
-                        decor = value
-                    }
-                    Picker(
-                        "Shadow preset",
-                        selection: Binding(
-                            get: { TextShadowPresets.matching((decor ?? TextDecor()).resolved(over: inherited))?.name ?? "" },
-                            set: { name in
-                                guard let preset = TextShadowPresets.all.first(where: { $0.name == name }) else { return }
-                                decor = TextShadowPresets.apply(preset, to: decor)
-                            })
-                    ) {
-                        Text("Custom").tag("")
-                        ForEach(TextShadowPresets.all) { preset in
-                            Text(preset.name).lineLimit(1).fixedSize().tag(preset.name).help(preset.help)
+        }
+        TextLookSection("Effects") {
+            if !boxOnly {
+                effect("Stroke", \.strokeOn, "strokeOn", TextLookSummary.stroke(resolved)) {
+                    number("Width", \.strokeWidth, "strokeWidth", 0...6)
+                    color("Colour", \.strokeColor, "strokeColor")
+                    number("Opacity", \.strokeOpacity, "strokeOpacity", 0...1)
+                }
+                effect("Shadow", \.shadowOn, "shadowOn", TextLookSummary.shadow(resolved, stored: decor)) {
+                    // Neutral white samples: a tile shows the shadow, not this state's box or stroke.
+                    LookTileGrid(
+                        choices: TextShadowPresets.all.map { preset in
+                            LookChoice(
+                                id: preset.name,
+                                name: preset.name.replacingOccurrences(of: " drop", with: "")
+                                    .replacingOccurrences(of: " offset", with: "").replacingOccurrences(of: " shadow", with: ""),
+                                decor: TextShadowPresets.apply(preset, to: nil).resolved(over: .defaults),
+                                isSelected: TextShadowPresets.matching(resolved)?.name == preset.name, help: preset.help
+                            ) { decor = TextShadowPresets.apply(preset, to: decor) }
+                        })
+                    .help(help("shadowPreset"))
+                    color("Colour", \.shadowColor, "shadowColor")
+                    number("Opacity", \.shadowOpacity, "shadowOpacity", 0...1)
+                    choices("Style", \.shadowStyle, "shadowStyle", [("soft", "Soft"), ("hard", "Hard"), ("extrude", "3D extrude")])
+                    HStack(alignment: .center, spacing: Theme.spaceS) {
+                        OverrideLabel(
+                            text: "Offset", isSet: decor?.shadowX != nil || decor?.shadowY != nil, parent: defaultLabel
+                        ) {
+                            var value = decor ?? TextDecor()
+                            value.shadowX = nil
+                            value.shadowY = nil
+                            decor = value
                         }
-                    }.labelsHidden()
-                    Spacer(minLength: 0)
-                }.help(help("shadowPreset"))
-                color("Shadow colour", \.shadowColor, "shadowColor")
-                number("Shadow opacity", \.shadowOpacity, "shadowOpacity", 0...1)
-                choices("Shadow style", \.shadowStyle, "shadowStyle", [("soft", "Soft"), ("hard", "Hard"), ("extrude", "3D extrude")])
-                HStack(alignment: .top, spacing: Theme.spaceS) {
-                    ShadowOffsetPad(x: setting(\.shadowX, 0), y: setting(\.shadowY, -0.08))
-                    VStack(spacing: Theme.spaceS) {
-                        number("X", \.shadowX, "shadowX", -3...3)
-                        number("Y", \.shadowY, "shadowY", -3...3)
+                        ShadowOffsetPad(x: setting(\.shadowX, 0), y: setting(\.shadowY, -0.08))
+                        VStack(alignment: .leading, spacing: 4) {
+                            offsetField("X", \.shadowX)
+                            offsetField("Y", \.shadowY)
+                        }
+                        Spacer(minLength: 0)
+                    }.help(help("shadowOffset"))
+                    if resolved.shadowStyle == "soft" {
+                        number("Blur", \.shadowBlur, "shadowBlur", 0...3)
                     }
-                }.help(help("shadowOffset"))
-                if resolved.shadowStyle == "soft" {
-                    number("Shadow blur", \.shadowBlur, "shadowBlur", 0...3)
                 }
             }
-        }
-        effect("Box", \.bgOn, "bgOn", TextLookSummary.box(resolved, perWord: !boxOnly)) {
-            color("Box colour", \.bgColor, "bgColor")
-            number("Box opacity", \.bgOpacity, "bgOpacity", 0...1)
-            number("Corner radius", \.bgRadius, "bgRadius", 0...40)
-            number("Padding X", \.bgPaddingX, "bgPaddingX", 0...3)
-            number("Padding Y", \.bgPaddingY, "bgPaddingY", 0...3)
-            toggle("Per line", \.bgPerLine, "bgPerLine")
-        }
-        effect("Border", \.borderOn, "borderOn", TextLookSummary.border(resolved)) {
-            number("Border width", \.borderWidth, "borderWidth", 0...6)
-            color("Border colour", \.borderColor, "borderColor")
+            effect("Box", \.bgOn, "bgOn", TextLookSummary.box(resolved, perWord: !boxOnly)) {
+                color("Colour", \.bgColor, "bgColor")
+                number("Opacity", \.bgOpacity, "bgOpacity", 0...1)
+                number("Radius", \.bgRadius, "bgRadius", 0...40)
+                number("Padding X", \.bgPaddingX, "bgPaddingX", 0...3)
+                number("Padding Y", \.bgPaddingY, "bgPaddingY", 0...3)
+                toggle("Per line", \.bgPerLine, "bgPerLine")
+            }
+            effect("Border", \.borderOn, "borderOn", TextLookSummary.border(resolved)) {
+                number("Width", \.borderWidth, "borderWidth", 0...6)
+                color("Colour", \.borderColor, "borderColor")
+            }
         }
         if !boxOnly {
-            SpacingSection {
+            TextLookSection("Spacing") {
                 number("Letter spacing", \.letterSpacing, "letterSpacing", -2...6)
                 number("Line height", \.lineHeight, "lineHeight", 0.8...2)
                 choices("Alignment", \.alignment, "alignment", [("leading", "Left"), ("center", "Center"), ("trailing", "Right")])
                 number("Max width", \.maxWidthFrac, "maxWidthFrac", 0.2...1)
             }
+        }
+    }
+}
+
+/// A plain inspector row for settings that are not decor overrides (caption
+/// paging, tag fields): the label sits in the shared column, the control after it.
+struct TextLookRow<Control: View>: View {
+    let label: String
+    @ViewBuilder var control: Control
+
+    init(_ label: String, @ViewBuilder control: () -> Control) {
+        self.label = label
+        self.control = control()
+    }
+
+    var body: some View {
+        HStack(spacing: Theme.spaceS) {
+            Text(label).lineLimit(1).fixedSize().frame(width: TextLookInspectorSections.labelWidth, alignment: .leading)
+            control.labelsHidden()
+            Spacer(minLength: 0)
         }
     }
 }
@@ -254,36 +284,41 @@ struct OverrideLabel: View {
     }
 }
 
-struct FontSection<Content: View>: View {
+/// A flat section: a small tracked uppercase header, then the rows. The
+/// optional trailing view sits on the header line (the Look row's buttons).
+struct TextLookSection<Content: View, Trailing: View>: View {
+    let title: String
+    @ViewBuilder var trailing: Trailing
     @ViewBuilder var content: Content
+
+    init(_ title: String, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content) {
+        self.title = title
+        self.trailing = trailing()
+        self.content = content()
+    }
+
     var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 10) { content }
-        } label: {
-            Text("Font").lineLimit(1).fixedSize()
+        VStack(alignment: .leading, spacing: Theme.spaceS) {
+            HStack(spacing: Theme.spaceS) {
+                Text(title.uppercased())
+                    .font(.caption.weight(.semibold)).tracking(0.8).foregroundStyle(.secondary)
+                    .lineLimit(1).fixedSize()
+                Spacer(minLength: 0)
+                trailing
+            }
+            content
         }
     }
 }
-struct ColourSection<Content: View>: View {
-    @ViewBuilder var content: Content
-    var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 10) { content }
-        } label: {
-            Text("Colour").lineLimit(1).fixedSize()
-        }
+
+extension TextLookSection where Trailing == EmptyView {
+    init(_ title: String, @ViewBuilder content: () -> Content) {
+        self.init(title, trailing: { EmptyView() }, content: content)
     }
 }
-struct SpacingSection<Content: View>: View {
-    @ViewBuilder var content: Content
-    var body: some View {
-        GroupBox {
-            VStack(alignment: .leading, spacing: 10) { content }
-        } label: {
-            Text("Spacing").lineLimit(1).fixedSize()
-        }
-    }
-}
+
+/// An effect card: chevron, title, one-line summary and the on/off switch on
+/// the header; the rows appear inside the card when it is expanded.
 struct EffectSection<Content: View>: View {
     let title: String
     @Binding var enabled: Bool
@@ -295,20 +330,39 @@ struct EffectSection<Content: View>: View {
     @State private var expanded = false
 
     var body: some View {
-        DisclosureGroup(isExpanded: $expanded) {
-            VStack(alignment: .leading, spacing: 10) { content }.disabled(!enabled)
-        } label: {
-            VStack(alignment: .leading, spacing: 4) {
-                Toggle(isOn: $enabled) {
-                    Text(title).lineLimit(1).fixedSize()
-                        .foregroundStyle(overridden ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.primary))
+        VStack(alignment: .leading, spacing: 0) {
+            HStack(spacing: Theme.spaceS) {
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { expanded.toggle() }
+                } label: {
+                    HStack(spacing: Theme.spaceS) {
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(expanded ? 90 : 0))
+                            .frame(width: 12)
+                        Text(title).font(.body.weight(.semibold)).lineLimit(1).fixedSize()
+                            .foregroundStyle(overridden ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.primary))
+                        Text(summary).font(.callout).foregroundStyle(.secondary).lineLimit(1).truncationMode(.tail)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
                 }
+                .buttonStyle(.plain)
+                .accessibilityLabel("\(title), \(summary)")
+                .accessibilityValue(expanded ? "expanded" : "collapsed")
                 .contextMenu { Button("Use \(parent.lowercased()) value", action: reset).disabled(!overridden) }
-                if !expanded {
-                    Text(summary).font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize(horizontal: false, vertical: true)
-                }
+                Toggle(title, isOn: $enabled).toggleStyle(.switch).controlSize(.small).labelsHidden()
+                    .accessibilityLabel("\(title) on")
+            }
+            .padding(.horizontal, Theme.spaceM).padding(.vertical, Theme.spaceS)
+            if expanded {
+                VStack(alignment: .leading, spacing: 10) { content }
+                    .disabled(!enabled)
+                    .padding(.horizontal, Theme.spaceM).padding(.bottom, Theme.spaceM)
             }
         }
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
+        .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius).strokeBorder(.quaternary))
     }
 }
 

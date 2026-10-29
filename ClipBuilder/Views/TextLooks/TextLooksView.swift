@@ -126,7 +126,7 @@ struct TextLooksView: View {
                     )
                     .rememberedPaneWidth("pane.textLooks.list", min: 200, initial: 232, max: 300)
                     stage.id(selection).frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
-                    inspector.frame(width: 320).frame(maxHeight: .infinity)
+                    inspector.frame(width: 336).frame(maxHeight: .infinity)
                 }
             }
             if let countError { FormCaption(countError, tone: .warning).padding(8) }
