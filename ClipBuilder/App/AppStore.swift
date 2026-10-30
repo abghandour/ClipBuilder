@@ -102,6 +102,7 @@ final class AppStore {
         didSet {
             updateBugReportContext()
             if oldValue != activeProjectID {
+                resetMiniFootage()
                 logEvent("app", "Project switched: \(activeProject?.name ?? "none")")
             }
         }
@@ -374,7 +375,19 @@ final class AppStore {
     var podcastResultsAfterDismissal: WizardRunResults?
     var pendingWizardSelectionReview: WizardSelectionReviewRequest?
     var wizardSelections: [WizardSelectionSummary] = []
-    var miniRun: MiniWizardRun?
+    var miniRuns: [MiniWizardFlow.FootageKind: MiniWizardRun] = [:]
+    var miniFootageKind: MiniWizardFlow.FootageKind = .highlights
+    var miniRun: MiniWizardRun? {
+        get { miniRuns[miniFootageKind] }
+        set { miniRuns[miniFootageKind] = newValue }
+    }
+    var isLoadingMiniFootage = false
+    var miniFootageRevision = 0
+    var miniFootageStage: String?
+    @ObservationIgnored var miniFootageTask: Task<Void, Never>?
+    @ObservationIgnored var miniFootageLoadID: UUID?
+    @ObservationIgnored var miniFootageVideoID: Int64?
+    @ObservationIgnored var miniFootageLength: MiniWizardFlow.Length = .automatic
     /// Serial scene trims; Mini waits for the latest write before recording Q&A takes.
     var sceneEditSaveTask: Task<Void, Error>?
     /// Serial transcript-pick writes; Mini waits for the latest before recording takes.
@@ -1053,7 +1066,7 @@ final class AppStore {
         wizardSelectionAfterDismissal = nil
         wizardSelectionSaveTask = nil
         wizardSelections = []
-        miniRun = nil
+        resetMiniFootage()
         sceneEditSaveTask = nil
         transcriptPickSaveTask = nil
         fightPickSaveTask = nil
@@ -1166,6 +1179,18 @@ final class AppStore {
 
     /// Transcript rows per video for scene blurbs; dropped on every refresh.
     var blurbTranscripts: [Int64: [TranscriptRow]] = [:]
+
+    /// A transcript's rows changed (speakers, re-cut, translation, re-transcription):
+    /// drop the cached rows and the Express runs built from them. `refreshAll`
+    /// clears the row cache alone; it must not evict an Express tab in use.
+    func transcriptEdited(videoID: Int64) {
+        blurbTranscripts[videoID] = nil
+        MiniWizardRunCache.invalidateTranscripts(&miniRuns, videoIDs: [videoID])
+        if miniFootageVideoID == videoID {
+            if miniFootageKind == .qa || miniFootageKind == .transcript { cancelMiniFootageLoad() }
+            miniFootageRevision &+= 1
+        }
+    }
     private var blurbSpeakerKeys: [Int64: String] = [:]
 
     /// What a scene is about: its narrative, else the first words of its
@@ -1189,7 +1214,7 @@ final class AppStore {
     var personPortraitVersions: [Int64: Int] = [:]
 
     func invalidatePersonReferences(videoID: Int64) {
-        blurbTranscripts[videoID] = nil
+        transcriptEdited(videoID: videoID)
         blurbSpeakers[videoID] = nil
         previousSpeakerMaps[videoID] = nil
         // A roster's identities can change without changing its count.
@@ -1215,7 +1240,7 @@ final class AppStore {
         guard let database else { return }
         do {
             try await database.setTranscriptSpeaker(ids: rowIDs, speaker: speaker)
-            blurbTranscripts[videoID] = nil
+            transcriptEdited(videoID: videoID)
         } catch {
             presentError("Could not change who says these lines", error)
         }
@@ -1237,7 +1262,7 @@ final class AppStore {
             if plan.hasChanges {
                 try await database.recutTranscript(videoID: videoID, transcriptionKey: transcriptionKey, pieces: plan.pieces)
             }
-            blurbTranscripts[videoID] = nil
+            transcriptEdited(videoID: videoID)
             return plan.splitRows
         } catch {
             presentError("Could not re-cut the transcript", error)
@@ -1268,7 +1293,7 @@ final class AppStore {
             previousSpeakerMapKeys[video.id] = sourceKey
         }
         blurbSpeakers[video.id] = nil
-        blurbTranscripts[video.id] = nil
+        transcriptEdited(videoID: video.id)
         return true
     }
 
@@ -1284,7 +1309,7 @@ final class AppStore {
             appendLog(\.analysisLog, ["\(video.filename): previous speaker map restored (\(before.count) turns)"])
             previousSpeakerMaps[video.id] = nil
             blurbSpeakers[video.id] = nil
-            blurbTranscripts[video.id] = nil
+            transcriptEdited(videoID: video.id)
             return true
         } catch {
             presentError("Could not restore the previous speaker map", error)

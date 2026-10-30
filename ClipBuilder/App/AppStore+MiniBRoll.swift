@@ -23,6 +23,8 @@ extension AppStore {
 extension AppStore {
     func restoreMiniHighlights(flow: MiniWizardFlow) {
         guard let video = flow.video, let projectID = activeProjectID, let database, !isWizardRunning else { return }
+        selectMiniFootage(flow: flow)
+        guard miniRuns[.highlights] == nil, !isLoadingMiniFootage else { return }
         let key = MiniWizardMemory.batchKey(profileName: activeProfile.profileName, projectID: projectID,
             videoID: video.id, kind: .highlights, length: flow.length)
         guard let batch = UserDefaults.standard.string(forKey: key) else { return }
@@ -35,9 +37,9 @@ extension AppStore {
         options.manualBRoll = true
         options.targetDurationSeconds = flow.length.seconds
         options.critiqueLoop = false
-        beginWizardSelectionWork(projectID: projectID, stage: "Restoring Express footage", options: options)
-        wizardTask = Task {
-            defer { finishWizardSelectionWork(generation: generation) }
+        let loadID = beginMiniFootageLoad(stage: "Restoring Express footage")
+        miniFootageTask = Task {
+            defer { finishMiniFootageLoad(loadID) }
             do {
                 var candidates = try await database.miniSavedCandidates(projectID: projectID, miniBatch: batch)
                 guard !Task.isCancelled, generation == profileGeneration, activeProjectID == projectID else { return }
@@ -45,11 +47,14 @@ extension AppStore {
                 if let kept = UserDefaults.standard.stringArray(forKey: "mini.kept.\(batch)") {
                     candidates = MiniHighlightReview.settingKept(Set(kept.compactMap(Int64.init)), in: candidates)
                 }
-                miniRun = MiniWizardRun(projectID: projectID, video: video, footageKind: .highlights,
+                guard miniFootageLoadID == loadID else { return }
+                miniRuns[.highlights] = MiniWizardRun(projectID: projectID, video: video, footageKind: .highlights,
                     length: flow.length, batchID: batch, candidates: candidates, options: options,
                     selectedSelectionID: candidates.first?.id)
+            } catch is CancellationError {
+                // Switching source or tab must not remove the remembered batch.
             } catch {
-                guard generation == profileGeneration else { return }
+                guard !Task.isCancelled, miniFootageLoadID == loadID, generation == profileGeneration else { return }
                 UserDefaults.standard.removeObject(forKey: key)
                 presentError("Could not restore Express footage", error)
             }

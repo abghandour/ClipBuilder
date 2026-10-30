@@ -25,6 +25,7 @@ struct MiniWizardView: View {
     @State private var settingsProfile: String?
     @State private var transcriptLanguage: String?
     @State private var hasTranscript = false
+    @State private var transcriptVideoID: Int64?
     @State private var confirmRemoveBRoll = false
     @State private var collapsedCard: MiniWizardFlow.Card?
     /// Navigation before a run exists; a run carries its own requested card.
@@ -59,14 +60,12 @@ struct MiniWizardView: View {
     private var selectedVideo: VideoRecord? { projectVideos.first { $0.path == videoPath } }
 
     private var currentRun: MiniWizardRun? {
-        guard let run = store.miniRun, run.projectID == store.activeProjectID,
-              run.video.path == selectedVideo?.path, (run.footageKind != .highlights || run.length == length) else { return nil }
-        // The same rule the Footage picker uses, so a Transcript run on an
-        // ordinary video with a transcript is recognised as the current run.
-        let expected = MiniWizardFlow(video: run.video,
-                                      hasPodcastExchangeScenes: podcastVideoIDs.contains(run.video.id),
-                                      hasTranscript: hasTranscript, footageKind: footageKind).effectiveFootageKind
-        guard run.footageKind == expected else { return nil }
+        guard let video = selectedVideo else { return nil }
+        let expected = MiniWizardFlow(video: video,
+            hasPodcastExchangeScenes: podcastVideoIDs.contains(video.id),
+            hasTranscript: hasTranscript, footageKind: footageKind).effectiveFootageKind
+        guard let run = store.miniRuns[expected], run.projectID == store.activeProjectID,
+              run.video.id == video.id, (expected != .highlights || run.length == length) else { return nil }
         return run
     }
 
@@ -184,6 +183,12 @@ struct MiniWizardView: View {
         }
         .task(id: transcriptKey) { await loadTranscriptLanguage() }
         .onChange(of: store.scenesVersion) { _, _ in store.refreshMiniQASections() }
+        .onChange(of: store.transcriptCountsVersion) { _, _ in
+            if store.isLoadingMiniFootage, [.qa, .transcript].contains(store.miniFootageKind) {
+                store.cancelMiniFootageLoad()
+                autoLoad(autoLoadKey)
+            }
+        }
         // Navigation from a finished step (generate, keep) reopens the page.
         .onChange(of: currentRun?.requestedCard) { _, _ in collapsedCard = nil }
         .onChange(of: autoLoadKey, initial: true) { _, key in autoLoad(key) }
@@ -369,17 +374,13 @@ struct MiniWizardView: View {
                 case .fightMetrics: "Fight metrics lists every scored action in time order. Select actions and add them as separate picks or as one stretch. Picks are kept with this video. No AI model runs for this step."
                 default: "Transcript shows every spoken line. Mark a passage and press Add. Picks are kept with this video. No AI model runs for this step."
             }
-            let loading: String = switch kind {
-                case .qa: "Loading Q&A exchanges…"
-                case .fightMetrics: "Loading fight actions…"
-                default: "Loading transcript…"
-            }
             FormCaption(caption)
             if let selectedVideo, !selectedVideo.isPresent {
                 FormCaption(VideoRecord.notPresentReason, tone: .warning)
-            } else if currentRun == nil, store.isWizardRunning {
-                ProgressView(loading)
             }
+        }
+        if currentRun == nil, store.isLoadingMiniFootage {
+            ProgressView(store.miniFootageStage ?? "Loading footage…")
         }
     }
 
@@ -387,6 +388,8 @@ struct MiniWizardView: View {
         var videoID: Int64?
         var kind: MiniWizardFlow.FootageKind?
         var hasRun: Bool
+        var length: MiniWizardFlow.Length
+        var revision: Int
     }
 
     /// Q&A, Transcript and Fight metrics need no model: they load as soon as a
@@ -396,12 +399,14 @@ struct MiniWizardView: View {
         let kind = flow.effectiveFootageKind
         return AutoLoadKey(videoID: selectedVideo?.id,
                            kind: kind,
-                           hasRun: currentRun != nil)
+                           hasRun: currentRun != nil, length: length, revision: store.miniFootageRevision)
     }
 
     private func autoLoad(_ key: AutoLoadKey) {
-        guard key.kind != nil, !key.hasRun, let selectedVideo, selectedVideo.isPresent,
-              !store.isWizardRunning, !isLoading else { return }
+        guard let selectedVideo, !isLoading else { return }
+        store.selectMiniFootage(flow: flow)
+        guard key.kind != nil, !key.hasRun, selectedVideo.isPresent,
+              !store.isWizardRunning else { return }
         if key.kind == .highlights { store.restoreMiniHighlights(flow: flow) }
         else { store.generateMiniFootage(flow: flow) }
     }
@@ -465,9 +470,7 @@ struct MiniWizardView: View {
             projectHasVideos = !fetchedVideos.isEmpty
             let validated = MiniWizardMemory.validatedVideoPath(videoPath, videos: videos)
             if validated != videoPath {
-                if store.miniRun?.projectID == projectID, store.miniRun?.video.path == videoPath {
-                    store.miniRun = nil
-                }
+                store.resetMiniFootage()
                 videoPath = validated
             }
             podcastVideoIDs = Set(scenes.filter { $0.tags.contains("podcast-exchange") }.map(\.videoID))
@@ -484,12 +487,15 @@ struct MiniWizardView: View {
     }
 
     private var transcriptKey: String {
-        "\(store.profileGeneration):\(selectedVideo?.id ?? -1):\(store.videosVersion):\(store.scenesVersion)"
+        "\(store.profileGeneration):\(selectedVideo?.id ?? -1):\(store.videosVersion):\(store.scenesVersion):\(store.transcriptCountsVersion)"
     }
 
     private func loadTranscriptLanguage() async {
-        transcriptLanguage = nil
-        hasTranscript = false
+        if transcriptVideoID != selectedVideo?.id {
+            transcriptLanguage = nil
+            hasTranscript = false
+            transcriptVideoID = selectedVideo?.id
+        }
         let key = transcriptKey
         guard let video = selectedVideo, let database = store.database else { return }
         // Original segments carry the language; translated English rows must not hide this choice.

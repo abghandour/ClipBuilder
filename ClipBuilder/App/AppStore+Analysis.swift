@@ -507,7 +507,7 @@ extension AppStore {
                         target: language, ai: ai, database: database, log: { log($0) })
                 }
                 guard generation == profileGeneration else { throw CancellationError() }
-                blurbTranscripts[videoID] = nil
+                transcriptEdited(videoID: videoID)
             }
             log("Transcript translations refreshed.")
             return nil

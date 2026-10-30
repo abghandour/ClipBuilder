@@ -15,9 +15,11 @@ extension AppStore {
         options.formatPreset = "custom"
         options.critiqueLoop = false
         options.workflow = .automatic
-        beginWizardSelectionWork(projectID: projectID, stage: "Loading fight actions", options: options)
-        wizardTask = Task {
-            defer { finishWizardSelectionWork(generation: generation) }
+        selectMiniFootage(flow: flow)
+        guard miniRuns[.fightMetrics] == nil, !isLoadingMiniFootage else { return }
+        let loadID = beginMiniFootageLoad(stage: "Loading fight actions")
+        miniFootageTask = Task {
+            defer { finishMiniFootageLoad(loadID) }
             do {
                 _ = try? await fightPickSaveTask?.value
                 try Task.checkCancellation()
@@ -26,14 +28,15 @@ extension AppStore {
                 let events = fightEvents[video.id] ?? []
                 let actions = MiniWizardFightRules.actions(events: events, duration: video.duration)
                 let names = Dictionary(uniqueKeysWithValues: people.map { ($0.key, $0.displayName) })
-                miniRun = MiniWizardRun(projectID: projectID, video: video, footageKind: .fightMetrics,
+                guard !Task.isCancelled, miniFootageLoadID == loadID else { return }
+                miniRuns[.fightMetrics] = MiniWizardRun(projectID: projectID, video: video, footageKind: .fightMetrics,
                     length: .automatic, batchID: UUID().uuidString, candidates: [], options: options,
                     fight: MiniWizardFight(actions: actions, picks: picks, names: names))
                 appendLog(\.wizardLog, ["Express: \(actions.count) fight actions, \(picks.count) saved picks."])
             } catch is CancellationError {
-                if generation == profileGeneration { appendLog(\.wizardLog, ["Loading fight actions stopped."]) }
+                if miniFootageLoadID == loadID, generation == profileGeneration { appendLog(\.wizardLog, ["Loading fight actions stopped."]) }
             } catch {
-                if generation == profileGeneration { presentError("Could not load the fight actions", error) }
+                if !Task.isCancelled, miniFootageLoadID == loadID, generation == profileGeneration { presentError("Could not load the fight actions", error) }
             }
         }
     }
@@ -81,16 +84,16 @@ extension AppStore {
                 if generation == profileGeneration { presentError("Could not add the pick", error) }
                 throw error
             }
-            guard generation == profileGeneration, miniRun?.batchID == batchID else { return }
-            miniRun?.fight?.picks.append(contentsOf: added)
+            guard generation == profileGeneration, miniRuns[.fightMetrics]?.batchID == batchID else { return }
+            miniRuns[.fightMetrics]?.fight?.picks.append(contentsOf: added)
         }
     }
 
     func setMiniFightPickRange(_ id: Int64, start: Double, end: Double) {
         guard let run = currentFightRun(), end > start,
               let index = run.fight?.picks.firstIndex(where: { $0.id == id }) else { return }
-        miniRun?.fight?.picks[index].start = start
-        miniRun?.fight?.picks[index].end = end
+        miniRuns[.fightMetrics]?.fight?.picks[index].start = start
+        miniRuns[.fightMetrics]?.fight?.picks[index].end = end
         enqueueFightPickWrite("Could not save the pick", batchID: run.batchID) { database in
             try await database.setFightPickRange(id: id, start: start, end: end)
         }
@@ -102,7 +105,7 @@ extension AppStore {
         let byID = Dictionary(uniqueKeysWithValues: picks.map { ($0.id, $0) })
         let ordered = ids.compactMap { byID[$0] } + picks.filter { !ids.contains($0.id) }
         guard ordered.map(\.id) != picks.map(\.id) else { return }
-        miniRun?.fight?.picks = ordered.enumerated().map { position, pick in
+        miniRuns[.fightMetrics]?.fight?.picks = ordered.enumerated().map { position, pick in
             var pick = pick
             pick.position = position
             return pick
@@ -116,7 +119,7 @@ extension AppStore {
 
     func deleteMiniFightPick(_ id: Int64) {
         guard let run = currentFightRun(), run.fight?.picks.contains(where: { $0.id == id }) == true else { return }
-        miniRun?.fight?.picks.removeAll { $0.id == id }
+        miniRuns[.fightMetrics]?.fight?.picks.removeAll { $0.id == id }
         enqueueFightPickWrite("Could not delete the pick", batchID: run.batchID) { database in
             try await database.deleteFightPick(id: id)
         }
@@ -124,7 +127,7 @@ extension AppStore {
 
     func deleteAllMiniFightPicks() {
         guard let run = currentFightRun(), run.fight?.picks.isEmpty == false else { return }
-        miniRun?.fight?.picks = []
+        miniRuns[.fightMetrics]?.fight?.picks = []
         let videoID = run.video.id
         enqueueFightPickWrite("Could not remove the picks", batchID: run.batchID) { database in
             try await database.deleteFightPicks(videoID: videoID)

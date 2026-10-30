@@ -17,36 +17,45 @@ extension AppStore {
         options.manualBRoll = true
         options.critiqueLoop = false
         options.workflow = .automatic
-        beginWizardSelectionWork(projectID: projectID, stage: "Loading transcript", options: options)
-        wizardTask = Task {
-            defer { finishWizardSelectionWork(generation: generation) }
+        selectMiniFootage(flow: flow)
+        guard miniRuns[.transcript] == nil, !isLoadingMiniFootage else { return }
+        let loadID = beginMiniFootageLoad(stage: "Loading transcript")
+        miniFootageTask = Task {
+            defer { finishMiniFootageLoad(loadID) }
             do {
                 _ = try? await transcriptPickSaveTask?.value
                 try Task.checkCancellation()
-                let rows = try await database.fetchTranscripts(videoID: video.id)
+                let rows = try await miniTranscriptRows(videoID: video.id)
                 let picks = try await database.fetchTranscriptPicks(videoID: video.id)
                 guard generation == profileGeneration, activeProjectID == projectID else { return }
                 let speakers = await speakerTurns(videoID: video.id)
                 try Task.checkCancellation()
                 guard generation == profileGeneration, activeProjectID == projectID else { return }
-                let namedTurns = TranscriptSpeakers.named(speakers.turns, roster: speakers.roster)
-                let labels = rows.reduce(into: [Int64: String]()) { labels, row in
-                    labels[row.id] = TranscriptSpeakers.label(for: row, turns: namedTurns,
-                                                             roster: speakers.roster, people: people)
-                }
+                let people = people
+                let transcript = await Task.detached(priority: .userInitiated) {
+                    let namedTurns = TranscriptSpeakers.named(speakers.turns, roster: speakers.roster)
+                    let labels = rows.reduce(into: [Int64: String]()) { labels, row in
+                        labels[row.id] = TranscriptSpeakers.label(for: row, turns: namedTurns,
+                                                                 roster: speakers.roster, people: people)
+                    }
+                    return MiniWizardTranscript(rows: rows, labels: labels, picks: picks,
+                        speakerSpans: TranscriptSpeakers.spans(turns: namedTurns, roster: speakers.roster))
+                }.value
+                try Task.checkCancellation()
+                guard miniFootageLoadID == loadID, generation == profileGeneration else { return }
                 let batch = MiniWizardMemory.batchID(profileName: activeProfile.profileName,
                     projectID: projectID, videoID: video.id, kind: .transcript)
                 let saved = try await database.miniSavedCandidates(projectID: projectID, miniBatch: batch)
                 guard !Task.isCancelled, generation == profileGeneration, activeProjectID == projectID else { return }
-                miniRun = MiniWizardRun(projectID: projectID, video: video, footageKind: .transcript,
+                guard !Task.isCancelled, miniFootageLoadID == loadID else { return }
+                miniRuns[.transcript] = MiniWizardRun(projectID: projectID, video: video, footageKind: .transcript,
                     length: .automatic, batchID: batch, candidates: saved, options: options,
-                    transcript: MiniWizardTranscript(rows: rows, labels: labels, picks: picks,
-                                                     speakerSpans: TranscriptSpeakers.spans(turns: namedTurns, roster: speakers.roster)))
+                    transcript: transcript)
                 appendLog(\.wizardLog, ["Express: transcript ready, \(picks.count) saved picks."])
             } catch is CancellationError {
-                if generation == profileGeneration { appendLog(\.wizardLog, ["Loading transcript stopped."]) }
+                if miniFootageLoadID == loadID, generation == profileGeneration { appendLog(\.wizardLog, ["Loading transcript stopped."]) }
             } catch {
-                if generation == profileGeneration { presentError("Could not load the transcript", error) }
+                if !Task.isCancelled, miniFootageLoadID == loadID, generation == profileGeneration { presentError("Could not load the transcript", error) }
             }
         }
     }
@@ -72,7 +81,7 @@ extension AppStore {
                 if generation == profileGeneration { presentError(context, error) }
                 throw error
             }
-            guard generation == profileGeneration, miniRun?.batchID == batchID else { return }
+            guard generation == profileGeneration, miniRuns[.transcript]?.batchID == batchID else { return }
             apply()
         }
     }
@@ -93,16 +102,16 @@ extension AppStore {
                 if generation == profileGeneration { presentError("Could not add the pick", error) }
                 throw error
             }
-            guard generation == profileGeneration, miniRun?.batchID == batchID else { return }
-            miniRun?.transcript?.picks.append(pick)
+            guard generation == profileGeneration, miniRuns[.transcript]?.batchID == batchID else { return }
+            miniRuns[.transcript]?.transcript?.picks.append(pick)
         }
     }
 
     func setMiniTranscriptPickRange(_ id: Int64, start: Double, end: Double) {
         guard let run = currentTranscriptRun(), end > start,
               let index = run.transcript?.picks.firstIndex(where: { $0.id == id }) else { return }
-        miniRun?.transcript?.picks[index].start = start
-        miniRun?.transcript?.picks[index].end = end
+        miniRuns[.transcript]?.transcript?.picks[index].start = start
+        miniRuns[.transcript]?.transcript?.picks[index].end = end
         enqueueTranscriptPickWrite("Could not save the pick", batchID: run.batchID) { database in
             try await database.setTranscriptPickRange(id: id, start: start, end: end)
         }
@@ -114,7 +123,7 @@ extension AppStore {
         let byID = Dictionary(uniqueKeysWithValues: picks.map { ($0.id, $0) })
         let ordered = ids.compactMap { byID[$0] } + picks.filter { !ids.contains($0.id) }
         guard ordered.map(\.id) != picks.map(\.id) else { return }
-        miniRun?.transcript?.picks = ordered.enumerated().map { position, pick in
+        miniRuns[.transcript]?.transcript?.picks = ordered.enumerated().map { position, pick in
             var pick = pick
             pick.position = position
             return pick
@@ -128,7 +137,7 @@ extension AppStore {
 
     func deleteMiniTranscriptPick(_ id: Int64) {
         guard let run = currentTranscriptRun(), run.transcript?.picks.contains(where: { $0.id == id }) == true else { return }
-        miniRun?.transcript?.picks.removeAll { $0.id == id }
+        miniRuns[.transcript]?.transcript?.picks.removeAll { $0.id == id }
         enqueueTranscriptPickWrite("Could not delete the pick", batchID: run.batchID) { database in
             try await database.deleteTranscriptPick(id: id)
         }
@@ -136,7 +145,7 @@ extension AppStore {
 
     func deleteAllMiniTranscriptPicks() {
         guard let run = currentTranscriptRun(), run.transcript?.picks.isEmpty == false else { return }
-        miniRun?.transcript?.picks = []
+        miniRuns[.transcript]?.transcript?.picks = []
         let videoID = run.video.id
         enqueueTranscriptPickWrite("Could not remove the picks", batchID: run.batchID) { database in
             try await database.deleteTranscriptPicks(videoID: videoID)

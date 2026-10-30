@@ -673,7 +673,7 @@ extension AppStore {
     /// cached rows, rebuild features and topics, and refresh the edited
     /// rows' translations. `transcriptionKey` nil means the active set.
     func transcriptTextsChanged(videoID: Int64, transcriptionKey: String? = nil, rowIDs: [Int64]) async {
-        blurbTranscripts[videoID] = nil
+        transcriptEdited(videoID: videoID)
         guard let database else { return }
         let generation = profileGeneration
         do {
@@ -688,7 +688,7 @@ extension AppStore {
                 try await transcription.refreshDerived(video: video, database: database, transcriptionKey: key)
             }
             guard generation == profileGeneration else { return }
-            blurbTranscripts[videoID] = nil
+            transcriptEdited(videoID: videoID)
         } catch {
             guard generation == profileGeneration else { return }
             presentError("Could not refresh transcript topics and features", error)

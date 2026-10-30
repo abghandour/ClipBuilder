@@ -1,7 +1,66 @@
 import Foundation
 
 extension AppStore {
+    /// Source/tab navigation is independent of AI generation and pick-saving work.
+    func selectMiniFootage(flow: MiniWizardFlow) {
+        guard let projectID = activeProjectID, let video = flow.video else { return }
+        let kind = flow.effectiveFootageKind
+        if miniFootageVideoID != video.id || miniFootageKind != kind
+            || (kind == .highlights && miniFootageLength != flow.length) {
+            cancelMiniFootageLoad()
+        }
+        MiniWizardRunCache.retain(&miniRuns, projectID: projectID, videoID: video.id, length: flow.length)
+        miniFootageVideoID = video.id
+        miniFootageKind = kind
+        miniFootageLength = flow.length
+    }
+
+    func cancelMiniFootageLoad() {
+        miniFootageTask?.cancel()
+        miniFootageTask = nil
+        miniFootageLoadID = nil
+        isLoadingMiniFootage = false
+        miniFootageStage = nil
+    }
+
+    func resetMiniFootage() {
+        cancelMiniFootageLoad()
+        miniRuns = [:]
+        miniFootageVideoID = nil
+    }
+
+    func beginMiniFootageLoad(stage: String) -> UUID {
+        cancelMiniFootageLoad()
+        let id = UUID()
+        miniFootageLoadID = id
+        isLoadingMiniFootage = true
+        miniFootageStage = stage
+        return id
+    }
+
+    func finishMiniFootageLoad(_ id: UUID) {
+        guard miniFootageLoadID == id else { return }
+        miniFootageTask = nil
+        miniFootageLoadID = nil
+        isLoadingMiniFootage = false
+        miniFootageStage = nil
+    }
+
+    /// Share the transcript cache with the transcript sheet and reject stale profile/edit reads.
+    func miniTranscriptRows(videoID: Int64) async throws -> [TranscriptRow] {
+        if let cached = blurbTranscripts[videoID] { return cached }
+        guard let database else { throw CancellationError() }
+        let generation = profileGeneration
+        let version = transcriptCountsVersion
+        let rows = try await database.fetchTranscripts(videoID: videoID)
+        try Task.checkCancellation()
+        guard generation == profileGeneration, version == transcriptCountsVersion else { throw CancellationError() }
+        blurbTranscripts[videoID] = rows
+        return rows
+    }
+
     func generateMiniFootage(flow: MiniWizardFlow) {
+        selectMiniFootage(flow: flow)
         if flow.effectiveFootageKind == .qa {
             loadMiniQA(flow: flow)
             return
@@ -35,6 +94,7 @@ extension AppStore {
         let generation = profileGeneration
         let podcastSettings = podcastEditingSettings
         let wizard = wizard
+        cancelMiniFootageLoad()
         beginWizardSelectionWork(projectID: projectID, stage: "Finding Express highlights", options: options)
         wizardTask = Task {
             await AIRunCapture.context.withValue(AIRunCapture()) {
@@ -72,7 +132,7 @@ extension AppStore {
                     guard generation == profileGeneration, activeProjectID == projectID else { return }
                     UserDefaults.standard.set(batch, forKey: MiniWizardMemory.batchKey(profileName: profile.profileName,
                         projectID: projectID, videoID: video.id, kind: .highlights, length: flow.length))
-                    miniRun = MiniWizardRun(projectID: projectID, video: video, footageKind: .highlights,
+                    miniRuns[.highlights] = MiniWizardRun(projectID: projectID, video: video, footageKind: .highlights,
                         length: flow.length, batchID: batch, candidates: candidates, options: options,
                         selectedSelectionID: candidates.first?.id)
                     appendLog(\.wizardLog, ["Express: \(candidates.count) candidates ready to review."])
@@ -179,54 +239,61 @@ extension AppStore {
         options.manualBRoll = true
         options.critiqueLoop = false
         options.workflow = .automatic
-        beginWizardSelectionWork(projectID: projectID, stage: "Loading Q&A exchanges", options: options)
-        wizardTask = Task {
-            defer { finishWizardSelectionWork(generation: generation) }
+        selectMiniFootage(flow: flow)
+        guard miniRuns[.qa] == nil, !isLoadingMiniFootage else { return }
+        let loadID = beginMiniFootageLoad(stage: "Loading Q&A exchanges")
+        miniFootageTask = Task {
+            defer { finishMiniFootageLoad(loadID) }
             do {
                 try await sceneEditSaveTask?.value
                 try Task.checkCancellation()
-                let rows = try await database.fetchTranscripts(videoID: video.id)
+                let rows = try await miniTranscriptRows(videoID: video.id)
                 let scenes = try await database.fetchScenes(projectID: projectID, scope: .active, includeExcluded: true)
                     .filter { $0.videoID == video.id }
                 guard generation == profileGeneration, activeProjectID == projectID else { return }
                 let speakers = await speakerTurns(videoID: video.id)
                 try Task.checkCancellation()
                 guard generation == profileGeneration, activeProjectID == projectID else { return }
-                let namedTurns = TranscriptSpeakers.named(speakers.turns, roster: speakers.roster)
-                let labels = rows.reduce(into: [Int64: String]()) { labels, row in
-                    labels[row.id] = TranscriptSpeakers.label(for: row, turns: namedTurns,
-                                                             roster: speakers.roster, people: people)
-                }
-                let sections = TranscriptQASections.sections(scenes: scenes, rows: rows, labels: labels)
-                // Nothing is kept until the user ticks an exchange; earlier
-                // ticks on this video come back across launches.
+                let people = people
                 let remembered = MiniWizardMemory.qaKept(profileName: activeProfile.profileName, videoID: video.id)
-                let qa = MiniWizardQA(sections: sections, rows: rows, labels: labels,
-                                      turns: speakers.turns, kept: remembered.intersection(Set(sections.map(\.id))),
-                                      speakerSpans: TranscriptSpeakers.spans(turns: namedTurns, roster: speakers.roster))
+                let qa = await Task.detached(priority: .userInitiated) {
+                    let namedTurns = TranscriptSpeakers.named(speakers.turns, roster: speakers.roster)
+                    let labels = rows.reduce(into: [Int64: String]()) { labels, row in
+                        labels[row.id] = TranscriptSpeakers.label(for: row, turns: namedTurns,
+                                                                 roster: speakers.roster, people: people)
+                    }
+                    let sections = TranscriptQASections.sections(scenes: scenes, rows: rows, labels: labels)
+                    // Nothing is kept until selected; restore only exchanges still present.
+                    return MiniWizardQA(sections: sections, rows: rows, labels: labels,
+                        turns: speakers.turns, kept: remembered.intersection(Set(sections.map(\.id))),
+                        speakerSpans: TranscriptSpeakers.spans(turns: namedTurns, roster: speakers.roster))
+                }.value
+                try Task.checkCancellation()
+                guard miniFootageLoadID == loadID, generation == profileGeneration else { return }
                 let batch = MiniWizardMemory.batchID(profileName: activeProfile.profileName,
                     projectID: projectID, videoID: video.id, kind: .qa)
                 let saved = try await database.miniSavedCandidates(projectID: projectID, miniBatch: batch)
                 guard !Task.isCancelled, generation == profileGeneration, activeProjectID == projectID else { return }
-                miniRun = MiniWizardRun(projectID: projectID, video: video, footageKind: .qa,
+                guard miniFootageLoadID == loadID else { return }
+                miniRuns[.qa] = MiniWizardRun(projectID: projectID, video: video, footageKind: .qa,
                     length: .automatic, batchID: batch, candidates: saved, options: options, qa: qa)
-                appendLog(\.wizardLog, ["Express: \(sections.count) Q&A exchanges ready to review."])
+                appendLog(\.wizardLog, ["Express: \(qa.sections.count) Q&A exchanges ready to review."])
             } catch is CancellationError {
-                if generation == profileGeneration { appendLog(\.wizardLog, ["Loading Q&A stopped."]) }
+                if miniFootageLoadID == loadID, generation == profileGeneration { appendLog(\.wizardLog, ["Loading Q&A stopped."]) }
             } catch {
-                if generation == profileGeneration { presentError("Could not load Q&A exchanges", error) }
+                if !Task.isCancelled, miniFootageLoadID == loadID, generation == profileGeneration { presentError("Could not load Q&A exchanges", error) }
             }
         }
     }
 
     /// Scene edits are shared with the Transcript sheet; keep its saved ranges visible in Mini.
     func refreshMiniQASections() {
-        guard !isLoadingProject, let run = miniRun, run.projectID == activeProjectID,
-              run.footageKind == .qa, var qa = run.qa else { return }
+        guard !isLoadingProject, let run = miniRuns[.qa], run.projectID == activeProjectID,
+              var qa = run.qa else { return }
         qa.sections = TranscriptQASections.sections(scenes: scenes.filter { $0.videoID == run.video.id },
                                                    rows: qa.rows, labels: qa.labels)
         qa.kept.formIntersection(Set(qa.sections.map(\.id)))
-        miniRun?.qa = qa
+        miniRuns[.qa]?.qa = qa
     }
 
     /// Save the chosen ranges, preserving manual source-clock cutaways.
