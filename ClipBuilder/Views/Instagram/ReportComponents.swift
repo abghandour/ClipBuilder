@@ -187,14 +187,35 @@ struct BreakdownChips: View {
     }
 }
 
+/// Optional identity for clients that need frames from the actual placement.
+struct FlowLayoutItemID: LayoutValueKey {
+    nonisolated static let defaultValue: Int? = nil
+}
+
+/// Receives each identified subview's frame, local to the layout, after a
+/// placement pass. A struct rather than a bare closure so `FlowLayout { }`
+/// keeps its trailing closure for the content.
+struct FlowLayoutPlacementReporter {
+    let report: ([Int: CGRect]) -> Void
+}
+
 /// Left-to-right, top-to-bottom wrapping layout for chips.
 struct FlowLayout: Layout {
     var spacing: CGFloat = 6
     /// Vertical gap between rows; defaults to `spacing`.
     var rowSpacing: CGFloat? = nil
+    /// Frames are local to this layout. Clients must defer any state writes
+    /// until after placement, and convert to their desired coordinate space.
+    var onPlace: FlowLayoutPlacementReporter? = nil
     private var rowGap: CGFloat { rowSpacing ?? spacing }
 
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
+    struct Cache {
+        var frames: [Int: CGRect]? = nil
+    }
+
+    func makeCache(subviews: Subviews) -> Cache { Cache() }
+
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
         let width = proposal.width ?? .infinity
         var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, maxX: CGFloat = 0
         for subview in subviews {
@@ -211,8 +232,9 @@ struct FlowLayout: Layout {
         return CGSize(width: width == .infinity ? maxX : width, height: y + rowHeight)
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
         var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
+        var frames: [Int: CGRect] = [:]
         for subview in subviews {
             let size = subview.sizeThatFits(.unspecified)
             if x > bounds.minX && x + size.width > bounds.maxX {
@@ -221,8 +243,15 @@ struct FlowLayout: Layout {
                 rowHeight = 0
             }
             subview.place(at: CGPoint(x: x, y: y), proposal: ProposedViewSize(size))
+            if onPlace != nil, let id = subview[FlowLayoutItemID.self] {
+                frames[id] = CGRect(origin: CGPoint(x: x - bounds.minX, y: y - bounds.minY), size: size)
+            }
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
+        }
+        if let onPlace, cache.frames != frames {
+            cache.frames = frames
+            onPlace.report(frames)
         }
     }
 }

@@ -341,3 +341,129 @@ extension TranscriptQATrimTests {
         #expect(single.lines.count == 1)
     }
 }
+
+extension TranscriptQATrimTests {
+    @Test func spokenWordUsesHalfOpenTimingAndStopsWhenPaused() {
+        var transcript = TranscriptQATrim.Transcript()
+        transcript.words = [
+            .init(id: 10, text: "one", start: 1, end: 2),
+            .init(id: 11, text: "two", start: 2, end: 3),
+            .init(id: 12, text: "three", start: 4, end: 5),
+            .init(id: 13, text: "point", start: 5, end: 5)
+        ]
+        #expect(transcript.spokenWordID(at: 0, isPlaying: true) == nil)
+        #expect(transcript.spokenWordID(at: 1, isPlaying: true) == 10)
+        #expect(transcript.spokenWordID(at: 2, isPlaying: true) == 11)
+        #expect(transcript.spokenWordID(at: 3.5, isPlaying: true) == nil)
+        #expect(transcript.spokenWordID(at: 4.5, isPlaying: true) == 12)
+        #expect(transcript.spokenWordID(at: 4.5, isPlaying: false) == nil)
+        #expect(transcript.spokenWordID(at: 5, isPlaying: true) == nil)
+        #expect(TranscriptQATrim.Transcript().spokenWordID(at: 0, isPlaying: true) == nil)
+    }
+
+    @Test func clippedSelectionPreservesMidpointMembershipAndZeroLengthWords() {
+        // Timings can extend beyond the row's own start/end. A point word at
+        // an upper boundary is selected, while an ordinary midpoint there is not.
+        let line = TranscriptQATrim.Line(id: 0, start: 11, end: 13, speaker: nil, words: [
+            .init(id: 0, text: "first", start: 10, end: 12),
+            .init(id: 1, text: "last", start: 12, end: 14),
+            .init(id: 2, text: "point", start: 14, end: 14)
+        ])
+        for range in [0.0...30.0, 11.0...13.0, 13.0...14.0, 14.0...14.0, 0.0...9.0, 15.0...20.0] {
+            let clipped = TranscriptQATrim.selectionRange(range, in: line)
+            for word in line.words {
+                #expect((clipped.map { TranscriptQATrim.contains(word, in: $0) } ?? false)
+                        == TranscriptQATrim.contains(word, in: range))
+            }
+        }
+        #expect(TranscriptQATrim.selectionRange(0...30, in: line) == 10...14)
+        #expect(TranscriptQATrim.selectionRange(0...40, in: line) == 10...14)
+        #expect(TranscriptQATrim.selectionRange(15...20, in: line) == nil)
+        #expect(TranscriptQATrim.selectionRange(0...30,
+            in: .init(id: 1, start: 10, end: 14, speaker: nil, words: [])) == nil)
+        #expect(TranscriptQATrim.touches(0...11, line: line) == false)
+        #expect(TranscriptQATrim.touches(14...14, line: line))
+    }
+
+    @Test func nearestEdgeHelpUsesTheUnclippedSelection() {
+        let line = TranscriptQATrim.Line(id: 0, start: 10, end: 14, speaker: nil, words: [
+            .init(id: 4, text: "first", start: 10, end: 12),
+            .init(id: 5, text: "last", start: 12, end: 14)
+        ])
+        // Both selections cover the whole line, but their nearest edges differ.
+        #expect(TranscriptQATrim.selectionRange(0...14, in: line)
+                == TranscriptQATrim.selectionRange(10...30, in: line))
+        #expect(TranscriptQATrim.startEdgeWordIDs(in: line, range: 0...14).isEmpty)
+        #expect(TranscriptQATrim.startEdgeWordIDs(in: line, range: 10...30) == [4, 5])
+        #expect(TranscriptQATrim.startEdgeWordIDs(in: line, range: 10...16) == [4, 5],
+                "an equidistant word moves the start")
+        #expect(TranscriptQATrim.startEdgeWordIDs(in: line, range: 10...14) == [4])
+    }
+
+    @Test func frameChangesOnlyInvalidateTheirLinesIncludingLazyRemoval() {
+        let lines = lines([row(0, 2, "first second"), row(2, 4, "third fourth")])
+        let before: [Int: CGRect] = [
+            0: CGRect(x: 0, y: 10, width: 20, height: 18),
+            1: CGRect(x: 23, y: 10, width: 20, height: 18),
+            2: CGRect(x: 0, y: 40, width: 20, height: 18),
+            3: CGRect(x: 23, y: 40, width: 20, height: 18)
+        ]
+        #expect(TranscriptQATrim.changedFrameLineIDs(lines: lines, before: before, after: before).isEmpty)
+        var after = before
+        after[1] = CGRect(x: 0, y: 30, width: 20, height: 18)
+        #expect(TranscriptQATrim.changedFrameLineIDs(lines: lines, before: before, after: after) == [0])
+        after.removeValue(forKey: 2)
+        after.removeValue(forKey: 3)
+        #expect(TranscriptQATrim.changedFrameLineIDs(lines: lines, before: before, after: after) == [0, 1])
+        #expect(TranscriptQATrim.changedFrameLineIDs(lines: lines, before: [:], after: before) == [0, 1])
+    }
+
+    @Test func rangeInvalidationIsLocalAndRetainsTieBreakingOrder() {
+        let lines = lines([row(0, 4, "one two three four"), row(10, 12, "later")])
+        #expect(TranscriptQATrim.changedRangeLineIDs(lines: lines, before: [0...2], after: [0...3]) == [0])
+        #expect(TranscriptQATrim.changedRangeLineIDs(lines: lines, before: [0...2], after: []) == [0])
+        #expect(TranscriptQATrim.changedRangeLineIDs(lines: lines, before: [], after: [20...30]).isEmpty)
+        #expect(TranscriptQATrim.changedRangeLineIDs(lines: lines, before: [0...3, 1...4], after: [1...4, 0...3]) == [0])
+    }
+
+    @Test func incrementalStartsRetainOtherLinesAndRemoveDisappearedFrames() {
+        let lines = lines([row(0, 4, "one two three four"), row(4, 6, "five six")])
+        let frames: [Int: CGRect] = [
+            0: CGRect(x: 0, y: 0, width: 20, height: 18),
+            1: CGRect(x: 23, y: 0, width: 20, height: 18),
+            2: CGRect(x: 0, y: 22, width: 20, height: 18),
+            3: CGRect(x: 23, y: 22, width: 20, height: 18),
+            4: CGRect(x: 0, y: 60, width: 20, height: 18),
+            5: CGRect(x: 23, y: 60, width: 20, height: 18)
+        ]
+        let ranges = [0.0...6.0, 2.0...3.0]
+        let initial = TranscriptQATrim.updatingLineStarts([:], lines: lines, changed: [0, 1], ranges: ranges, frames: frames)
+        #expect(initial == [0: [0, 2, 3], 1: [4]])
+        #expect(Set(initial.values.flatMap { $0 })
+                == TranscriptQATrim.lineStartWords(words: lines.flatMap(\.words), ranges: ranges, frames: frames))
+        var rewrapped = frames
+        rewrapped[1] = CGRect(x: 0, y: 22, width: 20, height: 18)
+        rewrapped[2] = CGRect(x: 23, y: 22, width: 20, height: 18)
+        rewrapped[3] = CGRect(x: 0, y: 44, width: 20, height: 18)
+        let updated = TranscriptQATrim.updatingLineStarts(initial, lines: lines, changed: [0], ranges: ranges, frames: rewrapped)
+        #expect(updated == [0: [0, 1, 2, 3], 1: [4]])
+        let removed = TranscriptQATrim.updatingLineStarts(updated, lines: lines, changed: [0], ranges: ranges,
+            frames: frames.filter { $0.key >= 4 })
+        #expect(removed == [1: [4]])
+        #expect(TranscriptQATrim.updatingLineStarts(updated, lines: lines, changed: [0], ranges: [], frames: frames) == [1: [4]])
+    }
+
+    @Test func linePlacementFramesConvertToViewportForHitTestingAndAnchors() {
+        let local: [Int: CGRect] = [
+            7: CGRect(x: 0, y: 0, width: 20, height: 18),
+            8: CGRect(x: 23, y: 0, width: 30, height: 18),
+            9: CGRect(x: 0, y: 20, width: 40, height: 18)
+        ]
+        let visible = TranscriptQATrim.offsetFrames(local, by: CGPoint(x: 80, y: -12))
+        #expect(visible[7] == CGRect(x: 80, y: -12, width: 20, height: 18))
+        #expect(visible[9] == CGRect(x: 80, y: 8, width: 40, height: 18))
+        #expect(TranscriptQATrim.word(at: CGPoint(x: 90, y: 10), frames: visible) == 9)
+        #expect(TranscriptQATrim.word(at: CGPoint(x: 101, y: 0), frames: visible) == nil)
+        #expect(TranscriptQATrim.offsetFrames([:], by: CGPoint(x: 80, y: -12)).isEmpty)
+    }
+}

@@ -63,6 +63,64 @@ nonisolated enum TranscriptQATrim {
         func lineID(at time: Double) -> Int? {
             lines.last { $0.start <= time && time < $0.end }?.id
         }
+
+        /// Resolve once for the panel, never once per token. Gaps and parked
+        /// playheads have no spoken word; at a shared boundary the next wins.
+        func spokenWordID(at time: Double, isPlaying: Bool) -> Int? {
+            guard isPlaying else { return nil }
+            return words.first { $0.start <= time && time < $0.end }?.id
+        }
+    }
+
+    /// Only the part of a selection that can affect this line's words.
+    /// Use word bounds: recorded timings can extend beyond the row's clocks.
+    static func selectionRange(_ range: ClosedRange<Double>, in line: Line) -> ClosedRange<Double>? {
+        guard let start = line.words.map(\.start).min(), let end = line.words.map(\.end).max() else { return nil }
+        let lower = max(start, range.lowerBound), upper = min(end, range.upperBound)
+        return lower <= upper ? lower...upper : nil
+    }
+
+    static func touches(_ range: ClosedRange<Double>, line: Line) -> Bool {
+        line.words.contains { contains($0, in: range) }
+    }
+
+    /// Clipping the selection changes its midpoint. Preserve the original
+    /// nearest-edge help as a value input, without invalidating unrelated lines.
+    static func startEdgeWordIDs(in line: Line, range: ClosedRange<Double>) -> Set<Int> {
+        Set(line.words.filter { nearestEdge(for: $0, in: range) == .start }.map(\.id))
+    }
+
+    /// Includes removals when a lazy line disappears, not just new frames.
+    static func changedFrameLineIDs(lines: [Line], before: [Int: CGRect], after: [Int: CGRect]) -> Set<Int> {
+        Set(lines.filter { line in
+            line.words.contains { before[$0.id] != after[$0.id] }
+        }.map(\.id))
+    }
+
+    /// Preserve order: equally tight overlapping picks use the first owner.
+    static func changedRangeLineIDs(lines: [Line], before: [ClosedRange<Double>],
+                                    after: [ClosedRange<Double>]) -> Set<Int> {
+        Set(lines.filter { line in
+            before.filter { touches($0, line: line) } != after.filter { touches($0, line: line) }
+        }.map(\.id))
+    }
+
+    /// Keep untouched lines' results. A missing frame set removes stale bars.
+    static func updatingLineStarts(_ previous: [Int: Set<Int>], lines: [Line], changed: Set<Int>,
+                                   ranges: [ClosedRange<Double>], frames: [Int: CGRect]) -> [Int: Set<Int>] {
+        var result = previous
+        for id in changed { result.removeValue(forKey: id) }
+        for line in lines where changed.contains(line.id) {
+            let starts = lineStartWords(words: line.words, ranges: ranges, frames: frames)
+            if !starts.isEmpty { result[line.id] = starts }
+        }
+        return result
+    }
+
+    /// FlowLayout reports local placement; the line's single geometry reader
+    /// supplies its origin in the stationary scroll viewport, including scroll.
+    static func offsetFrames(_ frames: [Int: CGRect], by origin: CGPoint) -> [Int: CGRect] {
+        frames.mapValues { $0.offsetBy(dx: origin.x, dy: origin.y) }
     }
 
     /// Callers scope rows to the recording before discovering or matching translations.

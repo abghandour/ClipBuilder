@@ -38,7 +38,10 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     /// The word the span drag started on.
     @State private var spanAnchor: Int?
     /// The first word on each wrapped line of each saved pick, from the measured frames.
-    @State private var lineStartWordIDs: Set<Int> = []
+    @State private var lineStartsByLine: [Int: Set<Int>] = [:]
+    @State private var pendingLineStartIDs: Set<Int> = []
+    @State private var lineStartRefreshGeneration = 0
+    @State private var lineActions = TranscriptQALineActions()
     @State private var spanMoved = false
     @State private var pointer: CGPoint?
     @State private var dragFrame: CGRect?
@@ -46,7 +49,6 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     @State private var lastPreviewedWord: Int?
     private static var scrollSpace: String { "qaWordViewport" }
 
-    private var currentLine: Int? { transcript.lineID(at: playback.time) }
     private var firstWord: TranscriptQATrim.Word? { transcript.words.first { TranscriptQATrim.contains($0, in: range) } }
     private var lastWord: TranscriptQATrim.Word? { transcript.words.last { TranscriptQATrim.contains($0, in: range) } }
     private var translationLanguage: String? {
@@ -55,12 +57,42 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     }
     private var showsTranslation: Bool { showTranslation && translationLanguage != nil }
 
-    private func refreshLineStarts() {
-        lineStartWordIDs = TranscriptQATrim.lineStartWords(words: transcript.words,
-            ranges: otherRanges.map(\.range), frames: frames)
+    /// Coalesce frame reports until the next main run-loop turn. Each queued
+    /// closure carries the latest inputs; older generations cannot publish.
+    private func refreshLineStarts(for changed: Set<Int>) {
+        guard !changed.isEmpty else { return }
+        pendingLineStartIDs.formUnion(changed)
+        lineStartRefreshGeneration += 1
+        let generation = lineStartRefreshGeneration
+        DispatchQueue.main.async {
+            guard generation == lineStartRefreshGeneration else { return }
+            let changed = pendingLineStartIDs
+            pendingLineStartIDs = []
+            let updated = TranscriptQATrim.updatingLineStarts(lineStartsByLine,
+                lines: transcript.lines, changed: changed, ranges: otherRanges.map(\.range), frames: frames)
+            if updated != lineStartsByLine { lineStartsByLine = updated }
+        }
+    }
+
+    private func transcriptChanged() {
+        cancelDrag()
+        lineStartRefreshGeneration += 1
+        pendingLineStartIDs = []
+        lineStartsByLine = [:]
+        let wordIDs = Set(transcript.words.map(\.id))
+        frames = frames.filter { wordIDs.contains($0.key) }
+        // Keep still-valid measurements until placement replaces them. An
+        // identical layout need not emit another preference after a text edit.
+        refreshLineStarts(for: TranscriptQATrim.changedFrameLineIDs(lines: transcript.lines, before: [:], after: frames))
     }
 
     var body: some View {
+        let time = playback.time
+        let spokenWordID = transcript.spokenWordID(at: time, isPlaying: playback.isPlaying)
+        let currentLine = transcript.lineID(at: time)
+        // The equatable lines retain this reference, so even an unchanged line
+        // invokes the current selection's callbacks after Clear or a pick switch.
+        let actions = lineActions.update(onSelect: onSelect, onSeek: { [playback] in playback.seek(to: $0) })
         VStack(alignment: .leading, spacing: 0) {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: Theme.spaceS) {
@@ -91,7 +123,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                     .padding(Theme.spaceM)
                     .frame(maxHeight: .infinity, alignment: .top)
             } else {
-                transcriptScroll
+                transcriptScroll(spokenWordID: spokenWordID, currentLine: currentLine, actions: actions)
             }
             if let footer {
                 Divider()
@@ -100,14 +132,30 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                     .padding(Theme.spaceS)
             }
         }
+        .onAppear {
+            refreshLineStarts(for: TranscriptQATrim.changedFrameLineIDs(lines: transcript.lines, before: [:], after: frames))
+        }
         .onChange(of: sectionID) { _, _ in cancelDrag() }
-        .onChange(of: frames) { _, _ in refreshLineStarts() }
-        .onChange(of: otherRanges) { _, _ in refreshLineStarts() }
+        .onChange(of: frames) { old, new in
+            refreshLineStarts(for: TranscriptQATrim.changedFrameLineIDs(lines: transcript.lines, before: old, after: new))
+        }
+        .onChange(of: otherRanges) { old, new in
+            // Palette-only changes do not affect starts. Include reordering
+            // because equally tight overlapping picks use the first owner.
+            refreshLineStarts(for: TranscriptQATrim.changedRangeLineIDs(lines: transcript.lines,
+                before: old.map(\.range), after: new.map(\.range)))
+        }
         .onChange(of: isEnabled) { _, enabled in if !enabled { cancelDrag() } }
-        .onChange(of: transcript) { _, _ in cancelDrag(); frames = [:] }
-        .onChange(of: showsTranslation) { _, _ in cancelDrag(); frames = [:] }
-        .onChange(of: translationLanguage) { _, _ in cancelDrag(); frames = [:] }
-        .onDisappear { cancelDrag() }
+        .onChange(of: transcript) { _, _ in transcriptChanged() }
+        // Geometry preferences replace frames if translation changes the
+        // layout; clearing them would lose anchors when the layout stays equal.
+        .onChange(of: showsTranslation) { _, _ in cancelDrag() }
+        .onChange(of: translationLanguage) { _, _ in cancelDrag() }
+        .onDisappear {
+            cancelDrag()
+            lineStartRefreshGeneration += 1
+            pendingLineStartIDs = []
+        }
     }
 
     private var transcriptControls: some View {
@@ -151,7 +199,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
         Locale.current.localizedString(forLanguageCode: language) ?? language
     }
 
-    private var transcriptScroll: some View {
+    private func transcriptScroll(spokenWordID: Int?, currentLine: Int?, actions: TranscriptQALineActions) -> some View {
         GeometryReader { geometry in
             // Both columns always fit the pane (the scroller's gutter included):
             // text wraps in a narrow pane and the user widens the column for
@@ -163,7 +211,22 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                     ScrollView(.vertical) {
                         LazyVStack(alignment: .leading, spacing: 2) {
                             ForEach(transcript.lines) { line in
-                                transcriptLine(line, columnWidth: columnWidth).id(line.id)
+                                TranscriptQALineView(
+                                    line: line,
+                                    columnWidth: columnWidth,
+                                    selection: TranscriptQATrim.selectionRange(range, in: line),
+                                    startEdgeWordIDs: spanSelection ? [] : TranscriptQATrim.startEdgeWordIDs(in: line, range: range),
+                                    otherRanges: otherRanges.filter { TranscriptQATrim.touches($0.range, line: line) },
+                                    spokenWordID: spokenWordID.flatMap { id in line.words.contains { $0.id == id } ? id : nil },
+                                    lineStartWordIDs: lineStartsByLine[line.id] ?? [],
+                                    showsTranslation: showsTranslation,
+                                    translation: translationLanguage.flatMap { translationsByLanguage[$0]?[line.id] },
+                                    canTrim: canTrim,
+                                    spanSelection: spanSelection,
+                                    onSelect: { actions.onSelect($0) },
+                                    onSeek: { actions.onSeek($0) })
+                                    .equatable()
+                                    .id(line.id)
                             }
                         }
                         .padding(Theme.spaceS)
@@ -202,119 +265,6 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                 }
             }
         }
-    }
-
-    private func transcriptLine(_ line: TranscriptQATrim.Line, columnWidth: CGFloat) -> some View {
-        HStack(alignment: .top, spacing: Theme.spaceS) {
-            originalLine(line)
-                .frame(width: showsTranslation ? columnWidth : nil, alignment: .leading)
-            if showsTranslation {
-                translationText(line)
-                    .frame(width: columnWidth, alignment: .topLeading)
-            }
-        }
-        .padding(.horizontal, Theme.spaceS)
-        .padding(.vertical, 4)
-        // The line being spoken is not tinted: a block behind the whole turn
-        // read as part of the selection. The yellow spoken word and Follow
-        // scrolling show where playback is.
-    }
-
-    @ViewBuilder
-    private func translationText(_ line: TranscriptQATrim.Line) -> some View {
-        if let language = translationLanguage, let text = translationsByLanguage[language]?[line.id] {
-            let inside = line.words.contains { TranscriptQATrim.contains($0, in: range) }
-            Text(text)
-                .font(.callout)
-                .foregroundStyle(inside ? Color.primary : Color.secondary)
-                .fixedSize(horizontal: false, vertical: true)
-                .textSelection(.enabled)
-        } else {
-            Text("—").font(.callout).foregroundStyle(.tertiary)
-        }
-    }
-
-    private func originalLine(_ line: TranscriptQATrim.Line) -> some View {
-        HStack(alignment: .top, spacing: Theme.spaceS) {
-            Button(line.start.timecode) { playback.seek(to: line.start) }
-                .buttonStyle(.plain)
-                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                .lineLimit(1).fixedSize()
-                .help("Move the playhead to \(line.start.timecode)")
-            VStack(alignment: .leading, spacing: 2) {
-                if let speaker = line.speaker {
-                    Text(speaker).font(.caption.weight(.semibold))
-                        .foregroundStyle(SpeakerColors.color(for: speaker))
-                        .lineLimit(1).help(speaker)
-                }
-                FlowLayout(spacing: TranscriptQAWordCursor.wordSpacing, rowSpacing: TranscriptQAWordCursor.rowSpacing) {
-                    ForEach(line.words) { word in wordToken(word) }
-                }
-            }
-            .frame(maxWidth: .infinity, alignment: .leading)
-        }
-    }
-
-    private func wordToken(_ word: TranscriptQATrim.Word) -> some View {
-        let inside = TranscriptQATrim.contains(word, in: range)
-        // Nested picks: the tightest range owns the word.
-        let other = otherRanges.filter { TranscriptQATrim.contains(word, in: $0.range) }
-            .min { ($0.range.upperBound - $0.range.lowerBound) < ($1.range.upperBound - $1.range.lowerBound) }
-        let startsOther = other != nil && lineStartWordIDs.contains(word.id)
-        // The spoken word is marked only while playing; a parked playhead would
-        // otherwise sit yellow inside the selection being made. The weight never
-        // changes: a bold word is wider and rewraps the line under Follow.
-        let spoken = playback.isPlaying && playback.time >= word.start && playback.time < word.end
-        return Button { if !spanSelection { onSelect(word) } } label: {
-            Text(word.text)
-                .font(.callout)
-                .foregroundStyle(spoken ? Color.black : inside || other != nil ? Color.primary : Color.secondary)
-                .padding(.horizontal, 2)
-                // Room for the line's bar and a gap before the first word.
-                .padding(.leading, startsOther ? RangeReviewPalette.barWidth + RangeReviewPalette.barGap : 0)
-                .background {
-                    if spoken {
-                        RoundedRectangle(cornerRadius: 3).fill(Color.yellow)
-                    } else if inside {
-                        // Reach across the gaps to the neighbouring words and
-                        // rows so the selection reads as one block, spaces
-                        // included. The fill is opaque: translucent rectangles
-                        // would show their overlaps as darker seams.
-                        Rectangle().fill(TranscriptQAWordCursor.selectionColor)
-                            .padding(.horizontal, -TranscriptQAWordCursor.wordSpacing / 2 - 0.5)
-                            .padding(.vertical, -TranscriptQAWordCursor.rowSpacing / 2 - 0.5)
-                    } else if let other {
-                        // Saved picks share one subtle block; each wrapped line
-                        // starts with the bar in the pick's list colour.
-                        Rectangle().fill(RangeReviewPalette.savedBlock)
-                            .overlay(alignment: .leading) {
-                                if startsOther {
-                                    Rectangle().fill(RangeReviewPalette.bar(other.paletteIndex))
-                                        .frame(width: RangeReviewPalette.barWidth)
-                                }
-                            }
-                            .padding(.horizontal, -TranscriptQAWordCursor.wordSpacing / 2 - 0.5)
-                            .padding(.vertical, -TranscriptQAWordCursor.rowSpacing / 2 - 0.5)
-                    }
-                }
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!canTrim)
-        // In span mode the drag gesture on the content owns the pointer.
-        .allowsHitTesting(!spanSelection)
-        .background {
-            // Measure the words in the scroll content using the stationary
-            // viewport space, also used by the anchors' pointer coordinates.
-            GeometryReader { geometry in
-                Color.clear.preference(key: TranscriptQAWordFrames.self,
-                                       value: [word.id: geometry.frame(in: .named(Self.scrollSpace))])
-            }
-        }
-        .help(spanSelection ? (inside ? "Click to clear the selection, or drag to select" : "Press and drag to select")
-              : "Move the \(TranscriptQATrim.nearestEdge(for: word, in: range) == .start ? "start" : "end") to this word")
-        .accessibilityLabel("\(word.text), \(word.start.timecode)")
-        .accessibilityAddTraits(inside ? .isSelected : [])
     }
 
     @ViewBuilder
@@ -479,5 +429,176 @@ enum TranscriptQAWordCursor {
     static func set(_ cursor: NSCursor?) {
         if pushed { NSCursor.pop(); pushed = false }
         if let cursor { cursor.push(); pushed = true }
+    }
+}
+
+/// Non-observable callback storage: refreshing callbacks must not invalidate
+/// every line, and an equatable line must not keep a previous pick's action.
+private final class TranscriptQALineActions {
+    var onSelect: (TranscriptQATrim.Word) -> Void = { _ in }
+    var onSeek: (Double) -> Void = { _ in }
+
+    func update(onSelect: @escaping (TranscriptQATrim.Word) -> Void,
+                onSeek: @escaping (Double) -> Void) -> TranscriptQALineActions {
+        self.onSelect = onSelect
+        self.onSeek = onSeek
+        return self
+    }
+}
+
+/// Rendering inputs are local to one speaker line. No playback observation or
+/// panel-wide frame/selection state is read while constructing its word tokens.
+private struct TranscriptQALineView: View, Equatable {
+    let line: TranscriptQATrim.Line
+    let columnWidth: CGFloat
+    let selection: ClosedRange<Double>?
+    let startEdgeWordIDs: Set<Int>
+    let otherRanges: [RangeReviewMarkedRange]
+    let spokenWordID: Int?
+    let lineStartWordIDs: Set<Int>
+    let showsTranslation: Bool
+    let translation: String?
+    let canTrim: Bool
+    let spanSelection: Bool
+    let onSelect: (TranscriptQATrim.Word) -> Void
+    let onSeek: (Double) -> Void
+
+    @State private var localFrames: [Int: CGRect] = [:]
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.line == rhs.line && lhs.columnWidth == rhs.columnWidth
+            && lhs.selection == rhs.selection && lhs.startEdgeWordIDs == rhs.startEdgeWordIDs
+            && lhs.otherRanges == rhs.otherRanges && lhs.spokenWordID == rhs.spokenWordID
+            && lhs.lineStartWordIDs == rhs.lineStartWordIDs
+            && lhs.showsTranslation == rhs.showsTranslation && lhs.translation == rhs.translation
+            && lhs.canTrim == rhs.canTrim && lhs.spanSelection == rhs.spanSelection
+    }
+
+    private func isSelected(_ word: TranscriptQATrim.Word) -> Bool {
+        selection.map { TranscriptQATrim.contains(word, in: $0) } ?? false
+    }
+
+    private func reportPlacement(_ frames: [Int: CGRect]) {
+        // Layout runs during a view update; publishing state here synchronously
+        // would feed back into that same update. FlowLayout deduplicates reports.
+        DispatchQueue.main.async {
+            if localFrames != frames { localFrames = frames }
+        }
+    }
+
+    var body: some View {
+        HStack(alignment: .top, spacing: Theme.spaceS) {
+            originalLine(line)
+                .frame(width: showsTranslation ? columnWidth : nil, alignment: .leading)
+            if showsTranslation {
+                translationText(line)
+                    .frame(width: columnWidth, alignment: .topLeading)
+            }
+        }
+        .padding(.horizontal, Theme.spaceS)
+        .padding(.vertical, 4)
+        // The line being spoken is not tinted: a block behind the whole turn
+        // read as part of the selection. The yellow spoken word and Follow
+        // scrolling show where playback is.
+    }
+
+    @ViewBuilder
+    private func translationText(_ line: TranscriptQATrim.Line) -> some View {
+        if let text = translation {
+            let inside = line.words.contains { isSelected($0) }
+            Text(text)
+                .font(.callout)
+                .foregroundStyle(inside ? Color.primary : Color.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+                .textSelection(.enabled)
+        } else {
+            Text("—").font(.callout).foregroundStyle(.tertiary)
+        }
+    }
+
+    private func originalLine(_ line: TranscriptQATrim.Line) -> some View {
+        HStack(alignment: .top, spacing: Theme.spaceS) {
+            Button(line.start.timecode) { onSeek(line.start) }
+                .buttonStyle(.plain)
+                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                .lineLimit(1).fixedSize()
+                .help("Move the playhead to \(line.start.timecode)")
+            VStack(alignment: .leading, spacing: 2) {
+                if let speaker = line.speaker {
+                    Text(speaker).font(.caption.weight(.semibold))
+                        .foregroundStyle(SpeakerColors.color(for: speaker))
+                        .lineLimit(1).help(speaker)
+                }
+                FlowLayout(spacing: TranscriptQAWordCursor.wordSpacing,
+                           rowSpacing: TranscriptQAWordCursor.rowSpacing,
+                           onPlace: FlowLayoutPlacementReporter(report: reportPlacement)) {
+                    ForEach(line.words) { word in
+                        wordToken(word).layoutValue(key: FlowLayoutItemID.self, value: word.id)
+                    }
+                }
+                .background {
+                    GeometryReader { geometry in
+                        Color.clear.preference(key: TranscriptQAWordFrames.self,
+                            value: TranscriptQATrim.offsetFrames(localFrames,
+                                by: geometry.frame(in: .named("qaWordViewport")).origin))
+                    }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func wordToken(_ word: TranscriptQATrim.Word) -> some View {
+        let inside = isSelected(word)
+        // Nested picks: the tightest range owns the word.
+        let other = otherRanges.filter { TranscriptQATrim.contains(word, in: $0.range) }
+            .min { ($0.range.upperBound - $0.range.lowerBound) < ($1.range.upperBound - $1.range.lowerBound) }
+        let startsOther = other != nil && lineStartWordIDs.contains(word.id)
+        // The spoken word is marked only while playing; a parked playhead would
+        // otherwise sit yellow inside the selection being made. The weight never
+        // changes: a bold word is wider and rewraps the line under Follow.
+        let spoken = spokenWordID == word.id
+        return Button { if !spanSelection { onSelect(word) } } label: {
+            Text(word.text)
+                .font(.callout)
+                .foregroundStyle(spoken ? Color.black : inside || other != nil ? Color.primary : Color.secondary)
+                .padding(.horizontal, 2)
+                // Room for the line's bar and a gap before the first word.
+                .padding(.leading, startsOther ? RangeReviewPalette.barWidth + RangeReviewPalette.barGap : 0)
+                .background {
+                    if spoken {
+                        RoundedRectangle(cornerRadius: 3).fill(Color.yellow)
+                    } else if inside {
+                        // Reach across the gaps to the neighbouring words and
+                        // rows so the selection reads as one block, spaces
+                        // included. The fill is opaque: translucent rectangles
+                        // would show their overlaps as darker seams.
+                        Rectangle().fill(TranscriptQAWordCursor.selectionColor)
+                            .padding(.horizontal, -TranscriptQAWordCursor.wordSpacing / 2 - 0.5)
+                            .padding(.vertical, -TranscriptQAWordCursor.rowSpacing / 2 - 0.5)
+                    } else if let other {
+                        // Saved picks share one subtle block; each wrapped line
+                        // starts with the bar in the pick's list colour.
+                        Rectangle().fill(RangeReviewPalette.savedBlock)
+                            .overlay(alignment: .leading) {
+                                if startsOther {
+                                    Rectangle().fill(RangeReviewPalette.bar(other.paletteIndex))
+                                        .frame(width: RangeReviewPalette.barWidth)
+                                }
+                            }
+                            .padding(.horizontal, -TranscriptQAWordCursor.wordSpacing / 2 - 0.5)
+                            .padding(.vertical, -TranscriptQAWordCursor.rowSpacing / 2 - 0.5)
+                    }
+                }
+                .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .disabled(!canTrim)
+        // In span mode the drag gesture on the content owns the pointer.
+        .allowsHitTesting(!spanSelection)
+        .help(spanSelection ? (inside ? "Click to clear the selection, or drag to select" : "Press and drag to select")
+              : "Move the \(startEdgeWordIDs.contains(word.id) ? "start" : "end") to this word")
+        .accessibilityLabel("\(word.text), \(word.start.timecode)")
+        .accessibilityAddTraits(inside ? .isSelected : [])
     }
 }
