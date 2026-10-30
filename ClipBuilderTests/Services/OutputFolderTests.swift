@@ -57,7 +57,7 @@ struct OutputFolderTests {
             return record
         }
         var timelineDecodes: [String: Int] = [:], settingsDecodes: [String: Int] = [:]
-        let folders = OutputFolders.build(records: records, scenes: [], decodeTimeline: { json in
+        let folders = OutputFolders.build(records: records, scenes: [], cache: OutputFolders.TimelineCache(), decodeTimeline: { json in
             timelineDecodes[json, default: 0] += 1
             return try? JSONSerialization.jsonObject(with: Data(json.utf8))
         }, decodeSettings: { json in
@@ -70,6 +70,69 @@ struct OutputFolderTests {
         let batches = folders.filter { $0.section == .batch }
         #expect(batches.count == 20)
         #expect(batches.allSatisfy { $0.count == 25 && $0.title.hasPrefix("Podcast highlights · ") })
+    }
+
+    @Test func cachedTimelinesKeepScenePathsAndSettingsLive() {
+        let cache = OutputFolders.TimelineCache()
+        var record = Fixtures.generatedVideo(id: 1, batchID: "cached-run")
+        record.timelineJSON = #"{"format_name":"podcast_highlights","video_track":[{"video_file":"/source/Podcast.mp4"},{"id":7}]}"#
+        record.settingsJSON = nil
+        var scene = Fixtures.scene(id: 7)
+        scene.videoPath = "/source/Before.mp4"
+        let now = Date(timeIntervalSince1970: 0)
+        var decodes = 0
+        func build(_ records: [GeneratedVideoRecord], scenes: [SceneRecord]) -> [OutputFolder] {
+            OutputFolders.build(records: records, scenes: scenes, now: now, cache: cache, decodeTimeline: { json in
+                decodes += 1
+                return try? JSONSerialization.jsonObject(with: Data(json.utf8))
+            })
+        }
+        let first = build([record], scenes: [scene])
+        #expect(first == build([record], scenes: [scene]))
+        #expect(decodes == 1)
+        #expect(first.first { $0.id == "batch:cached-run" }?.title.hasPrefix("Podcast highlights · ") == true)
+
+        scene.videoPath = "/source/After.mp4"
+        record.favorite = true
+        let refreshed = build([record], scenes: [scene])
+        #expect(decodes == 1)
+        #expect(refreshed.first { $0.id == "source:Podcast.mp4" }?.videoIDs == [1])
+        #expect(refreshed.first { $0.id == "source:After.mp4" }?.videoIDs == [1])
+        #expect(!refreshed.contains { $0.id == "source:Before.mp4" })
+        #expect(refreshed.first { $0.id == "favorites" }?.videoIDs == [1])
+
+        var options = WizardOptions()
+        options.formatPreset = "new_format"
+        record.settingsJSON = AISettingsJSON.encode(WizardRunSettings(options: options))
+        #expect(build([record], scenes: []).first { $0.id == "batch:cached-run" }?.title.hasPrefix("New Format · ") == true)
+        #expect(!build([record], scenes: []).contains { $0.id == "source:After.mp4" })
+        #expect(decodes == 1)
+
+        record.timelineJSON = #"[{"type":"clip","video_file":"/source/Replacement.mp4"}]"#
+        let replacement = build([record], scenes: [scene])
+        #expect(decodes == 2)
+        #expect(replacement.first { $0.id == "source:Replacement.mp4" }?.videoIDs == [1])
+        #expect(!replacement.contains { $0.id == "source:Podcast.mp4" })
+        var another = record
+        another.id = 2
+        #expect(build([record, another], scenes: []).first { $0.id == "source:Replacement.mp4" }?.videoIDs == [1, 2])
+        #expect(decodes == 3)
+    }
+
+    @Test func malformedTimelineResultIsAlsoCached() {
+        let cache = OutputFolders.TimelineCache()
+        var record = Fixtures.generatedVideo(id: 1)
+        record.timelineJSON = "not json"
+        var decodes = 0
+        for _ in 0..<2 {
+            let folders = OutputFolders.build(records: [record], scenes: [], cache: cache, decodeTimeline: { _ in
+                decodes += 1
+                return nil
+            })
+            #expect(folders.first { $0.id == "all" }?.videoIDs == [1])
+            #expect(!folders.contains { $0.section == .source })
+        }
+        #expect(decodes == 1)
     }
 
     @Test func todayUsesLocalCalendarAndMalformedDatesStayBrowsable() throws {

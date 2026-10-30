@@ -12,6 +12,7 @@ struct LibraryView: View {
     }
 
     @State private var folders: [OutputFolder] = []
+    @State private var folderBuildVersion = 0
     @State private var selectedFolder: String? = "all"
     @State private var driveSelection: Set<Int64> = []
     @State private var playing: GeneratedVideoRecord?
@@ -40,7 +41,7 @@ struct LibraryView: View {
             outputGrid
                 .frame(minWidth: 280, maxWidth: .infinity, maxHeight: .infinity)
         }
-        .onChange(of: store.generatedVideos, initial: true) { rebuildFolders() }
+        .onChange(of: store.generatedVideos) { rebuildFolders() }
         .onChange(of: store.scenesVersion) { rebuildFolders() }
         .onChange(of: store.timelines) { rebuildFolders() }
         .onReceive(NotificationCenter.default.publisher(for: .NSCalendarDayChanged)) { _ in rebuildFolders() }
@@ -112,6 +113,7 @@ struct LibraryView: View {
                 reviewTarget = store.generatedVideos.first
             }
         }
+        .onDisappear { folderBuildVersion &+= 1 }
         .confirmationDialog(
             "Delete \(deleting?.filename ?? "video")?",
             isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })
@@ -148,8 +150,22 @@ struct LibraryView: View {
     }
 
     private func rebuildFolders() {
-        folders = OutputFolders.build(records: store.generatedVideos, scenes: store.historyScenes, timelines: store.timelines)
-        selectedFolder = OutputFolders.resolvedSelection(selectedFolder, in: folders)
+        folderBuildVersion &+= 1
+        let version = folderBuildVersion
+        let generation = store.profileGeneration
+        let projectID = store.activeProjectID
+        let records = store.generatedVideos
+        let scenes = store.historyScenes
+        let timelines = store.timelines
+        Task {
+            let refreshed = await Task.detached(priority: .userInitiated) {
+                OutputFolders.build(records: records, scenes: scenes, timelines: timelines)
+            }.value
+            guard !Task.isCancelled, version == folderBuildVersion,
+                  generation == store.profileGeneration, projectID == store.activeProjectID else { return }
+            folders = refreshed
+            selectedFolder = OutputFolders.resolvedSelection(selectedFolder, in: refreshed)
+        }
     }
 
     @ViewBuilder private var outputGrid: some View {

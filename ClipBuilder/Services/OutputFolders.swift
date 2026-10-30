@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 nonisolated struct OutputFolder: Identifiable, Equatable {
     enum Section: String, CaseIterable {
@@ -29,6 +30,45 @@ nonisolated struct OutputFolder: Identifiable, Equatable {
 }
 
 nonisolated enum OutputFolders {
+    /// Cache only timeline-derived values. Legacy scene references must still
+    /// resolve against each build's scene paths, and settings remain live.
+    struct TimelineSources: Sendable {
+        var names: Set<String>
+        var sceneIDs: Set<Int64>
+        var format: String?
+
+        func sourceNames(scenePaths: [Int64: String]) -> Set<String> {
+            names.union(sceneIDs.compactMap { scenePaths[$0].flatMap(OutputFolders.filename) })
+        }
+    }
+
+    nonisolated final class TimelineCache: Sendable {
+        private struct Entry: Sendable {
+            var jsonHash: Int
+            var json: String
+            var sources: TimelineSources
+        }
+
+        private let entries = Mutex<[Int64: Entry]>([:])
+
+        fileprivate func sources(for record: GeneratedVideoRecord, decode: (String) -> Any?) -> TimelineSources {
+            let hash = record.timelineJSON.hashValue
+            return entries.withLock { entries in
+                if let entry = entries[record.id], entry.jsonHash == hash, entry.json == record.timelineJSON {
+                    return entry.sources
+                }
+                let sources = OutputFolders.timelineSources(in: decode(record.timelineJSON))
+                // Keep only the current JSON per record and bound cross-profile
+                // growth. Compare JSON too so a hash collision cannot misgroup.
+                if entries.count >= 2_048 { entries.removeAll(keepingCapacity: true) }
+                entries[record.id] = Entry(jsonHash: hash, json: record.timelineJSON, sources: sources)
+                return sources
+            }
+        }
+    }
+
+    private static let timelineCache = TimelineCache()
+
     static func resolvedSelection(_ selection: String?, in folders: [OutputFolder]) -> String {
         guard let selection, folders.contains(where: { $0.id == selection }) else { return "all" }
         return selection
@@ -40,6 +80,7 @@ nonisolated enum OutputFolders {
 
     static func build(records: [GeneratedVideoRecord], scenes: [SceneRecord], timelines: [TimelineRecord] = [],
                       now: Date = .now, calendar: Calendar = .current,
+                      cache: TimelineCache = timelineCache,
                       decodeTimeline: (String) -> Any? = { try? JSONSerialization.jsonObject(with: Data($0.utf8)) },
                       decodeSettings: (String) -> WizardRunSettings? = { AISettingsJSON.decode(WizardRunSettings.self, $0) }) -> [OutputFolder] {
         let scenePaths = Dictionary(scenes.map { ($0.id, $0.videoPath) }, uniquingKeysWith: { first, _ in first })
@@ -65,16 +106,15 @@ nonisolated enum OutputFolders {
         for record in records {
             if let date = dates[record.id] { days[calendar.startOfDay(for: date), default: []].insert(record.id) }
             else { unknownDates.insert(record.id) }
-            let timeline = decodeTimeline(record.timelineJSON)
-            let object = timeline as? [String: Any]
-            for source in sourceNames(in: timeline, scenePaths: scenePaths) {
+            let timeline = cache.sources(for: record, decode: decodeTimeline)
+            for source in timeline.sourceNames(scenePaths: scenePaths) {
                 sources[source, default: []].insert(record.id)
             }
             if let batch = record.batchID, !batch.isEmpty {
                 batches[batch, default: []].append(record)
                 if let date = dates[record.id] { batchDates[batch] = min(batchDates[batch] ?? date, date) }
                 formats[record.id] = formatName(record.settingsJSON.flatMap(decodeSettings)?.options.formatPreset
-                    ?? object?["format_name"] as? String ?? object?["formatPreset"] as? String)
+                    ?? timeline.format)
             }
         }
         for day in days.keys.sorted(by: >) {
@@ -106,17 +146,25 @@ nonisolated enum OutputFolders {
     }
 
     static func sourceNames(_ json: String, scenePaths: [Int64: String]) -> Set<String> {
-        sourceNames(in: try? JSONSerialization.jsonObject(with: Data(json.utf8)), scenePaths: scenePaths)
+        timelineSources(in: try? JSONSerialization.jsonObject(with: Data(json.utf8))).sourceNames(scenePaths: scenePaths)
     }
 
-    private static func sourceNames(in timeline: Any?, scenePaths: [Int64: String]) -> Set<String> {
+    private static func timelineSources(in timeline: Any?) -> TimelineSources {
         // Read only the fields needed for grouping, from modern or legacy JSON.
-        let entries = (timeline as? [String: Any])?["video_track"] as? [[String: Any]]
+        let object = timeline as? [String: Any]
+        let entries = object?["video_track"] as? [[String: Any]]
             ?? (timeline as? [[String: Any]])?.filter { $0["type"] as? String == "clip" } ?? []
-        return Set(entries.compactMap { entry in
-            let path = entry["video_file"] as? String ?? (entry["id"] as? NSNumber).flatMap { scenePaths[$0.int64Value] }
-            return path.flatMap(filename)
-        })
+        var names = Set<String>()
+        var sceneIDs = Set<Int64>()
+        for entry in entries {
+            if let path = entry["video_file"] as? String {
+                if let name = filename(path) { names.insert(name) }
+            } else if let id = entry["id"] as? NSNumber {
+                sceneIDs.insert(id.int64Value)
+            }
+        }
+        return TimelineSources(names: names, sceneIDs: sceneIDs,
+            format: object?["format_name"] as? String ?? object?["formatPreset"] as? String)
     }
 
     private static func filename(_ path: String) -> String? {
