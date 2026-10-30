@@ -1,6 +1,6 @@
 # Page and tab switching performance
 
-Date: October 29, 2026. Status: planned, not started. Implementer: Codex.
+Date: October 29, 2026. Status: implemented October 30, 2026 (Phases 0 to 5, one commit each); live verification and timing capture pending. Implementer: Codex.
 Reviewer: Claude (build, live driving, review).
 
 ## What the user asked for
