@@ -5,6 +5,7 @@ import SwiftUI
 /// combined with the tag filter this answers searches like "scenes of
 /// George where he is fighting".
 struct PeopleView: View {
+    @Environment(\.workspacePageVisible) private var pageVisible
     @Environment(AppStore.self) private var store
 
     @State private var vipVideoCount = 0
@@ -234,38 +235,40 @@ struct PeopleView: View {
         }
         .screenTitle("People", subtitle: hiddenPeople.isEmpty ? "\(projectPeople.count) \(store.isHomeProject ? "detected" : "in this project")" : "\(visiblePeople.count) \(store.isHomeProject ? "detected" : "in this project") · \(hiddenPeople.count) hidden")
         .toolbar {
-            if let snapshot = store.previousPeopleMerge {
-                Button {
-                    Task { if await store.undoPeopleMerge() { selectedPersonIDs = [] } }
-                } label: {
-                    ToolbarBubbleLabel(text: "Undo Merge", systemImage: "arrow.uturn.backward")
+            if pageVisible {
+                if let snapshot = store.previousPeopleMerge {
+                    Button {
+                        Task { if await store.undoPeopleMerge() { selectedPersonIDs = [] } }
+                    } label: {
+                        ToolbarBubbleLabel(text: "Undo Merge", systemImage: "arrow.uturn.backward")
+                    }
+                    .help("Put back the \(snapshot.sources.count) people merged into \(snapshot.survivor.displayName)")
                 }
-                .help("Put back the \(snapshot.sources.count) people merged into \(snapshot.survivor.displayName)")
-            }
-            Button {
-                store.researchPeople(peopleToResearch, reason: "refresh")
-            } label: {
-                ToolbarBubbleLabel(text: "Refresh Research", systemImage: "arrow.clockwise.circle")
-            }
-            .disabled(!peopleToResearch.contains { !$0.isUnnamed && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-                      || peopleToResearch.allSatisfy { store.personResearchInFlight.contains($0.id) })
-            .help("Search the web for the selected people's profile fields and role — or, with nothing selected, propose a role for everyone without one. You review every value before it is saved.")
-            if selectedPeople.count > 1 {
                 Button {
-                    mergeRequest = MergeRequest(people: selectedPeople)
+                    store.researchPeople(peopleToResearch, reason: "refresh")
                 } label: {
-                    ToolbarBubbleLabel(text: "Merge \(selectedPeople.count) People",
-                                       systemImage: "person.2.crop.square.stack")
+                    ToolbarBubbleLabel(text: "Refresh Research", systemImage: "arrow.clockwise.circle")
                 }
-                .help("These are the same person — pick the main record and combine their scenes under one identity")
+                .disabled(!peopleToResearch.contains { !$0.isUnnamed && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
+                          || peopleToResearch.allSatisfy { store.personResearchInFlight.contains($0.id) })
+                .help("Search the web for the selected people's profile fields and role — or, with nothing selected, propose a role for everyone without one. You review every value before it is saved.")
+                if selectedPeople.count > 1 {
+                    Button {
+                        mergeRequest = MergeRequest(people: selectedPeople)
+                    } label: {
+                        ToolbarBubbleLabel(text: "Merge \(selectedPeople.count) People",
+                                           systemImage: "person.2.crop.square.stack")
+                    }
+                    .help("These are the same person — pick the main record and combine their scenes under one identity")
+                }
+                Button {
+                    showGenerateSheet = true
+                } label: {
+                    ToolbarBubbleLabel(text: "Generate Video", systemImage: "wand.and.stars")
+                }
+                .disabled(selectedPerson.map { displayedScenes(for: $0).isEmpty } ?? true)
+                .help("Describe a video to create from the displayed scenes — this person and the active tag filter carry into the AI Wizard")
             }
-            Button {
-                showGenerateSheet = true
-            } label: {
-                ToolbarBubbleLabel(text: "Generate Video", systemImage: "wand.and.stars")
-            }
-            .disabled(selectedPerson.map { displayedScenes(for: $0).isEmpty } ?? true)
-            .help("Describe a video to create from the displayed scenes — this person and the active tag filter carry into the AI Wizard")
         }
         .sheet(item: $mergeRequest) { request in
             MergePeopleSheet(people: request.people) { main, name in

@@ -3,6 +3,7 @@ import UniformTypeIdentifiers
 
 /// Resource browser for looks, using rendered samples from the export pipeline.
 struct LooksView: View {
+    @Environment(\.workspacePageVisible) private var pageVisible
     @Environment(AppStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage("looks.playbackSpeed") private var playbackSpeed = 1.0
@@ -64,16 +65,18 @@ struct LooksView: View {
         .padding()
         .screenTitle("Effects", subtitle: subtitle)
         .toolbar {
-            ToolbarItemGroup {
-                Button("Render All Previews", systemImage: "play.rectangle.on.rectangle") {
-                    render(EffectCatalog.ids)
-                }
-                .disabled(renderTask != nil || availableIDs == nil || store.database == nil)
-                .help("Render a sample of every available effect through the final render pipeline")
-                .lineLimit(1).fixedSize()
-                Button("Change sample…", systemImage: "film") { pickingSample = true }
-                    .help("Choose the video used for every effect and Transitions Video A")
+            if pageVisible {
+                ToolbarItemGroup {
+                    Button("Render All Previews", systemImage: "play.rectangle.on.rectangle") {
+                        render(EffectCatalog.ids)
+                    }
+                    .disabled(renderTask != nil || availableIDs == nil || store.database == nil)
+                    .help("Render a sample of every available effect through the final render pipeline")
                     .lineLimit(1).fixedSize()
+                    Button("Change sample…", systemImage: "film") { pickingSample = true }
+                        .help("Choose the video used for every effect and Transitions Video A")
+                        .lineLimit(1).fixedSize()
+                }
             }
         }
         .fileImporter(isPresented: $pickingSample,
@@ -156,7 +159,7 @@ struct LooksView: View {
 
     private func preview(_ preset: EffectCatalog.Preset) -> some View {
         let available = availableIDs?.contains(preset.id) == true
-        let playing = isPlaying && !reduceMotion
+        let playing = isPlaying && !reduceMotion && pageVisible
         return ZStack {
             Rectangle().fill(.black)
             if let url = previews[preset.id], available {

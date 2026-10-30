@@ -61,6 +61,7 @@ struct RangeReviewView<Footer: View>: View {
     @State private var dropSlot: Int?
     @State private var rowFrames: [RangeReviewItem.ID: CGRect] = [:]
     private static var listSpace: String { "rangeReview.list" }
+    @Environment(\.workspacePageVisible) private var pageVisible
     @State private var playback = PodcastHighlightTrimPlayback()
     /// Seconds the ending button plays before the section's end; one
     /// remembered choice for every review surface.
@@ -271,6 +272,7 @@ struct RangeReviewView<Footer: View>: View {
         .onChange(of: isEnabled) { _, enabled in
             if !enabled { draft = nil; playingAll = false; playback.pause() }
         }
+        .onChange(of: pageVisible) { _, visible in if !visible { playback.pause() } }
         .onDisappear {
             playback.tearDown()
             loadedURL = nil

@@ -2,6 +2,7 @@ import SwiftUI
 
 /// The Builder monitor, its honest preview contract, and the first-run path.
 struct BuilderWorkspacePreview: View {
+    @Environment(\.workspacePageVisible) private var pageVisible
     @Environment(AppStore.self) private var store
 
     let onAddClip: () -> Void
@@ -43,6 +44,7 @@ struct BuilderWorkspacePreview: View {
         .padding(Theme.spaceM)
         // Any timeline change invalidates slices it touched (and stops a stale playback).
         .onChange(of: model.revision) { _, _ in store.pruneBuilderPreviewCache() }
+        .onChange(of: pageVisible) { _, visible in if !visible { store.stopBuilderPreview() } }
         .onDisappear { store.stopBuilderPreview() }
     }
 }

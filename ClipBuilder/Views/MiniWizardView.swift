@@ -2,6 +2,7 @@ import SwiftUI
 
 /// The Express cards share the full Wizard’s saved selections and renderer.
 struct MiniWizardView: View {
+    @Environment(\.workspacePageVisible) private var pageVisible
     @Environment(AppStore.self) private var store
     let profileName: String
 
@@ -199,6 +200,7 @@ struct MiniWizardView: View {
         .onChange(of: instructionsFocused) { _, focused in
             if !focused { saveInstructions() }
         }
+        .onChange(of: pageVisible) { _, visible in if !visible { saveInstructions() } }
         .onDisappear { saveInstructions() }
     }
 

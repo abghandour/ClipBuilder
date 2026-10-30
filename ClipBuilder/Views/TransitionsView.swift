@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 
 /// Resource browser with one selected transition, rendered through the real pipeline.
 struct TransitionsView: View {
+    @Environment(\.workspacePageVisible) private var pageVisible
     @Environment(AppStore.self) private var store
     @Environment(\.accessibilityReduceMotion) private var reduceMotion
     @AppStorage(WizardDefaults.limitTransitionsKey) private var aiTransitionsLimited = false
@@ -78,39 +79,41 @@ struct TransitionsView: View {
         .padding()
         .screenTitle("Transitions", subtitle: subtitle)
         .toolbar {
-            ToolbarItemGroup {
-                Button("Render All Previews", systemImage: "play.rectangle.on.rectangle") {
-                    renderAll()
-                }
-                .disabled(renderAllTask != nil)
-                .help("Render a sample of every transition through the real pipeline")
-                .lineLimit(1).fixedSize()
-                Menu("AI Palette", systemImage: "wand.and.stars") {
-                        Button("Let AI Choose Any Effect") {
-                            setAITransitionAvailability(Set(effects.map(\.name)))
-                        }
-                        Button("Hard Cuts Only") {
-                            setAITransitionAvailability([])
-                        }
-                        Divider()
-                        ForEach(TransitionEffect.Category.allCases.filter { $0 != .cut }, id: \.self) { category in
-                            let members = effects.filter { $0.category == category }
-                            Menu(category.title) {
-                                ForEach(members) { effect in
-                                    Toggle(effect.title, isOn: aiTransitionBinding(for: effect.name))
+            if pageVisible {
+                ToolbarItemGroup {
+                    Button("Render All Previews", systemImage: "play.rectangle.on.rectangle") {
+                        renderAll()
+                    }
+                    .disabled(renderAllTask != nil)
+                    .help("Render a sample of every transition through the real pipeline")
+                    .lineLimit(1).fixedSize()
+                    Menu("AI Palette", systemImage: "wand.and.stars") {
+                            Button("Let AI Choose Any Effect") {
+                                setAITransitionAvailability(Set(effects.map(\.name)))
+                            }
+                            Button("Hard Cuts Only") {
+                                setAITransitionAvailability([])
+                            }
+                            Divider()
+                            ForEach(TransitionEffect.Category.allCases.filter { $0 != .cut }, id: \.self) { category in
+                                let members = effects.filter { $0.category == category }
+                                Menu(category.title) {
+                                    ForEach(members) { effect in
+                                        Toggle(effect.title, isOn: aiTransitionBinding(for: effect.name))
+                                    }
                                 }
                             }
-                        }
+                    }
+                    .help("Choose which transitions the AI Wizard may use")
+                    .lineLimit(1).fixedSize()
+                    Button("Show in Finder", systemImage: "folder") {
+                        try? FileManager.default.createDirectory(at: EffectPreviewRenderer.directory,
+                                                                 withIntermediateDirectories: true)
+                        NSWorkspace.shared.open(EffectPreviewRenderer.directory)
+                    }
+                    .help("Reveal the rendered preview files in Finder")
+                    .lineLimit(1).fixedSize()
                 }
-                .help("Choose which transitions the AI Wizard may use")
-                .lineLimit(1).fixedSize()
-                Button("Show in Finder", systemImage: "folder") {
-                    try? FileManager.default.createDirectory(at: EffectPreviewRenderer.directory,
-                                                             withIntermediateDirectories: true)
-                    NSWorkspace.shared.open(EffectPreviewRenderer.directory)
-                }
-                .help("Reveal the rendered preview files in Finder")
-                .lineLimit(1).fixedSize()
             }
         }
         .fileImporter(isPresented: $showingSampleImporter,
@@ -151,7 +154,7 @@ struct TransitionsView: View {
     }
 
     private func preview(_ effect: TransitionEffect) -> some View {
-        let animating = isPlaying && !reduceMotion
+        let animating = isPlaying && !reduceMotion && pageVisible
         return ZStack {
             Rectangle().fill(.black)
             if let url = previews[effect.name] {

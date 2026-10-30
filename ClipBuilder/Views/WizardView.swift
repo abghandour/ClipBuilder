@@ -9,6 +9,7 @@ import SwiftUI
 /// Footage and idea entry converge on one reviewable run configuration.
 struct WizardView: View {
     // Internal members are shared only with this view's step/field extensions.
+    @Environment(\.workspacePageVisible) private var pageVisible
     @Environment(AppStore.self) var store
     @Environment(\.openSettings) private var openSettings
     @AppStorage("settings.selectedTab") private var settingsTab = "profile"
@@ -548,12 +549,14 @@ struct WizardView: View {
                                                  : capabilities.sources == .podcastRecording
                                                     ? "Choose a recording for highlights" : "\(analyzedSceneCount) scenes available")
         .toolbar {
-            ToolbarItem { AIPasteSettingsBar(kind: .wizard) }
-            ToolbarItemGroup {
-            Button("Training Guide", systemImage: "questionmark.circle") {
-                showTrainingGuide = true
-            }
-            .help("How to teach the Wizard your taste")
+            if pageVisible {
+                ToolbarItem { AIPasteSettingsBar(kind: .wizard) }
+                ToolbarItemGroup {
+                    Button("Training Guide", systemImage: "questionmark.circle") {
+                        showTrainingGuide = true
+                    }
+                    .help("How to teach the Wizard your taste")
+                }
             }
         }
         .sheet(isPresented: $showTrainingGuide) {
@@ -640,12 +643,16 @@ struct WizardView: View {
                                           WizardPresetBridge.wizardPresets(from: store.expressPresets(profileName: profileName))))
             }
         }
-        .onDisappear {
-            if answersProfile == store.activeProfile.profileName {
-                WizardMemory.remember(profile: store.activeProfile, renderSettings: runRenderSettings, pacing: runPacing)
-            }
-            store.saveActiveProfile()
+        .onChange(of: pageVisible) { _, visible in if !visible { rememberAnswers() } }
+        .onDisappear(perform: rememberAnswers)
+    }
+
+    /// The page stays mounted while another section shows; save on hide as on removal.
+    private func rememberAnswers() {
+        if answersProfile == store.activeProfile.profileName {
+            WizardMemory.remember(profile: store.activeProfile, renderSettings: runRenderSettings, pacing: runPacing)
         }
+        store.saveActiveProfile()
     }
 
     /// Bring this profile's remembered answers into the live keys. A profile

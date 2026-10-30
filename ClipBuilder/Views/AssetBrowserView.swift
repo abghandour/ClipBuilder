@@ -9,6 +9,7 @@ import UniformTypeIdentifiers
 /// per kind: audio rows with preview playback, font rows with rendered
 /// samples, image thumbnails in a grid.
 struct AssetBrowserView: View {
+    @Environment(\.workspacePageVisible) private var pageVisible
     @Environment(AppStore.self) private var store
     let kind: AssetKind
 
@@ -64,43 +65,45 @@ struct AssetBrowserView: View {
         }
         .screenTitle(kind.title, subtitle: subtitle)
         .toolbar {
-            ToolbarItemGroup {
-                if let home = store.googleDrive.assetHomes[store.activeProfile.profileName] {
-                    AssetSyncRefreshButton(home: home)
-                }
-                Button("Add Files", systemImage: "plus") {
-                    showingImporter = true
-                }
-                .help("Copy files into the current folder")
-                Button("New Folder", systemImage: "folder.badge.plus") {
-                    newFolderName = ""
-                    showingNewFolder = true
-                }
-                .help("Create a folder inside the current folder")
-
-                if kind == .images {
-                    Button("Ask Images", systemImage: "sparkle.magnifyingglass") {
-                        showingAskImages = true
+            if pageVisible {
+                ToolbarItemGroup {
+                    if let home = store.googleDrive.assetHomes[store.activeProfile.profileName] {
+                        AssetSyncRefreshButton(home: home)
                     }
-                    .disabled(items.filter { !$0.isFolder }.isEmpty)
-                    .help("Find images by describing what you need")
-                    if matchedImagePaths != nil {
-                        Button("Clear AI Search", systemImage: "xmark.circle") {
-                            matchedImagePaths = nil
+                    Button("Add Files", systemImage: "plus") {
+                        showingImporter = true
+                    }
+                    .help("Copy files into the current folder")
+                    Button("New Folder", systemImage: "folder.badge.plus") {
+                        newFolderName = ""
+                        showingNewFolder = true
+                    }
+                    .help("Create a folder inside the current folder")
+
+                    if kind == .images {
+                        Button("Ask Images", systemImage: "sparkle.magnifyingglass") {
+                            showingAskImages = true
                         }
-                        .help(matchedImageQuery)
+                        .disabled(items.filter { !$0.isFolder }.isEmpty)
+                        .help("Find images by describing what you need")
+                        if matchedImagePaths != nil {
+                            Button("Clear AI Search", systemImage: "xmark.circle") {
+                                matchedImagePaths = nil
+                            }
+                            .help(matchedImageQuery)
+                        }
+                        Button("Tag Images with AI", systemImage: "sparkles") {
+                            analyzeVisibleImages()
+                        }
+                        .disabled(analyzingPaths.isEmpty == false)
+                        .help("Tag every visible image with its subjects and a B-roll mark")
                     }
-                    Button("Tag Images with AI", systemImage: "sparkles") {
-                        analyzeVisibleImages()
-                    }
-                    .disabled(analyzingPaths.isEmpty == false)
-                    .help("Tag every visible image with its subjects and a B-roll mark")
-                }
 
-                Button("Show in Finder", systemImage: "folder") {
-                    NSWorkspace.shared.open(currentFolder)
+                    Button("Show in Finder", systemImage: "folder") {
+                        NSWorkspace.shared.open(currentFolder)
+                    }
+                    .help("Reveal the current folder in Finder")
                 }
-                .help("Reveal the current folder in Finder")
             }
         }
         .fileImporter(isPresented: $showingImporter,
@@ -181,7 +184,12 @@ struct AssetBrowserView: View {
             refresh()
             watcher?.watch(currentFolder)
         }
-        .searchable(text: $searchText, prompt: "Name, fighter, event, or tag")
+        .onChange(of: pageVisible) { _, visible in if !visible { stopPlayback() } }
+        .background {
+            if pageVisible {
+                Color.clear.searchable(text: $searchText, prompt: "Name, fighter, event, or tag")
+            }
+        }
     }
 
     private func applyImageSearchResult() {

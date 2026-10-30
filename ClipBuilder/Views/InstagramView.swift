@@ -5,6 +5,7 @@ import AVKit
 /// own or any public account — and turn a high performer into a structural
 /// template for the AI Wizard.
 struct InstagramView: View {
+    @Environment(\.workspacePageVisible) private var pageVisible
     @Environment(AppStore.self) private var store
 
     private enum SortOrder: String, CaseIterable, Identifiable {
@@ -68,7 +69,7 @@ struct InstagramView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .screenTitle(tab == .posts ? "Instagram — Posts" : "Instagram — Reports", subtitle: subtitle)
-        .toolbar { toolbarContent }
+        .toolbar { if pageVisible { toolbarContent } }
         .sheet(isPresented: $addingAccount) { addAccountSheet }
         .sheet(item: $detailMedia) { media in
             InstagramDetailSheet(media: media, account: selectedAccount)

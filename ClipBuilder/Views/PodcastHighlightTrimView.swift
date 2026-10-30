@@ -164,6 +164,7 @@ struct PodcastHighlightTrimView: View {
     let trim: PodcastHighlightTrim
     var autoplay = false
 
+    @Environment(\.workspacePageVisible) private var pageVisible
     @State private var playback = PodcastHighlightTrimPlayback()
     /// Handle positions while a drag is in flight; committed (snapped) on release.
     @State private var draft: (start: Double, end: Double)?
@@ -217,6 +218,7 @@ struct PodcastHighlightTrimView: View {
             recenterWindow()
             playback.load(url: url, range: range, autoplay: autoplay)
         }
+        .onChange(of: pageVisible) { _, visible in if !visible { playback.pause() } }
         .onDisappear { playback.tearDown() }
         .onChange(of: candidate.id) { _, _ in
             draft = nil

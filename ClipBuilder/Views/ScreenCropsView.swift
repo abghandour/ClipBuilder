@@ -22,6 +22,7 @@ struct ScreenCropPolygon: Shape {
 /// the Builder and the AI Wizard apply an area to a clip by its
 /// "Layout/Area" name, and only that part of the clip stays visible.
 struct ScreenCropsView: View {
+    @Environment(\.workspacePageVisible) private var pageVisible
     @AppStorage(WizardDefaults.useScreenCropsKey) private var aiLayoutsEnabled = false
     @AppStorage(WizardDefaults.screenCropLayoutsKey) private var aiLayoutsRaw = ""
     @State private var layouts: [ScreenCropLayout] = []
@@ -54,7 +55,7 @@ struct ScreenCropsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .screenTitle("Screen Layouts", subtitle: navigationSubtitle)
-        .toolbar { screenCropToolbarContent }
+        .toolbar { if pageVisible { screenCropToolbarContent } }
         .alert("Rename Screen Layout", isPresented: $renamePrompt) {
             TextField("Name", text: $renameText)
             Button("Rename", action: renameSelected)

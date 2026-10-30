@@ -18,21 +18,53 @@ private struct ProjectWorkspacePages: View {
     private var destination: SidebarSection { store.selectedSection.projectDestination }
     private var showsProject: Bool { !store.isShowingProjectsHome && store.activeProjectID != nil }
 
+    /// Every project destination stays mounted once visited: memory is spent
+    /// so switching back never rebuilds the page or reruns its appear-time work.
+    private static let retainedDestinations: [SidebarSection] = [
+        .sources, .scenes, .wizard, .timelines, .outputs, .people, .instagram, .instagramReports,
+        .screenCrops, .effects, .looks, .bumpers, .text, .images, .music
+    ]
+
     var body: some View {
         ZStack {
-            if visited.contains(.sources) || (showsProject && destination == .sources) {
-                retained(.sources) { AnalyzeView() }
-            }
-            if visited.contains(.scenes) || (showsProject && destination == .scenes) {
-                retained(.scenes) { ProjectScenesView() }
-            }
-            if visited.contains(.outputs) || (showsProject && destination == .outputs) {
-                retained(.outputs) { LibraryView() }
+            ForEach(Self.retainedDestinations, id: \.self) { section in
+                if visited.contains(section) || (showsProject && destination == section) {
+                    retained(section) { page(section) }
+                }
             }
             otherPage
         }
         .onChange(of: destination, initial: true) { _, _ in pageChanged() }
         .onChange(of: store.isShowingProjectsHome) { _, _ in pageChanged() }
+    }
+
+    @ViewBuilder
+    private func page(_ section: SidebarSection) -> some View {
+        switch section {
+        case .sources: AnalyzeView()
+        case .scenes: ProjectScenesView()
+        case .wizard: WizardHostView()
+        case .timelines:
+            if store.openTimelineID == nil {
+                TimelinesView()
+            } else {
+                BuilderView()
+            }
+        case .outputs: LibraryView()
+        case .people: PeopleView()
+        case .instagram: InstagramView(tab: .posts)
+        case .instagramReports: InstagramView(tab: .reports)
+        case .screenCrops: ScreenCropsView()
+        case .effects: TransitionsView()
+        case .looks: LooksView()
+        case .bumpers: AssetBrowserView(kind: .bumpers)
+        case .text:
+            TextLooksView(tab: TextLooksTab.tab(for: store.selectedSection) ?? TextLooksTab.remembered())
+                .id(store.activeProfile.profileName)
+        case .images: AssetBrowserView(kind: .images)
+        case .music: AssetBrowserView(kind: .music)
+        default: EmptyView()
+        }
     }
 
     private func retained<Content: View>(_ section: SidebarSection,
@@ -60,7 +92,7 @@ private struct ProjectWorkspacePages: View {
         DispatchQueue.main.async {
             guard destination == section, store.activeProjectID == projectID,
                   store.profileGeneration == generation else { return }
-            if showsProject && [.sources, .scenes, .outputs].contains(section) {
+            if showsProject && Self.retainedDestinations.contains(section) {
                 focusedPage = section
             }
             UITiming.responseReady(screen: "Sidebar", what: section.rawValue)
@@ -69,51 +101,15 @@ private struct ProjectWorkspacePages: View {
 
     @ViewBuilder
     private var otherPage: some View {
-        if destination == .text, !store.isShowingProjectsHome {
+        if destination == .text, !store.isShowingProjectsHome, store.activeProjectID == nil {
             TextLooksView(tab: TextLooksTab.tab(for: store.selectedSection) ?? TextLooksTab.remembered())
                 .id(store.activeProfile.profileName)
         } else if store.selectedSection == .learned && !store.isShowingProjectsHome {
             LearnedPreferencesView()
         } else if !showsProject {
             ProjectsHomeView()
-        } else {
-            switch store.selectedSection.projectDestination {
-            case .sources, .scenes, .outputs:
-                EmptyView()
-            case .timelines:
-                if store.openTimelineID == nil {
-                    TimelinesView()
-                } else {
-                    BuilderView()
-                }
-            case .wizard:
-                WizardHostView()
-            case .people:
-                PeopleView()
-            case .instagram:
-                InstagramView(tab: .posts)
-            case .instagramReports:
-                InstagramView(tab: .reports)
-            case .music:
-                AssetBrowserView(kind: .music)
-            case .images:
-                AssetBrowserView(kind: .images)
-            case .text, .tags, .captions, .overlays, .fonts:
-                TextLooksView(tab: TextLooksTab.tab(for: store.selectedSection) ?? TextLooksTab.remembered())
-                    .id(store.activeProfile.profileName)
-            case .effects:
-                TransitionsView()
-            case .looks:
-                LooksView()
-            case .bumpers:
-                AssetBrowserView(kind: .bumpers)
-            case .screenCrops:
-                ScreenCropsView()
-            case .projects:
-                ProjectsHomeView()
-            default:
-                EmptyView()
-            }
+        } else if destination == .projects {
+            ProjectsHomeView()
         }
     }
 }

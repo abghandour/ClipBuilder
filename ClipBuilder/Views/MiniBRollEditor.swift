@@ -14,6 +14,7 @@ struct MiniBRollEditor: View {
     let onChange: (BRollCut) -> Void
     let onReplace: () -> Void
     let onRemove: () -> Void
+    @Environment(\.workspacePageVisible) private var pageVisible
     @State private var playback = PodcastHighlightTrimPlayback()
     /// The recording's audio for the cut's words, played with the scene.
     @State private var voice = PodcastHighlightTrimPlayback()
@@ -84,6 +85,12 @@ struct MiniBRollEditor: View {
         // The voice ends the preview when it reaches the cut's last word.
         .onChange(of: voice.isPlaying) { _, playing in
             if !playing { playback.pause(); onSpoken(nil) }
+        }
+        .onChange(of: pageVisible) { _, visible in
+            if !visible {
+                playback.pause()
+                voice.pause()
+            }
         }
         .onDisappear {
             playback.tearDown()

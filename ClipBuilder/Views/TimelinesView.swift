@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct TimelinesView: View {
+    @Environment(\.workspacePageVisible) private var pageVisible
     /// Shown from the Builder's All Timelines button: a sheet with its own
     /// header and Close button instead of the window toolbar.
     var presentedAsSheet = false
@@ -24,10 +25,12 @@ struct TimelinesView: View {
             content
                 .screenTitle("Timelines", subtitle: subtitle)
                 .toolbar {
-                    ToolbarItemGroup {
-                        Button("New Timeline", systemImage: "plus", action: newTimeline)
-                        Button("New from Wizard…", systemImage: "wand.and.stars", action: openWizard)
-                            .buttonStyle(.borderedProminent)
+                    if pageVisible {
+                        ToolbarItemGroup {
+                            Button("New Timeline", systemImage: "plus", action: newTimeline)
+                            Button("New from Wizard…", systemImage: "wand.and.stars", action: openWizard)
+                                .buttonStyle(.borderedProminent)
+                        }
                     }
                 }
                 .modifier(dialogs)

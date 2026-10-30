@@ -5,6 +5,7 @@ import UniformTypeIdentifiers
 /// multi-track timeline on the right; Generate renders through the
 /// multitrack pipeline into the Library.
 struct BuilderView: View {
+    @Environment(\.workspacePageVisible) private var pageVisible
     @Environment(AppStore.self) private var store
     @Environment(\.undoManager) private var undoManager
 
@@ -218,43 +219,45 @@ struct BuilderView: View {
         .sheet(isPresented: $showDubSetup) { DubSetupSheet() }
         .sheet(isPresented: $showAllTimelines) { TimelinesView(presentedAsSheet: true) }
         .toolbar {
-            ToolbarItem {
-                Button("Dub…", systemImage: "waveform") { showDubSetup = true }
-                    .lineLimit(1).fixedSize()
-                    .disabled(model.document.videoTrack.isEmpty)
-            }
-            ToolbarItem {
-                Button(role: .destructive) {
-                    confirmClear = true
-                } label: {
-                    ToolbarBubbleLabel(text: "Clear", systemImage: "trash")
+            if pageVisible {
+                ToolbarItem {
+                    Button("Dub…", systemImage: "waveform") { showDubSetup = true }
+                        .lineLimit(1).fixedSize()
+                        .disabled(model.document.videoTrack.isEmpty)
                 }
-                .disabled(model.document.isEmpty)
-                .help("Remove everything from the timeline")
-            }
-            ToolbarItem(placement: .primaryAction) {
-                if store.isBuilderRendering {
-                    Button {
-                        store.cancelBuilderRender()
+                ToolbarItem {
+                    Button(role: .destructive) {
+                        confirmClear = true
                     } label: {
-                        HStack(spacing: 6) {
-                            ProgressView().controlSize(.small)
-                            ToolbarBubbleLabel(text: "Stop", systemImage: "stop.circle")
+                        ToolbarBubbleLabel(text: "Clear", systemImage: "trash")
+                    }
+                    .disabled(model.document.isEmpty)
+                    .help("Remove everything from the timeline")
+                }
+                ToolbarItem(placement: .primaryAction) {
+                    if store.isBuilderRendering {
+                        Button {
+                            store.cancelBuilderRender()
+                        } label: {
+                            HStack(spacing: 6) {
+                                ProgressView().controlSize(.small)
+                                ToolbarBubbleLabel(text: "Stop", systemImage: "stop.circle")
+                            }
                         }
+                        .help("Stop the render")
+                    } else {
+                        Button {
+                            store.renderBuilderTimeline()
+                        } label: {
+                            ToolbarBubbleLabel(text: "Render to Exports", systemImage: "play.rectangle.fill")
+                        }
+                        .disabled(model.document.videoTrack.isEmpty || store.isBuilderPreviewRendering
+                                  || FootageAvailability.missingSource(document: model.document, scenes: model.scenes) != nil)
+                        .help(FootageAvailability.missingSource(document: model.document, scenes: model.scenes) != nil
+                              ? VideoRecord.notPresentReason
+                              : store.isBuilderPreviewRendering ? "Wait for the temporary Render Preview to finish"
+                              : "Render the timeline to a video in Exports")
                     }
-                    .help("Stop the render")
-                } else {
-                    Button {
-                        store.renderBuilderTimeline()
-                    } label: {
-                        ToolbarBubbleLabel(text: "Render to Exports", systemImage: "play.rectangle.fill")
-                    }
-                    .disabled(model.document.videoTrack.isEmpty || store.isBuilderPreviewRendering
-                              || FootageAvailability.missingSource(document: model.document, scenes: model.scenes) != nil)
-                    .help(FootageAvailability.missingSource(document: model.document, scenes: model.scenes) != nil
-                          ? VideoRecord.notPresentReason
-                          : store.isBuilderPreviewRendering ? "Wait for the temporary Render Preview to finish"
-                          : "Render the timeline to a video in Exports")
                 }
             }
         }
