@@ -14,6 +14,30 @@ enum UITiming {
     /// Uptime of the last selection change reported through `selectionChanged`.
     private(set) static var lastSelectionChange: TimeInterval?
     private static var selectionInterval: PerfSignpost.Interval?
+    private static var navigation: [String: (destination: String, started: TimeInterval, interval: PerfSignpost.Interval?)] = [:]
+
+    static func sectionChanged(to section: String) {
+        navigationChanged(screen: "Sidebar", to: section)
+    }
+
+    static func expressTabChanged(to kind: String) {
+        navigationChanged(screen: "Express", to: kind)
+    }
+
+    private static func navigationChanged(screen: String, to destination: String) {
+        PerfSignpost.end(navigation[screen]?.interval)
+        navigation[screen] = (destination, uptime, PerfSignpost.begin("ui.navigation", metadata: "\(screen): \(destination)"))
+        emit(changeLine(screen: screen, destination: destination, milliseconds: millisecondsSinceMouseDown()))
+    }
+
+    nonisolated static func changeLine(screen: String, destination: String, milliseconds: Int?) -> String {
+        let latency = milliseconds.map { "\($0) ms after mouse down" } ?? "no recent click"
+        return "\(screen) → \(destination), \(latency)"
+    }
+
+    nonisolated static func readyLine(screen: String, destination: String, milliseconds: Int) -> String {
+        "\(screen) \(destination) ready \(milliseconds) ms after selection"
+    }
 
     private static var uptime: TimeInterval { ProcessInfo.processInfo.systemUptime }
 
@@ -46,6 +70,13 @@ enum UITiming {
 
     /// Call when the thing the selection drives (a preview, a pane) is ready.
     static func responseReady(screen: String, what: String) {
+        if screen == "Sidebar" || screen == "Express" {
+            guard let pending = navigation[screen], pending.destination == what else { return }
+            PerfSignpost.end(pending.interval)
+            navigation[screen] = nil
+            emit(readyLine(screen: screen, destination: what, milliseconds: Int((uptime - pending.started) * 1000)))
+            return
+        }
         PerfSignpost.end(selectionInterval)
         selectionInterval = nil
         guard let lastSelectionChange else { return }

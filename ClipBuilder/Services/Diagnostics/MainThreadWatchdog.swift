@@ -21,7 +21,7 @@ nonisolated final class MainThreadWatchdog: @unchecked Sendable {
         /// Stalls at least this long are logged.
         var logThreshold: TimeInterval = 0.5
         /// Stalls at least this long are sampled while still in progress.
-        var sampleThreshold: TimeInterval = 1.0
+        var sampleThreshold: TimeInterval = 0.6
         /// Seconds `sample` observes the process.
         var sampleSeconds: Int = 1
         /// Rate limit: a run of stalls yields one sample per this many seconds.

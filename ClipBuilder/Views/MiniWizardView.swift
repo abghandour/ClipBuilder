@@ -170,6 +170,13 @@ struct MiniWizardView: View {
         }
         .task(id: sourceKey) { await loadSources() }
         .onAppear(perform: restoreAnswers)
+        .onChange(of: footageKind) { _, kind in
+            UITiming.expressTabChanged(to: kind.rawValue)
+            if currentRun != nil { UITiming.responseReady(screen: "Express", what: kind.rawValue) }
+        }
+        .onChange(of: currentRun?.batchID) { _, _ in
+            if currentRun != nil { UITiming.responseReady(screen: "Express", what: footageKind.rawValue) }
+        }
         .onChange(of: store.profileGeneration) { _, _ in restoreAnswers() }
         .onChange(of: miniSettings) { _, value in
             guard settingsProfile == profileName, store.activeProfile.profileName == profileName else { return }

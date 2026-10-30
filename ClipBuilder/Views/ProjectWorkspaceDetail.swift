@@ -56,5 +56,10 @@ struct ProjectWorkspaceDetail: View {
                 }
             }
         }
+        .onAppear {
+            let destination = store.selectedSection.projectDestination.rawValue
+            DispatchQueue.main.async { UITiming.responseReady(screen: "Sidebar", what: destination) }
+        }
+        .id(store.selectedSection.projectDestination)
     }
 }

@@ -62,7 +62,12 @@ struct ProjectSidebarView: View {
                 selection: Binding(
                     get: { store.isShowingProjectsHome ? nil : store.selectedSection },
                     set: { section in
-                        if let section { store.selectSection(section) }
+                        if let section {
+                            if store.isShowingProjectsHome || section.projectDestination != store.selectedSection.projectDestination {
+                                UITiming.sectionChanged(to: section.projectDestination.rawValue)
+                            }
+                            store.selectSection(section)
+                        }
                     }
                 )
             ) {
