@@ -81,6 +81,9 @@ final class AppStore {
         AIRoutingResolver.effectiveConfig(local: settings.ai, team: activeProfile.aiRouting)
     }
     var createdOverlayName: String?
+    /// Set by the Text Look Wizard when it saves a caption or name tag style,
+    /// so the Text Looks studio switches to that tab and selects it.
+    var createdTextLookSelection: TextLookSelection?
     let teamSync = TeamSyncState()
     var teamSyncCoordinator: TeamSyncCoordinator { teamSync.coordinator }
     let jobs = AppJobs()

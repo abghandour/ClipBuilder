@@ -66,6 +66,7 @@ struct MiniTranscriptPickView: View {
                         onMove: { store.reorderMiniTranscriptPicks($0) },
                         onDelete: { item in store.deleteMiniTranscriptPick(item.id.ownerID) },
                         onDeleteAll: { store.deleteAllMiniTranscriptPicks() },
+                        onSplit: { item, time in store.splitMiniTranscriptPick(item.id.ownerID, at: time) },
                         spanSelection: true, playAll: true,
                         trimAccessory: { item in
                             // Add sits in the transcript footer once a passage is marked.

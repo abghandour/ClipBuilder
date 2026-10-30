@@ -31,6 +31,8 @@ struct AppJobReviewSheet: View {
                 FightResearchReviewSheet(jobID: job.id, video: video)
             case .personResearch(let outcomes):
                 PersonResearchReviewSheet(jobID: job.id, generation: job.profileGeneration, outcomes: outcomes)
+            case .textLooks(let imported):
+                TextLookNamesSheet(jobID: job.id, generation: job.profileGeneration, imported: imported)
             default:
                 simple
             }

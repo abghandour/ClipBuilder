@@ -323,6 +323,131 @@ nonisolated enum TranscriptQATrim {
         return nearest
     }
 
+    // MARK: Word steps
+
+    /// One-click adjustments for a marked range: take in or drop one word
+    /// or one sentence at either edge, or include the pause that follows
+    /// the last word (up to the next word, or the end of the limits). nil
+    /// when there is no such step, so the button disables.
+    enum Step: CaseIterable, Sendable, Equatable {
+        case wordBefore, dropFirstWord, sentenceBefore, dropFirstSentence
+        case dropLastWord, wordAfter, pauseAfter, sentenceAfter, dropLastSentence
+
+        var edge: Edge {
+            switch self {
+            case .wordBefore, .dropFirstWord, .sentenceBefore, .dropFirstSentence: .start
+            case .dropLastWord, .wordAfter, .pauseAfter, .sentenceAfter, .dropLastSentence: .end
+            }
+        }
+    }
+
+    static func stepped(_ range: ClosedRange<Double>, by step: Step, words: [Word],
+                        limits: ClosedRange<Double>, tolerance: Double = 0.05) -> ClosedRange<Double>? {
+        let inside = words.filter { $0.start >= range.lowerBound - tolerance && $0.end <= range.upperBound + tolerance }
+        let before = words.filter { $0.end <= range.lowerBound + tolerance && $0.start < range.lowerBound - tolerance }
+            .sorted { $0.start < $1.start }
+        let after = words.filter { $0.start >= range.upperBound - tolerance && $0.end > range.upperBound + tolerance }
+            .sorted { $0.start < $1.start }
+        let target: Double?
+        switch step {
+        case .wordBefore:
+            target = before.last?.start
+        case .dropFirstWord:
+            guard inside.count > 1 else { return nil }
+            target = inside.dropFirst().first?.start
+        case .sentenceBefore:
+            // Back to the word after the previous sentence end, or the first word.
+            // Already at a sentence start (the word before ends one): go
+            // back a whole sentence instead of standing still.
+            guard !before.isEmpty else { return nil }
+            let searched = before.last.map { endsSentence($0.text) } == true ? before.dropLast() : before[...]
+            if let stop = searched.lastIndex(where: { endsSentence($0.text) }) {
+                target = before[stop + 1].start
+            } else {
+                target = before.first?.start
+            }
+        case .dropFirstSentence:
+            // Forward to the next sentence start inside the range.
+            guard inside.count > 1 else { return nil }
+            target = inside.indices.dropFirst().first(where: { endsSentence(inside[$0 - 1].text) }).map { inside[$0].start }
+        case .dropLastSentence:
+            // Back to the previous sentence end inside the range.
+            guard inside.count > 1 else { return nil }
+            target = inside.dropLast().last(where: { endsSentence($0.text) })?.end
+        case .dropLastWord:
+            guard inside.count > 1 else { return nil }
+            target = inside.dropLast().last?.end
+        case .wordAfter:
+            target = after.first?.end
+        case .pauseAfter:
+            // A word starting exactly at the end counts as next, so a range
+            // that already runs up to it has no pause left to take.
+            let pauseEnd = min(limits.upperBound, after.first?.start ?? limits.upperBound)
+            target = pauseEnd > range.upperBound + tolerance ? pauseEnd : nil
+        case .sentenceAfter:
+            target = after.first(where: { endsSentence($0.text) })?.end
+        }
+        guard let target else { return nil }
+        return moved(setting(step.edge, at: target, in: range, limits: limits), from: range, edge: step.edge, tolerance: tolerance)
+    }
+
+    /// Start at the first word's start and end at the last word's end,
+    /// dropping the silence at both edges. nil when nothing changes.
+    static func trimmedSilence(_ range: ClosedRange<Double>, words: [Word], limits: ClosedRange<Double>,
+                               tolerance: Double = 0.05) -> ClosedRange<Double>? {
+        let inside = words.filter { $0.start >= range.lowerBound - tolerance && $0.end <= range.upperBound + tolerance }
+        guard let first = inside.first, let last = inside.last else { return nil }
+        let updated = clamped(first.start...max(first.start, last.end), limits: limits)
+        let changed = abs(updated.lowerBound - range.lowerBound) > tolerance / 2 || abs(updated.upperBound - range.upperBound) > tolerance / 2
+        return changed ? updated : nil
+    }
+
+    /// Move one edge by `delta` seconds (negative = earlier). nil when the
+    /// limits or the minimum span stop it.
+    static func nudged(_ range: ClosedRange<Double>, edge: Edge, by delta: Double,
+                       limits: ClosedRange<Double>) -> ClosedRange<Double>? {
+        let time = (edge == .start ? range.lowerBound : range.upperBound) + delta
+        return moved(setting(edge, at: time, in: range, limits: limits), from: range, edge: edge, tolerance: 0.001)
+    }
+
+    /// Move one edge to a speaker-turn boundary: growing, to the boundary
+    /// of the turn the edge sits in; shrinking, to the nearest boundary
+    /// inside the range. nil when no turn applies or nothing would move.
+    static func turned(_ range: ClosedRange<Double>, edge: Edge, grow: Bool, spans: [SpeakerSpan],
+                       limits: ClosedRange<Double>, tolerance: Double = 0.05) -> ClosedRange<Double>? {
+        let target: Double?
+        if grow {
+            let time = edge == .start ? range.lowerBound : range.upperBound
+            let covering = spans.filter { $0.start - tolerance <= time && time <= $0.end + tolerance }
+            // At a boundary two turns touch, prefer the one that extends the range.
+            let turn = edge == .start
+                ? covering.min(by: { $0.start < $1.start })
+                : covering.max(by: { $0.end < $1.end })
+            target = turn.map { edge == .start ? $0.start : $0.end }
+        } else {
+            let open = (range.lowerBound + tolerance)..<(range.upperBound - tolerance)
+            target = edge == .start
+                ? spans.map(\.start).filter { open.contains($0) }.min()
+                : spans.map(\.end).filter { open.contains($0) }.max()
+        }
+        guard let target else { return nil }
+        return moved(setting(edge, at: target, in: range, limits: limits), from: range, edge: edge, tolerance: tolerance)
+    }
+
+    /// Ends with . ? ! or … after closing quotes and brackets.
+    static func endsSentence(_ text: String) -> Bool {
+        let trimmed = text.trimmingCharacters(in: .whitespacesAndNewlines)
+            .trimmingCharacters(in: CharacterSet(charactersIn: "\"'”’)]»"))
+        guard let last = trimmed.last else { return false }
+        return ".?!…".contains(last)
+    }
+
+    private static func moved(_ updated: ClosedRange<Double>, from range: ClosedRange<Double>, edge: Edge,
+                              tolerance: Double) -> ClosedRange<Double>? {
+        let delta = edge == .start ? abs(updated.lowerBound - range.lowerBound) : abs(updated.upperBound - range.upperBound)
+        return delta > tolerance / 2 ? updated : nil
+    }
+
     static func releasing(_ draft: ClosedRange<Double>, from original: ClosedRange<Double>,
                           words: [Word], limits: ClosedRange<Double>) -> ClosedRange<Double> {
         let startMoved = abs(draft.lowerBound - original.lowerBound) > 0.001

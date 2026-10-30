@@ -107,6 +107,45 @@ extension AppStore {
         }
     }
 
+    /// Cut one pick in two at `time`: the pick keeps its first half and a
+    /// new pick with the second half lands right after it in the list.
+    func splitMiniTranscriptPick(_ id: Int64, at time: Double) {
+        guard let run = currentTranscriptRun(), let picks = run.transcript?.picks,
+              let index = picks.firstIndex(where: { $0.id == id }) else { return }
+        let pick = picks[index]
+        let minimum = TranscriptQATrim.minimumSpan
+        guard time - pick.start >= minimum, pick.end - time >= minimum else { return }
+        setMiniTranscriptPickRange(id, start: pick.start, end: time)
+        let videoID = run.video.id
+        let batchID = run.batchID
+        let end = pick.end
+        var order = picks.map(\.id)
+        let previous = transcriptPickSaveTask
+        let generation = profileGeneration
+        guard let database else { return }
+        transcriptPickSaveTask = Task {
+            _ = try? await previous?.value
+            let added: TranscriptPick
+            do {
+                added = try await database.addTranscriptPick(videoID: videoID, start: time, end: end)
+                order.insert(added.id, at: min(order.count, index + 1))
+                try await database.reorderTranscriptPicks(videoID: videoID, ids: order)
+            } catch {
+                if generation == profileGeneration { presentError("Could not split the pick", error) }
+                throw error
+            }
+            guard generation == profileGeneration, miniRuns[.transcript]?.batchID == batchID,
+                  var current = miniRuns[.transcript]?.transcript?.picks else { return }
+            let at = current.firstIndex(where: { $0.id == id }).map { $0 + 1 } ?? current.count
+            current.insert(added, at: at)
+            miniRuns[.transcript]?.transcript?.picks = current.enumerated().map { position, pick in
+                var pick = pick
+                pick.position = position
+                return pick
+            }
+        }
+    }
+
     func setMiniTranscriptPickRange(_ id: Int64, start: Double, end: Double) {
         guard let run = currentTranscriptRun(), end > start,
               let index = run.transcript?.picks.firstIndex(where: { $0.id == id }) else { return }

@@ -41,8 +41,9 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     case cover
     /// Content gap report over the whole library. Prompt: `GapReporter`.
     case gap
-    /// Reads overlay layout (positions, colors) from one reference image.
-    /// Prompt: overlay wizard in `AppStore+AITools`.
+    /// Reads text looks (overlay layout, caption style, name tag style and,
+    /// from a video, their animations) out of a reference image or clip.
+    /// Prompt: `TextLookExtraction.prompt`.
     case overlay
     /// Translates transcript or caption text. Prompts: `TranslationBatch`,
     /// `TranscriptTranslator`.

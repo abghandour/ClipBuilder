@@ -15,6 +15,80 @@ struct TranscriptQATrimTests {
         TranscriptQATrim.Word(id: 0, text: "word", start: start, end: end)
     }
 
+    @Test func wordStepsMoveOneWordOrThePause() {
+        // Words longer than the 1 s minimum span: [1-2.5] [3-4.5] [5-6.5] [9-10.5];
+        // the selection covers the middle two.
+        let words = [word(1, 2.5), word(3, 4.5), word(5, 6.5), word(9, 10.5)]
+        let range = 3.0...6.5
+        let limits = 0.0...14.0
+        #expect(TranscriptQATrim.stepped(range, by: .wordBefore, words: words, limits: limits) == 1.0...6.5)
+        #expect(TranscriptQATrim.stepped(range, by: .dropFirstWord, words: words, limits: limits) == 5.0...6.5)
+        #expect(TranscriptQATrim.stepped(range, by: .dropLastWord, words: words, limits: limits) == 3.0...4.5)
+        #expect(TranscriptQATrim.stepped(range, by: .wordAfter, words: words, limits: limits) == 3.0...10.5)
+        // The pause runs to the next word's start; once taken there is nothing more.
+        #expect(TranscriptQATrim.stepped(range, by: .pauseAfter, words: words, limits: limits) == 3.0...9.0)
+        #expect(TranscriptQATrim.stepped(3.0...9.0, by: .pauseAfter, words: words, limits: limits) == nil)
+        // Nothing to step to: no word before the first, a single word cannot be
+        // dropped, no word after the last; the final pause reaches the limits.
+        #expect(TranscriptQATrim.stepped(1.0...6.5, by: .wordBefore, words: words, limits: limits) == nil)
+        #expect(TranscriptQATrim.stepped(5.0...6.5, by: .dropLastWord, words: words, limits: limits) == nil)
+        #expect(TranscriptQATrim.stepped(9.0...10.5, by: .wordAfter, words: words, limits: limits) == nil)
+        #expect(TranscriptQATrim.stepped(9.0...10.5, by: .pauseAfter, words: words, limits: limits) == 9.0...14.0)
+        #expect(TranscriptQATrim.stepped(9.0...14.0, by: .pauseAfter, words: words, limits: limits) == nil)
+        // Limits cap the step.
+        #expect(TranscriptQATrim.stepped(range, by: .wordAfter, words: words, limits: 0.0...9.5) == 3.0...9.5)
+    }
+
+    @Test func sentenceTurnNudgeAndSilenceSteps() {
+        func w(_ id: Int, _ text: String, _ start: Double, _ end: Double) -> TranscriptQATrim.Word {
+            TranscriptQATrim.Word(id: id, text: text, start: start, end: end)
+        }
+        // "We won. It was close!" then "Next question?"
+        let words = [w(0, "We", 1, 2), w(1, "won.", 2.2, 3.5), w(2, "It", 4, 5), w(3, "was", 5.2, 6.5),
+                     w(4, "close!”", 6.7, 8), w(5, "Next", 10, 11.5), w(6, "question?", 11.7, 13)]
+        let limits = 0.0...15.0
+        let range = 4.0...6.5   // "It was"
+        #expect(TranscriptQATrim.stepped(range, by: .sentenceAfter, words: words, limits: limits) == 4.0...8.0)
+        #expect(TranscriptQATrim.stepped(4.0...8.0, by: .sentenceAfter, words: words, limits: limits) == 4.0...13.0)
+        #expect(TranscriptQATrim.stepped(4.0...13.0, by: .sentenceAfter, words: words, limits: limits) == nil)
+        // The sentence starts after "won."; from there, back to the first word.
+        #expect(TranscriptQATrim.stepped(5.2...8.0, by: .sentenceBefore, words: words, limits: limits) == 4.0...8.0)
+        #expect(TranscriptQATrim.stepped(4.0...8.0, by: .sentenceBefore, words: words, limits: limits) == 1.0...8.0)
+        #expect(TranscriptQATrim.stepped(1.0...8.0, by: .sentenceBefore, words: words, limits: limits) == nil)
+        #expect(TranscriptQATrim.endsSentence("close!”") && TranscriptQATrim.endsSentence("end…") && !TranscriptQATrim.endsSentence("3.5"))
+
+        // Silence at both ends.
+        #expect(TranscriptQATrim.trimmedSilence(3.6...9.5, words: words, limits: limits) == 4.0...8.0)
+        #expect(TranscriptQATrim.trimmedSilence(4.0...8.0, words: words, limits: limits) == nil)
+        #expect(TranscriptQATrim.trimmedSilence(8.5...9.5, words: words, limits: limits) == nil)
+
+        // Nudges respect the limits and the minimum span.
+        #expect(TranscriptQATrim.nudged(range, edge: .end, by: 0.1, limits: limits) == 4.0...6.6)
+        #expect(TranscriptQATrim.nudged(range, edge: .start, by: -1, limits: limits) == 3.0...6.5)
+        #expect(TranscriptQATrim.nudged(0.0...6.5, edge: .start, by: -0.1, limits: limits) == nil)
+        #expect(TranscriptQATrim.nudged(4.0...5.0, edge: .end, by: -0.1, limits: limits) == nil)
+
+        // Speaker turns.
+        let spans = [TranscriptQATrim.SpeakerSpan(start: 0, end: 8.5, label: "A"),
+                     TranscriptQATrim.SpeakerSpan(start: 8.5, end: 15, label: "B")]
+        #expect(TranscriptQATrim.turned(range, edge: .start, grow: true, spans: spans, limits: limits) == 0.0...6.5)
+        #expect(TranscriptQATrim.turned(range, edge: .end, grow: true, spans: spans, limits: limits) == 4.0...8.5)
+        #expect(TranscriptQATrim.turned(4.0...8.5, edge: .end, grow: true, spans: spans, limits: limits) == 4.0...15.0)
+        #expect(TranscriptQATrim.turned(0.0...6.5, edge: .start, grow: true, spans: spans, limits: limits) == nil)
+        #expect(TranscriptQATrim.turned(range, edge: .end, grow: true, spans: [], limits: limits) == nil)
+        // Shrinking stops at the nearest boundary inside the range.
+        #expect(TranscriptQATrim.turned(4.0...13.0, edge: .end, grow: false, spans: spans, limits: limits) == 4.0...8.5)
+        #expect(TranscriptQATrim.turned(4.0...13.0, edge: .start, grow: false, spans: spans, limits: limits) == 8.5...13.0)
+        #expect(TranscriptQATrim.turned(range, edge: .end, grow: false, spans: spans, limits: limits) == nil)
+        // Sentence shrink: forward to the next sentence start, back to the previous sentence end.
+        #expect(TranscriptQATrim.stepped(1.0...13.0, by: .dropFirstSentence, words: words, limits: limits) == 4.0...13.0)
+        #expect(TranscriptQATrim.stepped(4.0...13.0, by: .dropFirstSentence, words: words, limits: limits) == 10.0...13.0)
+        #expect(TranscriptQATrim.stepped(10.0...13.0, by: .dropFirstSentence, words: words, limits: limits) == nil)
+        #expect(TranscriptQATrim.stepped(1.0...13.0, by: .dropLastSentence, words: words, limits: limits) == 1.0...8.0)
+        #expect(TranscriptQATrim.stepped(1.0...8.0, by: .dropLastSentence, words: words, limits: limits) == 1.0...3.5)
+        #expect(TranscriptQATrim.stepped(1.0...3.5, by: .dropLastSentence, words: words, limits: limits) == nil)
+    }
+
     private func row(_ start: Double, _ end: Double, _ text: String, wordsJSON: String? = nil) -> TranscriptRow {
         TranscriptRow(id: 1, videoID: 1, language: "en", isTranslation: false,
                       startTime: start, endTime: end, text: text, originalText: nil,

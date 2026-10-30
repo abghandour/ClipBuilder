@@ -3,43 +3,181 @@ import Foundation
 import UniformTypeIdentifiers
 
 extension AppStore {
-    // MARK: - Overlay wizard
+    // MARK: - Text Look Wizard
 
-    /// Read the overlay elements out of a reference image (text, logos,
-    /// badges — people and background are discarded) and save them as a new
-    /// overlay template. Logo/badge regions are cropped out of the image
-    /// into the Images library so the template can render them.
-    /// Returns the created template's name.
-    func extractOverlayTemplate(from imageURL: URL, provider: String?, model: String?,
-                                log: @escaping @Sendable (String) -> Void) async throws -> String {
-        let imageData = try await AppJobWork.run { try Data(contentsOf: imageURL) }
-        try Task.checkCancellation()
-        let prompt = """
-        You are extracting the OVERLAY DESIGN from one frame of a social video so it can be recreated as a reusable overlay template.
-
-        Identify ONLY overlay elements: text captions/titles, name plates, logos, channel badges, watermarks, stickers. DISCARD everything that is part of the footage itself — people, background, scenery.
-
-        Return a JSON object:
-        {"overlays": [
-          {"kind": "text", "text": "<exact text>", "x": <0-1 center x>, "y": <0-1 center y>, "w": <0-1 width>, "h": <0-1 height>, "fontcolor": "#hex", "bold": true|false, "italic": true|false, "bgcolor": "#hex or null", "box_opacity": <0-1, 0 when no background plate>, "dynamic": true|false},
-          {"kind": "image", "x": ..., "y": ..., "w": ..., "h": ..., "description": "<what it is, e.g. 'UFC logo'>"}
-        ]}
-
-        Rules:
-        - Coordinates are fractions of the full frame; x/y are the element's CENTER.
-        - "kind":"text" for anything that is essentially styled text — recreate it as text, estimating color/bold/italic and any background plate.
-        - "kind":"image" for graphical marks (logos, badges, icons) that cannot be recreated as plain text. Make the box tight around the mark.
-        - "dynamic": true for the main caption-style text a future video would replace with its own words; false for names/labels/branding.
-        - 2-8 elements typical. Return ONLY the JSON object.
-        """
-        let frame = AIFrame(jpeg: imageData, label: "reference frame")
-        let response = try await ai.call(prompt: prompt, task: .overlay, frames: [frame],
-                                         model: model, provider: provider, timeout: 180, log: log)
-        try Task.checkCancellation()
-        return try await AppJobWork.run {
-            try OverlayTemplateFiles.write(response: response.text, provenance: response.provenance,
-                                           imageData: imageData, imageURL: imageURL, log: log)
+    /// Read text looks out of a reference image or video and save what the
+    /// user asked for: an overlay template (texts, cropped marks, and from a
+    /// video their timing and enter/exit effects), a caption style, a name
+    /// tag style. Gemini watches the clip natively; other providers get the
+    /// sampled stills. Returns what was created so the review sheet can let
+    /// the user rename it; throws only when nothing at all was saved.
+    func importTextLooks(from url: URL, targets: Set<TextLookExtraction.Target>,
+                         provider: String?, model: String?,
+                         log: @escaping @Sendable (String) -> Void) async throws -> TextLookImport {
+        guard !targets.isEmpty else { throw AIError.notConfigured("Choose at least one thing to import.") }
+        // Everything below the AI call writes into the active profile; a
+        // profile switch while the call ran must not land in the new one.
+        let generation = profileGeneration
+        func checkProfile() throws {
+            try Task.checkCancellation()
+            guard generation == profileGeneration else { throw CancellationError() }
         }
+        let isVideo = TextLookWizardSheet.isMovie(url)
+        let duration = isVideo ? await FFmpeg.duration(of: url) : 0
+        let fontFamilies = await AssetStore.libraryFontFamiliesAsync()
+        try Task.checkCancellation()
+        let prompt = TextLookExtraction.prompt(targets: targets, isVideo: isVideo, duration: duration,
+                                               fontFamilies: fontFamilies)
+        let stillData: Data? = isVideo ? nil : try await AppJobWork.run { try Data(contentsOf: url) }
+        let response: AIResponse
+        if isVideo {
+            let timestamps = TextLookExtraction.sampleTimestamps(duration: duration)
+            log("Sampling \(timestamps.count) frames across \(String(format: "%.1f", duration)) s for the still-frame fallback")
+            let sampled: @Sendable () async throws -> [AIFrame] = {
+                let jpegs = await ThumbnailService.jpegFrames(url: url, at: timestamps,
+                                                               maxDimension: CGFloat(AnalysisImageBudget.longestEdge))
+                let frames = zip(timestamps, jpegs).compactMap { time, jpeg in
+                    jpeg.map { AIFrame(jpeg: $0, label: String(format: "t=%.2fs", time)) }
+                }
+                guard !frames.isEmpty else { throw AIError.notConfigured("Could not decode any frame of that video.") }
+                return await AnalysisImageBudget.fit(frames, log: log)
+            }
+            response = try await ai.call(prompt: prompt, task: .overlay, video: url, fallbackFrames: sampled,
+                                         model: model, provider: provider, timeout: 300, log: log)
+        } else {
+            let frame = AIFrame(jpeg: stillData ?? Data(), label: "reference frame")
+            response = try await ai.call(prompt: prompt, task: .overlay, frames: [frame],
+                                         model: model, provider: provider, timeout: 180, log: log)
+        }
+        try Task.checkCancellation()
+        let parsed = try await AppJobWork.run {
+            // Library fonts first, then every family installed on this Mac:
+            // the model names the real typeface and the matcher picks the
+            // closest face that will actually render.
+            let fonts = FontMatch.Catalog.current(library: fontFamilies)
+            return TextLookExtraction.parse(response.text, targets: targets, fonts: fonts)
+        }
+        try checkProfile()
+        for note in parsed.notes { log(note) }
+        var summary: [String] = []
+        var missing: [String] = []
+        var created: [TextLookImport.Item] = []
+        if targets.contains(.overlay) {
+            // Marks are cropped from full-resolution pixels: the still, or
+            // a fresh frame at the time the model said each mark is visible.
+            var frames: [String: Data] = [:]
+            if isVideo {
+                let fallbackTime: Double = min(duration / 2, 1)
+                var times = Set<Double>()
+                for element in parsed.overlays where element.kind == .image {
+                    times.insert(element.at ?? fallbackTime)
+                }
+                for time in times {
+                    try Task.checkCancellation()
+                    if let data = await ThumbnailService.jpegFrame(url: url, at: time, maxDimension: 0, quality: 0.95) {
+                        frames[String(format: "%.2f", time)] = data
+                    }
+                }
+            } else if let stillData {
+                frames["poster"] = stillData
+            }
+            let referenceFrames = frames
+            let name = try await AppJobWork.run {
+                try OverlayTemplateFiles.write(elements: parsed.overlays, provenance: response.provenance,
+                                               sourceURL: url, isVideo: isVideo, duration: duration,
+                                               frame: { time in
+                                                   Self.referenceFrame(at: time, isVideo: isVideo, duration: duration, frames: referenceFrames)
+                                               }, log: log)
+            }
+            try checkProfile()
+            createdOverlayName = name
+            AssetCatalogChanges.publish()
+            summary.append("overlay “\(name)”")
+            created.append(TextLookImport.Item(kind: .overlay, id: name, name: name))
+        }
+        let base = url.deletingPathExtension().lastPathComponent
+        if targets.contains(.captions), parsed.caption == nil { missing.append("captions") }
+        if targets.contains(.nameTag), parsed.tag == nil { missing.append("name plate") }
+        if targets.contains(.captions), let style = parsed.caption {
+            let named = NamedCaptionStyle(name: uniqueStyleName("Wizard – \(base)", taken: (activeProfile.captionStyles ?? []).map(\.name)),
+                                          style: style)
+            activeProfile.captionStyles = (activeProfile.captionStyles ?? []) + [named]
+            createdTextLookSelection = TextLookSelection(tab: .captions, id: named.id.uuidString)
+            created.append(TextLookImport.Item(kind: .caption, id: named.id.uuidString, name: named.name))
+            log("Created caption style “\(named.name)”: \(style.resolvedAnimation) entrance, reveal \(style.resolvedReveal), highlight \(style.resolvedHighlight)")
+            summary.append("caption style “\(named.name)”")
+        }
+        if targets.contains(.nameTag), let style = parsed.tag {
+            let named = NamedTagStyle(name: uniqueStyleName("Wizard – \(base)", taken: (activeProfile.tagStyles ?? []).map(\.name)),
+                                      style: style)
+            activeProfile.tagStyles = (activeProfile.tagStyles ?? []) + [named]
+            if createdTextLookSelection == nil {
+                createdTextLookSelection = TextLookSelection(tab: .tags, id: named.id.uuidString)
+            }
+            created.append(TextLookImport.Item(kind: .nameTag, id: named.id.uuidString, name: named.name))
+            log("Created name tag style “\(named.name)”")
+            summary.append("name tag style “\(named.name)”")
+        }
+        if parsed.caption != nil || parsed.tag != nil { _ = saveActiveProfile() }
+        if created.isEmpty {
+            throw AIError.emptyResponse("text looks (the model found no \(missing.joined(separator: " or ")) in that file)")
+        }
+        log("Created " + summary.joined(separator: ", "))
+        return TextLookImport(items: created, missing: missing)
+    }
+
+    /// Apply the names the user chose in the import review. Items whose
+    /// name did not change are left alone; a rename that fails is reported
+    /// and the rest still apply. The profile must still be the one the job
+    /// wrote into.
+    func renameImportedTextLooks(_ items: [TextLookImport.Item], generation: Int) -> String? {
+        guard generation == profileGeneration else {
+            return "The profile changed since the import; names were kept."
+        }
+        var failures: [String] = []
+        var profileChanged = false
+        for item in items {
+            let wanted = item.name.trimmingCharacters(in: .whitespacesAndNewlines)
+            guard !wanted.isEmpty else { continue }
+            switch item.kind {
+            case .overlay:
+                guard wanted != item.id else { continue }
+                do {
+                    let final = try OverlayTemplateStore.rename(item.id, to: wanted)
+                    if createdOverlayName == item.id { createdOverlayName = final }
+                    AssetCatalogChanges.publish()
+                } catch {
+                    failures.append("“\(item.id)” → “\(wanted)”: \(error.localizedDescription)")
+                }
+            case .caption:
+                guard let index = activeProfile.captionStyles?.firstIndex(where: { $0.id.uuidString == item.id }),
+                      activeProfile.captionStyles?[index].name != wanted else { continue }
+                activeProfile.captionStyles?[index].name = wanted
+                profileChanged = true
+            case .nameTag:
+                guard let index = activeProfile.tagStyles?.firstIndex(where: { $0.id.uuidString == item.id }),
+                      activeProfile.tagStyles?[index].name != wanted else { continue }
+                activeProfile.tagStyles?[index].name = wanted
+                profileChanged = true
+            }
+        }
+        if profileChanged { _ = saveActiveProfile() }
+        return failures.isEmpty ? nil : "Could not rename " + failures.joined(separator: "; ")
+    }
+
+    nonisolated private static func referenceFrame(at time: Double?, isVideo: Bool, duration: Double,
+                                                   frames: [String: Data]) -> Data? {
+        guard isVideo else { return frames["poster"] }
+        let resolved: Double = time ?? min(duration / 2, 1)
+        let key = String(format: "%.2f", resolved)
+        return frames[key] ?? frames.values.first
+    }
+
+    private func uniqueStyleName(_ base: String, taken: [String]) -> String {
+        guard taken.contains(base) else { return base }
+        var counter = 2
+        while taken.contains("\(base) \(counter)") { counter += 1 }
+        return "\(base) \(counter)"
     }
 
     // MARK: - File Name Wizard

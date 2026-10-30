@@ -29,6 +29,8 @@ struct RangeReviewView<Footer: View>: View {
     var onDelete: ((RangeReviewItem) -> Void)? = nil
     /// A Remove All button beside the list title, shown while the list has items.
     var onDeleteAll: (() -> Void)? = nil
+    /// Split the selected saved item in two at a source time (the playhead).
+    var onSplit: ((RangeReviewItem, Double) -> Void)? = nil
     @State private var confirmingDeleteAll = false
     /// Draft items select by pressing a word and dragging; an empty range means nothing selected.
     var spanSelection = false
@@ -69,6 +71,8 @@ struct RangeReviewView<Footer: View>: View {
     private static var endingChoices: [Int] { [5, 3, 2, 1] }
     @State private var loadedURL: URL?
     @State private var draft: (start: Double, end: Double)?
+    /// The last one-click adjustment, so the next pick can take the same one.
+    @State private var lastAdjustment: RangeAdjustment?
     /// The anchor being dragged in the transcript; the player and filmstrip
     /// hold the saved range until it is released, then jump to this edge.
     @State private var anchorDrag: TranscriptQATrim.Edge?
@@ -701,9 +705,12 @@ struct RangeReviewView<Footer: View>: View {
                         rangeLabel
                     }
                 }
+                if canTrim, !isEmptyRange, policy != .wizard, !visibleTranscript.words.isEmpty {
+                    wordStepControls
+                }
                 let hint = spanSelection && item.isDraft ? Self.spanHint : (trimHint ?? Self.trimHint)
                 FormCaption(hint)
-                    .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
                     .help(hint)
             }
             footer(selectedParent ?? item)
@@ -716,11 +723,11 @@ struct RangeReviewView<Footer: View>: View {
     }
 
     private static var spanHint: String {
-        "Drag the handles or the transcript anchors to adjust · click the selection to clear it · I / O set the start / end at the playhead"
+        "Drag the handles or the transcript anchors to adjust · click the selection to clear it · I / O set the start / end at the playhead · ⌥←/→ words at the end (⇧⌥ at the start) · , / . nudge the end 0.1 s (⇧ 1 s, ⌥ the start)"
     }
 
     private static var trimHint: String {
-        "Drag the handles or the transcript anchors, or click a word to move the nearer end to it · I / O set the start / end at the playhead"
+        "Drag the handles or the transcript anchors, or click a word to move the nearer end to it · I / O set the start / end at the playhead · ⌥←/→ words at the end (⇧⌥ at the start) · , / . nudge the end 0.1 s (⇧ 1 s, ⌥ the start)"
     }
 
     private var playButton: some View {
@@ -758,6 +765,142 @@ struct RangeReviewView<Footer: View>: View {
             .accessibilityLabel("Play the ending")
             PlaybackSpeedControl(playback: playback)
         }
+    }
+
+    /// One-click adjustments: words, sentences, speaker turns and tenth-second
+    /// nudges at either edge, the pause after the last word, silence at both
+    /// ends, split at the playhead, and repeat the last one. Each button
+    /// disables when the transcript or the limits offer no such move.
+    /// Columns per kind of move, − shrinks the selection and + grows it, one
+    /// row per edge; the whole-range actions sit underneath.
+    private var wordStepControls: some View {
+        VStack(alignment: .leading, spacing: Theme.spaceXS) {
+            Grid(alignment: .center, horizontalSpacing: Theme.spaceM, verticalSpacing: Theme.spaceXS) {
+                GridRow {
+                    Color.clear.frame(width: 1, height: 1).gridCellUnsizedAxes([.horizontal, .vertical])
+                    columnLabel("Word")
+                    columnLabel("Sentence")
+                    columnLabel("Speaker")
+                    columnLabel("Nudge 0.1 s")
+                }
+                GridRow {
+                    rowLabel("Start")
+                    pair(minus: (.step(.dropFirstWord), "Drop the first word (⇧⌥→)"),
+                         plus: (.step(.wordBefore), "Add the word before (⇧⌥←)"))
+                    pair(minus: (.step(.dropFirstSentence), "Forward to the next sentence start"),
+                         plus: (.step(.sentenceBefore), "Back to the start of the sentence"))
+                    pair(minus: (.turn(.start, grow: false), "Forward to the next speaker change"),
+                         plus: (.turn(.start, grow: true), "Back to the start of the speaker's turn"))
+                    pair(minus: (.nudge(.start, 0.1), "Start 0.1 s later (⌥.  ⇧ for 1 s)"),
+                         plus: (.nudge(.start, -0.1), "Start 0.1 s earlier (⌥,  ⇧ for 1 s)"))
+                }
+                GridRow {
+                    rowLabel("End")
+                    pair(minus: (.step(.dropLastWord), "Drop the last word (⌥←)"),
+                         plus: (.step(.wordAfter), "Add the next word (⌥→)"))
+                    pair(minus: (.step(.dropLastSentence), "Back to the previous sentence end"),
+                         plus: (.step(.sentenceAfter), "On to the end of the sentence"))
+                    pair(minus: (.turn(.end, grow: false), "Back to the previous speaker change"),
+                         plus: (.turn(.end, grow: true), "On to the end of the speaker's turn"))
+                    pair(minus: (.nudge(.end, -0.1), "End 0.1 s earlier (,  ⇧ for 1 s)"),
+                         plus: (.nudge(.end, 0.1), "End 0.1 s later (.  ⇧ for 1 s)"))
+                }
+            }
+            HStack(spacing: Theme.spaceS) {
+                adjustmentButton(.step(.pauseAfter), "Keep Pause After Last Word",
+                                 help: "Extend the end through the silence after the last word, up to the next word")
+                adjustmentButton(.trimSilence, "Trim Silence", help: "Start at the first word and end at the last word")
+                if onSplit != nil {
+                    Button(action: splitAtPlayhead) { Text("Split at Playhead").lineLimit(1).fixedSize() }
+                        .disabled(!canSplit)
+                        .help("Split at the playhead: this pick keeps the first half, a new pick takes the rest")
+                }
+                Button {
+                    if let lastAdjustment { apply(lastAdjustment) }
+                } label: {
+                    Text("Repeat Last").lineLimit(1).fixedSize()
+                }
+                .disabled(lastAdjustment.flatMap { adjusted($0) } == nil)
+                .help(lastAdjustment.map { "Repeat: \($0.label)" } ?? "Repeat the last adjustment on this selection")
+                Spacer(minLength: 0)
+            }
+        }
+        .controlSize(.small)
+    }
+
+    private var stepButtonWidth: CGFloat { 30 }
+
+    /// A − / + pair; a missing side keeps its slot so the columns line up.
+    @ViewBuilder
+    private func pair(minus: (RangeAdjustment, String)?, plus: (RangeAdjustment, String)?) -> some View {
+        HStack(spacing: Theme.spaceXS) {
+            slot(minus, "−")
+            slot(plus, "+")
+        }
+    }
+
+    @ViewBuilder
+    private func slot(_ action: (RangeAdjustment, String)?, _ sign: String) -> some View {
+        if let (adjustment, help) = action {
+            Button { apply(adjustment) } label: {
+                Text(sign).monospacedDigit().frame(width: stepButtonWidth)
+            }
+            .disabled(adjusted(adjustment) == nil)
+            .help(help)
+        } else {
+            Color.clear.frame(width: stepButtonWidth + 12, height: 1)
+        }
+    }
+
+    private func columnLabel(_ text: String) -> some View {
+        Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+    }
+
+    private func rowLabel(_ text: String) -> some View {
+        Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+            .gridColumnAlignment(.trailing)
+    }
+
+    private func adjustmentButton(_ adjustment: RangeAdjustment, _ title: String, help: String) -> some View {
+        Button { apply(adjustment) } label: { Text(title).lineLimit(1).fixedSize() }
+            .disabled(adjusted(adjustment) == nil)
+            .help(help)
+    }
+
+    /// The range an adjustment would produce from the current one; nil when
+    /// there is no such move.
+    private func adjusted(_ adjustment: RangeAdjustment) -> ClosedRange<Double>? {
+        guard canTrim, !isEmptyRange, policy != .wizard else { return nil }
+        let words = visibleTranscript.words
+        switch adjustment {
+        case .step(let step):
+            return TranscriptQATrim.stepped(editRange, by: step, words: words, limits: limits)
+        case let .nudge(edge, delta):
+            return TranscriptQATrim.nudged(editRange, edge: edge, by: delta, limits: limits)
+        case let .turn(edge, grow):
+            let spans = speakerSpans.filter { $0.videoID == nil || $0.videoID == contextVideo?.id }
+            return TranscriptQATrim.turned(editRange, edge: edge, grow: grow, spans: spans, limits: limits)
+        case .trimSilence:
+            return TranscriptQATrim.trimmedSilence(editRange, words: words, limits: limits)
+        }
+    }
+
+    private func apply(_ adjustment: RangeAdjustment) {
+        guard let next = adjusted(adjustment) else { return }
+        lastAdjustment = adjustment
+        commit(next)
+    }
+
+    private var canSplit: Bool {
+        guard onSplit != nil, let selected, !selected.isDraft, selected.id.cutIndex == nil, canTrim, !isEmptyRange else { return false }
+        let minimum = policy.minimumSpan
+        let time = playback.time
+        return time - editRange.lowerBound >= minimum && editRange.upperBound - time >= minimum
+    }
+
+    private func splitAtPlayhead() {
+        guard canSplit, let selected, let onSplit else { return }
+        onSplit(selected, playback.time)
     }
 
     private var rangeLabel: some View {
@@ -909,8 +1052,25 @@ struct RangeReviewView<Footer: View>: View {
             onDelete(selected)
             return true
         }
+        let flags = event.modifierFlags.intersection([.option, .shift, .command, .control])
+        // ⌥←/→ step words at the end, ⇧⌥ at the start.
+        if event.keyCode == 123 || event.keyCode == 124, flags.contains(.option), !flags.contains(.command) {
+            let left = event.keyCode == 123
+            let step: TranscriptQATrim.Step = flags.contains(.shift)
+                ? (left ? .wordBefore : .dropFirstWord)
+                : (left ? .dropLastWord : .wordAfter)
+            apply(.step(step))
+            return true
+        }
         switch event.charactersIgnoringModifiers?.lowercased() {
         case " ": playingAll = false; playback.togglePlay()
+        case ",", ".", "<", ">":
+            // , / . nudge the end by 0.1 s; ⇧ makes it 1 s; ⌥ moves the start.
+            guard !flags.contains(.command), !flags.contains(.control) else { return false }
+            let characters = event.charactersIgnoringModifiers ?? ""
+            let earlier = characters == "," || characters == "<"
+            let seconds = flags.contains(.shift) || characters == "<" || characters == ">" ? 1.0 : 0.1
+            apply(.nudge(flags.contains(.option) ? .start : .end, earlier ? -seconds : seconds))
         case "i", "o":
             guard canTrim, !isEmptyRange else { return false }
             let edge: TranscriptQATrim.Edge = event.charactersIgnoringModifiers?.lowercased() == "i" ? .start : .end
@@ -919,5 +1079,38 @@ struct RangeReviewView<Footer: View>: View {
         default: return false
         }
         return true
+    }
+}
+
+/// A one-click change to a marked range; the view remembers the last one so
+/// the next pick can take it again.
+nonisolated enum RangeAdjustment: Equatable, Sendable {
+    case step(TranscriptQATrim.Step)
+    case nudge(TranscriptQATrim.Edge, Double)
+    case turn(TranscriptQATrim.Edge, grow: Bool)
+    case trimSilence
+
+    var label: String {
+        switch self {
+        case .step(.wordBefore): "add the word before"
+        case .step(.dropFirstWord): "drop the first word"
+        case .step(.sentenceBefore): "back to the start of the sentence"
+        case .step(.dropFirstSentence): "forward to the next sentence start"
+        case .step(.dropLastSentence): "back to the previous sentence end"
+        case .step(.dropLastWord): "drop the last word"
+        case .step(.wordAfter): "add the next word"
+        case .step(.pauseAfter): "keep the pause after the last word"
+        case .step(.sentenceAfter): "on to the end of the sentence"
+        case let .nudge(edge, delta):
+            "\(edge == .start ? "start" : "end") \(delta < 0 ? "earlier" : "later") by \(String(format: "%.1f", abs(delta))) s"
+        case let .turn(edge, grow):
+            switch (edge, grow) {
+            case (.start, true): "back to the start of the speaker's turn"
+            case (.start, false): "forward to the next speaker change"
+            case (.end, true): "on to the end of the speaker's turn"
+            case (.end, false): "back to the previous speaker change"
+            }
+        case .trimSilence: "trim the silence at both ends"
+        }
     }
 }

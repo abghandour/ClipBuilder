@@ -22,29 +22,34 @@ struct OverlayTemplatesView: View {
     @State private var renamePrompt = false
     @State private var renameText = ""
     @State private var deleteTarget: String?
-    @State private var showOverlayWizard = false
     @State private var operationError: String?
 
     var body: some View {
         Group {
             if templates.isEmpty {
-                ContentUnavailableView(
-                    "No Overlay Templates",
-                    systemImage: "square.on.square",
-                    description: Text("Create a starter template, then add text and images only when you need them. Use the toolbar to create a template or extract one from an image."))
+                ContentUnavailableView {
+                    Label("No Overlay Templates", systemImage: "square.on.square")
+                } description: {
+                    Text("Create a starter template, then add text and images only when you need them, or use Create from File… in the toolbar to extract one from an image or video.")
+                } actions: {
+                    Button("New Template", systemImage: "plus", action: createTemplate)
+                }
             } else {
                 HSplitView {
                     VStack(spacing: 0) {
                         templateList
                         ControlGroup {
+                            Button("New Template", systemImage: "plus", action: createTemplate)
+                                .help("Create an overlay template")
                             Button("Rename", systemImage: "pencil") {
                                 renameText = selectedName ?? ""; renamePrompt = true
-                            }
+                            }.disabled(selectedName == nil)
                             Button("Duplicate", systemImage: "plus.square.on.square") {
                                 if let template = templates.first(where: { $0.name == selectedName }) { duplicate(template) }
-                            }
+                            }.disabled(selectedName == nil)
                             Button("Delete", systemImage: "trash", role: .destructive) { deleteTarget = selectedName }
-                        }.labelStyle(.iconOnly).disabled(selectedName == nil).padding(8)
+                                .disabled(selectedName == nil)
+                        }.labelStyle(.iconOnly).padding(8)
                         Divider()
                         if selectedName != nil {
                             OverlayTemplateItems(composition: $composition, selection: $itemSelection)
@@ -67,9 +72,6 @@ struct OverlayTemplatesView: View {
         }
 
         .toolbar { if pageVisible { overlayToolbarContent } }
-        .sheet(isPresented: $showOverlayWizard) {
-            OverlayWizardSheet()
-        }
         .alert("Rename Template", isPresented: $renamePrompt) {
             TextField("Name", text: $renameText)
             Button("Rename", action: renameSelected)
@@ -159,27 +161,15 @@ struct OverlayTemplatesView: View {
 
     @ToolbarContentBuilder
     private var overlayToolbarContent: some ToolbarContent {
+        // "Create from File…" lives on the Text Looks toolbar so it shows on
+        // every tab; New Template sits with the list's other buttons.
         ToolbarItemGroup {
-            Button(action: createTemplate) { ToolbarBubbleLabel(text: "New Template", systemImage: "plus") }
-                .help("Create an overlay template")
             if selectedName != nil {
                     Label(isSaving ? "Saving…" : "Saved",
                           systemImage: isSaving ? "arrow.triangle.2.circlepath" : "checkmark")
                         .font(.caption)
                     .foregroundStyle(isSaving ? Color.secondary : Color.green)
             }
-            Button {
-                showOverlayWizard = true
-            } label: {
-                ToolbarBubbleLabel(text: "Create from Image…", systemImage: "wand.and.stars")
-            }
-            .help("Build an overlay template from a reference image")
-            Button {
-                NSWorkspace.shared.open(OverlayTemplateStore.directory)
-            } label: {
-                ToolbarBubbleLabel(text: "Show in Finder", systemImage: "folder")
-            }
-            .help("Reveal the template files in Finder")
         }
     }
 

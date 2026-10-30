@@ -30,6 +30,10 @@ enum TextLooksTab: String, CaseIterable, Identifiable {
 struct TextLooksView: View {
     let initialTab: TextLooksTab
     @Environment(AppStore.self) private var store
+    @Environment(\.workspacePageVisible) private var pageVisible
+    /// "Create from File…" on every tab: the wizard makes overlay templates,
+    /// caption styles and name tag styles alike.
+    @State private var showTextLookWizard = false
     @AppStorage("textLooks.openNamedStyles") private var openNamedStyles = false
     @State private var tab: TextLooksTab
     @State private var selection: String? = "default"
@@ -40,6 +44,9 @@ struct TextLooksView: View {
     @State private var counts = TextLookRunCounts()
     @State private var countError: String?
     @State private var overlayLinks: [TextLookRunCounts.Link] = []
+    /// A style the wizard just created, applied once the tab change lands
+    /// (the tab handler otherwise resets the selection to the default).
+    @State private var pendingSelection: String?
 
     init(tab: TextLooksTab) {
         initialTab = tab
@@ -132,14 +139,41 @@ struct TextLooksView: View {
             if let countError { FormCaption(countError, tone: .warning).padding(8) }
         }
         .screenTitle("Text Looks", subtitle: tab.rawValue)
+        .toolbar {
+            if pageVisible {
+                ToolbarItem {
+                    Button {
+                        showTextLookWizard = true
+                    } label: {
+                        ToolbarBubbleLabel(text: "Create from File…", systemImage: "wand.and.stars")
+                    }
+                    .help("Build an overlay template, caption style or name tag style from a reference image or video")
+                }
+            }
+        }
+        .sheet(isPresented: $showTextLookWizard) {
+            TextLookWizardSheet()
+        }
         .onChange(of: tab) { _, value in
             TextLooksTab.remember(value)
-            selection = value == .named ? store.activeProfile.textStyles?.first?.id.uuidString : "default"
+            selection = pendingSelection ?? (value == .named ? store.activeProfile.textStyles?.first?.id.uuidString : "default")
+            pendingSelection = nil
             refreshOverlayLinks()
         }
         .onChange(of: selection) { selectedImage = nil }
         .onChange(of: selectedImage) { _, image in if image != nil { tagState = "Box" } }
         .onChange(of: initialTab) { _, value in tab = value }
+        .onChange(of: store.createdTextLookSelection) { _, created in
+            // The Text Look Wizard saved a caption or name tag style: show it.
+            guard let created else { return }
+            if tab == created.tab {
+                selection = created.id
+            } else {
+                pendingSelection = created.id
+                tab = created.tab
+            }
+            store.createdTextLookSelection = nil
+        }
         .onAppear {
             consumeNamedRequest()
             refreshOverlayLinks()

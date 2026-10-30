@@ -106,6 +106,7 @@ nonisolated enum AppJobResult: Equatable, Sendable {
     case trim(start: Double, end: Double, reason: String, provenance: AIProvenance)
     case generateRequest(WizardPromptHandoff)
     case personResearch(outcomes: [PersonResearchOutcome])
+    case textLooks(TextLookImport)
 
     var committedOnCancellation: Bool {
         switch self {
