@@ -4,6 +4,7 @@ import SwiftUI
 /// right with favorite/grade voting and transcripts.
 struct ScenesView: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.workspacePageVisible) private var pageVisible
     @State private var favoritesOnly = false
 
     @State private var selectedRunIDs: Set<Int64> = []
@@ -263,94 +264,100 @@ struct ScenesView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .screenTitle("Scenes", subtitle: selectedSceneIDs.count > 1 ? "\(selectedSceneIDs.count) of \(filtered.count) scenes selected" : favoritesOnly ? "\(filtered.count) favorite scenes" : stackedAway > 0 ? "\(filtered.count) moments — \(filtered.count + stackedAway) scenes" : "\(filtered.count) scenes")
-        .searchable(text: $searchText, prompt: "Filter by file or tag")
+        .background {
+            if pageVisible {
+                Color.clear.searchable(text: $searchText, prompt: "Filter by file or tag")
+            }
+        }
         .toolbar {
-            ToolbarItem {
-                Toggle("Favorites", isOn: $favoritesOnly)
-                    .toggleStyle(.button)
-                    .help("Show only favorite scenes")
-            }
-            if let run = selectedRun {
+            if pageVisible {
                 ToolbarItem {
-                    Button("Analyze Batch Info", systemImage: "info.circle") {
-                        infoRun = run
-                    }
-                    .help("All parameters and instructions used for this analyze batch")
+                    Toggle("Favorites", isOn: $favoritesOnly)
+                        .toggleStyle(.button)
+                        .help("Show only favorite scenes")
                 }
-            }
-            if let runs = comparableRuns {
-                ToolbarItem {
-                    Button("Compare \(runs.count) Batches", systemImage: "rectangle.split.2x1") {
-                        compare(runs)
-                    }
-                    .help("Put the selected analyze batches side by side: where they cut scenes, what each found, blind grading of the scenes only one found, and Keep or Merge")
-                }
-            }
-            ToolbarItem {
-                Button {
-                    showAskSheet = true
-                } label: {
-                    ToolbarBubbleLabel(text: "Ask", systemImage: "sparkle.magnifyingglass")
-                }
-                .disabled(searchCandidates.isEmpty)
-                .help("Describe a moment in plain language — the AI reads every scene's story, tags, and people and filters the grid to the matches, best first")
-            }
-            ToolbarItem {
-                Menu {
-                    Picker("Tag", selection: $tagFilter) {
-                        Text("All Tags").tag(String?.none)
-                        ForEach(allTags, id: \.self) { tag in
-                            Text(tag).tag(String?.some(tag))
+                if let run = selectedRun {
+                    ToolbarItem {
+                        Button("Analyze Batch Info", systemImage: "info.circle") {
+                            infoRun = run
                         }
+                        .help("All parameters and instructions used for this analyze batch")
                     }
-                    Picker("Order", selection: $sortByScore) {
-                        Label("By time", systemImage: "clock").tag(false)
-                        Label("Top scored", systemImage: "star").tag(true)
+                }
+                if let runs = comparableRuns {
+                    ToolbarItem {
+                        Button("Compare \(runs.count) Batches", systemImage: "rectangle.split.2x1") {
+                            compare(runs)
+                        }
+                        .help("Put the selected analyze batches side by side: where they cut scenes, what each found, blind grading of the scenes only one found, and Keep or Merge")
                     }
-                    Picker("Minimum score", selection: $minScore) {
-                        Text("All scores").tag(0.0)
-                        Text("Score ≥ 5").tag(5.0)
-                        Text("Score ≥ 7").tag(7.0)
+                }
+                ToolbarItem {
+                    Button {
+                        showAskSheet = true
+                    } label: {
+                        ToolbarBubbleLabel(text: "Ask", systemImage: "sparkle.magnifyingglass")
                     }
-                    Divider()
-                    SceneStackLevelPicker()
-                    Toggle("Show Sequence Actions", isOn: $showSequenceParts)
-                    Toggle("Show Hidden Scenes", isOn: $showHidden)
-                    if filtersActive {
+                    .disabled(searchCandidates.isEmpty)
+                    .help("Describe a moment in plain language — the AI reads every scene's story, tags, and people and filters the grid to the matches, best first")
+                }
+                ToolbarItem {
+                    Menu {
+                        Picker("Tag", selection: $tagFilter) {
+                            Text("All Tags").tag(String?.none)
+                            ForEach(allTags, id: \.self) { tag in
+                                Text(tag).tag(String?.some(tag))
+                            }
+                        }
+                        Picker("Order", selection: $sortByScore) {
+                            Label("By time", systemImage: "clock").tag(false)
+                            Label("Top scored", systemImage: "star").tag(true)
+                        }
+                        Picker("Minimum score", selection: $minScore) {
+                            Text("All scores").tag(0.0)
+                            Text("Score ≥ 5").tag(5.0)
+                            Text("Score ≥ 7").tag(7.0)
+                        }
                         Divider()
-                        Button("Reset Filters") {
-                            tagFilter = nil
-                            sortByScore = false
-                            minScore = 0
-                            showSequenceParts = false
-                            showHidden = false
+                        SceneStackLevelPicker()
+                        Toggle("Show Sequence Actions", isOn: $showSequenceParts)
+                        Toggle("Show Hidden Scenes", isOn: $showHidden)
+                        if filtersActive {
+                            Divider()
+                            Button("Reset Filters") {
+                                tagFilter = nil
+                                sortByScore = false
+                                minScore = 0
+                                showSequenceParts = false
+                                showHidden = false
+                            }
                         }
+                    } label: {
+                        ToolbarBubbleLabel(
+                            text: "Filter",
+                            systemImage: filtersActive ? "line.3.horizontal.decrease.circle.fill"
+                                                       : "line.3.horizontal.decrease.circle")
                     }
-                } label: {
-                    ToolbarBubbleLabel(
-                        text: "Filter",
-                        systemImage: filtersActive ? "line.3.horizontal.decrease.circle.fill"
-                                                   : "line.3.horizontal.decrease.circle")
+                    .help("Filter and order the grid: tag, entertainment score, similar-scene grouping, sequence actions, hidden scenes. The icon fills when a filter is active.")
                 }
-                .help("Filter and order the grid: tag, entertainment score, similar-scene grouping, sequence actions, hidden scenes. The icon fills when a filter is active.")
-            }
-            ToolbarItem {
-                Button {
-                    showAIFavorites = true
-                } label: {
-                    ToolbarBubbleLabel(text: "AI Favorites", systemImage: "checkmark.seal")
+                ToolbarItem {
+                    Button {
+                        showAIFavorites = true
+                    } label: {
+                        ToolbarBubbleLabel(text: "AI Favorites", systemImage: "checkmark.seal")
+                    }
+                    .disabled(favoriteCandidates.isEmpty)
+                    .help("The AI judges the non-favorite scenes in view against your taste rubric and grading history and proposes keepers for the Favorites — every pick reviewed before applying. Select 2+ scenes to judge just those.")
                 }
-                .disabled(favoriteCandidates.isEmpty)
-                .help("The AI judges the non-favorite scenes in view against your taste rubric and grading history and proposes keepers for the Favorites — every pick reviewed before applying. Select 2+ scenes to judge just those.")
-            }
-            ToolbarItem {
-                Button {
-                    showGenerateSheet = true
-                } label: {
-                    ToolbarBubbleLabel(text: "Generate Video", systemImage: "wand.and.stars")
+                ToolbarItem {
+                    Button {
+                        showGenerateSheet = true
+                    } label: {
+                        ToolbarBubbleLabel(text: "Generate Video", systemImage: "wand.and.stars")
+                    }
+                    .disabled(filtered.isEmpty)
+                    .help("Describe a video to create from the displayed scenes — the current analyze batch, tag, and search filters carry into the AI Wizard")
                 }
-                .disabled(filtered.isEmpty)
-                .help("Describe a video to create from the displayed scenes — the current analyze batch, tag, and search filters carry into the AI Wizard")
             }
         }
         .sheet(isPresented: $showGenerateSheet) {

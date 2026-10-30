@@ -330,7 +330,6 @@ extension AppStore {
             isShowingProjectsHome = false
         }
         selectedSection = section.projectDestination
-        persistActiveProjectState()
     }
 
     func refreshProjectCatalog() {

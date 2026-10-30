@@ -56,14 +56,19 @@ extension Font {
 /// in the subtitle. Profiles switch under Settings › Profile, so the name
 /// doubles as the reminder of which brand you are working in.
 private struct ScreenTitle: ViewModifier {
+    @Environment(\.workspacePageVisible) private var pageVisible
     @Environment(AppStore.self) private var store
     let screen: String
     let subtitle: String
 
     func body(content: Content) -> some View {
-        content
-            .navigationTitle("Clip Builder — \(store.activeProfile.profileName)")
-            .navigationSubtitle(subtitle.isEmpty ? screen : "\(screen) · \(subtitle)")
+        content.background {
+            if pageVisible {
+                Color.clear
+                    .navigationTitle("Clip Builder — \(store.activeProfile.profileName)")
+                    .navigationSubtitle(subtitle.isEmpty ? screen : "\(screen) · \(subtitle)")
+            }
+        }
     }
 }
 

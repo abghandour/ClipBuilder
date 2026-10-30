@@ -737,6 +737,7 @@ private struct InlinePlayerLayerView: NSViewRepresentable {
 /// position when one was recorded, so the preview shows the scene the way
 /// it would crop in a reel.
 struct SceneInlinePlayer: View {
+    @Environment(\.workspacePageVisible) private var pageVisible
     @Environment(AppStore.self) private var store
     let scene: SceneRecord
 
@@ -804,6 +805,7 @@ struct SceneInlinePlayer: View {
         .accessibilityAction {
             if player == nil { play() } else { stop() }
         }
+        .onChange(of: pageVisible) { _, visible in if !visible { stop() } }
         .onDisappear { stop() }
     }
 
@@ -817,7 +819,8 @@ struct SceneInlinePlayer: View {
     private func play() {
         playbackFetchTask = Task {
             guard scene.isPresent, await DrivePlayback.prepare(scene.videoURL) else { return }
-            guard let asset = try? await DriveLocalAsset.make(scene.videoURL) else { return }
+            guard let asset = try? await DriveLocalAsset.make(scene.videoURL),
+                  !Task.isCancelled, pageVisible else { return }
             let item = AVPlayerItem(asset: asset)
             item.forwardPlaybackEndTime = CMTime(seconds: scene.endTime, preferredTimescale: 600)
             let player = AVPlayer(playerItem: item)
@@ -830,15 +833,15 @@ struct SceneInlinePlayer: View {
             // Seeking before the item is ready gets dropped and the file would
             // play from 0:00 — wait for readiness, land on the start, then roll.
             let target = CMTime(seconds: scene.startTime, preferredTimescale: 600)
-            Task { [weak player, weak item] in
-                for _ in 0..<100 where item?.status != .readyToPlay {
-                    if item?.status == .failed { return }
-                    try? await Task.sleep(for: .milliseconds(50))
-                }
-                await player?.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
-                player?.play()
-            }
             self.player = player
+            // Keep readiness polling in the cancellable playback task.
+            for _ in 0..<100 where item.status != .readyToPlay {
+                if Task.isCancelled || item.status == .failed { return }
+                try? await Task.sleep(for: .milliseconds(50))
+            }
+            guard !Task.isCancelled, pageVisible else { return }
+            await player.seek(to: target, toleranceBefore: .zero, toleranceAfter: .zero)
+            if !Task.isCancelled, pageVisible { player.play() }
         }
     }
 

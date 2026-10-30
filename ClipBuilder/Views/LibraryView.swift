@@ -4,6 +4,7 @@ import SwiftUI
 /// feedback, delete.
 struct LibraryView: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.workspacePageVisible) private var pageVisible
 
     private enum SortOrder: String, CaseIterable {
         case newest = "Newest"
@@ -52,33 +53,35 @@ struct LibraryView: View {
         }
         .screenTitle("Exports", subtitle: "\(sorted.count) of \(store.generatedVideos.count) videos")
         .toolbar {
-            ToolbarItem {
-                DriveMediaMenu(media: sorted.filter { driveSelection.contains($0.id) }.map(\.driveMedia))
-                    .disabled(driveSelection.isEmpty)
-                    .help("Select outputs using More or the context menu, then upload the selection.")
-            }
-            ToolbarItem {
-                // A named menu instead of a bare Picker — the toolbar showed
-                // only the selected value ("Newest") with nothing saying what
-                // the control was.
-                Menu {
-                    Picker("Sort", selection: Binding(
-                        get: { SortOrder(rawValue: store.outputsSort) ?? .newest },
-                        set: {
-                            store.outputsSort = $0.rawValue
-                            store.persistActiveProjectState()
-                        }
-                    )) {
-                        ForEach(SortOrder.allCases, id: \.self) { order in
-                            Text(order.rawValue).tag(order)
-                        }
-                    }
-                    .pickerStyle(.inline)
-                } label: {
-                    ToolbarBubbleLabel(text: "Sort: \((SortOrder(rawValue: store.outputsSort) ?? .newest).rawValue)",
-                                       systemImage: "arrow.up.arrow.down")
+            if pageVisible {
+                ToolbarItem {
+                    DriveMediaMenu(media: sorted.filter { driveSelection.contains($0.id) }.map(\.driveMedia))
+                        .disabled(driveSelection.isEmpty)
+                        .help("Select outputs using More or the context menu, then upload the selection.")
                 }
-                .help("Order the library's videos")
+                ToolbarItem {
+                    // A named menu instead of a bare Picker — the toolbar showed
+                    // only the selected value ("Newest") with nothing saying what
+                    // the control was.
+                    Menu {
+                        Picker("Sort", selection: Binding(
+                            get: { SortOrder(rawValue: store.outputsSort) ?? .newest },
+                            set: {
+                                store.outputsSort = $0.rawValue
+                                store.persistActiveProjectState()
+                            }
+                        )) {
+                            ForEach(SortOrder.allCases, id: \.self) { order in
+                                Text(order.rawValue).tag(order)
+                            }
+                        }
+                        .pickerStyle(.inline)
+                    } label: {
+                        ToolbarBubbleLabel(text: "Sort: \((SortOrder(rawValue: store.outputsSort) ?? .newest).rawValue)",
+                                           systemImage: "arrow.up.arrow.down")
+                    }
+                    .help("Order the library's videos")
+                }
             }
         }
         .onChange(of: store.activeProjectID) {

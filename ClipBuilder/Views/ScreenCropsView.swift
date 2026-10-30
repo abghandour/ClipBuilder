@@ -29,6 +29,8 @@ struct ScreenCropsView: View {
     @State private var layout = ScreenCropLayout(name: "")
     @State private var watcher: FolderWatcher?
     @State private var saveTask: Task<Void, Never>?
+    @State private var refreshTask: Task<Void, Never>?
+    @State private var refreshVersion = 0
     /// Layout the debounced save will write, for a flush on selection change.
     @State private var pendingSave: ScreenCropLayout?
     @State private var isSaving = false
@@ -85,6 +87,9 @@ struct ScreenCropsView: View {
             // Navigation may happen before the debounce fires. Write the
             // current snapshot instead of silently dropping the final edit.
             flushPendingSave()
+            refreshVersion &+= 1
+            refreshTask?.cancel()
+            refreshTask = nil
             watcher?.stop()
             watcher = nil
             saveTask?.cancel()
@@ -257,12 +262,22 @@ struct ScreenCropsView: View {
     }
 
     private func refresh() {
-        layouts = ScreenCropStore.list()
-        if let selectedName, let match = layouts.first(where: { $0.name == selectedName }) {
-            // Keep unsaved local edits over a stale disk read.
-            if layout.name != selectedName { layout = match }
-        } else if !isBuiltInSelected {
-            selectedName = layouts.first?.name ?? builtInLayouts.first?.name
+        refreshTask?.cancel()
+        refreshVersion &+= 1
+        let version = refreshVersion
+        refreshTask = Task {
+            let listed = await Task.detached(priority: .userInitiated) {
+                ScreenCropStore.list()
+            }.value
+            guard !Task.isCancelled, version == refreshVersion else { return }
+            layouts = listed
+            if let selectedName, let match = layouts.first(where: { $0.name == selectedName }) {
+                // Keep unsaved local edits over a stale disk read.
+                if layout.name != selectedName { layout = match }
+            } else if !isBuiltInSelected {
+                selectedName = layouts.first?.name ?? builtInLayouts.first?.name
+            }
+            refreshTask = nil
         }
     }
 

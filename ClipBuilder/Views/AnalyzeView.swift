@@ -16,6 +16,7 @@ struct AnalyzeView: View {
     @State private var skippedDriveUploads = 0
     @State private var sortOrder: [KeyPathComparator<VideoRecord>] = []
     @Environment(AppStore.self) private var store
+    @Environment(\.workspacePageVisible) private var pageVisible
 
     @State private var selection: Set<Int64> = []
     @State private var typeFocusVideoID: Int64?
@@ -192,73 +193,75 @@ struct AnalyzeView: View {
         }
         .screenTitle("Sources", subtitle: "\(store.videos.count) source videos")
         .toolbar {
-            ToolbarItemGroup {
-                Button("Add Videos", systemImage: "plus") {
-                    showingImporter = true
-                }
-                .help("Add source videos to this project")
-                Button("Add from Google Drive…", systemImage: "icloud.and.arrow.down") { showingDriveBrowser = true }
-                Button("Upload to Google Drive…", systemImage: "icloud.and.arrow.up") {
-                    pendingDriveUploads = GoogleDriveTransfers.uploadCandidates(selectedVideos.map(\.driveMedia))
-                    skippedDriveUploads = selectedVideos.count - pendingDriveUploads.count
-                    confirmingDriveUpload = true
-                }
-                .disabled(GoogleDriveTransfers.uploadCandidates(selectedVideos.map(\.driveMedia)).isEmpty)
-                DriveMediaMenu(media: selectedVideos.filter { $0.driveFileID != nil }.map(\.driveMedia))
-                    .disabled(!selectedVideos.contains { $0.driveFileID != nil })
+            if pageVisible {
+                ToolbarItemGroup {
+                    Button("Add Videos", systemImage: "plus") {
+                        showingImporter = true
+                    }
+                    .help("Add source videos to this project")
+                    Button("Add from Google Drive…", systemImage: "icloud.and.arrow.down") { showingDriveBrowser = true }
+                    Button("Upload to Google Drive…", systemImage: "icloud.and.arrow.up") {
+                        pendingDriveUploads = GoogleDriveTransfers.uploadCandidates(selectedVideos.map(\.driveMedia))
+                        skippedDriveUploads = selectedVideos.count - pendingDriveUploads.count
+                        confirmingDriveUpload = true
+                    }
+                    .disabled(GoogleDriveTransfers.uploadCandidates(selectedVideos.map(\.driveMedia)).isEmpty)
+                    DriveMediaMenu(media: selectedVideos.filter { $0.driveFileID != nil }.map(\.driveMedia))
+                        .disabled(!selectedVideos.contains { $0.driveFileID != nil })
 
-                if store.isHomeProject {
-                    Menu("Add to Project…", systemImage: "folder.badge.plus") {
-                        ForEach(store.projects.filter { !$0.isHome && !$0.archived }) { project in
-                            Button(project.name) {
-                                store.addVideos(Array(selection), to: project.id)
+                    if store.isHomeProject {
+                        Menu("Add to Project…", systemImage: "folder.badge.plus") {
+                            ForEach(store.projects.filter { !$0.isHome && !$0.archived }) { project in
+                                Button(project.name) {
+                                    store.addVideos(Array(selection), to: project.id)
+                                }
+                            }
+                            Divider()
+                            Button("New Project from Selection…", systemImage: "plus") {
+                                beginProjectFromSelection()
                             }
                         }
-                        Divider()
-                        Button("New Project from Selection…", systemImage: "plus") {
-                            beginProjectFromSelection()
+                        .disabled(selection.isEmpty)
+                    } else {
+                        Button("Add Existing Videos", systemImage: "folder.badge.plus") {
+                            showingProjectVideoPicker = true
                         }
-                    }
-                    .disabled(selection.isEmpty)
-                } else {
-                    Button("Add Existing Videos", systemImage: "folder.badge.plus") {
-                        showingProjectVideoPicker = true
+
+                        Button("Remove from Project", systemImage: "minus.circle") {
+                            pendingRemoval = selection
+                        }
+                        .disabled(selection.isEmpty)
                     }
 
-                    Button("Remove from Project", systemImage: "minus.circle") {
-                        pendingRemoval = selection
+                    Button {
+                        let videos = selectedVideos
+                        if !videos.isEmpty { startAnalysis(of: videos) }
+                    } label: {
+                        Label(selection.count > 1 ? "Analyze \(selection.count)" : selectedVideos.first.map { store.duplicateAnalysis(for: $0) != nil ? "Analyze again" : "Analyze" } ?? "Analyze",
+                              systemImage: "sparkles")
+                            .lineLimit(1).fixedSize()
                     }
-                    .disabled(selection.isEmpty)
-                }
+                    .disabled(selection.isEmpty || store.isAnalyzing || checkingAnalysis || selectedVideos.contains { !$0.isPresent })
+                    .help(selectedVideos.contains { !$0.isPresent } ? VideoRecord.notPresentReason : selection.count > 1
+                          ? "Analyzes the \(selection.count) selected videos back to back with the same plan — each lands in its own analyze batch on the Scenes screen"
+                          : selectedVideos.first.map { store.analysisRequestHelp(for: $0) } ?? "Select a video to analyze.")
 
-                Button {
-                    let videos = selectedVideos
-                    if !videos.isEmpty { startAnalysis(of: videos) }
-                } label: {
-                    Label(selection.count > 1 ? "Analyze \(selection.count)" : selectedVideos.first.map { store.duplicateAnalysis(for: $0) != nil ? "Analyze again" : "Analyze" } ?? "Analyze",
-                          systemImage: "sparkles")
-                        .lineLimit(1).fixedSize()
+                    Button("Run Full Pipeline", systemImage: "wand.and.rays") {
+                        showAnalyzeWizard = true
+                    }
+                    .disabled(selection.isEmpty || store.isPipelineRunning || selectedVideos.contains { !$0.isPresent })
+                    .help("Analyze the selected videos and generate reels from them in one run")
+                    Button("Generate Video…", systemImage: "wand.and.stars") {
+                        showGenerateSheet = true
+                    }
+                    .disabled(selection.isEmpty || store.isAnalyzing || selectedVideos.contains { !$0.isPresent })
+                    .help(selectedVideos.contains { !$0.isPresent } ? VideoRecord.notPresentReason : "")
+                    .help("Describe a video to make from the selected sources; the AI Wizard is filled in from your words")
+                    Button("Scan for Duplicates…", systemImage: "rectangle.on.rectangle") {
+                        showDuplicateScan = true
+                    }
+                    .help("Find source videos that are copies of each other")
                 }
-                .disabled(selection.isEmpty || store.isAnalyzing || checkingAnalysis || selectedVideos.contains { !$0.isPresent })
-                .help(selectedVideos.contains { !$0.isPresent } ? VideoRecord.notPresentReason : selection.count > 1
-                      ? "Analyzes the \(selection.count) selected videos back to back with the same plan — each lands in its own analyze batch on the Scenes screen"
-                      : selectedVideos.first.map { store.analysisRequestHelp(for: $0) } ?? "Select a video to analyze.")
-
-                Button("Run Full Pipeline", systemImage: "wand.and.rays") {
-                    showAnalyzeWizard = true
-                }
-                .disabled(selection.isEmpty || store.isPipelineRunning || selectedVideos.contains { !$0.isPresent })
-                .help("Analyze the selected videos and generate reels from them in one run")
-                Button("Generate Video…", systemImage: "wand.and.stars") {
-                    showGenerateSheet = true
-                }
-                .disabled(selection.isEmpty || store.isAnalyzing || selectedVideos.contains { !$0.isPresent })
-                .help(selectedVideos.contains { !$0.isPresent } ? VideoRecord.notPresentReason : "")
-                .help("Describe a video to make from the selected sources; the AI Wizard is filled in from your words")
-                Button("Scan for Duplicates…", systemImage: "rectangle.on.rectangle") {
-                    showDuplicateScan = true
-                }
-                .help("Find source videos that are copies of each other")
             }
         }
         .fileImporter(isPresented: $showingImporter,
@@ -871,6 +874,7 @@ private struct SourcesPanePlaceholder: View {
 /// Inline player for the single selected source video — watch the footage
 /// before deciding to analyze (or re-analyze) it.
 private struct VideoPreviewPane: View {
+    @Environment(\.workspacePageVisible) private var pageVisible
     @Environment(AppStore.self) private var store
     let video: VideoRecord
     let typeFocusRequest: UUID?
@@ -1371,6 +1375,12 @@ private struct VideoPreviewPane: View {
         }
         .sheet(isPresented: $showTranscript) {
             TranscriptSheet(video: video, focusSetsPicker: true)
+        }
+        .onChange(of: pageVisible) { _, visible in
+            if !visible {
+                stopFightLoop()
+                player?.pause()
+            }
         }
         .onDisappear {
             stopFightLoop()

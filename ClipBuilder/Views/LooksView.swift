@@ -11,6 +11,7 @@ struct LooksView: View {
     @State private var samples = EffectSampleSet.saved
     @State private var availableIDs: Set<String>?
     @State private var previews: [String: URL] = [:]
+    @State private var needsCacheLoad = true
     @State private var failures: [String: String] = [:]
     @State private var rendering: String?
     @State private var renderTask: Task<Void, Never>?
@@ -95,7 +96,6 @@ struct LooksView: View {
             isPlaying = true
             availableIDs = await EffectControls.availablePresetIDs()
             guard !Task.isCancelled else { return }
-            loadCached()
             renderSelected()
         }
         .onChange(of: selectedTab) { _, _ in
@@ -107,12 +107,10 @@ struct LooksView: View {
         }
         .onChange(of: store.database == nil) { _, _ in
             cancelRendering()
-            loadCached()
             renderSelected()
         }
         .onChange(of: store.activeProfile.id) { _, _ in
             cancelRendering()
-            loadCached()
             renderSelected()
         }
         .onDisappear { cancelRendering() }
@@ -217,12 +215,16 @@ struct LooksView: View {
     }
 
     private func renderSelected() {
-        guard !selectedItem.isEmpty, failures[selectedItem] == nil else { return }
+        guard !selectedItem.isEmpty, failures[selectedItem] == nil, previews[selectedItem] == nil,
+              availableIDs?.contains(selectedItem) == true else { return }
         render([selectedItem])
     }
 
     private func cancelRendering() {
         generation = UUID()
+        needsCacheLoad = true
+        previews = [:]
+        failures = [:]
         renderTask?.cancel()
         renderTask = nil
         rendering = nil
@@ -233,23 +235,27 @@ struct LooksView: View {
         // Preserve Video B if it was changed in another window.
         samples = EffectSamplePicker.selecting(url, for: .look, in: .saved)
         samples.save()
-        loadCached()
         isPlaying = true
         renderSelected()
     }
 
-    private func loadCached() {
-        previews = [:]
-        failures = [:]
-        for id in EffectCatalog.ids where LookSamples.hasPreview(for: id, video: samples.videoA) {
-            previews[id] = LookSamples.previewURL(for: id)
-        }
+    private func loadCached() async {
+        let video = samples.videoA
+        let current = generation
+        let cached = await Task.detached(priority: .userInitiated) {
+            var urls: [String: URL] = [:]
+            for id in EffectCatalog.ids where LookSamples.hasPreview(for: id, video: video) {
+                urls[id] = LookSamples.previewURL(for: id)
+            }
+            return urls
+        }.value
+        guard !Task.isCancelled, current == generation else { return }
+        previews = cached
+        needsCacheLoad = false
     }
 
     private func render(_ ids: [String]) {
         guard renderTask == nil, let database = store.database, let availableIDs else { return }
-        let pending = ids.filter { availableIDs.contains($0) && previews[$0] == nil }
-        guard !pending.isEmpty else { return }
         let current = generation
         let video = samples.videoA
         let profile = store.activeProfile
@@ -262,6 +268,9 @@ struct LooksView: View {
                     renderSelected()
                 }
             }
+            if needsCacheLoad { await loadCached() }
+            guard !Task.isCancelled, current == generation else { return }
+            let pending = ids.filter { availableIDs.contains($0) && previews[$0] == nil }
             for id in pending {
                 guard !Task.isCancelled, current == generation else { return }
                 rendering = id

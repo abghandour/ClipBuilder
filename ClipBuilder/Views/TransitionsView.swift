@@ -11,6 +11,7 @@ struct TransitionsView: View {
     @AppStorage(WizardDefaults.allowedTransitionsKey) private var aiTransitionsRaw = ""
     @AppStorage(EffectSamplePicker.Page.transitions.defaultsKey) private var selectedTab = "cut"
     @State private var previews: [String: URL] = [:]
+    @State private var needsCacheLoad = true
     @State private var rendering: Set<String> = []
     @State private var failures: [String: String] = [:]
     @State private var renderAllTask: Task<Void, Never>?
@@ -129,7 +130,6 @@ struct TransitionsView: View {
             samples = .saved
             rememberedItem = selectedItem
             isPlaying = true
-            loadCached()
             renderSelected()
         }
         .onChange(of: selectedTab) { _, _ in
@@ -141,12 +141,10 @@ struct TransitionsView: View {
         }
         .onChange(of: store.database == nil) { _, _ in
             cancelRendering()
-            loadCached()
             renderSelected()
         }
         .onChange(of: store.editingDefaults.transitions) { _, _ in
             cancelRendering()
-            loadCached()
             renderSelected()
         }
         .onDisappear { cancelRendering() }
@@ -331,12 +329,21 @@ struct TransitionsView: View {
 
     // MARK: - Rendering
 
-    private func loadCached() {
-        previews = [:]
-        failures = [:]
-        for effect in effects where EffectPreviewRenderer.hasPreview(for: effect, samples: samples, transitions: store.editingDefaults.transitions) {
-            previews[effect.name] = EffectPreviewRenderer.previewURL(for: effect, samples: samples, transitions: store.editingDefaults.transitions)
-        }
+    private func loadCached() async {
+        let effects = effects
+        let samples = samples
+        let transitions = store.editingDefaults.transitions
+        let current = generation
+        let cached = await Task.detached(priority: .userInitiated) {
+            var urls: [String: URL] = [:]
+            for effect in effects where EffectPreviewRenderer.hasPreview(for: effect, samples: samples, transitions: transitions) {
+                urls[effect.name] = EffectPreviewRenderer.previewURL(for: effect, samples: samples, transitions: transitions)
+            }
+            return urls
+        }.value
+        guard !Task.isCancelled, current == generation else { return }
+        previews = cached
+        needsCacheLoad = false
     }
 
     private func changeSample(to url: URL?, slot: EffectSamplePicker.Slot) {
@@ -348,13 +355,15 @@ struct TransitionsView: View {
     private func samplesChanged() {
         samples.save()
         cancelRendering()
-        loadCached()
         isPlaying = true
         renderSelected()
     }
 
     private func cancelRendering() {
         generation = UUID()
+        needsCacheLoad = true
+        previews = [:]
+        failures = [:]
         renderAllTask?.cancel()
         renderAllTask = nil
         rendering = []
@@ -362,7 +371,7 @@ struct TransitionsView: View {
 
     private func renderSelected() {
         guard store.database != nil, let effect = selectedEffect,
-              failures[effect.name] == nil else { return }
+              failures[effect.name] == nil, previews[effect.name] == nil else { return }
         render(effect)
     }
 
@@ -376,8 +385,6 @@ struct TransitionsView: View {
 
     private func render(_ requested: [TransitionEffect]) {
         guard renderAllTask == nil else { return }
-        let pending = requested.filter { previews[$0.name] == nil }
-        guard !pending.isEmpty else { return }
         let samples = samples
         let transitions = store.editingDefaults.transitions
         let current = generation
@@ -389,6 +396,9 @@ struct TransitionsView: View {
                     renderSelected()
                 }
             }
+            if needsCacheLoad { await loadCached() }
+            guard !Task.isCancelled, current == generation else { return }
+            let pending = requested.filter { previews[$0.name] == nil }
             for effect in pending {
                 guard !Task.isCancelled, current == generation else { return }
                 rendering.insert(effect.name)
