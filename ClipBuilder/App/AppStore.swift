@@ -254,13 +254,33 @@ final class AppStore {
     /// offers to resume and the Sources table marks. Mirrors the
     /// `analysis_checkpoints` table.
     var analysisCheckpoints: [Int64: AnalysisCheckpoint] = [:]
-    var analysisRequestPreviews: [Int64: AnalysisRequest] = [:]
-    var restoredAnalysisRequests: [Int64: AnalysisRequest] = [:]
+    var analysisRequestPreviews: [Int64: AnalysisRequest] = [:] {
+        didSet {
+            // Explicit Analyze captures and profile resets also write here.
+            analysisComparisonKeys = [:]
+            analysisComparisonVersion &+= 1
+        }
+    }
+    @ObservationIgnored var analysisComparisonKeys: [Int64: AnalysisComparisonMemo.Key] = [:]
+    @ObservationIgnored var analysisComparisonVersion = 0
+    var restoredAnalysisRequests: [Int64: AnalysisRequest] = [:] {
+        didSet {
+            analysisComparisonKeys = [:]
+            analysisComparisonVersion &+= 1
+        }
+    }
     var pendingAnalysisDuplicate: AnalysisDuplicatePrompt?
     private(set) var videoPeopleVersion = 0
     /// Roster rows changed outside the counts refresh (extensions cannot set the version).
     func noteVideoPeopleChanged() { videoPeopleVersion &+= 1 }
-    var people: [PersonRecord] = []
+    var people: [PersonRecord] = [] {
+        didSet {
+            if oldValue != people {
+                analysisComparisonKeys = [:]
+                analysisComparisonVersion &+= 1
+            }
+        }
+    }
     /// Saved fight research by video id — the Analyze page's column and the
     /// wizards' story/caption injection read from here.
     var fightResearch: [Int64: FightResearchRecord] = [:]

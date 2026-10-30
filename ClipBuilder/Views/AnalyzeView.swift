@@ -31,6 +31,7 @@ struct AnalyzeView: View {
     @State private var showDuplicateScan = false
     @State private var showAnalyzeWizard = false
     @State private var comparisonRevision = 0
+    @State private var comparisonPlanKey: String?
     @State private var checkingAnalysis = false
     /// Analyze was pressed on videos whose last analysis did not finish:
     /// the prompt asks whether to resume or start over.
@@ -353,13 +354,19 @@ struct AnalyzeView: View {
         .onChange(of: store.analysisRuns) { _, _ in comparisonRevision += 1 }
         .onChange(of: store.videos) { _, _ in comparisonRevision += 1 }
         .onChange(of: store.people) { _, _ in comparisonRevision += 1 }
+        .onChange(of: store.restoredAnalysisRequests) { comparisonRevision += 1 }
+        .onChange(of: store.transcriptCountsVersion) { comparisonRevision += 1 }
+        .onChange(of: store.videoPeopleVersion) { comparisonRevision += 1 }
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
-            comparisonRevision += 1
+            refreshComparisonPlanKey()
         }
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
-            comparisonRevision += 1
+            refreshComparisonPlanKey()
         }
-        .onAppear { restoreProjectState() }
+        .onAppear {
+            restoreProjectState()
+            refreshComparisonPlanKey()
+        }
         .onChange(of: store.projectStateVersion) { restoreProjectState() }
         .onChange(of: selection, initial: true) { old, new in
             // Mid-load the table's selection is the previous project's.
@@ -387,6 +394,15 @@ struct AnalyzeView: View {
 
     /// The model plan always shows for analysis — it carries the options
     /// (model, sampling, instructions, notes, people detection) for the run.
+    private func refreshComparisonPlanKey() {
+        let plan = AnalysisRequest.capturePlan(defaults: .standard, singleVideo: true,
+            provider: nil, model: nil, includeFightScoring: true)
+        let key = AnalysisComparisonMemo.planKey(plan)
+        guard key != comparisonPlanKey else { return }
+        comparisonPlanKey = key
+        comparisonRevision += 1
+    }
+
     /// A multi-selection runs back to back under one plan, one analyze batch
     /// per video; fine-trim only applies to single-video runs.
     private func startAnalysis(of videos: [VideoRecord]) {

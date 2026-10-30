@@ -94,19 +94,40 @@ extension AppStore {
     }
 
     func refreshAnalysisComparisons() async {
+        analysisComparisonVersion &+= 1
+        let version = analysisComparisonVersion
         let generation = profileGeneration
         let plan = AnalysisRequest.capturePlan(defaults: .standard, singleVideo: true, provider: nil, model: nil, includeFightScoring: true)
-        for video in videos where video.isPresent {
+        let planKey = AnalysisComparisonMemo.planKey(plan)
+        let transcriptVersion = transcriptCountsVersion
+        let peopleVersion = videoPeopleVersion
+        let presentVideos = videos.filter(\.isPresent)
+        let presentIDs = Set(presentVideos.map(\.id))
+        var previews = analysisRequestPreviews.filter { presentIDs.contains($0.key) }
+        var keys = analysisComparisonKeys.filter { presentIDs.contains($0.key) }
+        for video in presentVideos {
+            guard !Task.isCancelled, generation == profileGeneration, version == analysisComparisonVersion else { return }
+            let key = AnalysisComparisonMemo.Key(videoID: video.id, planKey: planKey, videoHash: video.hash,
+                transcriptCountsVersion: transcriptVersion, videoPeopleVersion: peopleVersion)
+            if keys[video.id] == key, previews[video.id] != nil { continue }
             do {
                 // Previews trust the size/date-validated identity cache; Analyze
                 // itself re-reads the source before it runs.
                 let request = try await captureAnalysisRequest(video: video, plan: plan, profile: activeProfile,
                     config: effectiveAIConfig, podcast: podcastEditingSettings, language: editingDefaults.footage.language,
                     freshSource: false)
-                guard !Task.isCancelled, generation == profileGeneration else { return }
-                analysisRequestPreviews[video.id] = request
-            } catch { analysisRequestPreviews[video.id] = nil }
+                previews[video.id] = request
+                keys[video.id] = key
+            } catch {
+                previews[video.id] = nil
+                keys[video.id] = nil // Failed captures remain retryable.
+            }
         }
+        guard !Task.isCancelled, generation == profileGeneration, version == analysisComparisonVersion,
+              transcriptVersion == transcriptCountsVersion, peopleVersion == videoPeopleVersion else { return }
+        // Publish atomically; cancellation must not leave keys for partial work.
+        if analysisRequestPreviews != previews { analysisRequestPreviews = previews }
+        analysisComparisonKeys = keys
     }
 
     func duplicateAnalysis(for video: VideoRecord) -> AnalysisRun? {
