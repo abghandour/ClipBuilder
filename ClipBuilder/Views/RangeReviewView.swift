@@ -17,7 +17,9 @@ struct RangeReviewView<Footer: View>: View {
     var resetTitle = "Reset to Original"
     /// Start playing when an item is shown or selected. Explicit word clicks always play.
     var autoplay = true
-    /// Transcript words on the left and the item list on the right (Transcript picks).
+    /// The transcript column stays up with nothing selected, so a drag can
+    /// start on a word and mark the draft (Transcript and Fight picks). Same
+    /// column order as the default: list, player, words.
     var transcriptLeading = false
     /// Heading above the list when there is no Keep checkbox.
     var listTitle: String? = nil
@@ -36,8 +38,8 @@ struct RangeReviewView<Footer: View>: View {
     var leadingPanel: AnyView? = nil
     /// A control for the transcript column's header, per selected item.
     var transcriptAccessory: ((RangeReviewItem) -> AnyView?)? = nil
-    /// A control shown under the picture while a span is marked (Express's
-    /// Add button); a Clear button that drops the span sits beside it.
+    /// A control in the transcript column's footer while a span is marked
+    /// (Express's Add button); the permanent Clear and Reset sit in the same row.
     var trimAccessory: ((RangeReviewItem) -> AnyView?)? = nil
     /// Shown in the trim column while a draft has no range yet.
     var emptyDraftHint = "Press a word in the transcript and drag to select a passage."
@@ -60,6 +62,10 @@ struct RangeReviewView<Footer: View>: View {
     @State private var rowFrames: [RangeReviewItem.ID: CGRect] = [:]
     private static var listSpace: String { "rangeReview.list" }
     @State private var playback = PodcastHighlightTrimPlayback()
+    /// Seconds the ending button plays before the section's end; one
+    /// remembered choice for every review surface.
+    @AppStorage("playback.endingSeconds") private var endingSeconds = 3
+    private static var endingChoices: [Int] { [5, 3, 2, 1] }
     @State private var loadedURL: URL?
     @State private var draft: (start: Double, end: Double)?
     /// The anchor being dragged in the transcript; the player and filmstrip
@@ -137,17 +143,13 @@ struct RangeReviewView<Footer: View>: View {
                                   - 2 * TranscriptQAColumns.dividerWidth)
             HStack(spacing: 0) {
                 if transcriptLeading {
+                    itemList.frame(width: widths.list).clipped()
+                    columnDivider(.list, width: widths.list, otherWidth: widths.transcript,
+                                  available: geometry.size.width)
                     // The word panel is one view whether or not something is
                     // selected, so a drag that starts with nothing selected
                     // keeps its gesture state while it selects the draft.
                     if let context = selected ?? items.first {
-                        Group {
-                            if let leadingPanel { leadingPanel }
-                            else { wordPanel(selected: context, video: context.video, inactive: selected == nil) }
-                        }
-                        .frame(width: widths.transcript).clipped()
-                        columnDivider(.transcript, width: widths.transcript, otherWidth: widths.list,
-                                      available: geometry.size.width)
                         if let selected {
                             trimSurface(item: selected).padding(Theme.spaceS)
                             .frame(width: playerWidth).frame(maxHeight: .infinity, alignment: .top).clipped()
@@ -156,14 +158,18 @@ struct RangeReviewView<Footer: View>: View {
                                                    description: Text(emptyMessage))
                                 .frame(width: playerWidth, alignment: .center).frame(maxHeight: .infinity)
                         }
+                        columnDivider(.transcript, width: widths.transcript, otherWidth: widths.list,
+                                      available: geometry.size.width)
+                        Group {
+                            if let leadingPanel { leadingPanel }
+                            else { wordPanel(selected: context, video: context.video, inactive: selected == nil) }
+                        }
+                        .frame(width: widths.transcript).clipped()
                     } else {
                         ContentUnavailableView(emptyTitle, systemImage: "text.bubble",
                                                description: Text(emptyMessage))
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
-                    columnDivider(.list, width: widths.list, otherWidth: widths.transcript,
-                                  available: geometry.size.width)
-                    itemList.frame(width: widths.list).clipped()
                 } else {
                     itemList.frame(width: widths.list).clipped()
                     columnDivider(.list, width: widths.list, otherWidth: widths.transcript,
@@ -317,7 +323,38 @@ struct RangeReviewView<Footer: View>: View {
                                   draft = nil
                                   commit(range.lowerBound...range.lowerBound)
                               },
-                              accessory: inactive ? nil : transcriptAccessory?(selected))
+                              accessory: inactive ? nil : transcriptAccessory?(selected),
+                              footer: AnyView(rangeActions(selected, inactive: inactive)))
+    }
+
+    /// Add for a marked draft, Clear, and Reset, pinned under the words. The
+    /// row is always there so the column does not jump as the selection changes.
+    private func rangeActions(_ item: RangeReviewItem, inactive: Bool) -> some View {
+        HStack(spacing: Theme.spaceS) {
+            if !inactive { draftActions(item) }
+            clearButton(item, inactive: inactive)
+            Spacer(minLength: 0)
+            if !inactive { resetButton(item) }
+        }
+    }
+
+    /// Drops any marked passage and deselects the item, like clicking the
+    /// selected row: one button that leaves nothing selected.
+    private func clearButton(_ item: RangeReviewItem, inactive: Bool) -> some View {
+        Button {
+            draft = nil
+            anchorDrag = nil
+            if spanSelection, item.isDraft, canTrim, let range, !isEmptyRange {
+                commit(range.lowerBound...range.lowerBound)
+            }
+            selectedID = nil
+            userCleared = true
+        } label: {
+            Text("Clear").lineLimit(1).fixedSize()
+        }
+        .controlSize(.small)
+        .disabled(!isEnabled || inactive)
+        .help("Clear the marked passage and deselect")
     }
 
     private func columnDivider(_ column: TranscriptQAColumns.Column, width: CGFloat,
@@ -330,7 +367,7 @@ struct RangeReviewView<Footer: View>: View {
         }, onReset: {
             if column == .list { listWidth = Double(column.defaultWidth) }
             else { transcriptWidth = Double(column.defaultWidth) }
-        }, isLeading: (column == .list) != transcriptLeading)
+        }, isLeading: column == .list)
     }
 
     private var itemList: some View {
@@ -645,22 +682,6 @@ struct RangeReviewView<Footer: View>: View {
                             .multilineTextAlignment(.center).padding(Theme.spaceS)
                     }
                 }
-            if spanSelection, item.isDraft, !isEmptyRange, let selected, selected.id == item.id {
-                HStack(spacing: Theme.spaceS) {
-                    if let accessory = trimAccessory?(selected) { accessory }
-                    Button {
-                        guard isEnabled, canTrim, let range else { draft = nil; return }
-                        draft = nil
-                        commit(range.lowerBound...range.lowerBound)
-                    } label: {
-                        Text("Clear").lineLimit(1).fixedSize()
-                    }
-                    .controlSize(.small)
-                    .disabled(!canTrim)
-                    .help("Clear the marked passage")
-                    Spacer(minLength: 0)
-                }
-            }
             if isEmptyRange {
                 FormCaption(emptyDraftHint)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
@@ -673,12 +694,10 @@ struct RangeReviewView<Footer: View>: View {
                         playButton
                         rangeLabel
                         Spacer(minLength: 0)
-                        resetButton(item)
                     }
                     VStack(alignment: .leading, spacing: Theme.spaceS) {
                         playButton
                         rangeLabel
-                        resetButton(item)
                     }
                 }
                 let hint = spanSelection && item.isDraft ? Self.spanHint : (trimHint ?? Self.trimHint)
@@ -712,6 +731,30 @@ struct RangeReviewView<Footer: View>: View {
             .labelStyle(.iconOnly).fixedSize()
             .disabled(playback.player == nil)
             .help(playback.isPlaying ? "Pause (Space)" : "Play the section (Space)")
+            Menu {
+                ForEach(RangeReviewView.endingChoices, id: \.self) { seconds in
+                    Button {
+                        endingSeconds = seconds
+                    } label: {
+                        if seconds == endingSeconds {
+                            Label("\(seconds) s", systemImage: "checkmark")
+                        } else {
+                            Text("\(seconds) s")
+                        }
+                    }
+                }
+            } label: {
+                Label("\(endingSeconds) s", systemImage: "forward.end.fill")
+                    .font(.callout.monospacedDigit()).lineLimit(1)
+            } primaryAction: {
+                playingAll = false
+                playback.playEnding(seconds: Double(endingSeconds))
+            }
+            .menuStyle(.button)
+            .fixedSize()
+            .disabled(playback.player == nil || isEmptyRange)
+            .help("Play the last \(endingSeconds) seconds of the section. The menu picks how many.")
+            .accessibilityLabel("Play the ending")
             PlaybackSpeedControl(playback: playback)
         }
     }
@@ -726,6 +769,15 @@ struct RangeReviewView<Footer: View>: View {
             .lineLimit(1).fixedSize()
         }
         .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+    }
+
+    /// Add (the caller's accessory) for a marked draft passage.
+    @ViewBuilder
+    private func draftActions(_ item: RangeReviewItem) -> some View {
+        if spanSelection, item.isDraft, !isEmptyRange, let selected, selected.id == item.id,
+           let accessory = trimAccessory?(selected) {
+            accessory
+        }
     }
 
     private func resetButton(_ item: RangeReviewItem) -> some View {

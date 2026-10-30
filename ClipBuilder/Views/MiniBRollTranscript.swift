@@ -119,7 +119,8 @@ struct MiniBRollTranscript: View {
         let spoken = spokenPiece == word.pieceID && spokenTime >= word.start && spokenTime < word.end
         return Text(word.text)
             .id("word-\(word.id)")
-            .font(.callout).fontWeight(spoken ? .bold : .regular)
+            // Regular weight even when spoken: bold is wider and rewraps the line.
+            .font(.callout)
             .foregroundStyle(spoken ? Color.black : active || mark != nil ? Color.primary : Color.secondary)
             .padding(.horizontal, 2)
             .padding(.leading, startsLine ? RangeReviewPalette.barWidth + RangeReviewPalette.barGap : 0)

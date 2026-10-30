@@ -1,8 +1,8 @@
 import SwiftUI
 
-/// Express Transcript mode: words on the left, the player in the middle, picks on
-/// the right. A "New pick" row holds the span being composed; Add stores it and
-/// clears the selection for the next one.
+/// Express Transcript mode: picks on the left, the player in the middle, words on
+/// the right. A "New pick" row holds the span being composed; Add (in the transcript
+/// column's footer) stores it and clears the selection for the next one.
 struct MiniTranscriptPickView: View {
     @Environment(AppStore.self) private var store
     let run: MiniWizardRun
@@ -68,7 +68,7 @@ struct MiniTranscriptPickView: View {
                         onDeleteAll: { store.deleteAllMiniTranscriptPicks() },
                         spanSelection: true, playAll: true,
                         trimAccessory: { item in
-                            // Add sits under the picture once a passage is marked.
+                            // Add sits in the transcript footer once a passage is marked.
                             guard item.isDraft, item.range.upperBound > item.range.lowerBound else { return nil }
                             return AnyView(addButton(item))
                         },

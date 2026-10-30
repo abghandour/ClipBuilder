@@ -125,6 +125,16 @@ final class PodcastHighlightTrimPlayback {
         isPlaying = false
     }
 
+    /// Play the last `seconds` of the range and stop at its end: a quick
+    /// check of how the section closes without sitting through it. The
+    /// item's end time stops the player; reaching it rewinds as usual.
+    func playEnding(seconds: Double = 3) {
+        guard player != nil else { return }
+        seek(to: max(range.lowerBound, range.upperBound - seconds))
+        player?.playImmediately(atRate: Float(rate))
+        isPlaying = true
+    }
+
     func togglePlay() { isPlaying ? pause() : play() }
 
     func tearDown() {
@@ -374,9 +384,9 @@ struct PodcastHighlightTrimView: View {
             select(word)
         } label: {
             // The word being spoken is unmistakable: yellow block, dark text.
+            // No weight change: a bold word is wider and rewraps the line.
             Text(word.text)
                 .font(.callout)
-                .fontWeight(spoken ? .bold : .regular)
                 .foregroundStyle(spoken ? Color.black : inside ? Color.primary : Color.secondary)
                 .padding(.horizontal, 2)
                 .background(spoken ? Color.yellow : inside ? Color.accentColor.opacity(0.28) : Color.clear,

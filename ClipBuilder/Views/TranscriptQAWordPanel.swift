@@ -27,6 +27,8 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     var onSpanClear: (() -> Void)? = nil
     /// Shown after the Follow / Translation controls (Express puts its Add button here).
     var accessory: AnyView? = nil
+    /// A row pinned under the words (the range review puts Add / Clear / Reset here).
+    var footer: AnyView? = nil
 
     @State private var followsPlayback = true
     @AppStorage("transcriptQA.showTranslation") private var showTranslation = false
@@ -90,6 +92,12 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                     .frame(maxHeight: .infinity, alignment: .top)
             } else {
                 transcriptScroll
+            }
+            if let footer {
+                Divider()
+                footer
+                    .lineLimit(1).fixedSize(horizontal: false, vertical: true)
+                    .padding(Theme.spaceS)
             }
         }
         .onChange(of: sectionID) { _, _ in cancelDrag() }
@@ -254,11 +262,12 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
             .min { ($0.range.upperBound - $0.range.lowerBound) < ($1.range.upperBound - $1.range.lowerBound) }
         let startsOther = other != nil && lineStartWordIDs.contains(word.id)
         // The spoken word is marked only while playing; a parked playhead would
-        // otherwise sit yellow inside the selection being made.
+        // otherwise sit yellow inside the selection being made. The weight never
+        // changes: a bold word is wider and rewraps the line under Follow.
         let spoken = playback.isPlaying && playback.time >= word.start && playback.time < word.end
         return Button { if !spanSelection { onSelect(word) } } label: {
             Text(word.text)
-                .font(.callout).fontWeight(spoken ? .bold : .regular)
+                .font(.callout)
                 .foregroundStyle(spoken ? Color.black : inside || other != nil ? Color.primary : Color.secondary)
                 .padding(.horizontal, 2)
                 // Room for the line's bar and a gap before the first word.

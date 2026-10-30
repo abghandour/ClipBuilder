@@ -1,7 +1,7 @@
 import SwiftUI
 
-/// Express Fight metrics: the scored actions on the left, the player with its
-/// trimmer in the middle, the picks on the right. Select actions in the grid;
+/// Express Fight metrics: the picks on the left, the player with its trimmer
+/// in the middle, the scored actions on the right. Select actions in the grid;
 /// Add turns each unbroken run of them into one pick.
 struct MiniFightPickView: View {
     @Environment(AppStore.self) private var store
