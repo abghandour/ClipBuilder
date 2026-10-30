@@ -17,6 +17,7 @@ struct GenerateVideoSheet: View {
 
     @State private var requestText = ""
     @State private var history: [String] = []
+    @State private var confirmingClearHistory = false
 
     private var unanalyzedCount: Int {
         guard case .videos(let videos) = source else { return 0 }
@@ -80,9 +81,9 @@ struct GenerateVideoSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             Text("Generate Video")
-                .font(.title3.bold())
+                .font(.headline)
             Text("Describe what to create from \(sourceLabel). Mention duration, content, overlays, music — the AI Wizard is filled in from your description, ready to review and run.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -99,12 +100,7 @@ struct GenerateVideoSheet: View {
                     }
                 }
                 Divider()
-                Button("Clear History", role: .destructive) {
-                    // Writing an empty scoped list also stops the legacy
-                    // fallback from resurrecting the cleared entries.
-                    UserDefaults.standard.set([String](), forKey: historyKey)
-                    history = []
-                }
+                Button("Clear History…", role: .destructive) { confirmingClearHistory = true }
             } label: {
                 Label("Previous requests", systemImage: "clock.arrow.circlepath")
             }
@@ -113,6 +109,15 @@ struct GenerateVideoSheet: View {
             .help(history.isEmpty
                   ? "Descriptions you generate with are remembered here for reuse"
                   : "Reuse a description from an earlier generated video")
+            .confirmationDialog("Clear the request history?", isPresented: $confirmingClearHistory) {
+                Button("Clear History", role: .destructive) {
+                    // Writing an empty scoped list also stops the legacy
+                    // fallback from resurrecting the cleared entries.
+                    UserDefaults.standard.set([String](), forKey: historyKey)
+                    history = []
+                }
+                Button("Cancel", role: .cancel) {}
+            }
 
             TextEditor(text: $requestText)
                 .font(.body)
@@ -158,7 +163,7 @@ struct GenerateVideoSheet: View {
                 .disabled(requestText.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
         .frame(width: 460)
         .modalCloseButton { dismiss() }
         .task { history = loadHistory() }

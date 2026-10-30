@@ -28,8 +28,9 @@ struct SocialFormatExportSheet: View {
                 Button("Done", action: dismiss.callAsFunction)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
         .frame(width: 460)
+        .modalCloseButton { dismiss() }
         .appJobSetupPresentation()
     }
 

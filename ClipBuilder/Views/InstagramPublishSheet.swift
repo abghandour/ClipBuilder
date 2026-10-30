@@ -106,10 +106,7 @@ struct InstagramPublishSheet: View {
                     }
 
                     HStack(spacing: Theme.spaceS) {
-                        Text("Caption")
-                            .font(.caption.weight(.semibold))
-                            .foregroundStyle(.secondary)
-                            .textCase(.uppercase)
+                        SectionLabel("Caption")
                         Spacer(minLength: 0)
                         let writing = store.isWritingPostText(for: video)
                         if writing {

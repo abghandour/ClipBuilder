@@ -411,7 +411,7 @@ struct PeopleView: View {
         switch bucketFilter {
         case .all: "Analyze videos and distinct people are detected automatically."
         case .category(let category):
-            "Right-click a person and choose Category › \(category.label) to file them here."
+            "Right-click a person and choose Category → \(category.label) to file them here."
         case .uncategorized: "Every confirmed person has a category."
         case .unknown: "Every detected person has a confirmed name."
         case .hidden: "Right-click a person and choose Hide to tuck them away here."
@@ -624,8 +624,8 @@ struct PeopleView: View {
                 .lineLimit(1)
             SceneTagLine(tags: scene.tags)
         }
-        .padding(8)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+        .padding(Theme.cardPadding)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
         .sceneStackDeck(count: stack?.count ?? 1)
         .onLongPressGesture(minimumDuration: 0.35) {
             if stack != nil { stackPickerSceneID = scene.id }
@@ -698,7 +698,7 @@ private struct MergePeopleSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             Text("Merge \(people.count) People")
                 .font(.headline)
             Text("These records become one person. Choose the main record — its picture and identity carry forward; every other record's scenes fold into it.")
@@ -707,7 +707,7 @@ private struct MergePeopleSheet: View {
                 .fixedSize(horizontal: false, vertical: true)
 
             ScrollView(.horizontal, showsIndicators: false) {
-                HStack(alignment: .top, spacing: 14) {
+                HStack(alignment: .top, spacing: Theme.spaceM) {
                     ForEach(people) { person in
                         let isMain = person.id == mainID
                         Button {
@@ -716,7 +716,7 @@ private struct MergePeopleSheet: View {
                             // already typed something of their own.
                             if name.isEmpty { name = person.name }
                         } label: {
-                            VStack(spacing: 5) {
+                            VStack(spacing: Theme.spaceXS) {
                                 PersonFaceAvatar(person: person, size: 64)
                                     .overlay {
                                         Circle().strokeBorder(
@@ -764,7 +764,7 @@ private struct MergePeopleSheet: View {
                 }
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
         .frame(minWidth: 400, maxWidth: 560)
         .modalCloseButton { dismiss() }
     }
@@ -783,7 +783,7 @@ private struct PersonRow: View {
     var body: some View {
         HStack(spacing: 10) {
             PersonFaceAvatar(person: person, size: 52)
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: Theme.spaceXS) {
                 // An unconfirmed person shows the name the analyzer read as
                 // the placeholder; typing (or submitting it) confirms it.
                 TextField(person.keyName.map { "\($0) — press Return to confirm" } ?? "Name this person",

@@ -389,8 +389,7 @@ struct RangeReviewView<Footer: View>: View {
                 Divider()
             } else if let listTitle {
                 HStack(spacing: Theme.spaceS) {
-                    Text(listTitle).font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        .lineLimit(1).fixedSize()
+                    SectionLabel(listTitle)
                     Spacer(minLength: 0)
                     if let onDeleteAll, items.contains(where: { !$0.isDraft }) {
                         Button("Remove All", role: .destructive) { confirmingDeleteAll = true }
@@ -765,8 +764,8 @@ struct RangeReviewView<Footer: View>: View {
         ViewThatFits(in: .horizontal) {
             Text(rangeCaption(shownRange)).lineLimit(1).fixedSize()
             VStack(alignment: .leading, spacing: 2) {
-                Text("\(shownRange.lowerBound.timecode)–\(shownRange.upperBound.timecode)")
-                Text("\(shownRange.upperBound - shownRange.lowerBound, format: .number.precision(.fractionLength(1)))s")
+                Text("\(shownRange.lowerBound.timecode)–\(shownRange.upperBound.timecode)").monospacedDigit()
+                Text("\(shownRange.upperBound - shownRange.lowerBound, format: .number.precision(.fractionLength(1)))s").monospacedDigit()
             }
             .lineLimit(1).fixedSize()
         }

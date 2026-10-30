@@ -40,9 +40,9 @@ struct AppJobReviewSheet: View {
 
     /// Results with nothing to decide: a permalink or a list of written files.
     private var simple: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             Text(job.title)
-                .font(.title3.bold())
+                .font(.headline)
             switch job.result {
             case .instagramPublished(let permalink):
                 Text("Published to Instagram.")
@@ -74,7 +74,7 @@ struct AppJobReviewSheet: View {
                     .help("Close this result and clear it from the status bar")
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
         .frame(minWidth: 440, idealWidth: 480)
         .modalCloseButton { dismiss() }
     }

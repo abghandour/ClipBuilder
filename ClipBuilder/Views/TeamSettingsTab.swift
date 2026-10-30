@@ -139,7 +139,7 @@ private struct TeamAttachmentSheet: View {
             }
             .lineLimit(1).fixedSize(horizontal: false, vertical: true)
         }
-        .padding(24)
+        .padding(Theme.spaceL)
         .frame(width: 500, height: 570)
     }
 }

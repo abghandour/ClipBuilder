@@ -22,9 +22,9 @@ struct FileNameWizardSheet: View {
     }
 
     private var setup: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             Text("File Name Wizard")
-                .font(.title3.bold())
+                .font(.headline)
             Text("Builds a descriptive name for each selected file from what's already on record — people detected, video type, fight result and research, scene stories, transcript. You review and edit every proposal before anything is renamed; analyze-batch names derived from a file update with it.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -65,7 +65,7 @@ struct FileNameWizardSheet: View {
                     .disabled(videos.isEmpty)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
     }
 
     private func run() {

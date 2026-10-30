@@ -74,9 +74,9 @@ struct PersonResearchReviewSheet: View {
                 Text("No supported values found.").font(.caption).foregroundStyle(.secondary)
             }
         }
-        .padding(12)
+        .padding(Theme.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 8))
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
         .disabled(isApplying)
     }
 

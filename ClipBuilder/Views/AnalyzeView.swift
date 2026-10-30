@@ -48,7 +48,6 @@ struct AnalyzeView: View {
     /// Scene playing from the person popover (sheet owned here, not by the
     /// split-view child).
     @State private var batchComparison: ScenesView.CompareRequest?
-    @State private var previewScene: SceneRecord?
     @State private var reassignPerson: PersonRecord?
     @State private var reassignVideo: VideoRecord?
     @State private var newPersonName = ""
@@ -122,7 +121,6 @@ struct AnalyzeView: View {
                                      fightStatsFocusRequest: fightStatsFocusVideoID == video.id ? fightStatsFocusRequest : nil,
                                      onResearch: { fightResearchTarget = video },
                                      onNameWizard: { showNameWizard = true },
-                                     onPreviewScene: { previewScene = $0 },
                                      onCompareBatches: { batchComparison = ScenesView.CompareRequest(runs: $0, video: video) },
                                      onSelectVideo: { selection = [$0.id] },
                                      onReassignNewPerson: { person, video, suggested in
@@ -195,22 +193,28 @@ struct AnalyzeView: View {
         .toolbar {
             if pageVisible {
                 ToolbarItemGroup {
-                    Button("Add Videos", systemImage: "plus") {
+                    Button {
                         showingImporter = true
+                    } label: {
+                        ToolbarBubbleLabel(text: "Add Videos", systemImage: "plus")
                     }
                     .help("Add source videos to this project")
-                    Button("Add from Google Drive…", systemImage: "icloud.and.arrow.down") { showingDriveBrowser = true }
-                    Button("Upload to Google Drive…", systemImage: "icloud.and.arrow.up") {
+                    Button { showingDriveBrowser = true } label: { ToolbarBubbleLabel(text: "Add from Google Drive…", systemImage: "icloud.and.arrow.down") }
+                        .help("Pick videos from Google Drive and add them to this project")
+                    Button {
                         pendingDriveUploads = GoogleDriveTransfers.uploadCandidates(selectedVideos.map(\.driveMedia))
                         skippedDriveUploads = selectedVideos.count - pendingDriveUploads.count
                         confirmingDriveUpload = true
+                    } label: {
+                        ToolbarBubbleLabel(text: "Upload to Google Drive…", systemImage: "icloud.and.arrow.up")
                     }
                     .disabled(GoogleDriveTransfers.uploadCandidates(selectedVideos.map(\.driveMedia)).isEmpty)
+                    .help("Upload the selected videos to Google Drive")
                     DriveMediaMenu(media: selectedVideos.filter { $0.driveFileID != nil }.map(\.driveMedia))
                         .disabled(!selectedVideos.contains { $0.driveFileID != nil })
 
                     if store.isHomeProject {
-                        Menu("Add to Project…", systemImage: "folder.badge.plus") {
+                        Menu {
                             ForEach(store.projects.filter { !$0.isHome && !$0.archived }) { project in
                                 Button(project.name) {
                                     store.addVideos(Array(selection), to: project.id)
@@ -220,45 +224,63 @@ struct AnalyzeView: View {
                             Button("New Project from Selection…", systemImage: "plus") {
                                 beginProjectFromSelection()
                             }
+                        } label: {
+                            ToolbarBubbleLabel(text: "Add to Project…", systemImage: "folder.badge.plus")
                         }
                         .disabled(selection.isEmpty)
                     } else {
-                        Button("Add Existing Videos", systemImage: "folder.badge.plus") {
+                        Button {
                             showingProjectVideoPicker = true
+                        } label: {
+                            ToolbarBubbleLabel(text: "Add Existing Videos…", systemImage: "folder.badge.plus")
                         }
+                        .help("Add videos that are already in another project")
 
-                        Button("Remove from Project", systemImage: "minus.circle") {
+                        Button {
                             pendingRemoval = selection
+                        } label: {
+
+                            ToolbarBubbleLabel(text: "Remove from Project…", systemImage: "minus.circle")
+
                         }
                         .disabled(selection.isEmpty)
+                        .help("Take the selected videos out of this project; they stay in Home")
                     }
 
                     Button {
                         let videos = selectedVideos
                         if !videos.isEmpty { startAnalysis(of: videos) }
                     } label: {
-                        Label(selection.count > 1 ? "Analyze \(selection.count)" : selectedVideos.first.map { store.duplicateAnalysis(for: $0) != nil ? "Analyze again" : "Analyze" } ?? "Analyze",
-                              systemImage: "sparkles")
-                            .lineLimit(1).fixedSize()
+                        ToolbarBubbleLabel(
+                            text: selection.count > 1 ? "Analyze \(selection.count)" : selectedVideos.first.map { store.duplicateAnalysis(for: $0) != nil ? "Analyze Again" : "Analyze" } ?? "Analyze",
+                            systemImage: "sparkles")
                     }
                     .disabled(selection.isEmpty || store.isAnalyzing || checkingAnalysis || selectedVideos.contains { !$0.isPresent })
                     .help(selectedVideos.contains { !$0.isPresent } ? VideoRecord.notPresentReason : selection.count > 1
                           ? "Analyzes the \(selection.count) selected videos back to back with the same plan — each lands in its own analyze batch on the Scenes screen"
                           : selectedVideos.first.map { store.analysisRequestHelp(for: $0) } ?? "Select a video to analyze.")
 
-                    Button("Run Full Pipeline", systemImage: "wand.and.rays") {
+                    Button {
                         showAnalyzeWizard = true
+                    } label: {
+
+                        ToolbarBubbleLabel(text: "Run Full Pipeline", systemImage: "wand.and.rays")
+
                     }
                     .disabled(selection.isEmpty || store.isPipelineRunning || selectedVideos.contains { !$0.isPresent })
                     .help("Analyze the selected videos and generate reels from them in one run")
-                    Button("Generate Video…", systemImage: "wand.and.stars") {
+                    Button {
                         showGenerateSheet = true
+                    } label: {
+                        ToolbarBubbleLabel(text: "Generate Video…", systemImage: "wand.and.stars")
                     }
                     .disabled(selection.isEmpty || store.isAnalyzing || selectedVideos.contains { !$0.isPresent })
-                    .help(selectedVideos.contains { !$0.isPresent } ? VideoRecord.notPresentReason : "")
-                    .help("Describe a video to make from the selected sources; the AI Wizard is filled in from your words")
-                    Button("Scan for Duplicates…", systemImage: "rectangle.on.rectangle") {
+                    .help(selectedVideos.contains { !$0.isPresent } ? VideoRecord.notPresentReason
+                          : "Describe a video to make from the selected sources; the AI Wizard is filled in from your words")
+                    Button {
                         showDuplicateScan = true
+                    } label: {
+                        ToolbarBubbleLabel(text: "Scan for Duplicates…", systemImage: "rectangle.on.rectangle")
                     }
                     .help("Find source videos that are copies of each other")
                 }
@@ -279,7 +301,7 @@ struct AnalyzeView: View {
             reassignVideo = nil
             newPersonName = ""
         }) { person in
-            VStack(alignment: .leading, spacing: 14) {
+            VStack(alignment: .leading, spacing: Theme.spaceM) {
                 Text("Move to a new person")
                     .font(.headline)
                 Text("Move \(person.displayName)'s references in \(reassignVideo?.filename ?? "this video") to:")
@@ -298,16 +320,11 @@ struct AnalyzeView: View {
                 .lineLimit(1)
                 .fixedSize(horizontal: false, vertical: true)
             }
-            .padding(20)
+            .padding(Theme.spaceL)
             .frame(width: 380)
         }
         .sheet(item: $batchComparison) { request in
             CompareBatchesSheet(runs: request.runs, video: request.video)
-        }
-        .sheet(item: $previewScene) { scene in
-            PlayerSheet(url: scene.videoURL, transcriptVideoID: scene.videoID,
-                        title: "\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)",
-                        startTime: scene.startTime, endTime: scene.endTime)
         }
         .sheet(item: $fightResearchTarget) { video in
             FightResearchSheet(video: video)
@@ -641,14 +658,14 @@ struct AnalyzeView: View {
                     HStack(spacing: 6) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("Analyzing")
+                        Text("Analyzing…")
                     }
                     .foregroundStyle(.secondary)
                 } else if store.detectingPeopleVideoID == video.id {
                     HStack(spacing: 6) {
                         ProgressView()
                             .controlSize(.small)
-                        Text("Detecting people")
+                        Text("Detecting people…")
                     }
                     .foregroundStyle(.secondary)
                     .help("The people pass is watching this video in the background")
@@ -787,7 +804,7 @@ struct AnalyzeView: View {
         } isTargeted: { isDropTargeted = $0 }
         .overlay {
             if isDropTargeted {
-                RoundedRectangle(cornerRadius: 8)
+                RoundedRectangle(cornerRadius: Theme.mediaRadius)
                     .strokeBorder(Color.accentColor, lineWidth: 3)
                     .allowsHitTesting(false)
             } else if store.videos.isEmpty {
@@ -923,8 +940,6 @@ private struct VideoPreviewPane: View {
     /// Opens the File Name Wizard for this video — same parent-presented
     /// sheet rule.
     let onNameWizard: () -> Void
-    /// Plays a scene picked in the person popover — same rule.
-    let onPreviewScene: (SceneRecord) -> Void
     let onCompareBatches: ([AnalysisRun]) -> Void
     /// Selects another video picked in the person popover.
     let onSelectVideo: (VideoRecord) -> Void
@@ -941,7 +956,7 @@ private struct VideoPreviewPane: View {
     private func fightCountsRow(_ fighter: FightScoreDigest.Fighter, events: [FightEventRecord]) -> some View {
         let name = store.people.first { $0.key == fighter.key }?.displayName
             ?? (fighter.key.isEmpty ? "Unattributed" : fighter.key)
-        return VStack(alignment: .leading, spacing: 3) {
+        return VStack(alignment: .leading, spacing: Theme.spaceXS) {
             Text(name)
                 .font(.caption2.weight(.medium))
                 .lineLimit(1)
@@ -1006,7 +1021,7 @@ private struct VideoPreviewPane: View {
                 // an unbounded player splits the pane 50/50 with the scroll
                 // area and pushes the sections under the fold.
                 .frame(maxWidth: .infinity, minHeight: 140, idealHeight: 230, maxHeight: 260)
-                .background(.black, in: RoundedRectangle(cornerRadius: 8))
+                .background(.black, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
                 .overlay {
                     switch availability {
                     case .loading:
@@ -1241,7 +1256,6 @@ private struct VideoPreviewPane: View {
                                                                  toleranceBefore: .zero, toleranceAfter: .zero)
                                                 },
                                                 onSelectVideo: onSelectVideo,
-                                                onPreviewScene: onPreviewScene,
                                                 onReassignNewPerson: onReassignNewPerson)
                                         }
                                     }

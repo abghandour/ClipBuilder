@@ -16,6 +16,7 @@ struct BuilderScriptsSection: View {
     @State private var showingSheet = false
     @State private var editing = false
     @State private var opening = false
+    @State private var deleteTarget: (name: String, confirm: () -> Void)?
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceS) {
@@ -23,11 +24,11 @@ struct BuilderScriptsSection: View {
                 if let tools {
                     Group {
                         Button("Run JavaScript File…", systemImage: "curlybraces", action: tools.runJavaScriptFile)
-                            .help("Run JavaScript File: run a file with header defaults, then review and Apply manually.")
+                            .help("Run JavaScript File: run a file with header defaults, then review and Apply manually")
                         Button("Preview JSON Script…", systemImage: "doc.text.magnifyingglass", action: tools.previewJSON)
-                            .help("Preview JSON Script: run a JSON script in an isolated session and inspect its diff.")
+                            .help("Preview JSON Script: run a JSON script in an isolated session and inspect its diff")
                         Button("Export Script Reference…", systemImage: "doc.text", action: tools.exportReference)
-                            .help("Export Script Reference: save the current command catalog and JavaScript header reference as Markdown.")
+                            .help("Export Script Reference: save the current command catalog and JavaScript header reference as Markdown")
                     }
                     .labelStyle(.iconOnly)
                 }
@@ -36,7 +37,7 @@ struct BuilderScriptsSection: View {
                     .help("Reinstall missing examples and reset bundled app-origin scripts, including edits. Duplicate an example first to keep your version.")
                 Button("Import", systemImage: "square.and.arrow.down", action: importScript)
                     .labelStyle(.iconOnly)
-                    .help("Import a JavaScript file as a new script in this profile.")
+                    .help("Import a JavaScript file as a new script in this profile")
             }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: Theme.spaceS) { creationButtons }
@@ -63,21 +64,23 @@ struct BuilderScriptsSection: View {
                             .help("Select \(script.name). ⌘R opens its run parameters.")
                             HStack(spacing: Theme.spaceM) {
                                 Button("Run…", systemImage: "play") { open(script, editing: false) }
-                                    .help("Run \(script.name) with parameters and a manual preview.")
+                                    .help("Run \(script.name) with parameters and a manual preview")
                                 Button("Edit", systemImage: "pencil") { open(script, editing: true) }
                                     .help("Edit and validate \(script.name). ⌘E edits the selected script.")
                                 Button("Duplicate", systemImage: "plus.square.on.square") { Task { await model.duplicate(script) } }
-                                    .help("Make a new copy of \(script.name).")
+                                    .help("Make a new copy of \(script.name)")
                                 Button("Export", systemImage: "square.and.arrow.up") { exportScript(script) }
-                                    .help("Export \(script.name) with its header as a JavaScript file.")
-                                Button("Delete", systemImage: "trash", role: .destructive) { Task { await model.delete(script) } }
-                                    .help("Delete \(script.name) from this profile.")
+                                    .help("Export \(script.name) with its header as a JavaScript file")
+                                Button("Delete…", systemImage: "trash", role: .destructive) {
+                                    deleteTarget = (script.name, { Task { await model.delete(script) } })
+                                }
+                                    .help("Delete \(script.name) from this profile")
                             }
                             .labelStyle(.iconOnly)
                         }
                         .padding(Theme.spaceS)
                         .background(model.selectedID == script.id ? Color.accentColor.opacity(0.12) : Color.clear,
-                                    in: .rect(cornerRadius: Theme.spaceXS))
+                                    in: .rect(cornerRadius: Theme.chipRadius))
                     }
                 }
             }
@@ -105,6 +108,16 @@ struct BuilderScriptsSection: View {
         .sheet(isPresented: $showingSheet) {
             BuilderScriptEditor(model: model, editing: editing, run: runScript)
         }
+        .confirmationDialog("Delete “\(deleteTarget?.name ?? "")”?",
+                            isPresented: Binding(get: { deleteTarget != nil }, set: { if !$0 { deleteTarget = nil } })) {
+            Button("Delete Script", role: .destructive) {
+                deleteTarget?.confirm()
+                deleteTarget = nil
+            }
+            Button("Cancel", role: .cancel) { deleteTarget = nil }
+        } message: {
+            Text("The script and its saved parameters are removed from this profile.")
+        }
     }
 
     @ViewBuilder
@@ -113,7 +126,7 @@ struct BuilderScriptsSection: View {
             .keyboardShortcut("n", modifiers: [.command, .shift])
             .help("Create a reusable script in this profile. ⌘⇧N.")
         Button("Write with AI…", systemImage: "sparkles", action: { showWizard(); wizard.beginAuthoring() })
-            .help("Use the request field to write a script with an AI provider, then review it in the editor.")
+            .help("Use the request field to write a script with an AI provider, then review it in the editor")
     }
 
     private func runScript() throws {

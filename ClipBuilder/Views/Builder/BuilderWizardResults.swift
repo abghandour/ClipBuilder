@@ -37,7 +37,7 @@ struct BuilderWizardResults: View {
                                     .frame(maxWidth: .infinity, alignment: .leading)
                             }
                         }
-                        .help("Inspect all document changes, including indirect layout, framing, and lane changes.")
+                        .help("Inspect all document changes, including indirect layout, framing, and lane changes")
                     }
                     .frame(maxWidth: .infinity, alignment: .leading)
                 }
@@ -50,7 +50,7 @@ struct BuilderWizardResults: View {
                             Text("Library changes are saved immediately and survive a failed run, Discard, Undo and Revert. Timeline changes still require Apply.")
                                 .font(.caption).foregroundStyle(.secondary)
                             Button("Confirm Library work", action: model.beginConfirmedPrerequisites)
-                                .help("Run the disclosed prerequisites once for this program, then preview its timeline edits.")
+                                .help("Run the disclosed prerequisites once for this program, then preview its timeline edits")
                         }
                         if !model.persistentEffects.isEmpty {
                             Text("Already saved. Discard, Undo and Revert keep these changes.")
@@ -82,8 +82,8 @@ struct BuilderWizardResults: View {
         Text("Save this as a reusable script?").font(.caption)
         Button("Save") { Task { await model.saveReplay() } }
             .disabled(model.savingReplay)
-            .help("Save the verified script with a name based on your request.")
+            .help("Save the verified script with a name based on your request")
         Button("Not now", action: model.declineSaveScript)
-            .help("Dismiss this suggestion for the current timeline revision.")
+            .help("Dismiss this suggestion for the current timeline revision")
     }
 }

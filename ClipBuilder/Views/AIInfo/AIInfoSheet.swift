@@ -119,8 +119,8 @@ struct AIInfoSheet: View {
                 Text(entry.name)
             }
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
-                    Text("Models").font(.headline)
+                VStack(alignment: .leading, spacing: Theme.spaceM) {
+                    SectionLabel("Models")
                     ForEach(Array(entry.roles.enumerated()), id: \.offset) { _, item in
                         HStack(alignment: .top) {
                             ProviderLogo(brand: item.provenance.brand, size: 18)
@@ -139,7 +139,7 @@ struct AIInfoSheet: View {
                                 .foregroundStyle(.secondary)
                                 if let took = item.provenance.durationLabel {
                                     Text("Took \(took)").foregroundStyle(.secondary)
-                                        .help("Wall-clock time of the AI call, including any failover attempts.")
+                                        .help("Wall-clock time of the AI call, including any failover attempts")
                                 }
                                 if let technique = item.provenance.technique {
                                     Text("Technique: \(technique)").foregroundStyle(.secondary)
@@ -150,7 +150,7 @@ struct AIInfoSheet: View {
                             }
                         }.font(.caption)
                     }
-                    Text("Settings").font(.headline)
+                    SectionLabel("Settings")
                     if let settings = entry.settings {
                         if case .object(let prompts) = settings["modelPrompts"], !prompts.isEmpty {
                             DisclosureGroup("Prompt previews (informational)") {
@@ -253,7 +253,8 @@ struct AIInfoSheet: View {
                     }
                 }
             }
-        }.padding(20).frame(width: 560, height: 620)
+        }.padding(Theme.spaceL).frame(width: 560, height: 620)
+        .modalCloseButton { dismiss() }
             .modifier(ConfirmTranscriptLoss(isRequested: $confirmTranscriptLoss, count: transcriptEditCount) {
                 guard let video = pendingTranscriptVideo else { return }
                 store.rerun(.transcript, video: video)

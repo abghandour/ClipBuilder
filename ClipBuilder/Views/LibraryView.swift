@@ -57,7 +57,7 @@ struct LibraryView: View {
                 ToolbarItem {
                     DriveMediaMenu(media: sorted.filter { driveSelection.contains($0.id) }.map(\.driveMedia))
                         .disabled(driveSelection.isEmpty)
-                        .help("Select outputs using More or the context menu, then upload the selection.")
+                        .help("Select outputs using More or the context menu, then upload the selection")
                 }
                 ToolbarItem {
                     // A named menu instead of a bare Picker — the toolbar showed
@@ -283,12 +283,12 @@ struct LibraryView: View {
                     Button("Review", systemImage: "hand.thumbsup") {
                         reviewTarget = video
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
                 } else {
                     Button("Publish", systemImage: "paperplane") {
                         publishTarget = video
                     }
-                    .buttonStyle(.borderedProminent)
+                    .buttonStyle(.bordered)
                 }
                 // The macOS share sheet: Messages, AirDrop, Mail and any
                 // share extension, with the caption as the message text.
@@ -329,7 +329,7 @@ struct LibraryView: View {
                     }
                     shareLink(video)
                     Divider()
-                    Button("Delete", systemImage: "trash", role: .destructive) {
+                    Button("Delete…", systemImage: "trash", role: .destructive) {
                         deleting = video
                     }
                 }

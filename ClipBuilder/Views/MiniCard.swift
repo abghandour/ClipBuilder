@@ -55,8 +55,8 @@ struct MiniCard<Content: View>: View {
             content
         }
         .frame(maxWidth: .infinity, alignment: .leading)
-        .padding(Theme.spaceL)
-        .background(.quaternary, in: .rect(cornerRadius: Theme.cardRadius))
+        .padding(Theme.spaceM)
+        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: Theme.cardRadius))
     }
 
     private var heading: some View {

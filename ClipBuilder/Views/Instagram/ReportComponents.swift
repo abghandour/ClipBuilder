@@ -38,17 +38,16 @@ struct SectionCard<Content: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
             VStack(alignment: .leading, spacing: 2) {
-                Text(title).font(.headline)
+                SectionLabel(title)
                 if let subtitle {
                     Text(subtitle).font(.caption).foregroundStyle(.secondary)
                 }
             }
             content()
         }
-        .padding(Theme.spaceL)
+        .padding(Theme.spaceM)
         .frame(maxWidth: .infinity, alignment: .leading)
-        .background(Color(nsColor: .controlBackgroundColor), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
-        .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius).strokeBorder(.separator))
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
     }
 }
 
@@ -90,7 +89,7 @@ struct DeltaText: View {
     let delta: InstagramReport.Delta
 
     var body: some View {
-        HStack(spacing: 3) {
+        HStack(spacing: Theme.spaceXS) {
             Image(systemName: delta.isPositive ? "arrow.up" : delta.isNegative ? "arrow.down" : "minus")
                 .font(.caption2.bold())
             if let percent = delta.percent {
@@ -163,7 +162,7 @@ struct TypeBadge: View {
             .font(.badgeCompact)
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
-            .background(ReportColors.forType(type).opacity(0.15), in: Capsule())
+            .background(ReportColors.forType(type).opacity(0.15), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
             .foregroundStyle(ReportColors.forType(type))
     }
 }
@@ -175,13 +174,13 @@ struct BreakdownChips: View {
     var body: some View {
         FlowLayout(spacing: 4) {
             ForEach(items) { item in
-                HStack(spacing: 3) {
-                    Text(item.intValue.formatted()).font(.caption2.bold().monospacedDigit())
+                HStack(spacing: Theme.spaceXS) {
+                    Text(item.intValue.formatted()).font(.badge)
                     Text(item.label).font(.caption2).foregroundStyle(.secondary)
                 }
                 .padding(.horizontal, 6)
                 .padding(.vertical, 2)
-                .background(.quaternary.opacity(0.6), in: Capsule())
+                .background(.quaternary.opacity(0.6), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
             }
         }
     }
@@ -302,8 +301,8 @@ struct CommentHeatmap: View {
     private var maximum: Int { max(1, counts.max() ?? 1) }
 
     var body: some View {
-        VStack(spacing: 3) {
-            HStack(spacing: 3) {
+        VStack(spacing: Theme.spaceXS) {
+            HStack(spacing: Theme.spaceXS) {
                 Text("").frame(width: 32)
                 ForEach(0..<24, id: \.self) { hour in
                     Text(hour % 3 == 0 ? "\(hour)" : "")
@@ -313,7 +312,7 @@ struct CommentHeatmap: View {
                 }
             }
             ForEach(0..<7, id: \.self) { day in
-                HStack(spacing: 3) {
+                HStack(spacing: Theme.spaceXS) {
                     Text(days[day]).font(.caption2).foregroundStyle(.secondary).frame(width: 32, alignment: .leading)
                     ForEach(0..<24, id: \.self) { hour in
                         let value = counts.indices.contains(day * 24 + hour) ? counts[day * 24 + hour] : 0

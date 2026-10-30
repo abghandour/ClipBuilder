@@ -10,7 +10,7 @@ struct AutoDriveUploadToggle: View {
     var body: some View {
         Toggle("Upload new sources to Google Drive automatically", isOn: selection)
             .disabled(loadedGeneration != store.profileGeneration || saving)
-            .help("When this profile is attached to a team, upload newly added local videos in the background.")
+            .help("When this profile is attached to a team, upload newly added local videos in the background")
             .task(id: store.profileGeneration) {
                 loadedGeneration = nil
                 let generation = store.profileGeneration

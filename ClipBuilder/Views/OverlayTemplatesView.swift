@@ -9,6 +9,7 @@ import SwiftUI
 struct OverlayTemplatesView: View {
     var runCounts: [String: Int] = [:]
     @Environment(AppStore.self) private var store
+    @Environment(\.workspacePageVisible) private var pageVisible
     @State private var templates: [OverlayTemplate] = []
     @State private var selectedName: String?
     @State private var itemSelection: OverlayItemSelection?
@@ -65,7 +66,7 @@ struct OverlayTemplatesView: View {
             }
         }
 
-        .toolbar { overlayToolbarContent }
+        .toolbar { if pageVisible { overlayToolbarContent } }
         .sheet(isPresented: $showOverlayWizard) {
             OverlayWizardSheet()
         }
@@ -159,22 +160,26 @@ struct OverlayTemplatesView: View {
     @ToolbarContentBuilder
     private var overlayToolbarContent: some ToolbarContent {
         ToolbarItemGroup {
-            Button("New Template", systemImage: "plus", action: createTemplate)
-                .lineLimit(1).fixedSize().help("Create an overlay template")
+            Button(action: createTemplate) { ToolbarBubbleLabel(text: "New Template", systemImage: "plus") }
+                .help("Create an overlay template")
             if selectedName != nil {
                     Label(isSaving ? "Saving…" : "Saved",
                           systemImage: isSaving ? "arrow.triangle.2.circlepath" : "checkmark")
                         .font(.caption)
                     .foregroundStyle(isSaving ? Color.secondary : Color.green)
             }
-            Button("Create from Image…", systemImage: "wand.and.stars") {
+            Button {
                 showOverlayWizard = true
+            } label: {
+                ToolbarBubbleLabel(text: "Create from Image…", systemImage: "wand.and.stars")
             }
-            .lineLimit(1).fixedSize().help("Build an overlay template from a reference image")
-            Button("Show in Finder", systemImage: "folder") {
+            .help("Build an overlay template from a reference image")
+            Button {
                 NSWorkspace.shared.open(OverlayTemplateStore.directory)
+            } label: {
+                ToolbarBubbleLabel(text: "Show in Finder", systemImage: "folder")
             }
-            .lineLimit(1).fixedSize().help("Reveal the template files in Finder")
+            .help("Reveal the template files in Finder")
         }
     }
 
@@ -498,7 +503,7 @@ struct OverlayPreviewCanvas: View {
                 }
             }
             .coordinateSpace(name: "overlayCanvas")
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
         }
         .aspectRatio(9 / 16, contentMode: .fit)
     }

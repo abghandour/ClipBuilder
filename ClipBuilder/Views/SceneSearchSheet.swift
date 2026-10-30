@@ -15,9 +15,9 @@ struct SceneSearchSheet: View {
     @FocusState private var queryFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             Text("Ask the Library")
-                .font(.title3.bold())
+                .font(.headline)
             Text("Describe the moment you're looking for in plain language — people, actions, story beats. The AI reads every scene's story and tags (\(candidates.count) scenes in view) and filters the grid to the matches.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -46,7 +46,7 @@ struct SceneSearchSheet: View {
                               || candidates.isEmpty)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
         .frame(width: 480)
         .appJobSetupPresentation()
         .modalCloseButton { dismiss() }

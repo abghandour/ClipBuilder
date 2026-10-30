@@ -4,6 +4,7 @@ import SwiftUI
 @MainActor
 struct LearnedPreferencesView: View {
     @Environment(AppStore.self) private var store
+    @Environment(\.workspacePageVisible) private var pageVisible
     @Environment(\.openSettings) private var openSettings
     @AppStorage("settings.selectedTab") private var settingsTab = "profile"
     @State private var showGapReport = false
@@ -47,9 +48,12 @@ struct LearnedPreferencesView: View {
         return visibleContributors.first { $0.contributor == selectedContributor }
     }
 
+    @State private var deletingLesson: WizardLesson?
+    @State private var droppingCategory: String?
+
     var body: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: 24) {
+            VStack(alignment: .leading, spacing: Theme.spaceL) {
                 header
                 if document != nil && remote == nil && !onboarding.isComplete {
                     onboardingCard
@@ -65,19 +69,48 @@ struct LearnedPreferencesView: View {
                 }
             }
             .frame(maxWidth: 900)
-            .padding(24)
+            .padding(Theme.spaceL)
             .frame(maxWidth: .infinity)
         }
+        .screenTitle("AI Lessons", subtitle: "What the AI has learned and which feature reads it")
         .toolbar {
-            ToolbarItemGroup {
-                Button("Content Gaps", systemImage: "checklist") { showGapReport = true }
+            if pageVisible {
+                ToolbarItemGroup {
+                    Button {
+                        showGapReport = true
+                    } label: {
+                        ToolbarBubbleLabel(text: "Content Gaps…", systemImage: "checklist")
+                    }
                     .help("See what to post next and what is blocking output")
-                Button("Manage Learned Rules…", systemImage: "brain.head.profile") {
-                    settingsTab = "taste"
-                    openSettings()
+                    Button {
+                        settingsTab = "taste"
+                        openSettings()
+                    } label: {
+                        ToolbarBubbleLabel(text: "Manage Learned Rules…", systemImage: "brain.head.profile")
+                    }
+                    .help("Review and edit learned rules in Settings → Taste")
                 }
-                .help("Review and edit learned rules in Settings › Taste")
             }
+        }
+        .confirmationDialog("Delete this rule?", isPresented: Binding(get: { deletingLesson != nil }, set: { if !$0 { deletingLesson = nil } })) {
+            Button("Delete Rule", role: .destructive) {
+                if let deletingLesson { store.deleteLesson(deletingLesson) }
+                deletingLesson = nil
+            }
+            Button("Cancel", role: .cancel) { deletingLesson = nil }
+        } message: {
+            Text("A future distill may recreate it from the same reviews.")
+        }
+        .confirmationDialog("Drop this category?", isPresented: Binding(get: { droppingCategory != nil }, set: { if !$0 { droppingCategory = nil } })) {
+            Button("Drop Category", role: .destructive) {
+                if let droppingCategory {
+                    store.activeProfile = LearnedEditing.dropCategory(droppingCategory, profile: store.activeProfile)
+                    store.saveActiveProfile()
+                    Task { await reload() }
+                }
+                droppingCategory = nil
+            }
+            Button("Cancel", role: .cancel) { droppingCategory = nil }
         }
         .sheet(isPresented: $showGapReport) { GapReportSheet() }
         .task(id: profileName) { await reload() }
@@ -110,15 +143,13 @@ struct LearnedPreferencesView: View {
 
     private var header: some View {
         VStack(alignment: .leading, spacing: 16) {
-            VStack(alignment: .leading, spacing: 6) {
-                Text("AI Lessons").font(.title.bold())
-                Text("Everything the AI has learned about your reels, and which feature reads each part. Edit it here or where it says.")
-                    .foregroundStyle(.secondary)
-            }
+            Text("Everything the AI has learned about your reels, and which feature reads each part. Edit it here or where it says.")
+                .font(.callout)
+                .foregroundStyle(.secondary)
             HStack(spacing: 12) {
                 Button("What the AI reads…", action: showPreview)
                     .buttonStyle(.bordered)
-                    .help("The learning available to the Wizard, the last plan prompt it sent, and the document that leaves this Mac.")
+                    .help("The learning available to the Wizard, the last plan prompt it sent, and the document that leaves this Mac")
                 syncState
             }
             if let job = store.jobs.latest(.publishLessons) {
@@ -140,7 +171,7 @@ struct LearnedPreferencesView: View {
                     }
                 }
                 .pickerStyle(.segmented)
-                .help("Choose whose learning to review below.")
+                .help("Choose whose learning to review below")
             }
             sharingPanel
         }
@@ -154,7 +185,7 @@ struct LearnedPreferencesView: View {
                 if hasHome {
                     contributorControl
                     VStack(alignment: .leading, spacing: 8) {
-                        Text("What leaves this Mac when you publish").font(.subheadline.weight(.medium))
+                        SectionLabel("What leaves this Mac when you publish")
                         Text(LearnedSectionInfo.shareHelp).font(.caption).foregroundStyle(.secondary)
                         ForEach(LearnedPreferences.Kind.allCases, id: \.rawValue) { kind in
                             Toggle(LearnedSectionInfo.entry(kind).title, isOn: shareBinding(kind))
@@ -165,12 +196,12 @@ struct LearnedPreferencesView: View {
                     HStack(spacing: 12) { sharingActions }
                     if !contributors.isEmpty {
                         VStack(alignment: .leading, spacing: 8) {
-                            Text("Contributors").font(.subheadline.weight(.medium))
+                            SectionLabel("Contributors")
                             Text(LearnedSectionInfo.mergeHelp).font(.caption).foregroundStyle(.secondary)
                             ForEach(contributors, id: \.contributor) { contributor in
                                 Toggle("Mute \(contributor.contributor)", isOn: muteBinding(contributor.contributor))
                                     .toggleStyle(.checkbox)
-                                    .help("Exclude this contributor from shared learning used on this Mac.")
+                                    .help("Exclude this contributor from shared learning used on this Mac")
                             }
                         }
                     }
@@ -211,7 +242,7 @@ struct LearnedPreferencesView: View {
             HStack(spacing: 8) {
                 TextField("Device nickname", text: $nickname)
                     .textFieldStyle(.roundedBorder)
-                    .help("The name used to identify this Mac's contributions.")
+                    .help("The name used to identify this Mac's contributions")
                 Button("Save nickname", action: saveNickname)
                     .disabled(nickname.trimmingCharacters(in: .whitespaces).isEmpty)
             }.frame(maxWidth: 320)
@@ -223,7 +254,7 @@ struct LearnedPreferencesView: View {
             Button("Publish now", action: publish)
                 .buttonStyle(.borderedProminent)
                 .disabled(busy || !hasNickname)
-                .help("Publish the selected sections to this profile's Google Drive home.")
+                .help("Publish the selected sections to this profile's Google Drive home")
         }
     }
 
@@ -337,8 +368,8 @@ struct LearnedPreferencesView: View {
                         }
                         if section.kind == .style && local {
                             Text(store.activeProfile.useLearnedEditingDefaults
-                                 ? "Hook and layout are learned defaults: opening Instagram › Editing performance may update them from your results."
-                                 : "Hook and layout are stored but not used until Learned editing defaults is on in Settings › Profile.")
+                                 ? "Hook and layout are learned defaults: opening Instagram → Editing performance may update them from your results."
+                                 : "Hook and layout are stored but not used until Learned editing defaults is on in Settings → Profile.")
                                 .font(.caption).foregroundStyle(.tertiary)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
@@ -407,7 +438,7 @@ struct LearnedPreferencesView: View {
                 ForEach(Array(info.editLocations.enumerated()), id: \.offset) { _, location in
                     Button(location.label, systemImage: "arrow.up.right.square") { open(location) }
                         .buttonStyle(.bordered).controlSize(.small)
-                        .help("Opens where these values are edited today.")
+                        .help("Opens where these values are edited today")
                 }
             }
         } else {
@@ -483,8 +514,8 @@ struct LearnedPreferencesView: View {
                             if let image = exemplar(frame, contributor: contributor, local: local) {
                                 Image(nsImage: image).resizable().scaledToFit()
                                     .frame(width: 140, height: 100)
-                                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 8))
-                                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                                    .background(.quaternary, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
+                                    .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
                                     .accessibilityLabel("Taste exemplar")
                             }
                         }
@@ -517,10 +548,8 @@ struct LearnedPreferencesView: View {
                     Task { await edit(item, .dismiss) }
                 }
                 .help("Hide this rule from the Wizard and from publishing. It can be restored below. A future distill may produce a similar rule with different wording.")
-                Button("Delete", systemImage: "trash", role: .destructive) {
-                    if let lesson = store.lessons.first(where: { lessonID($0) == item.id }) {
-                        store.deleteLesson(lesson)
-                    }
+                Button("Delete…", systemImage: "trash", role: .destructive) {
+                    deletingLesson = store.lessons.first(where: { lessonID($0) == item.id })
                 }
                 .help("Remove the rule. A future distill may recreate it from the same reviews.")
             }
@@ -529,10 +558,8 @@ struct LearnedPreferencesView: View {
                     .help(field.help)
             }
             if item.field == "category" {
-                Button("Drop category", systemImage: "tag.slash", role: .destructive) {
-                    store.activeProfile = LearnedEditing.dropCategory(item.id, profile: store.activeProfile)
-                    store.saveActiveProfile()
-                    Task { await reload() }
+                Button("Drop Category…", systemImage: "tag.slash", role: .destructive) {
+                    droppingCategory = item.id
                 }
             }
         } label: {

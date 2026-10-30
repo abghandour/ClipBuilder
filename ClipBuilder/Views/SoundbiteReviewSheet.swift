@@ -43,7 +43,7 @@ struct SoundbiteReviewSheet: View {
                             ))
                             .labelsHidden()
                             .toggleStyle(.checkbox)
-                            VStack(alignment: .leading, spacing: 3) {
+                            VStack(alignment: .leading, spacing: Theme.spaceXS) {
                                 HStack(spacing: 6) {
                                     Text("\(soundbite.start.timecode)–\(soundbite.end.timecode)")
                                         .font(.caption.monospacedDigit().bold())
@@ -65,8 +65,8 @@ struct SoundbiteReviewSheet: View {
                             }
                             Spacer(minLength: 0)
                         }
-                        .padding(10)
-                        .background(.quinary, in: RoundedRectangle(cornerRadius: 8))
+                        .padding(Theme.cardPadding)
+                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
                     }
                 }
                 .padding(.horizontal)

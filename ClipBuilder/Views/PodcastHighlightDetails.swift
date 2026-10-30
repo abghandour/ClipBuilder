@@ -10,6 +10,7 @@ struct PodcastHighlightDetails: View {
             Text(candidate.title).font(.headline)
             HStack(spacing: Theme.spaceS) {
                 Text("\(candidate.sourceStart.timecode)–\(candidate.sourceEnd.timecode) · \(candidate.duration, format: .number.precision(.fractionLength(1)))s · Score \(candidate.score, format: .number.precision(.fractionLength(1))) · \(candidate.includesQuestion ? "Q+A" : "Answer only")")
+                    .monospacedDigit()
                 if let original, candidate.isTrimmed(from: original) {
                     Text("trimmed · suggested \(original.sourceStart.timecode)–\(original.sourceEnd.timecode)")
                         .foregroundStyle(.orange)

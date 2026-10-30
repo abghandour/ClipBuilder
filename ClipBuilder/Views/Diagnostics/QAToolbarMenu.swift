@@ -52,7 +52,7 @@ struct QAToolbarMenu: View {
                 .overlay(alignment: .topTrailing) {
                     if ScreenshotStore.shared.count > 0 {
                         Text(ScreenshotStore.shared.count, format: .number)
-                            .font(.caption2.bold())
+                            .font(.badge)
                             .foregroundStyle(.white)
                             .padding(.horizontal, 4)
                             .background(.red, in: Capsule())

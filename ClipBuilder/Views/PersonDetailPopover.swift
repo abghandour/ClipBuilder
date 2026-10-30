@@ -18,8 +18,6 @@ struct PersonDetailPopover: View {
     var onSeek: ((Double) -> Void)?
     /// Selects another of the person's videos in the presenting screen.
     var onSelectVideo: ((VideoRecord) -> Void)?
-    /// Plays a scene (the presenter owns the sheet).
-    var onPreviewScene: ((SceneRecord) -> Void)?
     /// Requests a name in the presenting screen, outside the split-view child.
     var onReassignNewPerson: ((PersonRecord, VideoRecord, String) -> Void)?
 
@@ -49,14 +47,13 @@ struct PersonDetailPopover: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             header
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: Theme.spaceM) {
                     PersonTagFieldsView(person: person)
                     if let video { inThisVideo(video) }
                     videosSection
-                    scenesSection
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
@@ -79,13 +76,12 @@ struct PersonDetailPopover: View {
     // MARK: - Header
 
     private var header: some View {
-        HStack(alignment: .top, spacing: 14) {
+        HStack(alignment: .top, spacing: Theme.spaceM) {
             // The People screen's picture, so the person looks the same everywhere.
-            PersonFaceAvatar(person: person, size: 112)
-                .shadow(color: .black.opacity(0.2), radius: 6, y: 2)
+            PersonFaceAvatar(person: person, size: 96)
             VStack(alignment: .leading, spacing: 4) {
                 Text(person.displayName)
-                    .font(.title3.weight(.semibold))
+                    .font(.headline)
                     .lineLimit(2)
                 if person.isUnnamed {
                     Text(person.keyName == nil ? "Not named yet — name them on the People screen"
@@ -284,64 +280,7 @@ struct PersonDetailPopover: View {
         return parts.joined(separator: " · ")
     }
 
-    // MARK: - Scenes
-
-    private var scenesSection: some View {
-        VStack(alignment: .leading, spacing: 6) {
-            sectionTitle("Scenes")
-            if scenes.isEmpty {
-                Text("No scenes tagged with this person yet — analyze their videos with tag detection on.")
-                    .font(.caption)
-                    .foregroundStyle(.tertiary)
-            }
-            ForEach(scenes) { scene in
-                Button {
-                    onPreviewScene?(scene)
-                    dismiss()
-                } label: {
-                    HStack(spacing: 8) {
-                        let poster = scene.posterFrame(videoType: store.videos.first { $0.id == scene.videoID }?.type)
-                        VideoThumbnail(url: scene.videoURL, time: poster.time, cornerRadius: 4,
-                                       window: poster.window)
-                            .frame(width: 64, height: 36)
-                        VStack(alignment: .leading, spacing: 1) {
-                            Text("\(scene.startTime.timecode)–\(scene.endTime.timecode)")
-                                .font(.callout.monospacedDigit())
-                            Text(sceneLine(scene))
-                                .font(.caption2)
-                                .foregroundStyle(.secondary)
-                                .lineLimit(1)
-                                .truncationMode(.middle)
-                        }
-                        Spacer(minLength: 0)
-                        if scene.favorite {
-                            Image(systemName: "star.fill")
-                                .font(.caption2)
-                                .foregroundStyle(.yellow)
-                        }
-                        DurationBadge(seconds: scene.duration)
-                    }
-                    .contentShape(Rectangle())
-                }
-                .buttonStyle(.plain)
-                .disabled(onPreviewScene == nil)
-                .help(scene.narrative ?? "Play this scene")
-            }
-        }
-    }
-
-    private func sceneLine(_ scene: SceneRecord) -> String {
-        let tags = scene.tags.filter { !$0.hasPrefix("person:") && !$0.hasPrefix("vip:") && $0 != "auto-hidden" }
-        if videos.count > 1 || scene.videoID != video?.id {
-            return ([scene.videoFilename] + tags).joined(separator: " · ")
-        }
-        return tags.isEmpty ? scene.videoFilename : tags.joined(separator: " · ")
-    }
-
     private func sectionTitle(_ title: String) -> some View {
-        Text(title)
-            .font(.caption.weight(.semibold))
-            .foregroundStyle(.secondary)
-            .textCase(.uppercase)
+        SectionLabel(title)
     }
 }

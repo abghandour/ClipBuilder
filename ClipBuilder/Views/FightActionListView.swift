@@ -45,24 +45,20 @@ struct FightActionListView: View {
                         onPick(entry)
                     } label: {
                         VStack(alignment: .leading, spacing: 2) {
-                            VideoThumbnail(url: video.url, time: entry.time, cornerRadius: 4)
+                            VideoThumbnail(url: video.url, time: entry.time, cornerRadius: Theme.mediaRadius)
                                 .frame(width: 96, height: 54)
                                 .overlay(alignment: .bottomLeading) {
-                                    Text(timeBadge(entry))
-                                        .font(.system(size: 9).monospacedDigit())
-                                        .padding(.horizontal, 3)
-                                        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 3))
-                                        .foregroundStyle(.white)
-                                        .padding(2)
+                                    MediaBadge(text: timeBadge(entry))
+                                        .padding(Theme.spaceXS)
                                 }
                                 .overlay(alignment: .topTrailing) {
                                     if active {
                                         Image(systemName: "repeat")
                                             .font(.system(size: 9, weight: .bold))
                                             .padding(2)
-                                            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: 3))
+                                            .background(Color.accentColor, in: RoundedRectangle(cornerRadius: Theme.chipRadius))
                                             .foregroundStyle(.white)
-                                            .padding(2)
+                                            .padding(Theme.spaceXS)
                                     }
                                 }
                             Text(entry.summary)

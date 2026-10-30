@@ -278,16 +278,20 @@ struct ScenesView: View {
                 }
                 if let run = selectedRun {
                     ToolbarItem {
-                        Button("Analyze Batch Info", systemImage: "info.circle") {
+                        Button {
                             infoRun = run
+                        } label: {
+                            ToolbarBubbleLabel(text: "Analyze Batch Info", systemImage: "info.circle")
                         }
                         .help("All parameters and instructions used for this analyze batch")
                     }
                 }
                 if let runs = comparableRuns {
                     ToolbarItem {
-                        Button("Compare \(runs.count) Batches", systemImage: "rectangle.split.2x1") {
+                        Button {
                             compare(runs)
+                        } label: {
+                            ToolbarBubbleLabel(text: "Compare \(runs.count) Batches", systemImage: "rectangle.split.2x1")
                         }
                         .help("Put the selected analyze batches side by side: where they cut scenes, what each found, blind grading of the scenes only one found, and Keep or Merge")
                     }
@@ -1096,9 +1100,9 @@ struct SceneCard: View {
                         }
                         if childCount > 0 {
                             Text("SEQ · \(childCount)")
-                                .font(.caption2.bold())
+                                .font(.badge)
                                 .padding(3)
-                                .background(.purple.opacity(0.85), in: RoundedRectangle(cornerRadius: 4))
+                                .background(.purple.opacity(0.85), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
                                 .foregroundStyle(.white)
                                 .help("A sequence broken into \(childCount) action scene(s) — show them with the Sequence Actions toggle in the Filter menu")
                         }
@@ -1126,7 +1130,7 @@ struct SceneCard: View {
                 .onHover { hovering = $0 }
 
             Text("\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)")
-                .font(.caption)
+                .font(.caption.monospacedDigit())
                 .foregroundStyle(.secondary)
                 .lineLimit(1)
 

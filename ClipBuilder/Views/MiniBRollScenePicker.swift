@@ -50,6 +50,7 @@ struct MiniBRollScenePicker: View {
         }
         .padding(Theme.spaceL)
         .frame(minWidth: 520, idealWidth: 650, minHeight: 420, idealHeight: 560)
+        .modalCloseButton { dismiss() }
         .task(id: query) {
             let result = await MiniBRollLibrary.search(items, query: query)
             guard !Task.isCancelled else { return }

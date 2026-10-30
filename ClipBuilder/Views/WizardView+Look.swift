@@ -429,7 +429,7 @@ extension WizardView {
                             }))
                             .textFieldStyle(.roundedBorder)
                             .frame(maxWidth: 320)
-                            .help("Return starts a new line in the overlay.")
+                            .help("Return starts a new line in the overlay")
                             .accessibilityLabel("Overlay text \(index + 1)")
                         OverlayTextAlignmentPicker(alignment: Binding(
                             get: { OverlayEdits.split(fixedOverlayEdits).texts[safe: textIndex]?.alignment ?? item.alignment },
@@ -454,7 +454,7 @@ extension WizardView {
                     let edited = !OverlayEdits.split(fixedOverlayEdits).isEmpty || CustomPosition.isCustom(fixedOverlayPosition)
                     Text(edited ? "Custom (dragged)" : "As designed")
                         .lineLimit(1).fixedSize()
-                    Button("Reset layout", systemImage: "arrow.uturn.backward") {
+                    Button("Reset Layout", systemImage: "arrow.uturn.backward") {
                         fixedOverlayEdits = ""
                         fixedOverlayPosition = ""
                     }

@@ -73,7 +73,7 @@ struct LooksView: View {
                     .disabled(renderTask != nil || availableIDs == nil || store.database == nil)
                     .help("Render a sample of every available effect through the final render pipeline")
                     .lineLimit(1).fixedSize()
-                    Button("Change sample…", systemImage: "film") { pickingSample = true }
+                    Button("Change Sample…", systemImage: "film") { pickingSample = true }
                         .help("Choose the video used for every effect and Transitions Video A")
                         .lineLimit(1).fixedSize()
                 }

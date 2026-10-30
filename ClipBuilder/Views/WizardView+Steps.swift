@@ -142,7 +142,7 @@ extension WizardView {
                         .id("generate")
                     }
                 }
-                .padding(Theme.spaceXL)
+                .padding(Theme.spaceL)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
             }
@@ -169,7 +169,7 @@ extension WizardView {
         .onChange(of: store.wizardLookRevision) { _, _ in open(.settings) }
         .confirmationDialog("Delete this selection and its takes? Rendered outputs are kept.",
             isPresented: Binding(get: { deletingSelection != nil }, set: { if !$0 { deletingSelection = nil } })) {
-            Button("Delete selection", role: .destructive) {
+            Button("Delete Selection", role: .destructive) {
                 if let selection = deletingSelection { store.deleteWizardSelection(selection.id) }
                 deletingSelection = nil
             }

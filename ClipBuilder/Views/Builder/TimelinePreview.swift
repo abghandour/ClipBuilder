@@ -602,7 +602,7 @@ struct TimelinePreviewSheet: View {
 
     private var header: some View {
         HStack(alignment: .top, spacing: 12) {
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: Theme.spaceXS) {
                 Text("Timeline Preview")
                     .font(.headline)
                 Label(mode == .exact

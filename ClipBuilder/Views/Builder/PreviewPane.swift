@@ -112,7 +112,7 @@ struct PreviewPane: View {
                 // The chosen platform's buttons and description, over still and playback alike.
                 PlatformChromeLayer(size: frame, safeAreaSettings: model.document.renderSettings.platformSafeArea)
             }
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
             .frame(width: geo.size.width, height: geo.size.height)
         }
         .aspectRatio(store.builder.document.renderSettings.aspectRatio, contentMode: .fit)
@@ -302,7 +302,7 @@ private struct CropEditorLayer: View {
                     cropRectangle(index: index, src: crops[index].src, fitted: fitted)
                 }
             } else {
-                ProgressView()
+                ProgressView().controlSize(.small)
                     .frame(width: frame.width, height: frame.height)
             }
         }

@@ -127,7 +127,8 @@ struct LearnedFieldEditorSheet: View {
                     .accessibilityLabel(edit.title)
             }
         }
-        .padding(24).frame(width: 560)
+        .padding(Theme.spaceL).frame(width: 560)
+        .modalCloseButton { dismiss() }
         .onAppear {
             profileName = store.activeProfile.profileName
             draft = edit.draft(from: store.activeProfile)

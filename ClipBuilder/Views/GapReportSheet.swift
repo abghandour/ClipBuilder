@@ -21,9 +21,9 @@ struct GapReportSheet: View {
     }
 
     private var setup: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             Text("Content Gaps")
-                .font(.title3.bold())
+                .font(.headline)
             Text("A strategist's pass over everything on record — \(store.videos.count) source videos, \(store.generatedVideos.count) generated reels, Instagram history — answering: what should be posted next, what's sitting unused, and what's blocking more output.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -44,7 +44,7 @@ struct GapReportSheet: View {
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
     }
 
     private func run() {

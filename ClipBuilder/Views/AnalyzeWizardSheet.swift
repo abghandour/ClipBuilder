@@ -57,9 +57,9 @@ struct AnalyzeWizardSheet: View {
     }
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             Text("Wizard Pipeline")
-                .font(.title3.bold())
+                .font(.headline)
             Text("Runs everything the app can do for the \(videos.count) selected video\(videos.count == 1 ? "" : "s") — start to finished reels — in the background. Watch or cancel from the bar at the bottom of the window; keep using the app meanwhile.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -134,7 +134,7 @@ struct AnalyzeWizardSheet: View {
                 .disabled(videos.isEmpty || !options.anyEnabled || store.isPipelineRunning)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
         .frame(minWidth: 720, idealWidth: 760, minHeight: 480, idealHeight: 720)
         .modalCloseButton { dismiss() }
         .onAppear {

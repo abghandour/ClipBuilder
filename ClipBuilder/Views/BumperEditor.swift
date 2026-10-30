@@ -35,7 +35,8 @@ struct BumperEditor: View {
                     .keyboardShortcut(.defaultAction)
                     .disabled(saving || store.database == nil)
             }
-        }.padding(24).frame(width: 400)
+        }.padding(Theme.spaceL).frame(width: 400)
+        .modalCloseButton { dismiss() }
     }
 
     private func save() {

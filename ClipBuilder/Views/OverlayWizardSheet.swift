@@ -19,9 +19,9 @@ struct OverlayWizardSheet: View {
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             Text("Overlay Wizard")
-                .font(.title3.bold())
+                .font(.headline)
             Text("Drop a frame from a reel whose overlay style you like. The AI recreates its captions, name plates, and logos as a reusable overlay template — everything else in the image is discarded.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -45,7 +45,7 @@ struct OverlayWizardSheet: View {
                     .disabled(imageURL == nil)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
         .frame(width: 460)
         .appJobSetupPresentation()
         .modalCloseButton { dismiss() }
@@ -63,7 +63,7 @@ struct OverlayWizardSheet: View {
 
     private var dropZone: some View {
         ZStack {
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: Theme.mediaRadius)
                 .strokeBorder(isDropTargeted ? Color.accentColor : Color.secondary.opacity(0.4),
                               style: StrokeStyle(lineWidth: isDropTargeted ? 3 : 1, dash: [6]))
             if let preview {

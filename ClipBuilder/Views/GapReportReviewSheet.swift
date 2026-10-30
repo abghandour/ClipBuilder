@@ -26,7 +26,7 @@ struct GapReportReviewSheet: View {
             .padding()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: Theme.spaceM) {
                     ForEach(sections) { section in
                         VStack(alignment: .leading, spacing: 6) {
                             Text(section.title)

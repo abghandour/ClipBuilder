@@ -55,7 +55,7 @@ struct CaptionSpeakerStylesEditor: View {
                     .labelsHidden()
                     .lineLimit(1).fixedSize()
                     .accessibilityLabel("Caption style for \(person.displayName)")
-                    .help("Run style follows \(runStyleName), selected above.")
+                    .help("Run style follows \(runStyleName), selected above")
                     let changed = positionSelection(for: person.key).wrappedValue != nil
                         || selection(for: person.key).wrappedValue != nil
                     Button("Reset", systemImage: "arrow.uturn.backward") {

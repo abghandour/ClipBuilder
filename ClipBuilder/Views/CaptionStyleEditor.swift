@@ -64,7 +64,7 @@ struct CaptionStyleEditor: View {
                     Text("Colour and scale").tag("both")
                     Text("Font only").tag("font")
                 }
-            }.help("Emphasise up to two keywords per page, chosen on this Mac.")
+            }.help("Emphasise up to two keywords per page, chosen on this Mac")
         default: EmptyView()
         }
     }
@@ -76,14 +76,14 @@ struct CaptionStyleEditor: View {
                     Text("Fit two rows").tag(nil as Int?)
                     ForEach(1...8, id: \.self) { Text(String($0)).tag(Optional($0)) }
                 }
-            }.help("Limit each page to a word count, or fit up to two rows.")
+            }.help("Limit each page to a word count, or fit up to two rows")
             TextLookRow("Position") {
                 Picker("Position", selection: $style.position) {
                     Text("Top").tag("top")
                     Text("Middle").tag("middle")
                     Text("Bottom").tag("bottom")
                 }
-            }.help("Default caption position; individual clips can override it.")
+            }.help("Default caption position; individual clips can override it")
             TextLookRow("Words appear") {
                 Picker("Words appear", selection: setting(\.reveal, default: style.resolvedReveal)) {
                     Text("All at once").tag("none")
@@ -97,22 +97,22 @@ struct CaptionStyleEditor: View {
                     Text("Slide up").tag("slide-up")
                     Text("Fade").tag("fade")
                 }
-            }.help("Animate each new caption page.")
+            }.help("Animate each new caption page")
             if style.resolvedReveal == "word" {
                 TextLookRow("Each word") {
                     Toggle("Animate each word", isOn: setting(\.revealMotion, default: false))
                         .disabled(style.resolvedAnimation == "none")
                 }
-                .help("Each new word uses the Page entrance; off animates only the page.")
+                .help("Each new word uses the Page entrance; off animates only the page")
                 .formDependent()
                 if style.resolvedAnimation == "none" {
                     FormCaption("Choose a Page entrance first.")
                 }
             }
             TextLookRow("Emoji") { Toggle("Emoji", isOn: setting(\.emoji, default: false)) }
-                .help("Append a matching emoji when the page contains a supported keyword.")
+                .help("Append a matching emoji when the page contains a supported keyword")
             TextLookRow("Speaker colours") { Toggle("Speaker colours", isOn: setting(\.speakerColors, default: false)) }
-                .help("Use a consistent text colour for each speaker when speaker turns are available.")
+                .help("Use a consistent text colour for each speaker when speaker turns are available")
             if style.resolvedSpeakerColors {
                 TextLookRow("Palette") {
                     HStack(spacing: 4) {

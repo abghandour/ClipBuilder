@@ -64,13 +64,13 @@ struct DuplicateReviewSheet: View {
                                         HStack(spacing: 10) {
                                             VideoThumbnail(url: video.url, time: video.duration / 2)
                                                 .frame(width: 72, height: 40)
-                                                .clipShape(RoundedRectangle(cornerRadius: 4))
+                                                .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
                                             VStack(alignment: .leading, spacing: 2) {
                                                 Text(video.filename)
                                                     .font(.caption)
                                                     .lineLimit(1)
                                                 Text("\(video.width)×\(video.height) · \(video.duration.timecode)")
-                                                    .font(.caption2)
+                                                    .font(.caption2.monospacedDigit())
                                                     .foregroundStyle(.secondary)
                                             }
                                             Spacer()
@@ -93,8 +93,8 @@ struct DuplicateReviewSheet: View {
                                     }
                                 }
                             }
-                            .padding(10)
-                            .background(.quinary, in: RoundedRectangle(cornerRadius: 8))
+                            .padding(Theme.cardPadding)
+                            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
                         }
                     }
                     .padding(.horizontal)

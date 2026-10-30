@@ -12,9 +12,9 @@ struct CoverFrameSheet: View {
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
-            Text("Pick a Cover Frame")
-                .font(.title3.bold())
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
+            Text("Choose a Cover Frame")
+                .font(.headline)
             Text("The AI samples frames across \(video.filename) and ranks the strongest thumbnails — sharp, expressive, readable at cover size. Click one to make it the card's cover.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -31,7 +31,7 @@ struct CoverFrameSheet: View {
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
         .frame(minWidth: 500)
         .appJobSetupPresentation()
         .modalCloseButton { dismiss() }

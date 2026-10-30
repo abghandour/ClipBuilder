@@ -107,7 +107,7 @@ struct PersonReviewSheet: View {
         HStack(alignment: .top, spacing: 12) {
             VideoThumbnail(url: person.videoURL, time: person.sampleTime)
                 .frame(width: 68, height: 120)
-                .clipShape(RoundedRectangle(cornerRadius: 8))
+                .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
 
             VStack(alignment: .leading, spacing: 6) {
                 if !person.descriptor.isEmpty {
@@ -145,8 +145,8 @@ struct PersonReviewSheet: View {
                 }
             }
         }
-        .padding(10)
-        .background(.background.secondary, in: RoundedRectangle(cornerRadius: 10))
+        .padding(Theme.cardPadding)
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
     }
 
     private func mergeLabel(for person: DetectedNewPerson) -> String {

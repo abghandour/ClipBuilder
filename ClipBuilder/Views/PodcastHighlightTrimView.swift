@@ -311,7 +311,7 @@ struct PodcastHighlightTrimView: View {
         let current = trim.lineID(at: playback.time)
         return VStack(alignment: .leading, spacing: 0) {
             HStack {
-                Text("Transcript").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                SectionLabel("Transcript")
                 Spacer()
                 Toggle("Follow", isOn: $followsPlayback).toggleStyle(.checkbox).controlSize(.small)
                     .help("Keep the line being spoken in view")
@@ -366,7 +366,7 @@ struct PodcastHighlightTrimView: View {
                 if let speaker = line.speaker {
                     Text(speaker).font(.caption.weight(.semibold)).foregroundStyle(SpeakerColors.color(for: speaker))
                 }
-                FlowLayout(spacing: 3) {
+                FlowLayout(spacing: Theme.spaceXS) {
                     ForEach(line.words) { word in
                         wordToken(word)
                     }

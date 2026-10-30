@@ -15,8 +15,11 @@ struct DubInspector: View {
                     VStack(alignment: .leading) { controls }
                 }
             } else {
-                Text("No dub. Use Dub… in the toolbar to add one.")
-                    .font(.caption).foregroundStyle(.secondary)
+                ContentUnavailableView {
+                    Label("No Dub", systemImage: "waveform")
+                } description: {
+                    Text("Use Dub… in the toolbar to add one.")
+                }
             }
         }
         .padding()

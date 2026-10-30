@@ -53,7 +53,7 @@ struct ReelModelsLearnedSection: View {
             }
             if !available.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
-                    Text("Models from contributors").font(.subheadline.weight(.medium))
+                    SectionLabel("Models from contributors")
                     ForEach(available) { model in
                         HStack(spacing: 12) {
                             VStack(alignment: .leading, spacing: 4) {
@@ -63,12 +63,12 @@ struct ReelModelsLearnedSection: View {
                             Spacer()
                             Button("Adopt and evaluate") { adopt(model) }
                                 .buttonStyle(.bordered).controlSize(.small).disabled(busy)
-                                .help("Adopt this contributor's model and evaluate it locally.")
+                                .help("Adopt this contributor's model and evaluate it locally")
                         }
                     }
                 }.padding(.top, 8)
             }
-            Text("Evaluate a model here, then switch it on. The switch is app-wide; the model and its evaluation belong to this profile. Models only run while Prefer on-device processing is on in Settings › AI.")
+            Text("Evaluate a model here, then switch it on. The switch is app-wide; the model and its evaluation belong to this profile. Models only run while Prefer on-device processing is on in Settings → AI.")
                 .font(.caption).foregroundStyle(.secondary)
             if !status.isEmpty {
                 Text(status).font(.callout).foregroundStyle(.secondary).textSelection(.enabled)
@@ -135,7 +135,7 @@ struct ReelModelsLearnedSection: View {
                     HStack(spacing: 8) {
                         Text("Requested, inactive while on-device processing is off.")
                             .font(.caption).foregroundStyle(.orange)
-                        Button("Open Settings › AI") {
+                        Button("Open Settings → AI") {
                             settingsTab = "ai"
                             openSettings()
                         }

@@ -12,8 +12,8 @@ enum Theme {
     static let spaceXL: CGFloat = 20
 
     /// Card surfaces (scene cards, library cards): one radius + padding.
-    static let cardRadius: CGFloat = 10
-    static let cardPadding: CGFloat = 10
+    static let cardRadius: CGFloat = 8
+    static let cardPadding: CGFloat = 8
     /// Chips and small overlay badges.
     static let chipRadius: CGFloat = 4
     /// Media inside cards (thumbnails, players).

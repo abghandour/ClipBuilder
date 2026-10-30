@@ -197,7 +197,7 @@ struct FramingRows: View {
                 }
                 .labelsHidden()
                 .accessibilityLabel("Zoom")
-                .help("Zoom the focus frame in and out around its centre; drag it in the preview to move it.")
+                .help("Zoom the focus frame in and out around its centre; drag it in the preview to move it")
                 (Text(zoomLive ?? FocusFrameZoom.zoom(framing.focusFrame), format: .number.precision(.fractionLength(1))) + Text("×"))
                     .monospacedDigit().lineLimit(1).fixedSize()
             }

@@ -267,7 +267,6 @@ struct CompareBatchesSheet: View {
     }
 
     private func sectionTitle(_ title: String) -> some View {
-        Text(title)
-            .font(.subheadline.weight(.semibold))
+        SectionLabel(title)
     }
 }

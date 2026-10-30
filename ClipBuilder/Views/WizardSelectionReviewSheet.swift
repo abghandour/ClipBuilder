@@ -114,7 +114,7 @@ struct WizardSelectionReviewSheet: View {
                 if let score = take.criticScore { Text("\(score)/100").font(.caption.monospacedDigit()) }
             }
             .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-            Text("\(Int(WizardSelectionRules.duration(take.plan).rounded())) s · \(take.plan.clips.count) \(take.plan.clips.count == 1 ? "cut" : "cuts")")
+            Text("\(Int(WizardSelectionRules.duration(take.plan).rounded()))s · \(take.plan.clips.count) \(take.plan.clips.count == 1 ? "cut" : "cuts")")
                 .font(.caption).foregroundStyle(.secondary)
                 .lineLimit(1).fixedSize(horizontal: false, vertical: true)
             if let note = take.note, !note.isEmpty {

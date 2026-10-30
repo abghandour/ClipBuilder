@@ -29,9 +29,9 @@ struct AvatarPickerSheet: View {
     @State private var isLoading = true
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             Text("Choose Avatar — \(person.displayName)")
-                .font(.title3.bold())
+                .font(.headline)
             Text("Every face found in frames where \(person.displayName) appears. Click the right one — it becomes their avatar everywhere. Reset returns to the automatic pick.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -89,7 +89,7 @@ struct AvatarPickerSheet: View {
                 Button("Cancel") { dismiss() }
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
         .frame(minWidth: 460, idealWidth: 500, minHeight: 340, idealHeight: 420)
         .modalCloseButton { dismiss() }
         .task { await loadCandidates() }

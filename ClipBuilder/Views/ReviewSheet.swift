@@ -38,9 +38,9 @@ struct ReviewSheet: View {
             HStack(alignment: .top, spacing: 16) {
                 PlayerView(player: player)
                     .frame(width: 236, height: 420)
-                    .background(.black, in: RoundedRectangle(cornerRadius: 8))
+                    .background(.black, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
 
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: Theme.spaceM) {
                     LabeledContent("Overall") {
                         ThumbsToggle(value: $verdict)
                     }

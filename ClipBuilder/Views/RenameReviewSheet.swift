@@ -78,8 +78,8 @@ struct RenameSuggestionEditor: View {
                             .disabled(!(included[suggestion.videoID] ?? true))
                         }
                     }
-                    .padding(10)
-                    .background(.quinary, in: RoundedRectangle(cornerRadius: 8))
+                    .padding(Theme.cardPadding)
+                    .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
                 }
             }
             .padding(.horizontal)

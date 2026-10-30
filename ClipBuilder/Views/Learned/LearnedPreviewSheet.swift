@@ -56,7 +56,8 @@ struct LearnedPreviewSheet: View {
                 }
             }
         }
-        .padding(24).frame(minWidth: 680, minHeight: 560)
+        .padding(Theme.spaceL).frame(minWidth: 680, minHeight: 560)
+        .modalCloseButton(action: onDone)
         .task(id: profileName) {
             record = LastPlanRecord.load(profile: profileName)
             attempt = record?.acceptedAttempt ?? 0
@@ -86,7 +87,7 @@ struct LearnedPreviewSheet: View {
                 if !winners.isEmpty || !excluded.isEmpty {
                     VStack(alignment: .leading, spacing: 8) {
                         HStack(spacing: 8) {
-                            Text(LearnedSectionInfo.entry(kind).title).font(.headline)
+                            SectionLabel(LearnedSectionInfo.entry(kind).title)
                             Text("\(winners.count)").font(.caption.monospacedDigit()).foregroundStyle(.secondary)
                         }
                         ForEach(winners) { line in
@@ -107,7 +108,7 @@ struct LearnedPreviewSheet: View {
                 }
             }
             if report.winners.isEmpty && report.excluded.isEmpty {
-                Text("Nothing learned yet.").foregroundStyle(.secondary)
+                ContentUnavailableView("Nothing Learned Yet", systemImage: "graduationcap")
             }
         }
         .frame(maxWidth: .infinity, alignment: .leading)

@@ -81,13 +81,14 @@ struct TransitionsView: View {
         .toolbar {
             if pageVisible {
                 ToolbarItemGroup {
-                    Button("Render All Previews", systemImage: "play.rectangle.on.rectangle") {
+                    Button {
                         renderAll()
+                    } label: {
+                        ToolbarBubbleLabel(text: "Render All Previews", systemImage: "play.rectangle.on.rectangle")
                     }
                     .disabled(renderAllTask != nil)
                     .help("Render a sample of every transition through the real pipeline")
-                    .lineLimit(1).fixedSize()
-                    Menu("AI Palette", systemImage: "wand.and.stars") {
+                    Menu {
                             Button("Let AI Choose Any Effect") {
                                 setAITransitionAvailability(Set(effects.map(\.name)))
                             }
@@ -103,16 +104,18 @@ struct TransitionsView: View {
                                     }
                                 }
                             }
+                    } label: {
+                        ToolbarBubbleLabel(text: "AI Palette", systemImage: "wand.and.stars")
                     }
                     .help("Choose which transitions the AI Wizard may use")
-                    .lineLimit(1).fixedSize()
-                    Button("Show in Finder", systemImage: "folder") {
+                    Button {
                         try? FileManager.default.createDirectory(at: EffectPreviewRenderer.directory,
                                                                  withIntermediateDirectories: true)
                         NSWorkspace.shared.open(EffectPreviewRenderer.directory)
+                    } label: {
+                        ToolbarBubbleLabel(text: "Show in Finder", systemImage: "folder")
                     }
                     .help("Reveal the rendered preview files in Finder")
-                    .lineLimit(1).fixedSize()
                 }
             }
         }

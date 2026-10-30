@@ -44,7 +44,7 @@ struct FightStatsCoverageCell: View {
                 Image(systemName: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange)
                     .accessibilityLabel("Outcome check")
-                    .help("A completed submission does not match the saved fight outcome.")
+                    .help("A completed submission does not match the saved fight outcome")
             }
         }
         .task(id: store.fightEvents[video.id]) {

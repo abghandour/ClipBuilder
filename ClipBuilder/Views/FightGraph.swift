@@ -115,7 +115,7 @@ struct FightGraphView: View {
 
     var body: some View {
         let model = activityMemo(ActivityKey(events: events, range: range)) { activity() }
-        return VStack(alignment: .leading, spacing: 3) {
+        return VStack(alignment: .leading, spacing: Theme.spaceXS) {
             if showsLegend, let model {
                 HStack(spacing: 10) {
                     legendChip(name(for: model.topKey), score: model.topTotal,
@@ -185,7 +185,7 @@ struct FightGraphView: View {
     }
 
     private func legendChip(_ name: String, score: Double, color: Color, up: Bool) -> some View {
-        HStack(spacing: 3) {
+        HStack(spacing: Theme.spaceXS) {
             Image(systemName: up ? "arrowtriangle.up.fill" : "arrowtriangle.down.fill")
                 .font(.system(size: 7))
                 .foregroundStyle(color)

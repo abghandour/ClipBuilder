@@ -117,13 +117,8 @@ struct HoverScrubThumbnail: View {
         VideoThumbnail(url: url, time: time, cornerRadius: 6)
             .overlay(alignment: .bottomLeading) {
                 if hovering {
-                    Text(time.timecode)
-                        .font(.caption2.monospacedDigit())
-                        .padding(.horizontal, 4)
-                        .padding(.vertical, 1)
-                        .background(.black.opacity(0.6), in: RoundedRectangle(cornerRadius: 3))
-                        .foregroundStyle(.white)
-                        .padding(4)
+                    MediaBadge(text: time.timecode)
+                        .padding(Theme.spaceXS)
                 }
             }
             .onHover { hovering = $0 }

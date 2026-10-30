@@ -23,8 +23,7 @@ struct RunSummaryCard: View {
             }
             ForEach(summary.sections, id: \.title) { section in
                 HStack(alignment: .firstTextBaseline, spacing: Theme.spaceS) {
-                    Text(section.title)
-                        .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                    SectionLabel(section.title)
                         .frame(width: 64, alignment: .leading)
                     FlowLayout(spacing: Theme.spaceXS) {
                         ForEach(section.items, id: \.self) { item in
@@ -39,7 +38,7 @@ struct RunSummaryCard: View {
                 }
             }
         }
-        .padding(Theme.spaceM)
+        .padding(Theme.cardPadding)
         .frame(maxWidth: .infinity, alignment: .leading)
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
         .accessibilityElement(children: .combine)

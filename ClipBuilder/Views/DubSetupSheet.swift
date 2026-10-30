@@ -9,7 +9,7 @@ struct DubSetupSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 16) {
-            Text("Dub with \(store.dubEngine.title)").font(.title3.bold())
+            Text("Dub with \(store.dubEngine.title)").font(.headline)
             DubLanguagePicker(language: $language)
             HStack {
                 Text("Original level").lineLimit(1).fixedSize()
@@ -33,7 +33,8 @@ struct DubSetupSheet: View {
                 .buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20).frame(width: 440)
+        .padding(Theme.spaceL).frame(width: 440)
+        .modalCloseButton { dismiss() }
         .appJobSetupPresentation()
         .onAppear { language = store.builder.document.dub?.language ?? store.editingDefaults.footage.dubLanguage }
     }

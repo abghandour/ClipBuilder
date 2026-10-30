@@ -674,7 +674,7 @@ private struct PreviewComponentHandle: View {
                         resetInteraction()
                         onPlace(final)
                     })
-                .help("Drag to move the \(label); drag an edge or corner to resize it.")
+                .help("Drag to move the \(label); drag an edge or corner to resize it")
                 .accessibilityLabel("\(label.capitalized) position")
             ForEach(Grip.allCases, id: \.self) { grip in
                 let point = grip.point(in: displayed)

@@ -50,10 +50,10 @@ struct AIFavoritesReviewSheet: View {
                                 VideoThumbnail(url: scene.videoURL,
                                                time: (scene.startTime + scene.endTime) / 2)
                                     .frame(width: 72, height: 40)
-                                    .clipShape(RoundedRectangle(cornerRadius: 4))
+                                    .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
                                 VStack(alignment: .leading, spacing: 2) {
                                     Text("\(scene.videoFilename)  \(scene.startTime.timecode)–\(scene.endTime.timecode)")
-                                        .font(.caption)
+                                        .font(.caption.monospacedDigit())
                                         .lineLimit(1)
                                     HStack(spacing: 6) {
                                         if let score = scene.score {
@@ -69,8 +69,8 @@ struct AIFavoritesReviewSheet: View {
                                 }
                                 Spacer(minLength: 0)
                             }
-                            .padding(8)
-                            .background(.quinary, in: RoundedRectangle(cornerRadius: 8))
+                            .padding(Theme.cardPadding)
+                            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
                         }
                     }
                 }

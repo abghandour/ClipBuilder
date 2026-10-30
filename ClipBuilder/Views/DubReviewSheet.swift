@@ -49,7 +49,7 @@ struct DubReviewSheet: View {
     var body: some View {
         VStack(alignment: .leading, spacing: 12) {
             HStack {
-                Text("Review \(DubLanguageChoices.name(review.prepared.settings.language)) dub").font(.title3.bold())
+                Text("Review \(DubLanguageChoices.name(review.prepared.settings.language)) dub").font(.headline)
                 Spacer()
                 Text("\(lines.count) lines").foregroundStyle(.secondary)
             }
@@ -103,7 +103,8 @@ struct DubReviewSheet: View {
                 .disabled(hasEdits)
             }
         }
-        .padding(20).frame(minWidth: 680, idealWidth: 780, minHeight: 460, idealHeight: 650)
+        .padding(Theme.spaceL).frame(minWidth: 680, idealWidth: 780, minHeight: 460, idealHeight: 650)
+        .modalCloseButton(action: cancel)
         .task {
             let installed = await DubLanguageChoices.voices(engine: review.prepared.settings.engine)
             voices = installed.filter { DubLanguageChoices.matches($0.language, requested: review.prepared.settings.language) }

@@ -303,13 +303,13 @@ extension WizardView {
             .lineLimit(1).fixedSize()
             .disabled(summary.bestTake == nil)
             .help("Choose this selection’s best take and customize its look")
-            Button("Delete selection", systemImage: "trash") { deletingSelection = summary }
-                .labelStyle(.iconOnly).help("Delete selection")
+            Button("Delete Selection", systemImage: "trash") { deletingSelection = summary }
+                .labelStyle(.iconOnly).help("Delete this selection")
         }
     }
 
     var generateRequestBanner: some View {
-        VStack(alignment: .leading, spacing: 14) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             Label("Generate Video Request", systemImage: "wand.and.stars")
                 .font(.headline)
             Text("“\(store.pendingWizardPrompt?.description ?? "")”")

@@ -26,7 +26,7 @@ struct CaptionStylePreview: View {
                     .truncatingRemainder(dividingBy: loop)
                 let index = frames.firstIndex { $0.start <= time && time < $0.end }
                 ZStack(alignment: .topLeading) {
-                    Color(nsColor: .darkGray)
+                    Color.black
                     if let index, images.indices.contains(index), let image = images[index] {
                         Image(nsImage: image)
                             .resizable()
@@ -50,7 +50,7 @@ struct CaptionStylePreview: View {
                     playing.toggle()
                 }
                 .lineLimit(1).fixedSize()
-                .help("Play or pause the sample caption animation.")
+                .help("Play or pause the sample caption animation")
             }
             if let error { FormCaption(error, tone: .warning) }
             wordStateRows
@@ -109,7 +109,7 @@ struct CaptionStylePreview: View {
                 }
                 .padding(.horizontal, Theme.spaceS)
                 .frame(height: 44)
-                .background(Color(nsColor: .darkGray), in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
+                .background(.black, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
             }
         }
         .frame(width: 216)

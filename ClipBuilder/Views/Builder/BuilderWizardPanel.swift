@@ -47,22 +47,22 @@ struct BuilderWizardPanel: View {
                 HStack(spacing: Theme.spaceXS) {
                     Button("Discard", action: discard)
                         .disabled(model.phase == .applying)
-                        .help("Discard the preview and return to Scenes; saved Library work remains.")
+                        .help("Discard the preview and return to Scenes; saved Library work remains")
                     if model.beforeVersion != nil {
                         Button("Revert last run") { confirmRevert = true }
                             .disabled(model.busy)
-                            .help("Restore the saved timeline from before the last applied Wizard run, including removing later manual edits.")
+                            .help("Restore the saved timeline from before the last applied Wizard run, including removing later manual edits")
                     }
                     Spacer(minLength: 0)
                     if model.failure == .commitInProgress {
                         Button("Apply") { Task { await model.retryApply() } }
                             .buttonStyle(.borderedProminent)
-                            .help("Retry committing the same preview after the other commit finishes.")
+                            .help("Retry committing the same preview after the other commit finishes")
                     } else {
                         Button("Apply") { Task { await model.apply() } }
                             .buttonStyle(.borderedProminent)
                             .disabled(!model.canApply)
-                            .help("Commit the complete preview as one undoable timeline edit.")
+                            .help("Commit the complete preview as one undoable timeline edit")
                     }
                 }
                 .lineLimit(1)
@@ -79,9 +79,9 @@ struct BuilderWizardPanel: View {
         }
         .confirmationDialog("Revert ‘\(model.beforeVersion?.request ?? "last Wizard run")’?", isPresented: $confirmRevert) {
             Button("Revert last run", role: .destructive) { Task { await model.revert() } }
-                .help("Restore the saved before-version and remove later manual edits.")
+                .help("Restore the saved before-version and remove later manual edits")
             Button("Cancel", role: .cancel) {}
-                .help("Keep the current timeline.")
+                .help("Keep the current timeline")
         } message: {
             Text("Restores the timeline saved before this request. All later manual edits will be lost. Saved duration: \((try? model.beforeVersion?.document().contentEnd.timecode) ?? "unavailable").")
         }

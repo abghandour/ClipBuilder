@@ -126,7 +126,7 @@ struct ManualBuildSheet: View {
                 HStack {
                     Text(job.statusLine).font(.caption).lineLimit(1)
                     Button("Stop Center Stage") { store.jobs.cancel(job.id) }
-                }.padding(8).background(.regularMaterial, in: RoundedRectangle(cornerRadius: 8))
+                }.padding(Theme.cardPadding).background(.regularMaterial, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
             }
         }
         .onChange(of: model.editCenterStage) { ensureCameraPath() }
@@ -311,13 +311,8 @@ struct ManualBuildSheet: View {
                         VideoThumbnail(url: scene.videoURL, time: scene.startTime + 0.1)
                             .frame(width: 76, height: 46)
                             .overlay(alignment: .bottomTrailing) {
-                                Text(String(format: "%.0fs", scene.duration))
-                                    .font(.caption2.monospacedDigit())
-                                    .padding(.horizontal, 4)
-                                    .padding(.vertical, 1)
-                                    .background(.black.opacity(0.6), in: Capsule())
-                                    .foregroundStyle(.white)
-                                    .padding(3)
+                                MediaBadge(text: String(format: "%.0fs", scene.duration))
+                                    .padding(Theme.spaceXS)
                             }
                             .overlay {
                                 RoundedRectangle(cornerRadius: 6)
@@ -349,10 +344,7 @@ struct ManualBuildSheet: View {
     @ViewBuilder
     private var reelPreviewPane: some View {
         VStack(spacing: 8) {
-            Text("Reel Preview")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
+            SectionLabel("Reel Preview")
                 .frame(maxWidth: .infinity, alignment: .leading)
             if let reelPlayer {
                 PlayerFillView(player: reelPlayer)
@@ -360,8 +352,8 @@ struct ManualBuildSheet: View {
                     // Capped so the reel list below keeps its room in the
                     // shared right column.
                     .frame(maxHeight: 360)
-                    .background(.black, in: RoundedRectangle(cornerRadius: 8))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .background(.black, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
                 HStack(spacing: 10) {
                     Button {
                         reelPlaying.toggle()
@@ -896,10 +888,10 @@ struct ManualBuildSheet: View {
                 .frame(width: rect.width, height: rect.height)
                 .position(x: rect.midX, y: rect.midY)
             Text(label)
-                .font(.caption2.weight(.semibold))
-                .padding(.horizontal, 6)
+                .font(.badge)
+                .padding(.horizontal, 5)
                 .padding(.vertical, 2)
-                .background(.black.opacity(0.65), in: Capsule())
+                .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
                 .foregroundStyle(.yellow)
                 .position(x: rect.midX, y: max(videoRect.minY + 10, rect.minY - 12))
         }
@@ -1067,10 +1059,7 @@ struct ManualBuildSheet: View {
     /// remove. Replaces the old bottom strip so the player keeps the height.
     private var reelListPane: some View {
         VStack(alignment: .leading, spacing: 4) {
-            Text("Your Reel")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .textCase(.uppercase)
+            SectionLabel("Your Reel")
                 .padding(.horizontal, 10)
                 .padding(.top, 8)
                 .help("Drag to reorder, click to re-trim")
@@ -1271,8 +1260,8 @@ struct ManualBuildSheet: View {
                         }
                     }
                     .aspectRatio(9 / 16, contentMode: .fit)
-                    .background(.black, in: RoundedRectangle(cornerRadius: 8))
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .background(.black, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
                     .frame(maxHeight: .infinity)
                     HStack {
                         previewControls
@@ -1368,7 +1357,7 @@ struct ManualBuildSheet: View {
                             Text(pick.scene.videoFilename)
                                 .lineLimit(1)
                             Text(String(format: "%.1fs", pick.duration))
-                                .font(.caption)
+                                .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
                         Spacer()
@@ -1427,7 +1416,7 @@ struct ManualBuildSheet: View {
                 }
                 Spacer()
             }
-            .padding(24)
+            .padding(Theme.spaceL)
             .frame(maxWidth: .infinity, maxHeight: .infinity)
             // Final check before Generate: run the Exact Preview here and
             // watch precisely the file that Generate will save.

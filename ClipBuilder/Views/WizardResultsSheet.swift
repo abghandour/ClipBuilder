@@ -202,7 +202,7 @@ struct WizardResultsSheet: View {
                     .fixedSize(horizontal: false, vertical: true)
                     .help(video.rationale ?? video.filename)
                 Text("\(video.filename) · \(video.duration.timecode)")
-                    .font(.caption)
+                    .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle)
                     .help(video.filename)

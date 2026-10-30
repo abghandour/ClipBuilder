@@ -26,10 +26,10 @@ struct ComparisonSheet: View {
                     VStack(spacing: 8) {
                         PlayerView(player: players[video.id])
                             .frame(width: 210, height: 373)
-                            .background(.black, in: RoundedRectangle(cornerRadius: 8))
+                            .background(.black, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
 
                         Text("Variation \(index + 1) · \(video.duration.timecode)")
-                            .font(.caption)
+                            .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
 
                         if let rationale = video.rationale, !rationale.isEmpty {
@@ -43,7 +43,7 @@ struct ComparisonSheet: View {
                         Button("Pick This One") {
                             store.resolveComparison(batch, winner: video)
                         }
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.bordered)
                     }
                 }
             }

@@ -40,7 +40,7 @@ struct BuilderWizardStatusBanner: View {
                     if model.phase != .applied && model.phase != .discarded {
                         Button("Ask the agent instead", action: model.beginAskAgentInstead)
                             .disabled(model.busy || !model.identityMatches)
-                            .help("Discard this script preview and send the original request to the agent without saved script routing.")
+                            .help("Discard this script preview and send the original request to the agent without saved script routing")
                     }
                 }
                 Text(model.statusText).fontWeight(.medium)

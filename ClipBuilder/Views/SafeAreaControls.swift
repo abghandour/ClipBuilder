@@ -11,7 +11,7 @@ struct SafeAreaControls: View {
                 HStack(alignment: .top, spacing: Theme.spaceM) {
                     Toggle("Safe area only", isOn: $enabled)
                         .toggleStyle(.switch).fixedSize()
-                        .help("Keep captions and name tags inside the platforms' safe zones, even at Bottom, Top or a corner.")
+                        .help("Keep captions and name tags inside the platforms' safe zones, even at Bottom, Top or a corner")
                     if enabled {
                         PlatformTargetsPicker(platforms: $platforms)
                     }

@@ -39,10 +39,14 @@ struct TextLooksList: View {
             }
             ControlGroup {
                 Button("New", systemImage: "plus", action: add)
+                    .help("Add a style")
                 Button("Duplicate", systemImage: "plus.square.on.square", action: duplicate)
                     .disabled(selection == nil)
-                Button("Delete", systemImage: "trash", role: .destructive, action: remove).disabled(!canDelete)
-            }.labelStyle(.iconOnly).padding(8)
+                    .help("Duplicate the selected style")
+                Button("Delete", systemImage: "trash", role: .destructive, action: remove)
+                    .disabled(!canDelete)
+                    .help("Delete the selected style")
+            }.labelStyle(.iconOnly).padding(Theme.spaceS)
         }
     }
 

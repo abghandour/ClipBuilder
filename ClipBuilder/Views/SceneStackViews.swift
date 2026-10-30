@@ -72,7 +72,7 @@ struct SceneStackBadge: View {
 
     private var label: some View {
         Label("\(count)", systemImage: "square.stack")
-            .font(compact ? .badgeCompact : .caption2.bold())
+            .font(compact ? .badgeCompact : .badge)
             .padding(3)
             .background(.blue.opacity(0.85), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
             .foregroundStyle(.white)

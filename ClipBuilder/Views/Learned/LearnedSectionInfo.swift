@@ -40,7 +40,7 @@ nonisolated enum LearnedSectionInfo {
         var label: String {
             switch self {
             case .page: "Edit here"
-            case .settings(_, let title): "Change in Settings › \(title)"
+            case .settings(_, let title): "Change in Settings → \(title)"
             case .project(let title): "Change in \(title)"
             }
         }
@@ -74,9 +74,9 @@ nonisolated enum LearnedSectionInfo {
                   usedBy: [.init(consumer: .wizardPlan, qualifier: "House style on every plan. Hook and layout only while Learned editing defaults is on."),
                            .init(consumer: .critic, qualifier: "House style."),
                            .init(consumer: .captions, qualifier: "Caption languages.")],
-                  editLocations: [.settings(tab: "taste", title: "Taste › House Style"),
-                                  .settings(tab: "profile", title: "Profile › Brand Kit (languages)"),
-                                  .settings(tab: "profile", title: "Profile › Default Output (pacing)")],
+                  editLocations: [.settings(tab: "taste", title: "Taste → House Style"),
+                                  .settings(tab: "profile", title: "Profile → Brand Kit (languages)"),
+                                  .settings(tab: "profile", title: "Profile → Default Output (pacing)")],
                   readOnlyReason: "")
         case .taste:
             .init(title: "Taste",
@@ -98,8 +98,8 @@ nonisolated enum LearnedSectionInfo {
                   usedBy: [.init(consumer: .analysis, qualifier: "Tags to assign. The built-in schema is used when yours is empty."),
                            .init(consumer: .captions, qualifier: "Pinned hashtags seed the caption's hashtags when the caption uses local hashtags (up to seven candidates)."),
                            .init(consumer: .wizardPlan, qualifier: "Listed as learned vocabulary once a Google Drive home is set.")],
-                  editLocations: [.settings(tab: "profile", title: "Profile › Tag Schema"),
-                                  .settings(tab: "profile", title: "Profile › Brand Kit")],
+                  editLocations: [.settings(tab: "profile", title: "Profile → Tag Schema"),
+                                  .settings(tab: "profile", title: "Profile → Brand Kit")],
                   readOnlyReason: "",
                   emptyNote: "Using the built-in vocabulary.")
         case .benchmarks:
@@ -133,7 +133,7 @@ nonisolated enum LearnedSectionInfo {
     static let evidenceHelp = "Evidence: which reviews, studies or imports produced this."
     static let mergeHelp = "When another Mac shares the same entry, the newer one wins. Your own house style, hook style, layout, pacing, taste rubric and benchmark summary always win over shared ones."
     static let shareHelp = "What leaves this Mac when you publish. These switches never change what this Mac uses; each feature still applies its own conditions. People and research stay private unless you turn them on. Trained models are published separately."
-    static let noHomeHelp = "Choose a Google Drive home in Settings › Google Drive to share learning between Macs."
+    static let noHomeHelp = "Choose a Google Drive home in Settings → Google Drive to share learning between Macs."
 }
 
 /// Plain-language descriptions for the trained models.

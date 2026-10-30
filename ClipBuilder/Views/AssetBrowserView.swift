@@ -70,37 +70,51 @@ struct AssetBrowserView: View {
                     if let home = store.googleDrive.assetHomes[store.activeProfile.profileName] {
                         AssetSyncRefreshButton(home: home)
                     }
-                    Button("Add Files", systemImage: "plus") {
+                    Button {
                         showingImporter = true
+                    } label: {
+                        ToolbarBubbleLabel(text: "Add Files", systemImage: "plus")
                     }
                     .help("Copy files into the current folder")
-                    Button("New Folder", systemImage: "folder.badge.plus") {
+                    Button {
                         newFolderName = ""
                         showingNewFolder = true
+                    } label: {
+                        ToolbarBubbleLabel(text: "New Folder", systemImage: "folder.badge.plus")
                     }
                     .help("Create a folder inside the current folder")
 
                     if kind == .images {
-                        Button("Ask Images", systemImage: "sparkle.magnifyingglass") {
+                        Button {
                             showingAskImages = true
+                        } label: {
+                            ToolbarBubbleLabel(text: "Ask Images", systemImage: "sparkle.magnifyingglass")
                         }
                         .disabled(items.filter { !$0.isFolder }.isEmpty)
                         .help("Find images by describing what you need")
                         if matchedImagePaths != nil {
-                            Button("Clear AI Search", systemImage: "xmark.circle") {
+                            Button {
                                 matchedImagePaths = nil
+                            } label: {
+                                ToolbarBubbleLabel(text: "Clear AI Search", systemImage: "xmark.circle")
                             }
                             .help(matchedImageQuery)
                         }
-                        Button("Tag Images with AI", systemImage: "sparkles") {
+                        Button {
                             analyzeVisibleImages()
+                        } label: {
+                            ToolbarBubbleLabel(text: "Tag Images with AI", systemImage: "sparkles")
                         }
                         .disabled(analyzingPaths.isEmpty == false)
                         .help("Tag every visible image with its subjects and a B-roll mark")
                     }
 
-                    Button("Show in Finder", systemImage: "folder") {
+                    Button {
                         NSWorkspace.shared.open(currentFolder)
+                    } label: {
+
+                        ToolbarBubbleLabel(text: "Show in Finder", systemImage: "folder")
+
                     }
                     .help("Reveal the current folder in Finder")
                 }
@@ -325,8 +339,8 @@ struct AssetBrowserView: View {
                                 }
                             }
                         }
-                        .padding(8)
-                        .background(.quaternary.opacity(0.3), in: .rect(cornerRadius: 8))
+                        .padding(Theme.cardPadding)
+                        .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: Theme.cardRadius))
                         .contextMenu { contextMenu(for: item) }
                         .draggable(item.url)
                     }
@@ -367,7 +381,7 @@ struct AssetBrowserView: View {
                         .foregroundStyle(.secondary)
                         .frame(maxWidth: .infinity)
                         .frame(height: 100)
-                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+                        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
                 } else {
                     ImageThumbnail(url: item.url)
                         .frame(height: 100)
@@ -437,7 +451,7 @@ struct AssetBrowserView: View {
             NSWorkspace.shared.activateFileViewerSelecting([item.url])
         }
         Divider()
-        Button("Move to Trash", role: .destructive) { deleteTarget = item }
+        Button("Move to Trash…", role: .destructive) { deleteTarget = item }
     }
 
     private func open(_ folder: AssetItem) {
@@ -787,7 +801,7 @@ private struct FontRow: View {
     @State private var sampleFont: Font?
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 3) {
+        VStack(alignment: .leading, spacing: Theme.spaceXS) {
             HStack {
                 Text(fontName ?? item.displayName)
                     .font(.caption)
@@ -838,7 +852,7 @@ struct ImageThumbnail: View {
                     .controlSize(.small)
             }
         }
-        .clipShape(RoundedRectangle(cornerRadius: 8))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
         .task(id: url.path) {
             image = await Self.thumbnail(for: url)
         }

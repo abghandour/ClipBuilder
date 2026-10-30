@@ -78,7 +78,7 @@ struct SceneEditor: View {
             playerArea
                 .frame(maxWidth: .infinity)
                 .frame(height: 300)
-                .background(.black, in: RoundedRectangle(cornerRadius: 8))
+                .background(.black, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
 
             controlsRow
 
@@ -92,7 +92,7 @@ struct SceneEditor: View {
                     }
                     HStack {
                         Text("Analyzed: \(scene.originalStart.timecode)–\(scene.originalEnd.timecode)")
-                            .font(.caption2)
+                            .font(.caption2.monospacedDigit())
                             .foregroundStyle(.tertiary)
                         Spacer()
                         if hasOverride || rangeEdited {

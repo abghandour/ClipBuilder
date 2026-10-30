@@ -22,9 +22,9 @@ struct SoundbiteSheet: View {
     }
 
     private var setup: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             Text("Find Soundbites")
-                .font(.title3.bold())
+                .font(.headline)
             Text("Mines the transcript of \(video.filename) for the most quotable self-contained moments — the lines worth building a reel around — each with timestamps and a suggested overlay caption.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -45,7 +45,7 @@ struct SoundbiteSheet: View {
                     .keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
     }
 
     private func run() {

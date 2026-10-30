@@ -872,7 +872,7 @@ struct TagChip: View {
             .padding(.horizontal, 6)
             .padding(.vertical, 2)
             .background(tag == "reel-highlight" ? Color.accentColor : Color.secondary.opacity(0.14),
-                        in: Capsule())
+                        in: RoundedRectangle(cornerRadius: Theme.chipRadius))
     }
 }
 
@@ -1135,17 +1135,45 @@ enum MarkerPalette {
 
 /// Duration bubble overlaid on thumbnails — always bottom-trailing.
 /// Sub-minute durations keep tenths ("3.4s"); longer ones read as m:ss.
+/// `inset` is the gap to the thumbnail edge.
 struct DurationBadge: View {
     let seconds: Double
+    var inset: CGFloat = Theme.spaceXS
 
     var body: some View {
-        Text(seconds < 60 ? String(format: "%.1fs", seconds) : seconds.timecode)
-            .font(.caption2.monospacedDigit())
+        MediaBadge(text: seconds < 60 ? String(format: "%.1fs", seconds) : seconds.timecode)
+            .padding(inset)
+    }
+}
+
+/// Timecode or duration text on a dark pill over media. One look for every
+/// thumbnail overlay: badge font, chip radius, 65% black.
+struct MediaBadge: View {
+    let text: String
+
+    var body: some View {
+        Text(text)
+            .font(.badge)
             .padding(.horizontal, 5)
             .padding(.vertical, 2)
             .background(.black.opacity(0.65), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
             .foregroundStyle(.white)
-            .padding(6)
+    }
+}
+
+/// Section label inside inspectors, sheets and cards: small uppercase
+/// caption in secondary. One shape app-wide.
+struct SectionLabel: View {
+    let title: String
+    init(_ title: String) { self.title = title }
+
+    var body: some View {
+        Text(title)
+            .font(.caption.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .textCase(.uppercase)
+            .lineLimit(1)
+            .fixedSize()
     }
 }
 

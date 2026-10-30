@@ -127,8 +127,8 @@ struct MiniWizardView: View {
             }
         }
         .screenTitle("AI Wizard", subtitle: "Express")
-        .confirmationDialog("Remove all B-rolls?", isPresented: $confirmRemoveBRoll) {
-            Button("Remove all B-rolls", role: .destructive) {
+        .confirmationDialog("Remove all B-rolls from this reel?", isPresented: $confirmRemoveBRoll) {
+            Button("Remove All B-Rolls", role: .destructive) {
                 guard let run = currentRun else { return }
                 store.removeAllMiniBRoll(batchID: run.batchID)
                 miniSettings.didEditBRoll()
@@ -250,7 +250,7 @@ struct MiniWizardView: View {
                                 .font(.caption.weight(.semibold)).lineLimit(1).fixedSize()
                                 .padding(.horizontal, 8).padding(.vertical, 4).background(.quaternary, in: .capsule)) : nil) {
                             if flow.visibleCard == .broll {
-                                Button("Remove all B-rolls", role: .destructive) { confirmRemoveBRoll = true }
+                                Button("Remove All B-Rolls", role: .destructive) { confirmRemoveBRoll = true }
                                     .lineLimit(1).fixedSize().disabled(brollCount == 0 || store.isWizardRunning)
                                 if let run = currentRun, flow.canExpand(.broll) {
                                     MiniBRollPanel(run: run, settings: $miniSettings)
@@ -283,7 +283,7 @@ struct MiniWizardView: View {
                     }
                     .frame(maxWidth: .infinity)
                 }
-                .padding(Theme.spaceXL)
+                .padding(Theme.spaceL)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
         }

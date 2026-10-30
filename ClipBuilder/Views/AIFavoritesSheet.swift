@@ -22,9 +22,9 @@ struct AIFavoritesSheet: View {
     }
 
     private var setup: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             Text("AI Favorites")
-                .font(.title3.bold())
+                .font(.headline)
             Text("Judges the \(candidates.count) non-favorite scene\(candidates.count == 1 ? "" : "s") in view against your taste rubric — using your own grades and existing Favorite picks as worked examples — and proposes the keepers. You review every pick before it joins Favorites.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -48,7 +48,7 @@ struct AIFavoritesSheet: View {
                     .help("Ask AI Favorites to propose scenes for your review")
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
     }
 
     private func run() {

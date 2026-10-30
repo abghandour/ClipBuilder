@@ -60,7 +60,6 @@ struct BuilderScenePickerSheet: View {
                                         .aspectRatio(9 / 16, contentMode: .fit)
                                         .overlay(alignment: .bottomLeading) {
                                             DurationBadge(seconds: scene.duration)
-                                                .padding(Theme.spaceXS)
                                         }
                                     Text(scene.videoFilename)
                                         .font(.caption)

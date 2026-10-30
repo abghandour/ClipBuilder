@@ -805,8 +805,7 @@ struct DispatchPlanSheet: View {
     private var instructionsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Generic instructions — apply to every video (optional)")
-                    .font(.subheadline.weight(.medium))
+                SectionLabel("Generic instructions — apply to every video (optional)")
                 Spacer()
                 if !namedPeople.isEmpty {
                     Menu("People") {
@@ -1127,7 +1126,7 @@ private struct VideoNotesPanel: View {
                 selectedPeopleKeys.insert(entry.key)
             }
         } label: {
-            VStack(spacing: 3) {
+            VStack(spacing: Theme.spaceXS) {
                 VideoPersonAvatar(record: entry, videoURL: video.url, size: 44)
                     .contextMenu { VIPContextMenu(entry: entry) }
                     .overlay {
@@ -1215,7 +1214,7 @@ private struct VideoNotesPanel: View {
             PlayerView(player: player)
                 .frame(maxWidth: .infinity)
                 .frame(height: 380)
-                .background(.black, in: RoundedRectangle(cornerRadius: 8))
+                .background(.black, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
                 .overlay {
                     // Identity boxes near the current moment, drawn in the
                     // video's letterboxed display rect and editable in place.

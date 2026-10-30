@@ -552,8 +552,10 @@ struct WizardView: View {
             if pageVisible {
                 ToolbarItem { AIPasteSettingsBar(kind: .wizard) }
                 ToolbarItemGroup {
-                    Button("Training Guide", systemImage: "questionmark.circle") {
+                    Button {
                         showTrainingGuide = true
+                    } label: {
+                        ToolbarBubbleLabel(text: "Training Guide", systemImage: "questionmark.circle")
                     }
                     .help("How to teach the Wizard your taste")
                 }
@@ -889,7 +891,7 @@ struct WizardView: View {
             if let url = handoff.thumbnailURL {
                 CachedImage(url: url, maxPixel: 160)
                     .frame(width: 34, height: 56)
-                    .clipShape(RoundedRectangle(cornerRadius: 5))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
             } else {
                 RoundedRectangle(cornerRadius: 5)
                     .fill(.quaternary)

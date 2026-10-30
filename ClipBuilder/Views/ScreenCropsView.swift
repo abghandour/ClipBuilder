@@ -136,7 +136,7 @@ struct ScreenCropsView: View {
     @ToolbarContentBuilder
     private var screenCropToolbarContent: some ToolbarContent {
         ToolbarItemGroup {
-            Button("New Screen Layout", systemImage: "plus", action: createLayout)
+            Button(action: createLayout) { ToolbarBubbleLabel(text: "New Screen Layout", systemImage: "plus") }
                 .help("Create a screen layout")
             if selectedName != nil, !isBuiltInSelected {
                 Label(isSaving ? "Saving…" : "Saved",
@@ -144,14 +144,18 @@ struct ScreenCropsView: View {
                     .font(.caption)
                     .foregroundStyle(isSaving ? Color.secondary : Color.green)
             }
-            Menu("AI Availability", systemImage: "wand.and.stars") {
+            Menu {
                 aiAvailabilityMenuItems
+            } label: {
+                ToolbarBubbleLabel(text: "AI Availability", systemImage: "wand.and.stars")
             }
             .help("Choose which layouts the AI Wizard may use")
-            Button("Show in Finder", systemImage: "folder") {
+            Button {
                 try? FileManager.default.createDirectory(at: ScreenCropStore.directory,
                                                          withIntermediateDirectories: true)
                 NSWorkspace.shared.open(ScreenCropStore.directory)
+            } label: {
+                ToolbarBubbleLabel(text: "Show in Finder", systemImage: "folder")
             }
             .help("Reveal the layout files in Finder")
         }
@@ -216,6 +220,31 @@ struct ScreenCropsView: View {
     }
 
     private var layoutList: some View {
+        VStack(spacing: 0) {
+            layoutListRows
+            Divider()
+            ControlGroup {
+                Button("Rename", systemImage: "pencil") {
+                    renameText = selectedName ?? ""
+                    renamePrompt = true
+                }
+                .disabled(selectedName == nil || isBuiltInSelected)
+                .help("Rename this layout")
+                Button("Duplicate", systemImage: "plus.square.on.square") {
+                    if let item = (layouts + builtInLayouts).first(where: { $0.name == selectedName }) { duplicate(item) }
+                }
+                .disabled(selectedName == nil)
+                .help(isBuiltInSelected ? "Copy this built-in layout as a custom layout" : "Duplicate this layout")
+                Button("Delete", systemImage: "trash", role: .destructive) { deleteTarget = selectedName }
+                    .disabled(selectedName == nil || isBuiltInSelected)
+                    .help("Move this layout to the Trash")
+            }
+            .labelStyle(.iconOnly)
+            .padding(Theme.spaceS)
+        }
+    }
+
+    private var layoutListRows: some View {
         List(selection: $selectedName) {
             Section("Built-in") {
                 ForEach(builtInLayouts) { item in
@@ -257,7 +286,7 @@ struct ScreenCropsView: View {
             Button(builtIn ? "Duplicate as Custom" : "Duplicate") { duplicate(item) }
             if !builtIn {
                 Divider()
-                Button("Move to Trash", role: .destructive) { deleteTarget = item.name }
+                Button("Move to Trash…", role: .destructive) { deleteTarget = item.name }
             }
         }
     }
@@ -630,10 +659,9 @@ struct ScreenCropEditor: View {
 
             Divider()
 
-            Text("Areas")
-                .font(.subheadline.weight(.semibold))
+            SectionLabel("Areas")
             if layout.areas.isEmpty {
-                Text("None yet.")
+                Text("None yet")
                     .font(.caption)
                     .foregroundStyle(.tertiary)
             }

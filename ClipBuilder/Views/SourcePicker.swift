@@ -148,7 +148,7 @@ struct SourcePickerButton: View {
         } label: {
             HStack(spacing: Theme.spaceS) {
                 if let selection {
-                    VideoThumbnail(url: selection.url, time: min(1, selection.duration / 2), cornerRadius: 3)
+                    VideoThumbnail(url: selection.url, time: min(1, selection.duration / 2), cornerRadius: Theme.mediaRadius)
                         .frame(width: 32, height: 20)
                         .accessibilityHidden(true)
                 } else {

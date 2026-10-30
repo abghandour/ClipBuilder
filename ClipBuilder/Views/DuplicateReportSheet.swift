@@ -21,9 +21,9 @@ struct DuplicateReportSheet: View {
     }
 
     private var setup: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             Text("Scan for Duplicates")
-                .font(.title3.bold())
+                .font(.headline)
             Text("Compares the library's \(store.videos.count) videos — metadata plus one frame each — and reports footage imported more than once (re-downloads, different resolutions, shorter cuts), recommending which copy to keep. Nothing is deleted.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -45,7 +45,7 @@ struct DuplicateReportSheet: View {
                     .disabled(store.videos.count < 2)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
     }
 
     private func run() {

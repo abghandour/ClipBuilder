@@ -29,7 +29,7 @@ struct ProjectVideoPickerSheet: View {
                             Text(video.filename)
                                 .lineLimit(1)
                             Text(video.duration.timecode)
-                                .font(.caption)
+                                .font(.caption.monospacedDigit())
                                 .foregroundStyle(.secondary)
                         }
                     }
@@ -48,6 +48,7 @@ struct ProjectVideoPickerSheet: View {
             .padding(Theme.spaceM)
         }
         .frame(minWidth: 560, minHeight: 420)
+        .modalCloseButton { dismiss() }
         .navigationTitle("Add Existing Videos")
         .task { await loadVideos() }
     }

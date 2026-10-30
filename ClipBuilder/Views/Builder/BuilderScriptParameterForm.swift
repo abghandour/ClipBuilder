@@ -16,7 +16,7 @@ struct BuilderScriptParameterForm: View {
                             }
                         }
                         .labelsHidden()
-                        .help("Choose \(parameter.name) from the captured session.")
+                        .help("Choose \(parameter.name) from the captured session")
                     } else {
                         TextField(parameter.type == "time" ? "Seconds" : parameter.type,
                                   text: valueBinding(parameter.name))

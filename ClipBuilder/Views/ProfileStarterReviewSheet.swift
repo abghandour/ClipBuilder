@@ -43,7 +43,7 @@ struct ProfileStarterReviewSheet: View {
             .padding()
 
             ScrollView {
-                VStack(alignment: .leading, spacing: 14) {
+                VStack(alignment: .leading, spacing: Theme.spaceM) {
                     Toggle(store.activeProfile.tasteRubric.isEmpty
                            ? "Taste rubric"
                            : "Taste rubric (replaces the current one)", isOn: $applyRubric)
@@ -74,9 +74,9 @@ struct ProfileStarterReviewSheet: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
-                            .padding(8)
+                            .padding(Theme.cardPadding)
                             .frame(maxWidth: .infinity, alignment: .leading)
-                            .background(.quinary, in: RoundedRectangle(cornerRadius: 6))
+                            .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
                         }
                     }
                 }

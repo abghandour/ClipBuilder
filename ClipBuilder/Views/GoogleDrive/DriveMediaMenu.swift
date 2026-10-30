@@ -97,6 +97,7 @@ struct DriveMediaMenu: View {
                     } catch { self.error = GoogleDriveError.message(for: error) }
                 }
             }
+            Button("Cancel", role: .cancel) {}
         } message: {
             Text(
                 presentCopies.contains(where: \.shared)

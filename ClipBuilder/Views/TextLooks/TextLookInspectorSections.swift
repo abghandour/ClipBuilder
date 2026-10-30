@@ -300,9 +300,7 @@ struct TextLookSection<Content: View, Trailing: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceS) {
             HStack(spacing: Theme.spaceS) {
-                Text(title.uppercased())
-                    .font(.caption.weight(.semibold)).tracking(0.8).foregroundStyle(.secondary)
-                    .lineLimit(1).fixedSize()
+                SectionLabel(title)
                 Spacer(minLength: 0)
                 trailing
             }
@@ -362,7 +360,6 @@ struct EffectSection<Content: View>: View {
             }
         }
         .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
-        .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius).strokeBorder(.quaternary))
     }
 }
 

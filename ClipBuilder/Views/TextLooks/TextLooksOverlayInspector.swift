@@ -18,9 +18,8 @@ struct TextLooksOverlayInspector: View {
         case .text(let uid):
             if let index = composition.texts.firstIndex(where: { $0.uid == uid }) {
                 let binding = $composition.texts[index]
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Text Item").lineLimit(1).fixedSize()
-                        .font(.headline)
+                VStack(alignment: .leading, spacing: Theme.spaceM) {
+                    SectionLabel("Text Item")
                     timingControls(
                         start: binding.startTime, end: binding.endTime,
                         transIn: binding.transIn, transOut: binding.transOut,
@@ -35,9 +34,8 @@ struct TextLooksOverlayInspector: View {
         case .image(let uid):
             if let index = composition.images.firstIndex(where: { $0.uid == uid }) {
                 let binding = $composition.images[index]
-                VStack(alignment: .leading, spacing: 12) {
-                    Text("Image Item").lineLimit(1).fixedSize()
-                        .font(.headline)
+                VStack(alignment: .leading, spacing: Theme.spaceM) {
+                    SectionLabel("Image Item")
                     timingControls(
                         start: binding.startTime, end: binding.endTime,
                         transIn: binding.transIn, transOut: binding.transOut,

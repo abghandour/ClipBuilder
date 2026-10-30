@@ -39,7 +39,7 @@ struct TagStyleEditor: View {
                     if selectedState == "Description" {
                         TextLookRow("Field") {
                             TextField("Field", text: $style.description.field)
-                                .help("Shows the saved People field, or AI fills it from the reel's context.")
+                                .help("Shows the saved People field, or AI fills it from the reel's context")
                             Menu("Suggestions") {
                                 ForEach(TagTextWriter.profileFields, id: \.self) { field in
                                     Button(field) { style.description.field = field }

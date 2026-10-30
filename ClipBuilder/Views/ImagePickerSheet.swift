@@ -92,7 +92,7 @@ struct ImagePickerSheet: View {
                     .frame(height: 110)
                     .overlay {
                         if isSelected {
-                            RoundedRectangle(cornerRadius: 8)
+                            RoundedRectangle(cornerRadius: Theme.mediaRadius)
                                 .strokeBorder(Color.accentColor, lineWidth: 3)
                         }
                     }

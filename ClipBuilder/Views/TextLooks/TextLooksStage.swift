@@ -145,7 +145,7 @@ struct TextLooksStage: View {
             Text("Black").lineLimit(1).fixedSize().tag(OverlayStageBackdrop.Mode.black.rawValue)
             Text("Colour").lineLimit(1).fixedSize().tag(OverlayStageBackdrop.Mode.color.rawValue)
             Text("Source").lineLimit(1).fixedSize().tag(OverlayStageBackdrop.Mode.video.rawValue)
-        }.pickerStyle(.segmented).help("Preview background; never included in the exported look.")
+        }.pickerStyle(.segmented).help("Preview background; never included in the exported look")
     }
     @ViewBuilder private var backdropDetails: some View {
         switch backdrop.mode {

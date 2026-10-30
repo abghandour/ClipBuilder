@@ -54,8 +54,9 @@ struct GoogleDriveBrowserSheet: View {
                 Button("Close") { dismiss() }.keyboardShortcut(.cancelAction)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
         .frame(minWidth: 740, idealWidth: 860, minHeight: 480, idealHeight: 580)
+        .modalCloseButton { dismiss() }
         .task {
             profile = store.activeProfile.profileName
             projectID = store.activeProjectID
@@ -242,7 +243,7 @@ struct GoogleDriveBrowserSheet: View {
                 Button("Cancel") { dismiss() }.keyboardShortcut(.cancelAction)
                 Button(
                     pickFolder != nil
-                        ? "Choose Folder" : isUpload ? "Upload Here" : "Download \(selectedFiles.count) Files"
+                        ? "Choose Folder" : isUpload ? "Upload Here" : selectedFiles.count == 1 ? "Download 1 File" : "Download \(selectedFiles.count) Files"
                 ) { Task { await accept() } }
                 .keyboardShortcut(.defaultAction)
                 .disabled(loading || (isFolderPicker ? currentFolder == nil : selectedFiles.isEmpty))

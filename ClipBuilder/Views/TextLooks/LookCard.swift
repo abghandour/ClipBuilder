@@ -118,9 +118,9 @@ struct LookTile: View {
         }
         .padding(5)
         .frame(maxWidth: .infinity)
-        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: 8))
+        .background(.quaternary.opacity(0.5), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
         .overlay {
-            RoundedRectangle(cornerRadius: 8)
+            RoundedRectangle(cornerRadius: Theme.cardRadius)
                 .strokeBorder(isSelected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary), lineWidth: isSelected ? 2 : 1)
         }
         .overlay(alignment: .topTrailing) {
@@ -131,7 +131,7 @@ struct LookTile: View {
                     .padding(3)
             }
         }
-        .contentShape(RoundedRectangle(cornerRadius: 8))
+        .contentShape(RoundedRectangle(cornerRadius: Theme.cardRadius))
         .accessibilityElement(children: .ignore)
         .accessibilityLabel(name)
         .accessibilityAddTraits(isSelected ? [.isButton, .isSelected] : .isButton)

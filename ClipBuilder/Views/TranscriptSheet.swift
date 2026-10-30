@@ -847,7 +847,7 @@ struct TranscriptSheet: View {
                 }
             }
             .aspectRatio(16 / 9, contentMode: .fit)
-            .clipShape(RoundedRectangle(cornerRadius: 8))
+            .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
             if let playing {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
@@ -899,10 +899,8 @@ struct TranscriptSheet: View {
         let checkedKey = attributedKey(row)
         return VStack(alignment: .leading, spacing: 6) {
             HStack {
-                Text("Who is talking · \(row.startTime.timecode)–\(row.endTime.timecode)")
-                    .font(.caption.weight(.semibold))
-                    .foregroundStyle(.secondary)
-                    .textCase(.uppercase)
+                SectionLabel("Who is talking · \(row.startTime.timecode)–\(row.endTime.timecode)")
+                    .monospacedDigit()
                 Spacer()
                 if attribution != .automatic {
                     Button("Use the app's guess") { attribute([row], .automatic) }

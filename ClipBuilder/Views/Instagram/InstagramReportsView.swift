@@ -96,10 +96,9 @@ struct InstagramReportsView: View {
 
     private var working: some View {
         VStack(spacing: Theme.spaceM) {
-            ProgressView()
-            Text(store.isImportingPeaceGrappler ? "Importing report history…"
-                 : store.isFetchingInstagram ? "Fetching report data…" : "Building report…")
-                .foregroundStyle(.secondary)
+            ProgressView(store.isImportingPeaceGrappler ? "Importing report history…"
+                         : store.isFetchingInstagram ? "Fetching report data…" : "Building report…")
+                .controlSize(.small)
         }
         .padding()
     }
@@ -135,7 +134,7 @@ struct InstagramReportsView: View {
         HStack(spacing: Theme.spaceM) {
             Image(systemName: "clock.arrow.circlepath")
                 .font(.title2)
-                .foregroundStyle(ReportColors.accent)
+                .foregroundStyle(Theme.instagramTint)
             VStack(alignment: .leading, spacing: 2) {
                 Text("Months of history are waiting in the peace-grappler reports")
                     .font(.subheadline.weight(.semibold))
@@ -150,8 +149,7 @@ struct InstagramReportsView: View {
                 .help("Reads the peace-grappler checkout (Settings → Instagram → Report History sets the folder) — safe to run again, live data always wins")
         }
         .padding(Theme.spaceL)
-        .background(ReportColors.accent.opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
-        .overlay(RoundedRectangle(cornerRadius: Theme.cardRadius).strokeBorder(ReportColors.accent.opacity(0.3)))
+        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: Theme.cardRadius))
     }
 
     private func header(_ report: InstagramReport, account: IGAccountRecord) -> some View {
@@ -161,7 +159,7 @@ struct InstagramReportsView: View {
                 Label("@\(account.username)",
                       systemImage: store.isGraphAccount(account) ? "checkmark.seal.fill" : "person.crop.circle")
                     .font(.title3.weight(.semibold))
-                    .foregroundStyle(store.isGraphAccount(account) ? ReportColors.accent : .primary)
+                    .foregroundStyle(store.isGraphAccount(account) ? Theme.instagramTint : .primary)
                     .lineLimit(1)
                     .fixedSize()
                 Text(store.isGraphAccount(account) ? "Connected · official API" : "Not connected · stored data only")
@@ -271,7 +269,7 @@ struct InstagramReportsView: View {
             SectionCard(title: "Engagement Analytics", subtitle: "Engagement = likes + comments") {
                 ForEach(overview.engagement) { window in
                     VStack(alignment: .leading, spacing: Theme.spaceS) {
-                        Text(window.label).font(.subheadline.weight(.semibold))
+                        SectionLabel(window.label)
                         LazyVGrid(columns: statColumns, spacing: Theme.spaceS) {
                             StatCard(stat: .init(label: "Total Engagement", value: window.totalEngagement.formatted()), accent: true)
                             StatCard(stat: .init(label: "Likes", value: window.likes.formatted()))
@@ -612,7 +610,7 @@ struct InstagramReportsView: View {
         let color: Color = analysis.tier.hasPrefix("Top") ? ReportColors.green
             : analysis.tier.hasPrefix("Average") ? ReportColors.orange : ReportColors.red
         return HStack(alignment: .top, spacing: Theme.spaceM) {
-            VStack(spacing: 3) {
+            VStack(spacing: Theme.spaceXS) {
                 Text("\(analysis.score)")
                     .font(.title3.bold().monospacedDigit())
                     .foregroundStyle(color)
@@ -620,12 +618,12 @@ struct InstagramReportsView: View {
                     .font(.badgeCompact)
                     .padding(.horizontal, 6)
                     .padding(.vertical, 2)
-                    .background(color.opacity(0.15), in: Capsule())
+                    .background(color.opacity(0.15), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
                     .foregroundStyle(color)
                     .lineLimit(1)
             }
             .frame(width: 100)
-            VStack(alignment: .leading, spacing: 3) {
+            VStack(alignment: .leading, spacing: Theme.spaceXS) {
                 PostCell(media: analysis.media)
                 if let tip = analysis.topTip {
                     Label(tip, systemImage: "lightbulb")
@@ -647,7 +645,7 @@ struct InstagramReportsView: View {
                 }
             }
             Spacer(minLength: 4)
-            VStack(alignment: .trailing, spacing: 3) {
+            VStack(alignment: .trailing, spacing: Theme.spaceXS) {
                 Text(analysis.date).font(.caption2).foregroundStyle(.secondary)
                 OpenPostButton(media: analysis.media)
             }

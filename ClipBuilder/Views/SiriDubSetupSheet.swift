@@ -15,8 +15,8 @@ struct SiriDubSetupSheet: View {
     @State private var showSteps: Set<String> = []
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 14) {
-            Text("Set up Siri voices for \(DubLanguageChoices.name(language))").font(.title3.bold())
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
+            Text("Set up Siri voices for \(DubLanguageChoices.name(language))").font(.headline)
             Text("Siri voices are not available to apps directly. Clip Builder speaks each dub line through a small shortcut in the Shortcuts app, one per voice. This is done once per voice.")
                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
             if let status {
@@ -38,7 +38,8 @@ struct SiriDubSetupSheet: View {
                 Button("Done") { dismiss() }.buttonStyle(.borderedProminent).keyboardShortcut(.defaultAction)
             }
         }
-        .padding(20).frame(width: 520)
+        .padding(Theme.spaceL).frame(width: 520)
+        .modalCloseButton { dismiss() }
         .task {
             await refresh()
             while !Task.isCancelled {
@@ -80,7 +81,7 @@ struct SiriDubSetupSheet: View {
                     .font(.caption).foregroundStyle(.secondary).lineLimit(2)
             }
             HStack {
-                Text("System voice ⓘ › \(DubLanguageChoices.name(language)) › Voice › search “Siri” › download.")
+                Text("System voice ⓘ → \(DubLanguageChoices.name(language)) → Voice → search “Siri” → download.")
                     .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)
                 Spacer()
                 Button("Open Spoken Content") { NSWorkspace.shared.open(SiriDubVoices.spokenContentSettingsURL) }
@@ -108,7 +109,7 @@ struct SiriDubSetupSheet: View {
                     }
                 }
                 if !installed, showSteps.contains(voice.identifier) {
-                    VStack(alignment: .leading, spacing: 3) {
+                    VStack(alignment: .leading, spacing: Theme.spaceXS) {
                         ForEach(Array(SiriDubVoices.manualSteps(for: voice).enumerated()), id: \.offset) { item in
                             Text("\(item.offset + 1). \(item.element)")
                                 .font(.caption).foregroundStyle(.secondary).fixedSize(horizontal: false, vertical: true)

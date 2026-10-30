@@ -22,7 +22,7 @@ struct WizardSourceEvidence: View {
             ScrollView(.horizontal) {
                 HStack(spacing: 6) {
                     ForEach(scenes) { scene in
-                        VideoThumbnail(url: scene.videoURL, time: scene.startTime, cornerRadius: 4)
+                        VideoThumbnail(url: scene.videoURL, time: scene.startTime, cornerRadius: Theme.mediaRadius)
                             .frame(width: 56, height: 36)
                             .accessibilityLabel("\(scene.videoFilename), \(scene.startTime.timecode)")
                     }

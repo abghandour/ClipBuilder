@@ -228,7 +228,7 @@ struct MiniSettingsCard: View {
                         let edited = !settings.overlayEdits.isEmpty || CustomPosition.isCustom(settings.overlayPosition)
                         Text(edited ? "Custom (dragged)" : "As designed")
                             .lineLimit(1).fixedSize()
-                        Button("Reset layout", systemImage: "arrow.uturn.backward") {
+                        Button("Reset Layout", systemImage: "arrow.uturn.backward") {
                             settings.overlayEdits = OverlayEdits()
                             settings.overlayPosition = nil
                         }
@@ -307,7 +307,7 @@ struct MiniSettingsCard: View {
                         }))
                         .textFieldStyle(.roundedBorder)
                         .frame(maxWidth: 320)
-                        .help("Return starts a new line in the overlay.")
+                        .help("Return starts a new line in the overlay")
                         .accessibilityLabel("Overlay text \(index + 1)")
                     OverlayTextAlignmentPicker(alignment: Binding(
                         get: { settings.overlayEdits.texts[safe: textIndex]?.alignment ?? item.alignment },
@@ -384,7 +384,7 @@ struct MiniSettingsCard: View {
                         .accessibilityLabel("Track")
                     }
                     FormCaption(musicTracks?.isEmpty == true
-                        ? "The music library is empty; add tracks under Resources › Music."
+                        ? "The music library is empty; add tracks under Resources → Music."
                         : settings.musicTrackName == nil
                             ? "Random picks a track that fits the reel's length."
                             : settings.muteSourceAudio ? "Music only." : "Mixed under the source audio.")
@@ -502,6 +502,6 @@ struct OverlayTextAlignmentPicker: View {
         .labelsHidden()
         .controlSize(.small)
         .fixedSize()
-        .help("Where this text sits in its box.")
+        .help("Where this text sits in its box")
     }
 }

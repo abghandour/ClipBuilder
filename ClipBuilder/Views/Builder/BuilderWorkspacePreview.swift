@@ -80,7 +80,7 @@ struct BuilderPreviewControls: View {
                 }
                 if store.builderPreviewLastPlayed != nil {
                     Button("Replay", systemImage: "arrow.counterclockwise", action: store.replayBuilderPreview)
-                        .help("Play the last preview run again from where it started.")
+                        .help("Play the last preview run again from where it started")
                 }
                 Button("Preview \(seconds) s", systemImage: "play.fill") { store.startBuilderPreview() }
                     .buttonStyle(.borderedProminent)

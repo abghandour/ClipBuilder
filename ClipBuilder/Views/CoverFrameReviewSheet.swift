@@ -25,15 +25,10 @@ struct CoverFrameReviewSheet: View {
                             VideoThumbnail(url: video.url, time: candidate.time)
                                 .aspectRatio(9 / 16, contentMode: .fit)
                                 .frame(width: 140)
-                                .clipShape(RoundedRectangle(cornerRadius: 8))
+                                .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
                                 .overlay(alignment: .bottomTrailing) {
-                                    Text(candidate.time.timecode)
-                                        .font(.caption2.monospacedDigit())
-                                        .padding(3)
-                                        .background(.black.opacity(0.6),
-                                                    in: RoundedRectangle(cornerRadius: 4))
-                                        .foregroundStyle(.white)
-                                        .padding(4)
+                                    MediaBadge(text: candidate.time.timecode)
+                                        .padding(Theme.spaceXS)
                                 }
                             Text(candidate.reason.isEmpty ? "Use This" : candidate.reason)
                                 .font(.caption2)
@@ -52,7 +47,7 @@ struct CoverFrameReviewSheet: View {
                     .keyboardShortcut(.cancelAction)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
         .frame(minWidth: 500)
         .modalCloseButton { dismiss() }
     }

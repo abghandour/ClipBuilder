@@ -36,7 +36,7 @@ struct MiniBRollPanel: View {
         // player's size can loop AppKit's constraint passes on macOS 27.
         HStack(alignment: .top, spacing: Theme.spaceM) {
             VStack(alignment: .leading, spacing: Theme.spaceS) {
-                Text("Kept footage").font(.caption.weight(.semibold)).lineLimit(1).fixedSize()
+                SectionLabel("Kept footage")
                 if loading { ProgressView("Loading transcript…") }
                 if let error {
                     FormCaption(error, tone: .warning)
@@ -56,7 +56,7 @@ struct MiniBRollPanel: View {
             VStack(alignment: .leading, spacing: 0) {
                 VStack(alignment: .leading, spacing: Theme.spaceM) {
                     if let selection {
-                        Text("“\(selection.text)” · \(selection.range.upperBound - selection.range.lowerBound, specifier: "%.1f") s")
+                        Text("“\(selection.text)” · \(selection.range.upperBound - selection.range.lowerBound, specifier: "%.1f")s")
                             .font(.callout).fixedSize(horizontal: false, vertical: true)
                         ViewThatFits(in: .horizontal) {
                             HStack { selectionButtons(selection) }

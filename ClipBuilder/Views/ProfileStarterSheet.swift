@@ -31,9 +31,9 @@ struct ProfileStarterSheet: View {
     }
 
     private var interview: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             Text("Generate Starting Style")
-                .font(.title3.bold())
+                .font(.headline)
             Text("Answer what you can — the AI writes this profile's founding taste rubric, house style, and starter video-type categories from it. You review and edit everything before it's saved. Learning from real reels later refines these.")
                 .font(.callout)
                 .foregroundStyle(.secondary)
@@ -68,7 +68,7 @@ struct ProfileStarterSheet: View {
                                   .allSatisfy { $0.trimmingCharacters(in: .whitespaces).isEmpty })
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
     }
 
     private func run() {

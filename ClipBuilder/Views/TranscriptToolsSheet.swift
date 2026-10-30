@@ -43,7 +43,7 @@ struct TranscriptToolsSheet: View {
                             .foregroundStyle(.secondary)
                     } else {
                         ForEach(topics) { topic in
-                            VStack(alignment: .leading, spacing: 3) {
+                            VStack(alignment: .leading, spacing: Theme.spaceXS) {
                                 Text(topic.title).bold()
                                 Text(
                                     "\(topic.startTime.timecode)–\(topic.endTime.timecode) · \(topic.duration.formatted(.number.precision(.fractionLength(1))))s"
@@ -155,6 +155,7 @@ struct TranscriptToolsSheet: View {
             }
         }
         .frame(width: 720, height: 650)
+        .modalCloseButton { dismiss() }
         .task { await load() }
         .appJobSetupPresentation()
         .onChange(of: analysisJob?.status) { _, state in

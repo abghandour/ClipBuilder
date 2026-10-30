@@ -67,18 +67,12 @@ struct BuilderInspector: View {
     }
 
     private var placeholder: some View {
-        VStack(spacing: 8) {
-            Image(systemName: "slider.horizontal.3")
-                .font(.title2)
-                .foregroundStyle(.secondary)
+        ContentUnavailableView {
+            Label("Nothing Selected", systemImage: "slider.horizontal.3")
+        } description: {
             Text("Select a clip, crop block, music block, or overlay to edit its settings.")
-                .font(.caption)
-                .foregroundStyle(.secondary)
-                .multilineTextAlignment(.center)
         }
-        .padding()
         .frame(maxWidth: .infinity)
-        .padding(.top, 40)
     }
 }
 
@@ -1083,10 +1077,7 @@ struct InspectorSection<Content: View>: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceS) {
-            Text(title.uppercased())
-                .font(.caption2.weight(.semibold))
-                .foregroundStyle(.secondary)
-                .tracking(0.6)
+            SectionLabel(title)
             content
         }
     }

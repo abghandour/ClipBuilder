@@ -25,7 +25,7 @@ struct TextOverlayForm: View {
             if showsPreview {
                 TextOverlayRasterPreview(item: item, cropToBox: true)
                     .frame(maxWidth: .infinity, minHeight: 96, maxHeight: 220)
-                    .background(Color(nsColor: .darkGray), in: RoundedRectangle(cornerRadius: 6))
+                    .background(.black, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
             }
             TextLookInspector(decor: $item.decor, fontFamily: $item.fontOverride,
                 inherited: inherited,
@@ -36,7 +36,7 @@ struct TextOverlayForm: View {
                     Text(String(count)).lineLimit(1).fixedSize().tag(count)
                 }
             } label: { Text("Words per line").lineLimit(1).fixedSize() }
-            .help("Wrap after this many words, or use only the width cap.")
+            .help("Wrap after this many words, or use only the width cap")
             HStack {
                 Text("Element opacity").lineLimit(1).fixedSize()
                 Spacer(minLength: 4)
@@ -45,7 +45,7 @@ struct TextOverlayForm: View {
             }
             Slider(value: $item.opacity, in: 0...1) {
                 Text("Element opacity").lineLimit(1).fixedSize()
-            }.help("Opacity of the text, box and shadow together.")
+            }.help("Opacity of the text, box and shadow together")
         }
     }
 }
@@ -210,9 +210,7 @@ struct FontFamilyPicker: View {
     }
 
     private func sectionHeader(_ title: String) -> some View {
-        Text(title)
-            .font(.caption.bold())
-            .foregroundStyle(.secondary)
+        SectionLabel(title)
             .padding(.horizontal, 10)
             .padding(.top, 8)
             .padding(.bottom, 2)

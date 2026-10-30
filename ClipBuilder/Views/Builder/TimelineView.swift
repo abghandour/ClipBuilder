@@ -268,7 +268,7 @@ struct TrackHeader: View {
                 let cutaways = model.document.cutaways(inTrack: track).count
                 if cutaways > 0 {
                     Text("\(cutaways) B-roll")
-                        .font(.system(size: 9, weight: .semibold))
+                        .font(.badgeCompact)
                         .foregroundStyle(.orange)
                         .help("B-roll on this track covers its area for a while; it never moves the clips around it")
                 }
@@ -705,9 +705,9 @@ struct TimelineClipBlock: View {
 
         ZStack(alignment: .bottomLeading) {
             if let url = model.sourceURL(for: clip), !clip.bumper || FileManager.default.fileExists(atPath: url.path) {
-                VideoThumbnail(url: url, time: clip.sourceStart ?? 0, cornerRadius: 5)
+                VideoThumbnail(url: url, time: clip.sourceStart ?? 0, cornerRadius: Theme.chipRadius)
             } else {
-                RoundedRectangle(cornerRadius: 5).fill(.gray.opacity(0.4))
+                RoundedRectangle(cornerRadius: Theme.chipRadius).fill(.gray.opacity(0.4))
             }
             LinearGradient(colors: [.clear, .black.opacity(0.65)],
                            startPoint: .center, endPoint: .bottom)
@@ -746,7 +746,7 @@ struct TimelineClipBlock: View {
                 .allowsHitTesting(false)
             }
             VStack(alignment: .leading, spacing: 1) {
-                HStack(spacing: 3) {
+                HStack(spacing: Theme.spaceXS) {
                     if clip.bumper {
                         Label("Bumper · " + store.bumperDisplayName(for: clip), systemImage: "film.stack")
                             .font(.caption2).foregroundStyle(.white)
@@ -758,17 +758,17 @@ struct TimelineClipBlock: View {
                     }
                     if clip.isCutaway {
                         Text("B")
-                            .font(.system(size: 8, weight: .heavy))
+                            .font(.badgeCompact)
                             .foregroundStyle(.black)
                             .padding(.horizontal, 4)
-                            .background(.orange, in: .capsule)
+                            .background(.orange, in: .rect(cornerRadius: Theme.chipRadius))
                             .help("B-roll: it covers this track's area and never moves the clips around it")
                         if clip.coverAllAreas {
                             Text("all areas")
-                                .font(.system(size: 8, weight: .semibold))
+                                .font(.badgeCompact)
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 3)
-                                .background(.orange.opacity(0.55), in: .capsule)
+                                .background(.orange.opacity(0.55), in: .rect(cornerRadius: Theme.chipRadius))
                                 .help("This B-roll covers the whole screen, not just this track's area")
                         }
                     }
@@ -776,10 +776,10 @@ struct TimelineClipBlock: View {
                         WideBadge(compact: true)
                         if clip.framing != .fixed {
                             Text(clip.framing.label)
-                                .font(.system(size: 8, weight: .semibold))
+                                .font(.badgeCompact)
                                 .foregroundStyle(.white)
                                 .padding(.horizontal, 3)
-                                .background((clip.framing == .custom ? Color.accentColor : Color.teal).opacity(0.85), in: .capsule)
+                                .background((clip.framing == .custom ? Color.accentColor : Color.teal).opacity(0.85), in: .rect(cornerRadius: Theme.chipRadius))
                                 .help(clip.framing == .custom
                                       ? "Custom camera path" + (clip.cameraPathSource == "wizard" ? " set by the Wizard" : clip.cameraPathSource == "recipe" ? " set by a recipe" : "") + "; adjust it at the playhead in the inspector"
                                       : "Tracking camera from the analysis")
@@ -823,7 +823,7 @@ struct TimelineClipBlock: View {
             .padding(4)
         }
         .frame(width: width, height: blockHeight)
-        .clipShape(RoundedRectangle(cornerRadius: 5))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.chipRadius))
         .overlay {
             // Shade the stretches a bumper covers, so hidden footage reads
             // as hidden rather than quietly missing from the render.
@@ -844,9 +844,9 @@ struct TimelineClipBlock: View {
         // frame is hundreds of points tall); clipShape hides that but hit
         // testing does not, so without this a long clip catches clicks
         // meant for the lanes above it.
-        .contentShape(RoundedRectangle(cornerRadius: 5))
+        .contentShape(RoundedRectangle(cornerRadius: Theme.chipRadius))
         .overlay {
-            RoundedRectangle(cornerRadius: 5)
+            RoundedRectangle(cornerRadius: Theme.chipRadius)
                 .strokeBorder((isSelected || isFocused) ? Color.accentColor
                               : (clip.isCutaway ? Color.orange.opacity(0.9) : .white.opacity(0.15)),
                               style: StrokeStyle(lineWidth: (isSelected || isFocused) ? 2 : 1,
@@ -914,7 +914,7 @@ struct TimelineClipBlock: View {
                         .help("Puts this clip back in the track's sequence, which repacks the track from the start. It keeps no captions, Center Stage or free crops.")
                 } else {
                     Button("Make B-roll") { model.setClipRole(clip.uid, role: .cutaway) }
-                        .help("Turns this clip into B-roll pinned to its time: it drops captions, Center Stage and free crops, is muted, and the track repacks without it.")
+                        .help("Turns this clip into B-roll pinned to its time: it drops captions, Center Stage and free crops, is muted, and the track repacks without it")
                 }
             }
             Divider()
@@ -1122,12 +1122,12 @@ struct BumperBlockView: View {
         .foregroundStyle(.white)
         .frame(width: width, height: height - 8, alignment: .leading)
         .clipped()
-        .background(Color.purple.opacity(missing ? 0.5 : 0.85), in: RoundedRectangle(cornerRadius: 5))
+        .background(Color.purple.opacity(missing ? 0.5 : 0.85), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
         // The whole block is the hit target for selecting and moving; the
         // thumbnail and labels inside must not swallow the press.
-        .contentShape(RoundedRectangle(cornerRadius: 5))
+        .contentShape(RoundedRectangle(cornerRadius: Theme.chipRadius))
         .overlay {
-            RoundedRectangle(cornerRadius: 5)
+            RoundedRectangle(cornerRadius: Theme.chipRadius)
                 .strokeBorder(isSelected ? Color.accentColor : .white.opacity(0.25),
                               lineWidth: isSelected ? 2 : 1)
                 .allowsHitTesting(false)
@@ -1249,9 +1249,9 @@ struct CropBlockView: View {
         .foregroundStyle(.white)
         .frame(width: width, height: height - 8, alignment: .leading)
         .clipped()
-        .background(tint.opacity(missing ? 0.35 : 0.5), in: RoundedRectangle(cornerRadius: 5))
+        .background(tint.opacity(missing ? 0.35 : 0.5), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
         .overlay {
-            RoundedRectangle(cornerRadius: 5)
+            RoundedRectangle(cornerRadius: Theme.chipRadius)
                 .strokeBorder(isSelected ? Color.accentColor : .white.opacity(0.12),
                               lineWidth: isSelected ? 2 : 1)
         }
@@ -1521,9 +1521,9 @@ struct SoundBlock: View {
         .padding(.horizontal, 6)
         .foregroundStyle(.white)
         .frame(width: width, height: height - 8)
-        .background(Color.green.opacity(0.55), in: RoundedRectangle(cornerRadius: 5))
+        .background(Color.green.opacity(0.55), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
         .overlay {
-            RoundedRectangle(cornerRadius: 5)
+            RoundedRectangle(cornerRadius: Theme.chipRadius)
                 .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2)
         }
         .overlay(alignment: .trailing) {
@@ -1653,9 +1653,9 @@ struct OverlayBlockView: View {
         .padding(.horizontal, 6)
         .foregroundStyle(.white)
         .frame(width: width, height: height - 8)
-        .background(Color.indigo.opacity(0.6), in: RoundedRectangle(cornerRadius: 5))
+        .background(Color.indigo.opacity(0.6), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
         .overlay {
-            RoundedRectangle(cornerRadius: 5)
+            RoundedRectangle(cornerRadius: Theme.chipRadius)
                 .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2)
         }
         .overlay(alignment: .trailing) {
@@ -1741,9 +1741,9 @@ struct ImageBlock: View {
         .padding(.horizontal, 6)
         .foregroundStyle(.white)
         .frame(width: width, height: height - 8)
-        .background(Color.teal.opacity(0.55), in: RoundedRectangle(cornerRadius: 5))
+        .background(Color.teal.opacity(0.55), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
         .overlay {
-            RoundedRectangle(cornerRadius: 5)
+            RoundedRectangle(cornerRadius: Theme.chipRadius)
                 .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2)
         }
         .overlay(alignment: .trailing) {
@@ -1828,9 +1828,9 @@ struct TextBlock: View {
         .padding(.horizontal, 6)
         .foregroundStyle(.white)
         .frame(width: width, height: height - 8)
-        .background(Color.purple.opacity(0.55), in: RoundedRectangle(cornerRadius: 5))
+        .background(Color.purple.opacity(0.55), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
         .overlay {
-            RoundedRectangle(cornerRadius: 5)
+            RoundedRectangle(cornerRadius: Theme.chipRadius)
                 .strokeBorder(isSelected ? Color.accentColor : .clear, lineWidth: 2)
         }
         .overlay(alignment: .trailing) {

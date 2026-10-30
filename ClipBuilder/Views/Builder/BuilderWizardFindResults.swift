@@ -6,10 +6,10 @@ struct BuilderWizardFindResults: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
-            Text("Found \(model.results.count) scenes").font(.subheadline.weight(.semibold))
+            SectionLabel("Found \(model.results.count) scenes")
             Text("Adding scenes creates a preview for Apply.")
                 .font(.caption).foregroundStyle(.secondary)
-            if model.results.isEmpty { Text("No scenes match this request.").foregroundStyle(.secondary) }
+            if model.results.isEmpty { ContentUnavailableView("No Scenes Match", systemImage: "magnifyingglass", description: Text("Try a broader request.")) }
             let tracks = model.trackChoices
             HStack(spacing: Theme.spaceS) {
                 Menu("Add All to Track") {
@@ -19,10 +19,10 @@ struct BuilderWizardFindResults: View {
                 }
                 .fixedSize()
                 .disabled(model.results.isEmpty)
-                .help("Preview all results back-to-back as main clips on that track, starting at the current playhead (a sequential track packs them after its last clip).")
+                .help("Preview all results back-to-back as main clips on that track, starting at the current playhead (a sequential track packs them after its last clip)")
                 Button("Add all as B-roll", action: model.addAllAsBRoll)
                     .disabled(model.results.isEmpty)
-                    .help("Preview all results back-to-back as B-roll starting at the current playhead on the focused track.")
+                    .help("Preview all results back-to-back as B-roll starting at the current playhead on the focused track")
             }
             LazyVStack(alignment: .leading, spacing: Theme.spaceM) {
                 ForEach(model.results.prefix(BuilderSceneSearch.limit)) { scene in

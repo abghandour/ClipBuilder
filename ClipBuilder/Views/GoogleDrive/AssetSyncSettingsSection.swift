@@ -4,6 +4,7 @@ struct AssetSyncSettingsSection: View {
     @Environment(AppStore.self) private var store
     @State private var choosingFolder = false
     @State private var error: String?
+    @State private var confirmingForget = false
     private var profile: String { store.activeProfile.profileName }
 
     static func isVisible(connection: DriveConnectionState?) -> Bool { connection?.isConnected == true }
@@ -14,13 +15,19 @@ struct AssetSyncSettingsSection: View {
                 LabeledContent("Folder", value: home.selection.breadcrumb)
                 HStack {
                     Button("Change…") { choosingFolder = true }
-                    Button("Forget folder") {
-                        Task {
-                            do { try await store.googleDrive.forgetAssetHome(profile: profile) } catch {
-                                self.error = error.localizedDescription
+                    Button("Forget Folder…") { confirmingForget = true }
+                        .confirmationDialog("Forget the asset library folder?", isPresented: $confirmingForget) {
+                            Button("Forget Folder", role: .destructive) {
+                                Task {
+                                    do { try await store.googleDrive.forgetAssetHome(profile: profile) } catch {
+                                        self.error = error.localizedDescription
+                                    }
+                                }
                             }
+                            Button("Cancel", role: .cancel) {}
+                        } message: {
+                            Text("Assets already copied to this Mac stay in the library.")
                         }
-                    }
                 }.disabled(home.isRefreshing)
                 AssetSyncRefreshButton(home: home, showsStatus: true)
                 Text(

@@ -96,8 +96,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
         VStack(alignment: .leading, spacing: 0) {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: Theme.spaceS) {
-                    Text("Transcript").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                        .lineLimit(1).fixedSize()
+                    SectionLabel("Transcript")
                     Spacer(minLength: 0)
                     transcriptControls
                     if let accessory { accessory }
@@ -105,8 +104,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                 // Narrow column: the accessory keeps the title row, the toggles get their own.
                 VStack(alignment: .leading, spacing: Theme.spaceS) {
                     HStack(spacing: Theme.spaceS) {
-                        Text("Transcript").font(.caption.weight(.semibold)).foregroundStyle(.secondary)
-                            .lineLimit(1).fixedSize()
+                        SectionLabel("Transcript")
                         Spacer(minLength: 0)
                         if let accessory { accessory }
                     }

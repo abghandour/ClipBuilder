@@ -59,7 +59,7 @@ struct ProjectCardView: View {
             }
             .padding(Theme.cardPadding)
             .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary, in: .rect(cornerRadius: Theme.cardRadius))
+            .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: Theme.cardRadius))
             .contentShape(.rect(cornerRadius: Theme.cardRadius))
         }
         .buttonStyle(.plain)

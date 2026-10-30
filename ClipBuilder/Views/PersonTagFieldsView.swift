@@ -12,17 +12,28 @@ struct PersonTagFieldsView: View {
         VStack(alignment: .leading, spacing: Theme.spaceS) {
             if !fields.isEmpty {
                 HStack {
-                    Text("Name tag").font(.headline).lineLimit(1).fixedSize()
+                    SectionLabel("Name tag")
                     Spacer()
                     Button("Research on the Web") {
                         store.researchPeople([person], reason: "refresh")
                     }
                     .lineLimit(1).fixedSize()
                     .disabled(person.isUnnamed || store.personResearchInFlight.contains(person.id))
-                    .help("Searches the web for this person's role, profession, record, team, nationality, Instagram and X handles and proposes values for review.")
+                    .help("Searches the web for this person's role, profession, record, team, nationality, Instagram and X handles and proposes values for review")
                 }
-                LazyVGrid(columns: Array(repeating: GridItem(.flexible(), spacing: Theme.spaceM, alignment: .top), count: 3),
-                          alignment: .leading, spacing: Theme.spaceM) {
+                // One single-line row per field, like the Sources table:
+                // label, value, source, count, actions, with hairline dividers.
+                Grid(alignment: .leading, horizontalSpacing: Theme.spaceM, verticalSpacing: 0) {
+                    GridRow {
+                        Text("Field")
+                        Text("Value")
+                        Text("Source")
+                        Text("")
+                        Text("")
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+                    .padding(.vertical, 3)
+                    Divider().gridCellUnsizedAxes(.horizontal)
                     ForEach(fields) { savedField in
                         let draft = Binding(
                             get: { drafts[savedField.id] ?? savedField },
@@ -30,10 +41,43 @@ struct PersonTagFieldsView: View {
                         )
                         let field = draft.wrappedValue
                         let repeatsPersonName = !TagTextWriter.isHandleField(field.field) && repeatsName(field.value)
-                        VStack(alignment: .leading, spacing: 4) {
-                            HStack {
-                                Text(field.field).font(.caption.weight(.medium)).lineLimit(1).fixedSize()
-                                Spacer()
+                        GridRow(alignment: .center) {
+                            Text(field.field)
+                                .font(.callout.weight(.medium))
+                                .lineLimit(1).truncationMode(.tail)
+                                .frame(minWidth: 72, alignment: .leading)
+                            HStack(spacing: 4) {
+                                if TagTextWriter.isHandleField(field.field) {
+                                    Text("@").foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                                }
+                                TextField(field.field, text: draft.value)
+                                    .textFieldStyle(.roundedBorder)
+                                    .controlSize(.small)
+                                    .onChange(of: field.value) { _, value in
+                                        if !TagTextWriter.isHandleField(field.field), value.count > 40 {
+                                            draft.wrappedValue.value = String(value.prefix(40))
+                                        }
+                                    }
+                                if let handle = TagTextWriter.normalizeHandle(field.value, field: field.field),
+                                   let url = URL(string: "https://\(field.field == "Instagram" ? "instagram.com" : "x.com")/\(handle)") {
+                                    Link(destination: url) {
+                                        Label("Open", systemImage: "arrow.up.right.square").labelStyle(.iconOnly)
+                                    }
+                                    .lineLimit(1).fixedSize()
+                                    .help("Open the profile")
+                                }
+                            }
+                            .frame(maxWidth: 320)
+                            Text(repeatsPersonName ? "Use a description instead of repeating the name." : metadata(field) ?? "")
+                                .font(.caption)
+                                .foregroundStyle(repeatsPersonName || isStale(field) ? Color.orange : Color.secondary)
+                                .lineLimit(1).truncationMode(.middle)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                            Text("\(field.value.count)/\(field.field == "Instagram" ? 30 : field.field == "X" ? 15 : 40)")
+                                .font(.caption).monospacedDigit().foregroundStyle(.secondary)
+                                .lineLimit(1).fixedSize()
+                                .gridColumnAlignment(.trailing)
+                            HStack(spacing: Theme.spaceS) {
                                 if let provenance = field.provenance { AIInfoButton(provenance: provenance, role: "Name tag text") }
                                 Button("Refresh", systemImage: "arrow.clockwise") {
                                     store.researchPeople([person], fields: [field.field], reason: "refresh")
@@ -58,41 +102,10 @@ struct PersonTagFieldsView: View {
                                     .disabled(field.value.isEmpty)
                                     .help("Clear this field")
                             }
-                            HStack(spacing: 4) {
-                                if TagTextWriter.isHandleField(field.field) {
-                                    Text("@").lineLimit(1).fixedSize()
-                                }
-                                TextField(field.field, text: draft.value)
-                                    .textFieldStyle(.roundedBorder)
-                                    .controlSize(.small)
-                                    .onChange(of: field.value) { _, value in
-                                        if !TagTextWriter.isHandleField(field.field), value.count > 40 {
-                                            draft.wrappedValue.value = String(value.prefix(40))
-                                        }
-                                    }
-                                if let handle = TagTextWriter.normalizeHandle(field.value, field: field.field),
-                                   let url = URL(string: "https://\(field.field == "Instagram" ? "instagram.com" : "x.com")/\(handle)") {
-                                    Link(destination: url) {
-                                        Label("Open", systemImage: "arrow.up.right.square").labelStyle(.iconOnly)
-                                    }
-                                    .lineLimit(1).fixedSize()
-                                    .help("Open the profile")
-                                }
-                            }
-                            HStack {
-                                Text(repeatsPersonName ? "Use a description instead of repeating the name." : metadata(field) ?? " ")
-                                    .font(.caption2)
-                                    .foregroundStyle(repeatsPersonName || isStale(field) ? Color.orange : Color.secondary)
-                                    .lineLimit(1).truncationMode(.middle)
-                                Spacer()
-                                Text("\(field.value.count)/\(field.field == "Instagram" ? 30 : field.field == "X" ? 15 : 40)")
-                                    .font(.caption2).foregroundStyle(.secondary)
-                                    .lineLimit(1).fixedSize()
-                            }
+                            .gridColumnAlignment(.trailing)
                         }
-                        .padding(10)
-                        .background(.quaternary.opacity(0.35), in: RoundedRectangle(cornerRadius: 8))
-                        .frame(maxWidth: .infinity, alignment: .leading)
+                        .padding(.vertical, 3)
+                        Divider().gridCellUnsizedAxes(.horizontal)
                     }
                 }
                 Text("The second line of this person’s name tag. A blank field is filled by AI on the next run that shows a tag.")

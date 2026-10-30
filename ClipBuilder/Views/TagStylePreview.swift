@@ -34,7 +34,7 @@ struct TagStylePreview: View {
             GeometryReader { geo in
                 let scale = geo.size.width / TagPreviewImage.canvas.width
                 ZStack(alignment: .topLeading) {
-                    if !transparentBackdrop { Color(nsColor: .darkGray) }
+                    if !transparentBackdrop { Color.black }
                     if let preview {
                         Image(decorative: preview.image, scale: 1)
                             .resizable().frame(width: geo.size.width, height: geo.size.height)

@@ -187,7 +187,7 @@ struct BuilderView: View {
                                 if let preview = result.makeWizard(store: store) { showWizard(preview) }
                             }
                             .labelStyle(.iconOnly)
-                            .help("Fix with Wizard… Preview an editing request on this planned timeline, then Apply manually.")
+                            .help("Fix with Wizard… Preview an editing request on this planned timeline, then Apply manually")
                         }
                         .padding(.horizontal, Theme.spaceM)
                         .padding(.bottom, Theme.spaceS)
@@ -221,9 +221,13 @@ struct BuilderView: View {
         .toolbar {
             if pageVisible {
                 ToolbarItem {
-                    Button("Dub…", systemImage: "waveform") { showDubSetup = true }
-                        .lineLimit(1).fixedSize()
-                        .disabled(model.document.videoTrack.isEmpty)
+                    Button {
+                        showDubSetup = true
+                    } label: {
+                        ToolbarBubbleLabel(text: "Dub…", systemImage: "waveform")
+                    }
+                    .disabled(model.document.videoTrack.isEmpty)
+                    .help("Replace the speech on this timeline with a synthetic voice in another language")
                 }
                 ToolbarItem {
                     Button(role: .destructive) {
@@ -265,6 +269,7 @@ struct BuilderView: View {
             Button("Clear Timeline", role: .destructive) {
                 model.clear()
             }
+            Button("Cancel", role: .cancel) {}
         } message: {
             Text("Removes every clip, music block, and text overlay. You can undo this with ⌘Z.")
         }

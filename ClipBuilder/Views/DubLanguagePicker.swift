@@ -47,7 +47,7 @@ struct DubLanguagePicker: View {
 
     private func caption(count: Int) -> String {
         switch (store.dubEngine, count) {
-        case (.mac, 0): "Install voices in System Settings › Accessibility › Spoken Content"
+        case (.mac, 0): "Install voices in System Settings → Accessibility → Spoken Content"
         case (.mac, _): "\(count) voices installed"
         case (.siri, 0): "Siri voices need a one-time setup for \(DubLanguageChoices.name(selectedLanguage))"
         case (.siri, _): "\(count) Siri voices ready"

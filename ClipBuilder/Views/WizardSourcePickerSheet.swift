@@ -123,7 +123,7 @@ struct WizardSourcePickerSheet: View {
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             } else if filteredRuns.isEmpty {
-                                Text("No batches match \"\(batchFilter)\".")
+                                Text("No batches match “\(batchFilter)”")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             } else {
@@ -141,15 +141,14 @@ struct WizardSourcePickerSheet: View {
                     if !eligiblePeople.isEmpty {
                         VStack(alignment: .leading, spacing: Theme.spaceS) {
                             HStack {
-                                Text("Feature people")
-                                    .font(.subheadline.weight(.semibold))
+                                SectionLabel("Feature people")
                                 Spacer()
                                 Text(selectedPeople.isEmpty ? "Anyone" : "\(selectedPeople.count) selected")
                                     .font(.caption)
                                     .foregroundStyle(.secondary)
                             }
                             ScrollView(.horizontal, showsIndicators: false) {
-                                HStack(alignment: .top, spacing: 14) {
+                                HStack(alignment: .top, spacing: Theme.spaceM) {
                                     personChoice(label: "Anyone", isSelected: selectedPeople.isEmpty,
                                                  help: "Use scenes regardless of who is in them") {
                                         sourcePeopleRaw = ""
@@ -263,7 +262,7 @@ struct WizardSourcePickerSheet: View {
                         } else { select(runs.map(\.id), on: false) }
                     })) {
                     HStack(spacing: 8) {
-                        VideoThumbnail(url: first.videoURL, time: 1, cornerRadius: 3)
+                        VideoThumbnail(url: first.videoURL, time: 1, cornerRadius: Theme.mediaRadius)
                             .frame(width: 40, height: 24)
                         Text(first.videoFilename).lineLimit(1)
                     }
@@ -286,7 +285,7 @@ struct WizardSourcePickerSheet: View {
                 Image(systemName: selected ? "checkmark.square.fill" : "square")
                     .font(.system(size: 15))
                     .foregroundStyle(selected ? Color.accentColor : .secondary)
-                VideoThumbnail(url: run.videoURL, time: 1, cornerRadius: 3)
+                VideoThumbnail(url: run.videoURL, time: 1, cornerRadius: Theme.mediaRadius)
                     .frame(width: 40, height: 24)
                 VStack(alignment: .leading, spacing: 2) {
                     Text(run.name.isEmpty ? run.videoFilename : run.name)

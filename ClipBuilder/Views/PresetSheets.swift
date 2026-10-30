@@ -45,7 +45,7 @@ struct PresetSaveSheet<P: NamedPreset>: View {
                     .disabled(NamedPresets.cleaned(name).isEmpty)
             }
         }
-        .padding(Theme.spaceXL)
+        .padding(Theme.spaceL)
         .frame(width: 380)
         .onAppear {
             existing = presets()
@@ -89,6 +89,7 @@ struct PresetLoadSheet<P: NamedPreset>: View {
     @State private var renaming: P.ID?
     @State private var renameText = ""
     @State private var error: String?
+    @State private var deleting: P?
     @FocusState private var renameFocused: Bool
 
     var body: some View {
@@ -105,7 +106,7 @@ struct PresetLoadSheet<P: NamedPreset>: View {
                             .contextMenu {
                                 Button("Load") { load(preset) }
                                 Button("Rename…") { beginRename(preset) }
-                                Button("Delete", role: .destructive) { delete(preset) }
+                                Button("Delete…", role: .destructive) { deleting = preset }
                             }
                     }
                     if let imports, !imports.presets.isEmpty {
@@ -133,9 +134,19 @@ struct PresetLoadSheet<P: NamedPreset>: View {
                     .disabled(selected == nil || renaming != nil)
             }
         }
-        .padding(Theme.spaceXL)
+        .padding(Theme.spaceL)
         .frame(width: 460)
         .onAppear(perform: reload)
+        .confirmationDialog("Delete “\(deleting?.name ?? "")”?",
+                            isPresented: Binding(get: { deleting != nil }, set: { if !$0 { deleting = nil } })) {
+            Button("Delete", role: .destructive) {
+                if let deleting { delete(deleting) }
+                deleting = nil
+            }
+            Button("Cancel", role: .cancel) { deleting = nil }
+        } message: {
+            Text("The saved settings are removed from this profile.")
+        }
     }
 
     private var selected: P? {
@@ -173,10 +184,10 @@ struct PresetLoadSheet<P: NamedPreset>: View {
                 Spacer(minLength: Theme.spaceS)
                 Button("Rename", systemImage: "pencil") { beginRename(preset) }
                     .labelStyle(.iconOnly).buttonStyle(.borderless).controlSize(.small)
-                    .help("Rename")
-                Button("Delete", systemImage: "trash") { delete(preset) }
+                    .help("Rename these saved settings")
+                Button("Delete", systemImage: "trash", role: .destructive) { deleting = preset }
                     .labelStyle(.iconOnly).buttonStyle(.borderless).controlSize(.small)
-                    .help("Delete")
+                    .help("Delete these saved settings")
             }
         }
         .contentShape(Rectangle())

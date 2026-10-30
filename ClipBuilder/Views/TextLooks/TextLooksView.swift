@@ -108,7 +108,7 @@ struct TextLooksView: View {
         VStack(spacing: 0) {
             Picker("Text Looks", selection: $tab) {
                 ForEach(TextLooksTab.allCases) { tab in Text(tab.rawValue).lineLimit(1).fixedSize().tag(tab) }
-            }.pickerStyle(.segmented).padding(12)
+            }.pickerStyle(.segmented).labelsHidden().padding(.horizontal, Theme.spaceM).padding(.vertical, Theme.spaceS)
             Divider()
             if tab == .overlays {
                 OverlayTemplatesView(runCounts: counts.overlays)
@@ -126,7 +126,7 @@ struct TextLooksView: View {
                     )
                     .rememberedPaneWidth("pane.textLooks.list", min: 200, initial: 232, max: 300)
                     stage.id(selection).frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
-                    inspector.frame(width: 336).frame(maxHeight: .infinity)
+                    inspector.frame(minWidth: 280, idealWidth: 336, maxWidth: 440).frame(maxHeight: .infinity)
                 }
             }
             if let countError { FormCaption(countError, tone: .warning).padding(8) }
@@ -202,12 +202,12 @@ struct TextLooksView: View {
         case .named:
             if let named {
                 ScrollView {
-                    VStack(alignment: .leading, spacing: 12) {
+                    VStack(alignment: .leading, spacing: Theme.spaceM) {
                         TextField("Name", text: named.name).help(WizardFieldHelp.textDecor["name"]!.tooltip)
                         TextLookInspector(
                             decor: Binding(get: { named.wrappedValue.decor }, set: { named.wrappedValue.decor = $0 ?? TextDecor() }),
                             fontFamily: named.fontFamily, defaultLabel: "Defaults", sourceLabel: "named style", stateLabel: "Look")
-                    }.padding(12)
+                    }.padding(Theme.spaceM)
                 }
             }
         case .overlays, .fonts: EmptyView()

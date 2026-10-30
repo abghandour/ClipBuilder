@@ -14,7 +14,7 @@ struct BuilderScriptEditor: View {
                     .font(.system(.body, design: .monospaced))
                     .frame(minHeight: 220)
                     .border(.separator)
-                    .help("JavaScript source, including its authoritative clipbuilder-script JSON header.")
+                    .help("JavaScript source, including its authoritative clipbuilder-script JSON header")
                     .onChange(of: model.source) { _, _ in model.parse() }
             } else {
                 Text(model.header?.description ?? "").font(.callout)
@@ -39,7 +39,7 @@ struct BuilderScriptEditor: View {
             HStack {
                 Button("Cancel") { dismiss() }
                     .keyboardShortcut(.cancelAction)
-                    .help("Close this sheet.")
+                    .help("Close this sheet")
                 Spacer()
                 if editing {
                     Button("Validate") { Task { await model.validate() } }
@@ -47,16 +47,17 @@ struct BuilderScriptEditor: View {
                         .help("Validate in an isolated session with these sample values. Library work is never executed.")
                     Button("Save") { Task { do { try await model.save() } catch { model.fail(error) } } }
                         .disabled(model.busy || model.header == nil)
-                        .help("Reparse the header and save this script in the current profile.")
+                        .help("Reparse the header and save this script in the current profile")
                 }
                 Button("Run", action: startRun)
                     .buttonStyle(.borderedProminent)
                     .disabled(model.busy || model.capture == nil || model.header == nil)
-                    .help("Validate parameters, then disclose any Library work before running a preview.")
+                    .help("Validate parameters, then disclose any Library work before running a preview")
             }
         }
         .padding(Theme.spaceL)
         .frame(minWidth: 420, idealWidth: 580, minHeight: editing ? 480 : 260)
+        .modalCloseButton { dismiss() }
     }
 
     private func startRun() {

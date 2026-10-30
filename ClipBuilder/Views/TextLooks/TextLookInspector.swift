@@ -163,7 +163,7 @@ struct TextLookInspector<Controls: View>: View {
                     }
                 }
                 .lineLimit(1).fixedSize().disabled(overrideCount == 0)
-                .help("Remove this state's local overrides and use its parent look.")
+                .help("Remove this state's local overrides and use its parent look")
             }
         }
     }
@@ -226,7 +226,7 @@ struct TextLookInspector<Controls: View>: View {
             .help(clipboard.map { "Paste the style copied from \($0.source). Placement is never pasted." } ?? "Copy a style first.")
             Button("Save as Named Text Style", systemImage: "square.and.arrow.down", action: saveAsNamedStyle)
                 .lineLimit(1).fixedSize()
-                .help("Add this look to the profile's Named Text Styles so any caption, name tag or overlay can share it.")
+                .help("Add this look to the profile's Named Text Styles so any caption, name tag or overlay can share it")
         }
         .labelStyle(.iconOnly)
         .onAppear { clipboardTick += 1 }

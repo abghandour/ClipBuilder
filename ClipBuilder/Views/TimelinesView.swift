@@ -27,9 +27,14 @@ struct TimelinesView: View {
                 .toolbar {
                     if pageVisible {
                         ToolbarItemGroup {
-                            Button("New Timeline", systemImage: "plus", action: newTimeline)
-                            Button("New from Wizard…", systemImage: "wand.and.stars", action: openWizard)
-                                .buttonStyle(.borderedProminent)
+                            Button(action: newTimeline) {
+                                ToolbarBubbleLabel(text: "New Timeline", systemImage: "plus")
+                            }
+                            .help("Start an empty timeline in the Builder")
+                            Button(action: openWizard) {
+                                ToolbarBubbleLabel(text: "New from Wizard", systemImage: "wand.and.stars")
+                            }
+                            .help("Open the AI Wizard to generate a timeline")
                         }
                     }
                 }

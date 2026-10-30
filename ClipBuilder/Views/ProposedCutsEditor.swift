@@ -95,7 +95,7 @@ struct ProposedCutsEditor: View {
         return VStack(alignment: .leading, spacing: Theme.spaceS) {
             HStack(spacing: Theme.spaceS) {
                 if let scene {
-                    VideoThumbnail(url: scene.videoURL, time: ProposedCutTrim.midpoint(range), cornerRadius: 4)
+                    VideoThumbnail(url: scene.videoURL, time: ProposedCutTrim.midpoint(range), cornerRadius: Theme.mediaRadius)
                         .frame(width: 64, height: 40)
                         .accessibilityHidden(true)
                 }

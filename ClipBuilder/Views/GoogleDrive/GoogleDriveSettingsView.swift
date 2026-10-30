@@ -2,8 +2,19 @@ import SwiftUI
 
 struct GoogleDriveSettingsView: View {
     @Environment(AppStore.self) private var store
+    @State private var confirmingDisconnect = false
     private var drive: GoogleDriveTransfers { store.googleDrive }
     private var profile: String { store.activeProfile.profileName }
+
+    private var disconnectButton: some View {
+        Button("Disconnect…") { confirmingDisconnect = true }
+            .confirmationDialog("Disconnect Google Drive?", isPresented: $confirmingDisconnect) {
+                Button("Disconnect", role: .destructive) { drive.disconnect(profile: profile) }
+                Button("Cancel", role: .cancel) {}
+            } message: {
+                Text("Transfers stop and this profile forgets the account. Local files stay on this Mac.")
+            }
+    }
 
     var body: some View {
         Form {
@@ -18,7 +29,7 @@ struct GoogleDriveSettingsView: View {
                     LabeledContent("Connected account", value: email)
                     Text("Expires \(expires.formatted(date: .abbreviated, time: .shortened))")
                     connectButton("Reconnect")
-                    Button("Disconnect") { drive.disconnect(profile: profile) }
+                    disconnectButton
                 case .reconnect(let email, let expires):
                     LabeledContent("Account", value: email)
                     Label(
@@ -28,7 +39,7 @@ struct GoogleDriveSettingsView: View {
                         Text("Connection expired \(expires.formatted(date: .abbreviated, time: .shortened))")
                     }
                     connectButton("Reconnect")
-                    Button("Disconnect") { drive.disconnect(profile: profile) }
+                    disconnectButton
                 }
                 if let error = drive.connectionError { Text(error).foregroundStyle(.red).textSelection(.enabled) }
             }

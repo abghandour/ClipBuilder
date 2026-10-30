@@ -431,10 +431,10 @@ struct BuilderBRollPickerSheet: View {
                         .lineLimit(1)
                     if source.reason != nil {
                         Text("Suggested")
-                            .font(.system(size: 8, weight: .semibold))
+                            .font(.badgeCompact)
                             .foregroundStyle(.white)
                             .padding(.horizontal, 3)
-                            .background(.blue, in: .capsule)
+                            .background(.blue, in: .rect(cornerRadius: Theme.chipRadius))
                     }
                     if source.isPhoto {
                         Image(systemName: "photo")
@@ -444,10 +444,10 @@ struct BuilderBRollPickerSheet: View {
                     }
                     if source.isBRoll {
                         Text("B")
-                            .font(.system(size: 8, weight: .heavy))
+                            .font(.badgeCompact)
                             .foregroundStyle(.black)
                             .padding(.horizontal, 3)
-                            .background(.orange, in: .capsule)
+                            .background(.orange, in: .rect(cornerRadius: Theme.chipRadius))
                     }
                     if added.contains(source.id) {
                         Image(systemName: "checkmark.circle.fill")
@@ -597,7 +597,7 @@ struct BuilderBRollPickerSheet: View {
                 .foregroundStyle(.secondary)
             Spacer()
             Button("Cancel") { cancel() }
-                .help("Close the picker without adding footage.")
+                .help("Close the picker without adding footage")
             Button("Add and Keep Going") { add(advance: true) }
                 .help("Add the selected source and advance the playhead. Found scenes require a Wizard preview.")
                 .keyboardShortcut(.return, modifiers: .shift)

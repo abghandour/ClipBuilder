@@ -16,9 +16,9 @@ struct ImageLibrarySearchSheet: View {
     @FocusState private var queryFocused: Bool
 
     var body: some View {
-        VStack(alignment: .leading, spacing: 12) {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
             Text("Ask the Image Library")
-                .font(.title3.bold())
+                .font(.headline)
             Text(
                 "Describe a fighter, event, topic, or kind of visual. The search uses the image subjects and tags already stored in this profile."
             )
@@ -43,8 +43,9 @@ struct ImageLibrarySearchSheet: View {
                     .disabled(query.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
         .frame(width: 500)
+        .modalCloseButton { dismiss() }
         .appJobSetupPresentation()
         .task {
             queryFocused = true

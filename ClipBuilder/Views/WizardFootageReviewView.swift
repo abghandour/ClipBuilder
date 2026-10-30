@@ -73,7 +73,7 @@ struct WizardFootageReviewView: View {
                     .textFieldStyle(.roundedBorder)
                     .frame(maxWidth: 260)
                     .accessibilityLabel("Selection name")
-                Button("Delete selection", systemImage: "trash") { store.deleteWizardSelection(summary.id) }
+                Button("Delete Selection", systemImage: "trash") { store.deleteWizardSelection(summary.id) }
                     .labelStyle(.iconOnly).help("Delete this selection and its takes")
                 Spacer(minLength: 0)
             }

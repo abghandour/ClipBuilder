@@ -155,7 +155,7 @@ struct InstagramView: View {
                     }
                     .pickerStyle(.inline)
                 } label: {
-                    Text("Sort: \(sortOrder.rawValue)")
+                    ToolbarBubbleLabel(text: "Sort: \(sortOrder.rawValue)", systemImage: "arrow.up.arrow.down")
                 }
                 .help("Order reels by recency or performance")
             }
@@ -186,7 +186,7 @@ struct InstagramView: View {
                             Text("Learning…")
                         }
                     } else {
-                        Label("Learn", systemImage: "graduationcap")
+                        ToolbarBubbleLabel(text: "Learn", systemImage: "graduationcap")
                     }
                 }
                 .help("Teach the taste profile from reels: tick reels with the circle on each card, or learn from the five strongest normalized save/share/comment performers. Each reel is classified into a video type (fight highlights, interviews, …) whose rubric it refines.")
@@ -322,7 +322,7 @@ struct InstagramView: View {
                     .disabled(newHandle.trimmingCharacters(in: .whitespaces).isEmpty)
             }
         }
-        .padding(20)
+        .padding(Theme.spaceL)
         .modalCloseButton {
             addingAccount = false
             newHandle = ""
@@ -349,7 +349,7 @@ private struct ReelCard: View {
                 thumbnail
                     .aspectRatio(9 / 16, contentMode: .fit)
                     .frame(maxWidth: .infinity)
-                    .clipShape(RoundedRectangle(cornerRadius: 8))
+                    .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
                 if media.duration > 0 {
                     DurationBadge(seconds: media.duration)
                 }
@@ -411,7 +411,7 @@ private struct ReelCard: View {
     }
 
     private func statBadge(_ symbol: String, _ count: Int) -> some View {
-        HStack(spacing: 3) {
+        HStack(spacing: Theme.spaceXS) {
             Image(systemName: symbol)
             Text(count.compactFormatted)
                 .monospacedDigit()
@@ -563,7 +563,7 @@ private struct InstagramDetailSheet: View {
                     Text("Structure").font(.caption2.bold()).foregroundStyle(.secondary)
                     ForEach(Array(template.structure.enumerated()), id: \.offset) { _, phase in
                         Text("\(phase.start.timecode)–\(phase.end.timecode)  \(phase.phase): \(phase.description)")
-                            .font(.caption2)
+                            .font(.caption2.monospacedDigit())
                             .foregroundStyle(.secondary)
                     }
                 }

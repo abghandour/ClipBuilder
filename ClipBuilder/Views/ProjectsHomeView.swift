@@ -71,13 +71,16 @@ struct ProjectsHomeView: View {
                     .foregroundStyle(.secondary)
                 }
             }
-            .padding(Theme.spaceXL)
+            .padding(Theme.spaceL)
         }
         .screenTitle("Projects", subtitle: "\(store.projects.count(where: { !$0.archived })) active, \(store.projects.count(where: \.archived)) archived")
         .searchable(text: $searchText, prompt: "Search projects")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {
-                Button("New Project", systemImage: "plus", action: beginNewProject)
+                Button(action: beginNewProject) {
+                    ToolbarBubbleLabel(text: "New Project", systemImage: "plus")
+                }
+                .help("Create a project for a set of source videos")
             }
         }
         .alert("New Project", isPresented: $showingNewProject) {

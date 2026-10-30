@@ -49,7 +49,7 @@ struct BuilderWizardRequestHeader: View {
                 Menu {
                     ForEach(model.history, id: \.self) { request in
                         Button(request) { model.request = request }
-                            .help("Use this request again against the current timeline.")
+                            .help("Use this request again against the current timeline")
                     }
                 } label: {
                     Label("Recent Requests", systemImage: "clock.arrow.circlepath")
@@ -59,11 +59,11 @@ struct BuilderWizardRequestHeader: View {
                 .menuStyle(.borderlessButton)
                 .fixedSize()
                 .disabled(model.history.isEmpty || model.busy || (model.phase == .awaitingPrerequisites || model.phase == .awaitingReply) || !model.identityMatches)
-                .help("Recent Requests: the last ten distinct requests for this profile.")
+                .help("Recent Requests: the last ten distinct requests for this profile")
                 Button("Supported requests", systemImage: "questionmark.circle") { showHelp.toggle() }
                     .labelStyle(.iconOnly)
                     .buttonStyle(.borderless)
-                    .help("See all supported examples and how B-roll, tracks, and clip numbers work.")
+                    .help("See all supported examples and how B-roll, tracks, and clip numbers work")
                     .popover(isPresented: $showHelp) {
                         ScrollView {
                             VStack(alignment: .leading, spacing: Theme.spaceM) {
@@ -85,7 +85,7 @@ struct BuilderWizardRequestHeader: View {
                     }
                 if model.phase == .running {
                     Button("Cancel", action: model.cancelRun)
-                        .buttonStyle(.borderedProminent)
+                        .buttonStyle(.bordered)
                         .keyboardShortcut(.return, modifiers: .command)
                         .help("Cancel and wait for active work to stop. No timeline changes are applied; saved Library work remains. ⌘Return.")
                 } else if model.phase != .awaitingReply {

@@ -436,13 +436,12 @@ struct SceneDragPreview: View {
             }
         }
         .frame(width: 81, height: 144)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
+        .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
         .overlay(alignment: .bottomLeading) {
             DurationBadge(seconds: scene.duration)
-                .padding(4)
         }
         .overlay {
-            RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor, lineWidth: 2)
+            RoundedRectangle(cornerRadius: Theme.mediaRadius).strokeBorder(Color.accentColor, lineWidth: 2)
         }
         .opacity(0.85)
         .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
@@ -464,9 +463,9 @@ struct FileDragPreview: View {
             }
         }
         .frame(width: 144, height: 81)
-        .clipShape(RoundedRectangle(cornerRadius: 6))
-        .overlay(alignment: .bottomLeading) { DurationBadge(seconds: video.duration).padding(4) }
-        .overlay { RoundedRectangle(cornerRadius: 6).strokeBorder(Color.accentColor, lineWidth: 2) }
+        .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
+        .overlay(alignment: .bottomLeading) { DurationBadge(seconds: video.duration) }
+        .overlay { RoundedRectangle(cornerRadius: Theme.mediaRadius).strokeBorder(Color.accentColor, lineWidth: 2) }
         .opacity(0.85)
         .shadow(color: .black.opacity(0.35), radius: 6, y: 2)
         .accessibilityLabel("Dragging \(video.filename)")
