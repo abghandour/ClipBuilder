@@ -82,7 +82,9 @@ struct SettingsRowDetail: View {
 /// column so every control starts at the same x and sits next to its label
 /// instead of at the far edge of a wide panel.
 enum SettingsRowMetrics {
-    static let labelWidth: CGFloat = 150
+    /// Fits the common labels ("Focus frame", "Safe area only"); a longer one
+    /// widens its own row rather than pushing every row's control right.
+    static let labelWidth: CGFloat = 96
     /// Sliders and text fields stop here; menus and pickers keep their natural size.
     static let controlWidth: CGFloat = 360
 }

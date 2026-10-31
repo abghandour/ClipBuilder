@@ -7,6 +7,7 @@ struct TeamSettingsTab: View {
     @State private var joinCode = ""
     @State private var inviteEmail = ""
     @State private var showingAttachment = false
+    @State private var choosingTeamFolder = false
 
     var body: some View {
         @Bindable var team = store.teamSync
@@ -47,6 +48,25 @@ struct TeamSettingsTab: View {
                         LabeledContent("Profile", value: store.activeProfile.profileName)
                         Text(team.status).foregroundStyle(.secondary)
                         AutoDriveUploadToggle()
+                        LabeledContent("Team upload folder") {
+                            HStack(spacing: 8) {
+                                Text(store.activeProfile.teamDriveFolderName ?? "Not set")
+                                    .foregroundStyle(store.activeProfile.teamDriveFolderID == nil ? .secondary : .primary)
+                                    .lineLimit(1)
+                                Button("Choose…") { choosingTeamFolder = true }
+                                    .fixedSize()
+                                if store.activeProfile.teamDriveFolderID != nil {
+                                    Button("Clear") {
+                                        store.activeProfile.teamDriveFolderID = nil
+                                        store.activeProfile.teamDriveFolderName = nil
+                                        store.saveActiveProfile()
+                                    }
+                                    .fixedSize()
+                                }
+                            }
+                        }
+                        Text("A Drive folder shared with every member. New sources upload there and teammates can download them. Each member signs in to Google with their own account and needs edit access to the folder.")
+                            .font(.caption).foregroundStyle(.secondary)
                         Toggle("Pause sync", isOn: $team.paused)
                             .onChange(of: team.paused) { _, value in team.setPaused(value) }
                             .disabled(team.replacingProfile)
@@ -102,6 +122,15 @@ struct TeamSettingsTab: View {
         .task {
             if team.store == nil { team.store = store }
             await team.restore()
+        }
+        .sheet(isPresented: $choosingTeamFolder) {
+            GoogleDriveBrowserSheet(pickFolder: { folder, breadcrumb in
+                guard folder.id != "root", !folder.id.isEmpty else { throw GoogleDriveError.notShareable }
+                store.activeProfile.teamDriveFolderID = folder.id
+                store.activeProfile.teamDriveFolderName = breadcrumb
+                store.saveActiveProfile()
+                try? await store.googleDrive.rememberFolder(folder, profile: store.activeProfile.profileName)
+            })
         }
         .sheet(isPresented: $showingAttachment) {
             TeamAttachmentSheet(counts: team.counts, profileName: store.activeProfile.profileName) {

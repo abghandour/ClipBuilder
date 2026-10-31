@@ -551,8 +551,13 @@ final class GoogleDriveTransfers {
         revision += 1
     }
 
-    func uploadFolder(profile: String, project: String) async throws -> DriveFile {
+    /// The team's shared folder wins over this Mac's remembered choice, so every
+    /// member's uploads land where teammates can download them.
+    func uploadFolder(profile: String, project: String, teamFolderID: String? = nil) async throws -> DriveFile {
         guard let context = contexts[profile] else { throw GoogleDriveError.notFound }
+        if let teamFolderID, !teamFolderID.isEmpty {
+            return try await context.client.metadata(id: teamFolderID)
+        }
         if let remembered = try await context.database.driveSetting("uploadFolder"), !remembered.isEmpty {
             return try await context.client.metadata(id: remembered)
         }

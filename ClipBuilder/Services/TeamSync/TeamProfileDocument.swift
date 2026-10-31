@@ -9,8 +9,10 @@ nonisolated enum TeamProfileDocument {
         "default_pacing", "default_music_volume", "use_learned_editing_defaults", "learned_hook_style",
         "learned_layout_preference", "taste_rubric", "taste_categories", "house_style", "critic_brief_use",
         "editing", "ai_routing", "default_render_settings", "buzz_sources", "buzz_extra_sources", "mini_instructions", "express_presets",
-        "wizard_presets",
+        "wizard_presets", "team_drive_folder_id", "team_drive_folder_name",
     ]
+
+    static let teamFolderKeys = ["team_drive_folder_id", "team_drive_folder_name"]
 
     static func encode(_ profile: BrandProfile) throws -> String {
         let full = try JSONDecoder().decode(SyncMapping.WireRow.self, from: JSONEncoder().encode(profile))
@@ -65,6 +67,11 @@ nonisolated enum TeamProfileDocument {
                 result[key] = key == "express_presets" || key == "wizard_presets"
                     ? mergeNamedList(remote: result[key], current: current[key], baseline: baseline[key])
                     : merge(remote: result[key], current: current[key], baseline: baseline[key])
+            }
+            // The team upload folder's id and name describe one choice: a local
+            // change to either carries both, so the name never names another folder.
+            if teamFolderKeys.contains(where: { current[$0] != baseline[$0] }) {
+                for key in teamFolderKeys { result[key] = current[key] ?? .null }
             }
             return .object(result)
         }
@@ -171,6 +178,12 @@ extension Database {
             }
             // And the Wizard presets added in 1.108.
             if profile.wizardPresets == nil, saved["wizard_presets"] != nil, saved["wizard_presets"] != .null {
+                try connection.execute("INSERT OR IGNORE INTO sync_profile_adoption(id, baseline_json) VALUES (1, ?)",
+                                       [.text(current)])
+                return
+            }
+            // And the team upload folder added in 1.137.
+            if profile.teamDriveFolderID == nil, saved["team_drive_folder_id"] != nil, saved["team_drive_folder_id"] != .null {
                 try connection.execute("INSERT OR IGNORE INTO sync_profile_adoption(id, baseline_json) VALUES (1, ?)",
                                        [.text(current)])
                 return

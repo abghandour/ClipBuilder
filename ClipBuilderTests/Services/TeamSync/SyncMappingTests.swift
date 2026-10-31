@@ -96,12 +96,15 @@ extension SyncMappingTests {
         profile.buzzSources = ["news"]
         profile.buzzExtraSources = "r/ufc"
         profile.miniInstructions = "Keep the hook short"
+        profile.teamDriveFolderID = "drive-folder-1"
+        profile.teamDriveFolderName = "Shared with me › PAX Folder"
         profile.tasteCategories = [TasteCategory(key: "fight", label: "Fights", exemplarFrames: ["/private/frame.jpg"])]
         let json = try TeamProfileDocument.encode(profile)
         #expect(!json.contains("/private"))
         #expect(!json.contains("team_id"))
         let fields = try JSONDecoder().decode(SyncMapping.WireRow.self, from: Data(json.utf8))
-        for key in ["editing", "ai_routing", "default_render_settings", "buzz_sources", "buzz_extra_sources", "mini_instructions"] {
+        for key in ["editing", "ai_routing", "default_render_settings", "buzz_sources", "buzz_extra_sources", "mini_instructions",
+                    "team_drive_folder_id", "team_drive_folder_name"] {
             #expect(fields[key] != nil)
         }
         for key in ["logo_path", "source_folder", "output_folder", "taste_exemplar_frames",

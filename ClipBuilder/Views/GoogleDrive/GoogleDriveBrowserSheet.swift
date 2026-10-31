@@ -472,7 +472,8 @@ struct GoogleDriveBrowserSheet: View {
     /// The remembered upload folder, else the default
     /// Clip Builder › <profile> › <project>, else nil (My Drive's root).
     private func initialUploadFolder(client: GoogleDriveClient) async -> DriveFile? {
-        if let remembered = try? await store.googleDrive.uploadFolder(profile: profile, project: projectName) {
+        if let remembered = try? await store.googleDrive.uploadFolder(
+            profile: profile, project: projectName, teamFolderID: store.activeProfile.teamDriveFolderID) {
             return remembered
         }
         do {

@@ -3,7 +3,7 @@ import Foundation
 nonisolated enum GoogleDriveError: Error, LocalizedError, Equatable {
     case accountMismatch(expected: String)
     case notConfigured, reconnect, quota, notFound, forbidden, offline, cancelled
-    case invalidResponse, conflict, inUse, cannotReplaceAsset
+    case invalidResponse, conflict, inUse, cannotReplaceAsset, notShareable
     case server(Int)
     case keychain(Int32)
 
@@ -26,6 +26,7 @@ nonisolated enum GoogleDriveError: Error, LocalizedError, Equatable {
         case .cancelled: "Google sign-in was cancelled."
         case .invalidResponse: "Google Drive couldn't finish that request. Please try again."
         case .cannotReplaceAsset: "cannot replace (not created by Clip Builder)"
+        case .notShareable: "Choose a specific folder. The top of My Drive is different for every member."
         case .inUse: "This video is being used. Close its previews and wait for its other work to finish."
         case .conflict: "This file has changed. Please try again to get the latest copy."
         case .server: "Google Drive is having trouble. Please try again later."

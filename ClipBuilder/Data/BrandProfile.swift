@@ -46,6 +46,9 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     var profileID: UUID?
     var teamID: UUID?
     var teamSyncPaused: Bool?
+    /// Google Drive folder every member uploads new sources into; shared through Team Sync.
+    var teamDriveFolderID: String?
+    var teamDriveFolderName: String?
     var learnedSharing = LearnedSharing()
     var profileName: String
     var brandName: String
@@ -127,6 +130,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case profileID = "profile_id"
         case teamID = "team_id"
         case teamSyncPaused = "team_sync_paused"
+        case teamDriveFolderID = "team_drive_folder_id"
+        case teamDriveFolderName = "team_drive_folder_name"
         case learnedSharing = "learned_sharing"
         case profileName = "profile_name"
         case brandName = "brand_name"
@@ -174,6 +179,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         profileID = try container.decodeIfPresent(UUID.self, forKey: .profileID)
         teamID = try container.decodeIfPresent(UUID.self, forKey: .teamID)
         teamSyncPaused = try container.decodeIfPresent(Bool.self, forKey: .teamSyncPaused)
+        teamDriveFolderID = try container.decodeIfPresent(String.self, forKey: .teamDriveFolderID)
+        teamDriveFolderName = try container.decodeIfPresent(String.self, forKey: .teamDriveFolderName)
         learnedSharing = try container.decodeIfPresent(LearnedSharing.self, forKey: .learnedSharing) ?? LearnedSharing()
         criticBriefUse = try container.decodeIfPresent(CriticBriefUse.self, forKey: .criticBriefUse) ?? .automatic
         instagramPublishAccount = try container.decodeIfPresent(String.self, forKey: .instagramPublishAccount)
