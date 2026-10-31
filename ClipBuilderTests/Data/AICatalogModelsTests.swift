@@ -40,7 +40,8 @@ struct AICatalogModelsTests {
     func subscriptionChains() {
         #expect(AICatalog.provider("antigravity")?.supportsImages == true)
         #expect(AICatalog.provider("antigravity")?.bin == "agy")
-        for (task, chain) in AICatalog.recommendedChains {
+        // Image generation is Gemini-only (nanobanana); it has no subscription twin.
+        for (task, chain) in AICatalog.recommendedChains where task != "image_generation" {
             let gemini = chain.filter { $0.provider == "gemini" }
             let antigravity = chain.filter { $0.provider == "antigravity" }
             #expect(gemini.count == antigravity.count, "\(task)")
