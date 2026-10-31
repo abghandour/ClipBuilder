@@ -63,7 +63,7 @@ ClipBuilder/
   App/        AppStore.swift (state + core, 2k lines) and AppStore+<Feature>.swift
               extensions (Projects, Analysis, WizardPipeline, Wizard, People,
               AITools, Scenes, Timelines, FightResearch, Instagram, Jobs,
-              ImageSearch, ReelModels); AppJobs (background jobs);
+              ImageSearch, ReelModels, ImageGeneration); AppJobs (background jobs);
               BuilderStore (timeline editing)
   Data/       Models, Database.swift (schema + migrations) and
               Database+<TableGroup>.swift query extensions, BrandProfile,

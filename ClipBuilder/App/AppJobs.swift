@@ -10,8 +10,9 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
     case personResearch
     case criticBrief, evaluateCritic, fightScore
     case postText, transcriptTranslation, dub
+    case generateImage, trackImage, report, builderAssistant
 
-    var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief }
+    var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief || self == .generateImage }
     /// Routine cycles finish quietly; the outcome goes to the activity log only.
     var logsCompletion: Bool { self == .teamSync }
 
@@ -47,6 +48,10 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .postText: "Post Text"
         case .transcriptTranslation: "Translate Transcript"
         case .dub: "Dub"
+        case .generateImage: "Generate Image"
+        case .trackImage: "Track Face"
+        case .report: "AI Report"
+        case .builderAssistant: "Builder Wizard"
         }
     }
 
@@ -54,8 +59,8 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         switch self {
         case .aiFavorites: "curate"
         case .gapReport, .generateRequest: "wizard"
-        case .instagramPublish: "instagram"
-        case .socialExport, .dub: "builder"
+        case .instagramPublish, .report: "instagram"
+        case .socialExport, .dub, .generateImage, .trackImage, .builderAssistant: "builder"
         case .profileStarter, .overlayTemplate, .imageSearch, .resourceExport, .resourceImport,
              .evaluateReelModel, .publishLessons, .teamSync: "app"
         case .criticBrief, .evaluateCritic, .postText: "wizard"
@@ -88,6 +93,8 @@ nonisolated struct SceneSearchContext: Equatable, Sendable {
 }
 
 nonisolated enum AppJobResult: Equatable, Sendable {
+    case report(AIReportRecord)
+    case generatedImage(GeneratedImage)
     case dub(DubReview)
     case favorites(candidates: [SceneRecord], proposals: [SceneCurator.Proposal], provenance: AIProvenance?)
     case soundbites(video: VideoRecord, items: [SoundbiteFinder.Soundbite], provenance: AIProvenance?)
@@ -117,7 +124,7 @@ nonisolated enum AppJobResult: Equatable, Sendable {
 
     var needsReview: Bool {
         switch self {
-        case .sceneSearch, .imageSearch, .trim, .generateRequest: false
+        case .sceneSearch, .imageSearch, .trim, .generateRequest, .generatedImage: false
         default: true
         }
     }

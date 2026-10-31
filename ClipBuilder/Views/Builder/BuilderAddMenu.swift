@@ -7,6 +7,7 @@ struct BuilderAddMenu: View {
 
     @Binding var showScenePicker: Bool
     @Binding var showImagePicker: Bool
+    @Binding var showGenerateImage: Bool
     @Binding var showBRollPicker: Bool
 
     var body: some View {
@@ -89,6 +90,10 @@ struct BuilderAddMenu: View {
 
             Button("Image…", systemImage: "photo") {
                 showImagePicker = true
+            }
+
+            Button("Generate Image…", systemImage: "sparkles") {
+                showGenerateImage = true
             }
 
             Menu("Overlay", systemImage: "square.on.square") {

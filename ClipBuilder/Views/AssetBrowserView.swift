@@ -36,6 +36,10 @@ struct AssetBrowserView: View {
     @State private var showingAskImages = false
     @State private var matchedImagePaths: Set<String>?
     @State private var matchedImageQuery = ""
+    /// Images with an AI provenance sidecar (`<file>.json` written by
+    /// Generate Image) in the current folder.
+    @State private var generatedPaths: Set<String> = []
+    @State private var onlyGenerated = false
 
     private var imageSearchJob: AppJob? {
         store.jobs.latestFinished(.imageSearch, projectID: store.activeProjectID)
@@ -92,6 +96,13 @@ struct AssetBrowserView: View {
                         }
                         .disabled(items.filter { !$0.isFolder }.isEmpty)
                         .help("Find images by describing what you need")
+                        if !generatedPaths.isEmpty || onlyGenerated {
+                            Toggle(isOn: $onlyGenerated) {
+                                ToolbarBubbleLabel(text: "AI Only", systemImage: "sparkles")
+                            }
+                            .toggleStyle(.button)
+                            .help("Show only images made by Generate Image")
+                        }
                         if matchedImagePaths != nil {
                             Button {
                                 matchedImagePaths = nil
@@ -394,6 +405,13 @@ struct AssetBrowserView: View {
                                     .padding(4)
                                     .background(.regularMaterial, in: .capsule)
                                     .padding(5)
+                            } else if generatedPaths.contains(item.url.path) {
+                                Label("AI", systemImage: "sparkles")
+                                    .font(.caption)
+                                    .padding(4)
+                                    .background(.regularMaterial, in: .capsule)
+                                    .padding(5)
+                                    .help("Made by Generate Image; the prompt is in the sidecar JSON next to the file")
                             }
                         }
                 }
@@ -513,10 +531,16 @@ struct AssetBrowserView: View {
         let kind = kind
         Task {
             async let folders = AssetStore.folderNamesAsync(of: kind)
+            async let generated: Set<String> = kind == .images ? AssetStore.generatedImagePathsAsync(in: folder) : []
             let refreshed = await AssetStore.itemsAsync(of: kind, in: folder)
+            let refreshedGenerated = await generated
+            let refreshedFolders = await folders
+            // Every scan is in hand before the guard, so a slower scan for a
+            // folder the user already left cannot land on the new one.
             guard !Task.isCancelled, version == refreshVersion, folder == currentFolder else { return }
             items = refreshed
-            folderNames = await folders
+            generatedPaths = refreshedGenerated
+            folderNames = refreshedFolders
             if let playingID, !items.contains(where: { $0.id == playingID }) { stopPlayback() }
             if kind == .images || kind == .bumpers { loadMetadata() }
             if kind == .bumpers { store.refreshBumpers() }
@@ -527,6 +551,7 @@ struct AssetBrowserView: View {
         items.filter { item in
             let matchesAI = matchedImagePaths.map { item.isFolder || $0.contains(item.url.path) } ?? true
             guard matchesAI else { return false }
+            if onlyGenerated, !item.isFolder, !generatedPaths.contains(item.url.path) { return false }
             guard !searchText.isEmpty else { return true }
             return item.isFolder || item.name.localizedStandardContains(searchText)
                 || (kind == .bumpers && bumper(for: item).displayName.localizedStandardContains(searchText))

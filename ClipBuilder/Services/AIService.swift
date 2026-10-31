@@ -677,21 +677,8 @@ actor AIService {
         let result = try await runRequest(executable: binary, arguments: arguments, timeout: timeout,
                                           environment: ["GEMINI_CLI_TRUST_WORKSPACE": "true"])
         if result.exitCode != 0 {
-            let rawError = result.stderrText + "\n" + result.stdoutText
-            let error = Self.firstCLIErrorLine(rawError)
-            if Self.isProviderUnavailable(rawError) {
-                unavailableProviders.insert("gemini")
-                log("Gemini CLI error: \(error)")
-                throw AIError.notConfigured(
-                    "Gemini CLI is no longer available for this account (Google: \(error)). Choose another analysis provider in Settings → AI.")
-            }
-            if Self.isQuotaError(rawError) { throw AIError.quotaExhausted(String(error.prefix(200))) }
-            if Self.isPromptTooLong(rawError) { throw AIError.promptTooLong("Gemini") }
-            if let failure = await Self.authFailure(provider: "gemini", binary: binary, raw: rawError, log: log) {
-                throw failure
-            }
-            log("Gemini CLI error: \(error)")
-            throw AIError.emptyResponse("Gemini")
+            throw await geminiFailure(raw: result.stderrText + "\n" + result.stdoutText, binary: binary,
+                                      label: "Gemini", log: log)
         }
         var text = result.stdoutText.trimmingCharacters(in: .whitespacesAndNewlines)
         // Strip "Loaded cached credentials." style noise some versions emit.
@@ -700,6 +687,100 @@ actor AIService {
         }
         guard !text.isEmpty else { throw AIError.emptyResponse("Gemini") }
         return text
+    }
+
+    var hasGeminiImageTools: Bool {
+        var isDirectory: ObjCBool = false
+        let extensionURL = FileManager.default.homeDirectoryForCurrentUser
+            .appendingPathComponent(".gemini/extensions/nanobanana", isDirectory: true)
+        return binaryURL(forProvider: "gemini") != nil
+            && FileManager.default.fileExists(atPath: extensionURL.path, isDirectory: &isDirectory)
+            && isDirectory.boolValue
+    }
+
+    /// Why a Gemini CLI run failed, in the order the text calls and image
+    /// generation both need: account gone, quota, prompt size, auth, then a
+    /// plain empty response under `label`.
+    private func geminiFailure(raw rawError: String, binary: URL, label: String,
+                               log: @Sendable (String) -> Void) async -> AIError {
+        let error = Self.firstCLIErrorLine(rawError)
+        if Self.isProviderUnavailable(rawError) {
+            unavailableProviders.insert("gemini")
+            log("Gemini CLI error: \(error)")
+            return .notConfigured(
+                "Gemini CLI is no longer available for this account (Google: \(error)). Choose another analysis provider in Settings → AI.")
+        }
+        if Self.isQuotaError(rawError) { return .quotaExhausted(String(error.prefix(200))) }
+        if Self.isPromptTooLong(rawError) { return .promptTooLong(label) }
+        if let failure = await Self.authFailure(provider: "gemini", binary: binary, raw: rawError, log: log) {
+            return failure
+        }
+        log("Gemini CLI error: \(error)")
+        return .emptyResponse(label)
+    }
+
+    func generateImage(_ request: ImageGeneration.Request, timeout: TimeInterval = 180,
+                       log: @escaping @Sendable (String) -> Void) async throws -> URL {
+        // Verified from a terminal on October 30, 2026 (Gemini CLI 0.53.1, Nano
+        // Banana 1.0.12): from a fresh scratch cwd,
+        //   GEMINI_CLI_TRUST_WORKSPACE=true gemini --approval-mode yolo -p "<prompt>"
+        // ran the extension's generate_image tool, wrote
+        // ./nanobanana-output/<slug>.png (1408x768, opaque) and printed its
+        // absolute path on stdout. stderr carried two "YOLO mode is enabled"
+        // notices and one retried tool error; the run took about 40 s. The
+        // extension cannot read outside the cwd, so the frame is copied there.
+        guard providerKey(forTask: AITask.imageGeneration.rawValue) == "gemini",
+              hasGeminiImageTools, let binary = binaryURL(forProvider: "gemini") else {
+            throw AIError.notConfigured("Image generation needs the Gemini CLI with the Nano Banana extension installed.")
+        }
+        guard request.mode != .edit || request.frame != nil else {
+            throw AIError.unusableResponse("Move the playhead onto a video frame before editing an image.")
+        }
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cb_imagegen_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        do {
+            try Task.checkCancellation()
+            var prompt = ImageGeneration.prompt(for: request)
+            if let frame = request.frame {
+                try frame.write(to: scratch.appendingPathComponent("frame.jpg"))
+                prompt = "@frame.jpg\n\n" + prompt
+            }
+            var arguments = ["--approval-mode", "yolo"]
+            if let model = resolveProviderModel(task: AITask.imageGeneration.rawValue).model {
+                arguments += ["-m", model]
+            }
+            arguments += ["-p", prompt]
+            let result = try await runRequest(executable: binary, arguments: arguments, timeout: timeout,
+                environment: ["GEMINI_CLI_TRUST_WORKSPACE": "true"], currentDirectory: scratch)
+            try Task.checkCancellation()
+            // The scratch directory was created empty just above, so every
+            // image in it is new.
+            let output = ImageGeneration.newOutputFiles(in: scratch, before: []).first
+                ?? result.stdoutText.components(separatedBy: .newlines).reversed().compactMap { line -> URL? in
+                    let path = line.trimmingCharacters(in: CharacterSet.whitespacesAndNewlines
+                        .union(CharacterSet(charactersIn: "`\"'")))
+                    let url = path.hasPrefix("/") ? URL(fileURLWithPath: path) : scratch.appendingPathComponent(path)
+                    // A printed path is untrusted. Keep output inside this request's scratch
+                    // directory, including after symlink resolution; never move a user file.
+                    guard url.resolvingSymlinksInPath().path.hasPrefix(scratch.resolvingSymlinksInPath().path + "/"),
+                          ["png", "jpg", "jpeg"].contains(url.pathExtension.lowercased()),
+                          url.standardizedFileURL != scratch.appendingPathComponent("frame.jpg").standardizedFileURL,
+                          let attributes = try? FileManager.default.attributesOfItem(atPath: url.path),
+                          attributes[.type] as? FileAttributeType == .typeRegular else { return nil }
+                    return url
+                }.first
+            if result.exitCode != 0 || output == nil {
+                throw await geminiFailure(raw: result.stderrText + "\n" + result.stdoutText, binary: binary,
+                                          label: "Gemini image", log: log)
+            }
+            guard let output else { throw AIError.emptyResponse("Gemini image") }
+            // The caller owns the raw file and removes scratch after saving to the library.
+            return output
+        } catch {
+            try? FileManager.default.removeItem(at: scratch)
+            throw error
+        }
     }
 
     // MARK: - Antigravity (sandboxed JSON output)

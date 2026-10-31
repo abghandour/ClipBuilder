@@ -503,6 +503,16 @@ struct WizardView: View {
                 reviewingIdea = false
             }
         }
+        .onChange(of: store.pendingWizardAssistantRequest, initial: true) { _, request in
+            guard let request, store.wizardMode == .full, pageVisible else { return }
+            store.pendingWizardAssistantRequest = nil
+            aiInstructions = request.text
+            guard canStart else {
+                store.presentNotice("Ask AI", "Added to the Wizard's instructions. Choose sources, then press Generate.")
+                return
+            }
+            startGeneration()
+        }
         .onChange(of: entryMode) { _, _ in
             open(.source)
             reviewingIdea = false

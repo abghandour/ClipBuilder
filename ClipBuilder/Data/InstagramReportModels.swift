@@ -572,3 +572,15 @@ nonisolated struct InstagramReport: Sendable {
         !overview.followerSeries.isEmpty || !posts.rows.isEmpty || !overview.accountInsights.isEmpty
     }
 }
+
+/// A kept AI analysis of one account and report period.
+nonisolated struct AIReportRecord: Codable, Sendable, Equatable, Identifiable {
+    var id: UUID = UUID()
+    var accountID: Int64
+    var periodKey: String
+    var prompt: String
+    var markdown: String
+    var provider: String
+    var model: String?
+    var createdAt: Date = Date()
+}

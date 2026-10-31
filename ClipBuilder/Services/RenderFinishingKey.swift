@@ -10,6 +10,8 @@ nonisolated struct RenderFinishingKey: Encodable, Sendable {
         var end: Double
         var transIn: String
         var transOut: String
+        var xExpr: String?
+        var yExpr: String?
     }
 
     var segments: [String]
@@ -66,7 +68,7 @@ nonisolated struct RenderFinishingKey: Encodable, Sendable {
     static func overlayIdentities(_ overlays: [MultitrackRenderer.TimedOverlayPNG]) throws -> [Overlay] {
         try overlays.map {
             try Overlay(pixels: digest($0.png), start: $0.startTime, end: $0.endTime,
-                        transIn: $0.transIn, transOut: $0.transOut)
+                        transIn: $0.transIn, transOut: $0.transOut, xExpr: $0.xExpr, yExpr: $0.yExpr)
         }
     }
 

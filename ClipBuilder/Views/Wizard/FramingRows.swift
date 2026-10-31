@@ -8,6 +8,11 @@ struct FramingRows: View {
     var videoIDs: [Int64] = []
     /// Width over height of the output canvas; the locked focus frame starts at this shape.
     var canvasAspect: Double = 9.0 / 16
+    /// The Builder hides Layout: there a layout is a crop block, not a clip setting.
+    var allowsLayout = true
+    private var subjects: [Framing.Subject] {
+        FramingMenu.allowed(type: type).filter { allowsLayout || $0 != .layout }
+    }
     /// The slider's value while it is being dragged; committed when the drag ends.
     @State private var zoomLive: Double?
     @State private var hasTurns = false
@@ -29,7 +34,7 @@ struct FramingRows: View {
     var body: some View {
         SettingsRow("Framing", detail: framing.subject.summary(type: type)) {
             Menu {
-                ForEach(FramingMenu.allowed(type: type), id: \.self) { subject in
+                ForEach(subjects, id: \.self) { subject in
                     Button {
                         var value = framing
                         value.subject = subject
@@ -48,7 +53,7 @@ struct FramingRows: View {
         }
         if let reason = reason(framing.subject) {
             FormCaption(reason)
-        } else if FramingMenu.allowed(type: type).contains(.speakerFocus), !hasTurns {
+        } else if subjects.contains(.speakerFocus), !hasTurns {
             FormCaption("Speaker focus needs speaker turns. Analyze speech first.")
         }
         if type == .fight, framing.subject == .vipFocus, !hasVIP {

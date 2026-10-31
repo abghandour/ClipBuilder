@@ -26,6 +26,14 @@ extension Database {
         return rows.first?["id"]?.intValue ?? connection.lastInsertRowID
     }
 
+    /// Hide sources from every list on this Mac without touching the row
+    /// itself (teammates and sync keep it).
+    func setVideosHidden(_ ids: [Int64], _ hidden: Bool) throws {
+        for id in ids {
+            try connection.execute("UPDATE videos SET hidden = ? WHERE id = ?", [.integer(hidden ? 1 : 0), .integer(id)])
+        }
+    }
+
     /// Remove source rows outright; every dependent table cascades.
     func deleteVideos(_ ids: [Int64]) throws {
         for id in ids {
@@ -409,11 +417,11 @@ extension Database {
             return try connection.query("""
                 SELECT v.* FROM videos v
                 JOIN project_videos pv ON pv.video_id = v.id
-                WHERE pv.project_id = ?
+                WHERE pv.project_id = ? AND v.hidden = 0
                 ORDER BY v.filename COLLATE NOCASE
                 """, [.integer(projectID)]).map(resolvedVideoRecord)
         }
-        return try connection.query("SELECT * FROM videos ORDER BY filename COLLATE NOCASE")
+        return try connection.query("SELECT * FROM videos WHERE hidden = 0 ORDER BY filename COLLATE NOCASE")
             .map(resolvedVideoRecord)
     }
 

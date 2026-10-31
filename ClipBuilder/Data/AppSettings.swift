@@ -271,6 +271,7 @@ nonisolated enum AICatalog {
     static let tasks = AITask.configurable.map(\.rawValue)
 
     static let taskLabels: [String: String] = [
+        "image_generation": "Image Generation",
         "builder_agent": "Builder editing",
         "route": "Wizard routing",
         "analysis": "Video analysis",
@@ -297,12 +298,14 @@ nonisolated enum AICatalog {
         "dedupe": "Duplicate detection",
         "trim": "Trim suggestion",
         "gap": "Content gap report",
+        "report": "AI Report",
         "onboard": "Profile starter",
         // Not in Settings → AI's routing list; the Mini wizard's gear sets it.
         "translate": "Caption translation",
     ]
 
     static let taskDefaults: [String: String] = [
+        "image_generation": "gemini",
         "route": "claude",
         "analysis": "claude",
         "people": "claude",
@@ -328,6 +331,7 @@ nonisolated enum AICatalog {
         "dedupe": "claude",
         "trim": "claude",
         "gap": "claude",
+        "report": "claude",
         "onboard": "claude",
     ]
 
@@ -337,6 +341,7 @@ nonisolated enum AICatalog {
     /// failover when a provider errors out. Antigravity uses the subscription;
     /// Gemini CLI stays last as the API-key fallback.
     static let recommendedChains: [String: [(provider: String, model: String)]] = [
+        "image_generation": [("gemini", "gemini-3.8-flash")],
         "route": [("claude", "claude-haiku-4-5-20251001"),
                   ("antigravity", "gemini-3.8-flash-medium"),
                   ("codex", "gpt-5.6-luna"),
@@ -492,6 +497,9 @@ nonisolated enum AICatalog {
                  ("claude", "claude-sonnet-5-5"),
                  ("claude", "claude-haiku-4-5-20251001"),
                  ("gemini", "gemini-3.8-flash")],
+        "report": [("claude", "claude-sonnet-5-5"),
+                   ("antigravity", "gemini-3.1-pro-high"),
+                   ("gemini", "gemini-3.1-pro-preview")],
         // Content gap report reasons over the whole library's state.
         "gap": [("claude", "claude-sonnet-5-5"),
                 ("antigravity", "gemini-3.1-pro-high"),

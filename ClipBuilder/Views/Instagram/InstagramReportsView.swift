@@ -1,4 +1,5 @@
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// Instagram → Reports: the peace-grappler analytics pages rebuilt natively
 /// from the data the Refresh button stores — Overview & growth, post
@@ -12,6 +13,7 @@ struct InstagramReportsView: View {
         case commenters = "Commenters"
         case audience = "Audience"
         case editing = "Editing"
+        case aiReports = "AI Reports"
         var id: String { rawValue }
     }
 
@@ -42,14 +44,26 @@ struct InstagramReportsView: View {
     var body: some View {
         Group {
             if let account = selectedAccount {
-                if !store.isGraphAccount(account) && store.igReport?.hasData != true {
-                    notConnected(account)
-                } else if let report = store.igReport, report.hasData {
-                    content(report, account: account)
-                } else if store.isLoadingIGReport || store.isFetchingInstagram || store.isImportingPeaceGrappler {
-                    working
-                } else {
-                    noData(account)
+                VStack(spacing: 0) {
+                    Picker("Page", selection: $page) {
+                        ForEach(Page.allCases) { Text($0.rawValue).tag($0) }
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .lineLimit(1).fixedSize()
+                    .padding(Theme.spaceM)
+                    if page == .aiReports {
+                        SavedAIReportsView(accountID: account.id)
+                            .id("\(store.profileGeneration):\(account.id)")
+                    } else if !store.isGraphAccount(account) && store.igReport?.hasData != true {
+                        notConnected(account)
+                    } else if let report = store.igReport, report.hasData {
+                        content(report, account: account)
+                    } else if store.isLoadingIGReport || store.isFetchingInstagram || store.isImportingPeaceGrappler {
+                        working
+                    } else {
+                        noData(account)
+                    }
                 }
             } else {
                 ContentUnavailableView("No Account", systemImage: "chart.bar.xaxis",
@@ -59,6 +73,9 @@ struct InstagramReportsView: View {
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         // The report is built here, on demand, rather than at launch.
         .task(id: store.igSelectedAccountID) { store.ensureIGReportLoaded() }
+        .onChange(of: store.pendingIGAIReport, initial: true) { _, report in
+            if report?.accountID == store.igSelectedAccountID, report != nil { page = .aiReports }
+        }
     }
 
     // MARK: - Empty states
@@ -120,6 +137,7 @@ struct InstagramReportsView: View {
                 case .commenters: commenters(report)
                 case .audience: audience(report)
                 case .editing: EditingPerformanceView()
+                case .aiReports: EmptyView() // Presented outside the analytics scroll view.
                 }
             }
             .frame(maxWidth: 1100)
@@ -169,14 +187,6 @@ struct InstagramReportsView: View {
                 Spacer()
             }
             HStack {
-                // Intrinsic width: a capped frame clips the first segment.
-                Picker("Page", selection: $page) {
-                    ForEach(Page.allCases) { Text($0.rawValue).tag($0) }
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .fixedSize()
-                Spacer()
                 Picker("Period", selection: Binding(
                     get: { store.igReportPeriod.id },
                     set: { store.setIGReportPeriod(ReportPeriod.from(id: $0)) }
@@ -882,6 +892,136 @@ struct InstagramReportsView: View {
                 SectionCard(title: "Top Cities", subtitle: "By \(engaged ? "engaged accounts" : "followers")") {
                     if cities.isEmpty { EmptyNote(text: "No city data yet.") }
                     else { HorizontalBars(items: cities, color: ReportColors.orange) }
+                }
+            }
+        }
+    }
+}
+
+private struct SavedAIReportsView: View {
+    @Environment(AppStore.self) private var store
+    let accountID: Int64
+    @State private var reports: [AIReportRecord] = []
+    @State private var selectedID: UUID?
+    @State private var loading = true
+    @State private var deleting = false
+    @State private var loadError: String?
+
+    private var selected: AIReportRecord? { reports.first { $0.id == selectedID } }
+    private var loadKey: String { "\(store.profileGeneration):\(accountID)" }
+
+    var body: some View {
+        HSplitView {
+            List(selection: $selectedID) {
+                ForEach(reports) { report in
+                    VStack(alignment: .leading, spacing: Theme.spaceXS) {
+                        Text(report.prompt).lineLimit(2)
+                        Text(report.createdAt, format: .dateTime.month().day().year())
+                            .font(.caption).foregroundStyle(.secondary)
+                        Text(report.provider).font(.caption).foregroundStyle(.secondary)
+                    }
+                    .tag(report.id)
+                }
+            }
+            .frame(minWidth: 200, idealWidth: 260, maxWidth: 340)
+            VStack(alignment: .leading, spacing: Theme.spaceM) {
+                if let selected {
+                    HStack {
+                        Button("Copy", systemImage: "doc.on.doc") {
+                            NSPasteboard.general.clearContents()
+                            NSPasteboard.general.setString(selected.markdown, forType: .string)
+                        }
+                        Button("Save…", systemImage: "square.and.arrow.down") { save(selected) }
+                        Spacer()
+                        Button("Delete", role: .destructive) { delete(selected) }
+                            .disabled(deleting)
+                    }
+                    .lineLimit(1).fixedSize(horizontal: false, vertical: true)
+                    ScrollView {
+                        LearnedRichTextView(text: selected.markdown)
+                            .frame(maxWidth: .infinity, alignment: .leading)
+                    }
+                } else if loading {
+                    ProgressView("Loading AI reports…")
+                } else if let loadError {
+                    ContentUnavailableView("Could not load reports", systemImage: "exclamationmark.triangle",
+                                           description: Text(loadError))
+                } else {
+                    ContentUnavailableView("AI Reports", systemImage: "sparkles",
+                        description: Text("Use Ask AI to create a report, then choose Keep to save it here."))
+                }
+            }
+            .padding(Theme.spaceL)
+            .frame(maxWidth: .infinity, maxHeight: .infinity)
+        }
+        .task(id: loadKey) { await load() }
+        // A report kept while this page is already showing: reload to list it.
+        .onChange(of: store.pendingIGAIReport) { _, report in
+            if report != nil { Task { await load() } }
+        }
+    }
+
+    private func load() async {
+        let key = loadKey
+        let generation = store.profileGeneration
+        reports = []
+        loading = true
+        loadError = nil
+        guard let database = store.database else { loading = false; return }
+        do {
+            let loaded = try await database.fetchIGAIReports(accountID: accountID)
+            guard !Task.isCancelled, loadKey == key, store.profileGeneration == generation else { return }
+            reports = loaded
+            if let pending = store.pendingIGAIReport, pending.accountID == accountID,
+               loaded.contains(where: { $0.id == pending.id }) {
+                selectedID = pending.id
+                // Consumed: a later visit to Reports opens on its own page again.
+                store.pendingIGAIReport = nil
+            } else if !loaded.contains(where: { $0.id == selectedID }) {
+                selectedID = loaded.first?.id
+            }
+            loading = false
+        } catch {
+            guard !Task.isCancelled, loadKey == key, store.profileGeneration == generation else { return }
+            loading = false
+            loadError = error.userMessage
+        }
+    }
+
+    private func delete(_ report: AIReportRecord) {
+        guard !deleting, let database = store.database else { return }
+        let generation = store.profileGeneration
+        deleting = true
+        Task {
+            do {
+                try await database.deleteIGAIReport(id: report.id)
+                guard store.profileGeneration == generation, store.igSelectedAccountID == accountID else { return }
+                reports.removeAll { $0.id == report.id }
+                selectedID = reports.first?.id
+                if store.pendingIGAIReport?.id == report.id { store.pendingIGAIReport = nil }
+                deleting = false
+            } catch {
+                guard store.profileGeneration == generation else { return }
+                deleting = false
+                store.presentError("Could not delete AI report", error)
+            }
+        }
+    }
+
+    private func save(_ report: AIReportRecord) {
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "md") ?? .plainText]
+        // Local date, matching the list; dayKey is UTC for report periods.
+        panel.nameFieldStringValue = "AI-Report-\(report.createdAt.formatted(.iso8601.year().month().day())).md"
+        let generation = store.profileGeneration
+        panel.begin { response in
+            guard response == .OK, let url = panel.url else { return }
+            Task {
+                do {
+                    try await AppJobWork.run { try report.markdown.write(to: url, atomically: true, encoding: .utf8) }
+                } catch {
+                    guard store.profileGeneration == generation else { return }
+                    store.presentError("Could not export AI report", error)
                 }
             }
         }

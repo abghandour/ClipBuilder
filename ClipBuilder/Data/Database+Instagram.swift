@@ -710,3 +710,32 @@ extension Database {
         return inputs
     }
 }
+
+extension Database {
+    func saveIGAIReport(_ report: AIReportRecord) throws {
+        try connection.execute("""
+            INSERT INTO ig_ai_reports (id, account_id, period_key, prompt, markdown, provider, model, created_at)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+            ON CONFLICT(id) DO UPDATE SET prompt=excluded.prompt, markdown=excluded.markdown,
+                provider=excluded.provider, model=excluded.model
+            """, [.text(report.id.uuidString), .integer(report.accountID), .text(report.periodKey),
+                  .text(report.prompt), .text(report.markdown), .text(report.provider),
+                  report.model.map(SQLValue.text) ?? .null, .text(Self.sqliteDateString(report.createdAt))])
+    }
+
+    func fetchIGAIReports(accountID: Int64) throws -> [AIReportRecord] {
+        try connection.query("SELECT * FROM ig_ai_reports WHERE account_id = ? ORDER BY created_at DESC, id",
+                             [.integer(accountID)]).compactMap { row in
+            guard let id = row["id"]?.stringValue.flatMap(UUID.init(uuidString:)),
+                  let date = Self.parseSQLiteDate(row["created_at"]?.stringValue) else { return nil }
+            return AIReportRecord(id: id, accountID: row["account_id"]?.intValue ?? accountID,
+                periodKey: row["period_key"]?.stringValue ?? "", prompt: row["prompt"]?.stringValue ?? "",
+                markdown: row["markdown"]?.stringValue ?? "", provider: row["provider"]?.stringValue ?? "",
+                model: row["model"]?.stringValue, createdAt: date)
+        }
+    }
+
+    func deleteIGAIReport(id: UUID) throws {
+        try connection.execute("DELETE FROM ig_ai_reports WHERE id = ?", [.text(id.uuidString)])
+    }
+}

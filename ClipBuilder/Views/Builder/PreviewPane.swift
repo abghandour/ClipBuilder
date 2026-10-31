@@ -172,6 +172,17 @@ struct PreviewPane: View {
         return CGSize(width: width * scale, height: height * scale)
     }
 
+    /// `window` of the source scaled so it fills `size`.
+    private func windowCrop(url: URL, time: Double, window: FreeCropRect, size: CGSize) -> some View {
+        let fullWidth = size.width / max(0.01, window.wFrac)
+        let fullHeight = size.height / max(0.01, window.hFrac)
+        return VideoThumbnail(url: url, time: time, cornerRadius: 0)
+            .frame(width: fullWidth, height: fullHeight)
+            .offset(x: -window.xFrac * fullWidth, y: -window.yFrac * fullHeight)
+            .frame(width: size.width, height: size.height, alignment: .topLeading)
+            .clipped()
+    }
+
     @ViewBuilder
     private func clipLayer(clip: TimelineClip, time: Double, frame: CGSize,
                            model: BuilderTimelineModel, area: ScreenCropArea?) -> some View {
@@ -188,6 +199,28 @@ struct PreviewPane: View {
                         .offset(x: -window.xFrac * fullWidth, y: -window.yFrac * fullHeight)
                         .frame(width: frame.width, height: frame.height, alignment: .topLeading)
                         .clipped()
+                } else if !clip.isCutaway, let plan = clip.framingPlan, plan.isStatic {
+                    // A static focus window from the picture controls: the
+                    // window fills the canvas, or sits fitted over a blurred
+                    // copy of itself, as the render composes it.
+                    let window = clip.freeCrops?.first?.src ?? FreeCropRect()
+                    let sourceAspect = model.sourceAspect(for: clip) ?? 16.0 / 9.0
+                    let windowAspect = sourceAspect * window.wFrac / max(0.001, window.hFrac)
+                    let canvasAspect = frame.width / max(1, frame.height)
+                    if plan.fit == .blurredFill, abs(windowAspect - canvasAspect) > 0.01 {
+                        let fitted = windowAspect > canvasAspect
+                            ? CGSize(width: frame.width, height: frame.width / windowAspect)
+                            : CGSize(width: frame.height * windowAspect, height: frame.height)
+                        ZStack {
+                            windowCrop(url: url, time: sourceTime, window: window, size: frame)
+                                .blur(radius: 6 + 24 * plan.blur)
+                            windowCrop(url: url, time: sourceTime, window: window, size: fitted)
+                        }
+                        .frame(width: frame.width, height: frame.height)
+                        .clipped()
+                    } else {
+                        windowCrop(url: url, time: sourceTime, window: window, size: frame)
+                    }
                 } else if let area {
                     let bounds = area.bounds
                     let box = CGRect(x: bounds.x * frame.width, y: bounds.y * frame.height,
@@ -487,7 +520,11 @@ private struct ImageOverlayLayer: View {
     @FocusState private var isFocused: Bool
 
     var body: some View {
-        let width = frame.width * overlay.wFrac
+        let key = ImageTrackKey.interpolate(overlay.track ?? [], at: store.builder.playhead)
+        let x = key?.xFrac ?? overlay.xFrac
+        let y = key?.yFrac ?? overlay.yFrac
+        // Phase 2 keeps the raster at the first key's width, matching export.
+        let width = frame.width * (overlay.track?.first?.wFrac ?? overlay.wFrac)
         let height = image.map { width * $0.size.height / max(1, $0.size.width) } ?? width
         let accessibilityName = "Image overlay " + overlay.displayName
         Group {
@@ -501,13 +538,13 @@ private struct ImageOverlayLayer: View {
         }
         .frame(width: width, height: height)
         .opacity(overlay.opacity)
-        .position(x: frame.width * overlay.xFrac, y: frame.height * overlay.yFrac)
+        .position(x: frame.width * x, y: frame.height * y)
         .gesture(
             DragGesture()
                 .onChanged { value in
                     let model = store.builder
                     if dragStart == nil {
-                        dragStart = CGPoint(x: overlay.xFrac, y: overlay.yFrac)
+                        dragStart = CGPoint(x: x, y: y)
                         model.selection = .image(overlay.uid)
                     }
                     guard let start = dragStart else { return }
@@ -520,6 +557,7 @@ private struct ImageOverlayLayer: View {
                         newX = center.x
                         newY = center.y
                     }
+                    store.stopTrackingImageOverlay(overlay.uid, builder: model)
                     model.updateImage(overlay.uid) {
                         $0.xFrac = newX
                         $0.yFrac = newY
@@ -554,6 +592,7 @@ private struct ImageOverlayLayer: View {
     private func nudge(x: CGFloat, y: CGFloat) {
         guard editable else { return }
         store.builder.selection = .image(overlay.uid)
+        store.stopTrackingImageOverlay(overlay.uid, builder: store.builder)
         store.builder.updateImage(overlay.uid) {
             $0.xFrac = min(max($0.xFrac + x, 0), 1)
             $0.yFrac = min(max($0.yFrac + y, 0), 1)

@@ -3,10 +3,8 @@ import CoreGraphics
 import ImageIO
 import UniformTypeIdentifiers
 
-/// Rasterizes an image overlay to a full-frame transparent PNG — the image
-/// counterpart of TextOverlayRenderer. The PNG is video-sized and overlaid at
-/// 0:0, so the ffmpeg fade/slide expressions that animate text overlays work
-/// on image overlays unchanged.
+/// Rasterizes static overlays into a full-frame transparent PNG. Tracked
+/// overlays use a sticker-sized raster and are positioned by ffmpeg each frame.
 nonisolated struct ImageOverlayRenderer {
     var videoWidth = 1080
     var videoHeight = 1920
@@ -18,7 +16,8 @@ nonisolated struct ImageOverlayRenderer {
     }
 
     func render(_ item: ImageOverlayItem, to directory: URL) throws -> URL {
-        let targetWidth = max(1, Double(videoWidth) * item.wFrac)
+        let tracked = item.track?.isEmpty == false
+        let targetWidth = max(1, Double(videoWidth) * (item.track?.first?.wFrac ?? item.wFrac))
         guard let source = CGImageSourceCreateWithURL(item.url as CFURL, nil),
               let image = CGImageSourceCreateThumbnailAtIndex(source, 0, [
                   // Thumbnail-with-transform bakes in EXIF rotation; cap the
@@ -33,7 +32,9 @@ nonisolated struct ImageOverlayRenderer {
         let aspect = Double(image.height) / Double(max(1, image.width))
         let width = targetWidth
         let height = width * aspect
-        guard let context = CGContext(data: nil, width: videoWidth, height: videoHeight,
+        let canvasWidth = tracked ? Int(ceil(width)) : videoWidth
+        let canvasHeight = tracked ? Int(ceil(height)) : videoHeight
+        guard let context = CGContext(data: nil, width: canvasWidth, height: canvasHeight,
                                       bitsPerComponent: 8, bytesPerRow: 0,
                                       space: CGColorSpace(name: CGColorSpace.sRGB)!,
                                       bitmapInfo: CGImageAlphaInfo.premultipliedLast.rawValue) else {
@@ -45,14 +46,14 @@ nonisolated struct ImageOverlayRenderer {
         // Core Graphics' origin is bottom-left, so flip y.
         var center = (x: item.xFrac, y: item.yFrac)
         // Hand-placed items (Express overlay, watermark) are never nudged clear of platform chrome.
-        if let safeArea, !item.keepsPlacement {
+        if let safeArea, !item.keepsPlacement, !tracked {
             center = safeArea.clampedCenter(x: item.xFrac, y: item.yFrac,
                                             width: width / Double(videoWidth), height: height / Double(videoHeight))
         }
         let rect = CGRect(x: Double(videoWidth) * center.x - width / 2,
                           y: Double(videoHeight) * (1 - center.y) - height / 2,
                           width: width, height: height)
-        context.draw(image, in: rect)
+        context.draw(image, in: tracked ? CGRect(x: 0, y: 0, width: canvasWidth, height: canvasHeight) : rect)
 
         guard let rendered = context.makeImage() else { throw RenderError.contextCreationFailed }
         let url = directory.appendingPathComponent("imgoverlay-\(item.uid.uuidString).png")

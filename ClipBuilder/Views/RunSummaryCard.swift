@@ -22,18 +22,19 @@ struct RunSummaryCard: View {
                 }
             }
             ForEach(summary.sections, id: \.title) { section in
-                HStack(alignment: .firstTextBaseline, spacing: Theme.spaceS) {
+                // The label is the first item of the flow: chips start right
+                // after it and wrap onto the next row, so a narrow column
+                // does not pay for an aligned label gutter.
+                FlowLayout(spacing: Theme.spaceXS) {
                     SectionLabel(section.title)
-                        .frame(width: 64, alignment: .leading)
-                    FlowLayout(spacing: Theme.spaceXS) {
-                        ForEach(section.items, id: \.self) { item in
-                            Text(item)
-                                .font(.caption)
-                                .lineLimit(1).truncationMode(.middle)
-                                .frame(maxWidth: 260)
-                                .padding(.horizontal, Theme.spaceS).padding(.vertical, 3)
-                                .background(.quaternary, in: Capsule())
-                        }
+                        .padding(.trailing, Theme.spaceXS).padding(.vertical, 3)
+                    ForEach(section.items, id: \.self) { item in
+                        Text(item)
+                            .font(.caption)
+                            .lineLimit(1).truncationMode(.middle)
+                            .frame(maxWidth: 260)
+                            .padding(.horizontal, Theme.spaceS).padding(.vertical, 3)
+                            .background(.quaternary, in: Capsule())
                     }
                 }
             }

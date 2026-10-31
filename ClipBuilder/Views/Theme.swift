@@ -78,3 +78,41 @@ extension View {
         modifier(ScreenTitle(screen: screen, subtitle: subtitle))
     }
 }
+
+private struct AskAIToolbar: ViewModifier {
+    @Environment(AppStore.self) private var store
+    @Environment(\.workspacePageVisible) private var pageVisible
+    // A stored property, not an environment value: an existential cannot be
+    // compared, so writing it into the environment would invalidate the whole
+    // page subtree on every parent pass.
+    let assistant: (any PageAssistant)?
+    @State private var showing = false
+    @State private var outcome: AskAIOutcome?
+
+    func body(content: Content) -> some View {
+        content.toolbar {
+            if pageVisible, let assistant {
+                ToolbarItem(placement: .automatic) {
+                    Button("Ask AI", systemImage: "sparkles") { showing = true }
+                        .lineLimit(1).fixedSize()
+                        .popover(isPresented: $showing) {
+                            AskAIPopover(assistant: assistant, outcome: outcome) { text in
+                                showing = false
+                                outcome = assistant.handle(text, store: store)
+                                if case .unavailable(let message) = outcome {
+                                    store.presentNotice("Ask AI", message)
+                                }
+                            }
+                        }
+                }
+            }
+        }
+    }
+}
+
+extension View {
+    /// Apply before the page's primary-action toolbar. Nil adds no button.
+    func askAI(_ assistant: (any PageAssistant)?) -> some View {
+        modifier(AskAIToolbar(assistant: assistant))
+    }
+}

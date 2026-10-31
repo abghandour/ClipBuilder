@@ -283,6 +283,16 @@ nonisolated enum AssetStore {
         return String(path.dropFirst(rootPath.count + 1))
     }
 
+    /// Image files in `folder` that Generate Image wrote: each has a
+    /// `<file>.json` provenance sidecar beside it.
+    @concurrent
+    static func generatedImagePathsAsync(in folder: URL) async -> Set<String> {
+        let names = (try? FileManager.default.contentsOfDirectory(atPath: folder.path)) ?? []
+        let sidecars = Set(names.filter { $0.hasSuffix(".json") }.map { String($0.dropLast(5)) })
+        return Set(names.filter { sidecars.contains($0) && !$0.hasSuffix(".json") }
+            .map { folder.appendingPathComponent($0).path })
+    }
+
     /// Root-relative names of every folder in a library (root excluded),
     /// sorted; includes empty folders, so it is what a "Move to…" menu wants.
     @concurrent

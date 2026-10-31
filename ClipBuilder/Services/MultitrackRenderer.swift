@@ -620,7 +620,7 @@ actor MultitrackRenderer {
             guard end > start, let png = try? imageRenderer.render(item, to: scratch) else { continue }
             let identity = try RenderSegmentCache.key(item) + SourceIdentityCache.shared.fingerprint(of: item.url)
             overlays.append(TimedOverlayPNG(png: png, startTime: start, endTime: end,
-                transIn: item.transIn, transOut: item.transOut, identity: identity))
+                transIn: item.transIn, transOut: item.transOut, identity: identity, track: item.track).positioned())
         }
         let statVideos = document.textOverlays.contains { $0.stat != nil } ? try await database.fetchVideos() : []
         let boundText = document.textOverlays.flatMap {
@@ -870,6 +870,7 @@ actor MultitrackRenderer {
 
             let remainingOverlays = overlayPlan.remaining.compactMap { overlay -> TimedOverlayPNG? in
                 var overlay = overlay
+                overlay.remapTrack(using: clock)
                 overlay.startTime = clock.map(overlay.startTime)
                 overlay.endTime = min(clock.map(overlay.endTime, end: true), videoDuration)
                 return overlay.endTime > overlay.startTime ? overlay : nil
@@ -1164,6 +1165,11 @@ actor MultitrackRenderer {
             var item = item
             if item.startTime < lower { item.transIn = "cut" }
             if item.endTime > upper { item.transOut = "cut" }
+            item.track = item.track?.map { key in
+                var key = key
+                key.time -= lower
+                return key
+            }
             item.startTime = start - lower
             item.endTime = stop - lower
             return item
@@ -2487,8 +2493,8 @@ actor MultitrackRenderer {
         }
     }
 
-    /// A pre-rendered full-frame overlay PNG with its window and transitions
-    /// — text and image overlays share this once rasterized.
+    /// A raster overlay with its window and transitions. Static overlays are
+    /// full-frame; tracked stickers carry expressions for their smaller raster.
     nonisolated struct TimedOverlayPNG: Codable, Sendable {
         var png: URL
         var startTime: Double
@@ -2496,6 +2502,51 @@ actor MultitrackRenderer {
         var transIn: String
         var transOut: String
         var identity: String?
+        var xExpr: String?
+        var yExpr: String?
+        var track: [ImageTrackKey]?
+
+        nonisolated func positioned() -> Self {
+            var result = self
+            if let track, !track.isEmpty {
+                result.xExpr = "W*(\(ImageTracker.expression(track, axis: \.xFrac)))-w/2"
+                result.yExpr = "H*(\(ImageTracker.expression(track, axis: \.yFrac)))-h/2"
+            }
+            return result
+        }
+
+        nonisolated mutating func remapTrack(using clock: RenderClock) {
+            if let track {
+                // Crossfades can map neighbouring timeline keys out of order.
+                // Sort on the output clock; at a collision the later source key wins.
+                var mapped: [(index: Int, key: ImageTrackKey)] = []
+                for (index, original) in track.enumerated() {
+                    var key = original
+                    key.time = clock.map(key.time)
+                    mapped.append((index: index, key: key))
+                }
+                mapped.sort { a, b in
+                    if a.key.time == b.key.time { return a.index < b.index }
+                    return a.key.time < b.key.time
+                }
+                var keys: [ImageTrackKey] = []
+                for (_, key) in mapped {
+                    if keys.last?.time == key.time { keys[keys.count - 1] = key }
+                    else { keys.append(key) }
+                }
+                self.track = keys
+                self = positioned()
+            }
+        }
+
+        nonisolated mutating func shiftTrack(by offset: Double) {
+            track = track?.map { key in
+                var key = key
+                key.time += offset
+                return key
+            }
+            self = positioned()
+        }
     }
 
     nonisolated struct OverlayPlan {
@@ -2544,6 +2595,7 @@ actor MultitrackRenderer {
             }
             if let index = destination, !overlapsRetained {
                 var local = overlay
+                local.shiftTrack(by: -segments[index].start)
                 local.startTime -= segments[index].start
                 local.endTime -= segments[index].start
                 plan.bySegment[index, default: []].append(local)
@@ -2592,6 +2644,7 @@ actor MultitrackRenderer {
                 guard !segment.clips.isEmpty, !segment.clips.allSatisfy(\.missingBumper),
                       !segment.clips.contains(where: \.bumper) else { return nil }
                 var local = overlay
+                local.shiftTrack(by: -segment.start)
                 local.startTime -= segment.start
                 local.endTime -= segment.start
                 // ffmpeg's fade cannot begin before the segment's first frame,
@@ -2813,10 +2866,12 @@ actor MultitrackRenderer {
                                    start + anim, enterY, end - anim, exitY)
                 if enterX == "0" && exitX == "0" { xExpr = "0" }
                 if enterY == "0" && exitY == "0" { yExpr = "0" }
+                xExpr = "(\(overlay.xExpr ?? "0"))+(\(xExpr))"
+                yExpr = "(\(overlay.yExpr ?? "0"))+(\(yExpr))"
                 filters.append("\(previous)\(current)overlay=x='\(xExpr)':y='\(yExpr)':" +
                                String(format: "enable='gte(t,%.3f)*lt(t,%.3f)'", start, end) + outLabel)
             } else {
-                filters.append("\(previous)\(current)overlay=0:0:" +
+                filters.append("\(previous)\(current)overlay=x='\(overlay.xExpr ?? "0")':y='\(overlay.yExpr ?? "0")':" +
                                String(format: "enable='gte(t,%.3f)*lt(t,%.3f)':shortest=0", start, end) + outLabel)
             }
             previous = outLabel

@@ -41,10 +41,14 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     case cover
     /// Content gap report over the whole library. Prompt: `GapReporter`.
     case gap
+    /// Instagram report using only the current analytics snapshot. Prompt: ReportAssistant.
+    case report
     /// Reads text looks (overlay layout, caption style, name tag style and,
     /// from a video, their animations) out of a reference image or clip.
     /// Prompt: `TextLookExtraction.prompt`.
     case overlay
+    /// Generates a sticker or frame edit through Nano Banana. Prompt: `ImageGeneration.prompt`.
+    case imageGeneration = "image_generation"
     /// Translates transcript or caption text. Prompts: `TranslationBatch`,
     /// `TranscriptTranslator`.
     case translate
@@ -120,8 +124,10 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     static let configurable: [AITask] = [
         .analysis, .people, .exchanges, .highlights, .framing, .broll, .wizard, .critique, .research, .fightResearch, .personResearch,
         .parse, .captions, .tagText, .distill, .overlay, .naming, .curate, .search, .soundbites, .cover, .dedupe, .trim,
-        .gap, .onboard, .route,
+        .gap, .report, .onboard, .route,
     ]
+    // `.imageGeneration` is not routable: it only runs through the Gemini CLI's
+    // Nano Banana extension (`AIService.generateImage`), like `.translate`.
 
     /// Human label from the catalog, falling back to the key.
     var label: String { AICatalog.taskLabels[rawValue] ?? rawValue }

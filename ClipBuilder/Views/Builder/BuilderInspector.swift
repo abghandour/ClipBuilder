@@ -83,6 +83,34 @@ private let transitionChoices = ["cut"] + RenderEngine.actionTransitions + Rende
 struct ClipInspector: View {
     @State private var cropDragAnchor: Double?
     @Environment(AppStore.self) private var store
+
+    /// The same rows Express shows under Picture, bound to this clip's request.
+    @ViewBuilder
+    private func pictureRows(clip: TimelineClip, scene: SceneRecord?, model: BuilderTimelineModel) -> some View {
+        let video = store.videos.first { $0.id == scene?.videoID }
+            ?? store.videos.first { $0.path != nil && $0.path == clip.videoFile }
+        let type: VideoType = video?.type ?? scene.map { scene in
+            scene.tags.contains("fight") ? .fight : scene.tags.contains("training") ? .training
+                : scene.tags.contains("podcast") ? .podcast : .other
+        } ?? .other
+        FramingRows(framing: Binding(
+            get: { clip.framingRequest ?? Framing(subject: clip.centerStage ? .centerStage : .original) },
+            set: { model.setFramingRequest(clip.uid, $0, type: type) }),
+            type: type, videoIDs: video.map { [$0.id] } ?? [],
+            canvasAspect: model.document.renderSettings.aspectRatio, allowsLayout: false)
+        if clip.framingRequest != nil {
+            InspectorRow("Picture") {
+                Button("Use Analysis", systemImage: "arrow.uturn.backward") { model.clearFramingRequest(clip.uid) }
+                    .controlSize(.small)
+                    .help("Drop this picture request and frame the clip from the analysis again")
+            }
+        } else {
+            Text("Change any row above to frame this clip like Express does. Until then the clip keeps the camera below.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Divider()
+        }
+    }
     let clip: TimelineClip
 
 
@@ -196,6 +224,11 @@ struct ClipInspector: View {
             // Framing — the decision that changes the picture most.
             if !clip.bumper {
                 InspectorSection("Framing") {
+                    // The Express picture controls, per clip. Clips in a crop
+                    // area keep their window / tracking / keyframe rows.
+                    if area == nil, !clip.isCutaway, !model.document.isOrphaned(clip) {
+                        pictureRows(clip: clip, scene: scene, model: model)
+                    }
                     if let area {
                         InspectorRow("Crop area") {
                             Text(area.name)
@@ -232,7 +265,7 @@ struct ClipInspector: View {
                               systemImage: "exclamationmark.triangle.fill")
                             .font(.caption)
                             .foregroundStyle(.yellow)
-                    } else if clip.wide {
+                    } else if clip.wide, clip.framingRequest == nil {
                         InspectorRow("Position") {
                             Picker("Position", selection: Binding(
                                 get: { clip.position ?? "layer" },
@@ -311,7 +344,7 @@ struct ClipInspector: View {
                             }
                             .help("Pin each source half into the top and bottom of a 50/50 vertical reel")
                         }
-                    } else {
+                    } else if clip.framingRequest == nil {
                         Text("Full screen. Portrait clips fill the frame as they are.")
                             .font(.caption)
                             .foregroundStyle(.secondary)
@@ -572,6 +605,20 @@ struct ImageInspector: View {
                 .font(.headline)
 
             ImageOverlayControls(item: itemBinding, name: item.displayName)
+
+            if let track = item.track {
+                Button("Stop Following", systemImage: "stop.circle") {
+                    store.stopTrackingImageOverlay(item.uid, builder: store.builder)
+                }
+                .lineLimit(1).fixedSize()
+                Text("Tracked, \(track.count) keys").font(.caption).foregroundStyle(.secondary)
+            } else {
+                Button("Follow Face", systemImage: "sparkles.rectangle.stack") {
+                    store.trackImageOverlay(item.uid, builder: store.builder)
+                }
+                .lineLimit(1).fixedSize()
+                .disabled(store.jobs.running.contains { $0.kind == .trackImage && $0.subjectID == item.uid.uuidString })
+            }
 
             Picker("Enter", selection: itemBinding.transIn) {
                 ForEach(TextOverlayItem.transitionChoices, id: \.self) { name in

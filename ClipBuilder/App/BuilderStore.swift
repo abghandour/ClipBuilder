@@ -161,6 +161,9 @@ enum OverlayLaneEntry: Identifiable {
 /// testable. Autosaves per profile after each mutation (debounced).
 @Observable
 final class BuilderTimelineModel {
+    var pendingGenerateImagePrompt: String?
+    var pendingAssistantWizard: UUID?
+
     nonisolated enum Mode: Sendable { case persistent, transient }
     let mode: Mode
 
@@ -442,6 +445,8 @@ final class BuilderTimelineModel {
     func load(profileName: String, defaultRenderSettings: RenderSettings = RenderSettings()) {
         flushPendingAutosave()
         resetUndoHistory()
+        pendingGenerateImagePrompt = nil
+        pendingAssistantWizard = nil
         self.profileName = profileName
         timelineID = nil
         // Remembered B-roll picks belong to the document they were made in.
@@ -475,6 +480,8 @@ final class BuilderTimelineModel {
                       selection: TimelineSelection? = nil, focusedTrack: Int? = nil) {
         flushPendingAutosave()
         resetUndoHistory()
+        pendingGenerateImagePrompt = nil
+        pendingAssistantWizard = nil
         suppressAutosave = true
         self.persistedRevision = persistedRevision
         revision = max(revision, persistedRevision)
@@ -498,6 +505,8 @@ final class BuilderTimelineModel {
     func closeTimeline(defaultRenderSettings: RenderSettings = RenderSettings()) {
         flushPendingAutosave()
         resetUndoHistory()
+        pendingGenerateImagePrompt = nil
+        pendingAssistantWizard = nil
         suppressAutosave = true
         timelineID = nil
         lastBRollPick = nil
@@ -596,7 +605,7 @@ final class BuilderTimelineModel {
     // MARK: - Camera paths
 
     /// Source frame sizes by path, from the analyzed scenes.
-    private var sourceSizeByPath: [String: CGSize] = [:]
+    private(set) var sourceSizeByPath: [String: CGSize] = [:]
     private var cameraPathMemo: [UUID: (key: String, path: [CameraPathKeyframe])] = [:]
 
     /// Width ÷ height of a clip's source frame, when the Library knows it.
@@ -1816,6 +1825,7 @@ final class BuilderTimelineModel {
         let before = document.videoTrack[index]
         mutate(&document.videoTrack[index])
         document.videoTrack[index].enforceCutawayRules()
+        BuilderFraming.mirrorFocusFrame(before: before, after: &document.videoTrack[index])
         if before.bumper {
             let after = document.videoTrack[index]
             if abs(after.duration - before.duration) > 0.001 {

@@ -24,6 +24,7 @@ struct WizardPreviewColumn: View {
     let profile: BrandProfile
     var captionOrdinals: [String: Int]? = nil
     /// Pinned under the preview: Express puts its run summary and Generate here.
+    /// It must scroll on its own; the column only gives it the pane.
     var footer: AnyView? = nil
     /// Called when the user drops a dragged element; the owner stores the
     /// position in its settings and the preview re-renders from them.
@@ -126,12 +127,12 @@ struct WizardPreviewColumn: View {
         Group {
             if let footer {
                 // The divider between the preview and the footer is draggable,
-                // so the preview can take the height it needs. The footer
-                // scrolls when squeezed.
+                // so the preview can take the height it needs. The footer owns
+                // its scrolling so it can keep its action pinned when squeezed.
                 VSplitView {
                     previewArea
                         .rememberedPaneHeight("pane.wizard.previewArea", min: 260, initial: 560)
-                    ScrollView { footer.padding(Theme.spaceM) }
+                    footer
                         .frame(minHeight: 96)
                 }
             } else {

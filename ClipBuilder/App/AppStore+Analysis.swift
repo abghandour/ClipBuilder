@@ -798,6 +798,40 @@ extension AppStore {
         }
     }
 
+    /// The Sources pane's "Analyze (N steps)" footer: run only the steps a
+    /// recording is missing. Scenes or exchanges need a new analyze batch,
+    /// whose plan carries the other missing steps along (people, transcript,
+    /// fight scoring); without a batch step, each step runs in place.
+    func runMissingAnalysisSteps(_ steps: [AnalysisSteps.Step], video: VideoRecord) {
+        guard !steps.isEmpty else { return }
+        guard video.isPresent else { presentError(VideoRecord.notPresentReason); return }
+        if steps.contains(where: \.needsBatch) {
+            guard !isAnalyzing else { return }
+            var plan = AnalysisRequest.capturePlan(defaults: .standard, singleVideo: true, provider: nil, model: nil,
+                                                   includeFightScoring: steps.contains(.fightScore))
+            plan.detectPeople = steps.contains(.people)
+            plan.includeTranscript = steps.contains(.transcript)
+            let generation = profileGeneration
+            Task {
+                do {
+                    let request = try await captureAnalysisRequest(
+                        video: video, plan: plan, profile: activeProfile, config: effectiveAIConfig,
+                        podcast: podcastEditingSettings, language: editingDefaults.footage.language, resolveType: true)
+                    guard generation == profileGeneration else { return }
+                    analysisRequestPreviews[video.id] = request
+                    analyze(videos: [video], includeFightScoring: steps.contains(.fightScore),
+                            capturedRequests: [video.id: request])
+                } catch {
+                    presentError("Could not capture analysis settings", error)
+                }
+            }
+            return
+        }
+        if steps.contains(.people) { detectPeople(in: [video]) }
+        if steps.contains(.transcript) { transcribe(video: video) }
+        if steps.contains(.fightScore) { scoreFightAction(video: video) }
+    }
+
     /// Run one stage of a video's analysis again with the given model. The
     /// tagging and podcast stages land in a new analyze batch like a full
     /// run; people detection and transcription update the video in place.

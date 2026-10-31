@@ -192,7 +192,7 @@ extension Database {
         guard try !isHomeProject(projectID) else { return [] }
         return try connection.query("""
             SELECT v.* FROM videos v
-            WHERE NOT EXISTS (
+            WHERE v.hidden = 0 AND NOT EXISTS (
                   SELECT 1 FROM project_videos current
                   WHERE current.project_id = ? AND current.video_id = v.id
             )

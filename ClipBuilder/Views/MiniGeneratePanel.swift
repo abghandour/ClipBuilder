@@ -1,7 +1,8 @@
 import SwiftUI
 
-/// The last step: what Generate will make, and the button. Its own panel
-/// under the three cards, never collapsed, shown once footage is kept.
+/// The last step: what Generate will make, and the button. Pinned under the
+/// preview, never collapsed, shown once footage is kept. The summary scrolls
+/// when the pane is squeezed; the button is the pane's footer and stays put.
 struct MiniGeneratePanel: View {
     @Environment(AppStore.self) private var store
     @Binding var settings: MiniWizardSettings
@@ -9,8 +10,9 @@ struct MiniGeneratePanel: View {
     let run: MiniWizardRun
 
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.spaceM) {
-            summaryCard
+        VStack(alignment: .leading, spacing: 0) {
+            ScrollView { summaryCard.padding(Theme.spaceM) }
+            Divider()
             Button {
                 store.generateMiniVideosRecordingPicks(settings: settings, flow: flow, batchID: run.batchID)
             } label: {
@@ -18,6 +20,8 @@ struct MiniGeneratePanel: View {
             }
             .buttonStyle(.borderedProminent)
             .disabled(run.keptCount == 0)
+            .padding(Theme.spaceM)
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .disabled(store.isWizardRunning)
     }

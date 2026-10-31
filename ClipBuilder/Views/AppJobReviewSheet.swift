@@ -11,6 +11,8 @@ struct AppJobReviewSheet: View {
     var body: some View {
         Group {
             switch job.result {
+            case .report(let report):
+                AIReportReview(job: job, report: report)
             case .dub(let review):
                 DubReviewSheet(jobID: job.id, review: review)
             case let .favorites(candidates, proposals, provenance):
@@ -114,4 +116,62 @@ private struct AppJobSetupPresentation: ViewModifier {
 
 extension View {
     func appJobSetupPresentation() -> some View { modifier(AppJobSetupPresentation()) }
+}
+
+private struct AIReportReview: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.dismiss) private var dismiss
+    let job: AppJob
+    let report: AIReportRecord
+    @State private var saving = false
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spaceM) {
+            Text("AI Report").font(.title2.bold())
+            Text(report.prompt).font(.headline)
+            Text("\(report.provider) · \(report.createdAt.formatted())")
+                .font(.caption).foregroundStyle(.secondary)
+            ScrollView {
+                LearnedRichTextView(text: report.markdown)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            HStack {
+                Spacer()
+                Button("Discard", role: .destructive) {
+                    store.jobs.markReviewed(job.id)
+                    dismiss()
+                }
+                Button("Keep") { keep() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+            }
+            .lineLimit(1).fixedSize(horizontal: false, vertical: true)
+            .disabled(saving)
+        }
+        .padding(Theme.spaceL)
+        .frame(width: 720, height: 620)
+        .interactiveDismissDisabled(saving)
+    }
+
+    private func keep() {
+        guard !saving, job.profileGeneration == store.profileGeneration, let database = store.database else { return }
+        saving = true
+        Task {
+            do {
+                try await database.saveIGAIReport(report)
+                guard job.profileGeneration == store.profileGeneration else { return }
+                if store.igSelectedAccountID != report.accountID {
+                    store.selectInstagramAccount(report.accountID)
+                }
+                store.pendingIGAIReport = report
+                store.selectedSection = .instagramReports
+                store.jobs.markReviewed(job.id)
+                dismiss()
+            } catch {
+                guard job.profileGeneration == store.profileGeneration else { return }
+                saving = false
+                store.presentError("Could not save AI report", error)
+            }
+        }
+    }
 }

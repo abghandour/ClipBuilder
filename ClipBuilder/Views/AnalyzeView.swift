@@ -9,6 +9,8 @@ struct AnalyzeView: View {
     @State private var confirmingDriveUpload = false
     /// Videos queued for "Remove from Project"; non-empty shows the confirmation.
     @State private var pendingRemoval: Set<Int64> = []
+    /// Sources awaiting the footer's remove confirmation.
+    @State private var pendingSourceRemoval: [VideoRecord] = []
     /// Videos whose analyze batches are queued for removal; non-empty shows the confirmation.
     @State private var pendingBatchRemoval: Set<Int64> = []
     @State private var showingDriveUpload = false
@@ -111,30 +113,34 @@ struct AnalyzeView: View {
             HSplitView {
                 table
                     .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
-                if let video = previewVideo {
-                    // Research opens through this view's top-level sheet — a
-                    // presentation modifier inside the split child re-reports
-                    // its min size mid-layout and trips AppKit's
-                    // constraint-loop guard (crash).
-                    VideoPreviewPane(video: video,
-                                     typeFocusRequest: typeFocusVideoID == video.id ? typeFocusRequest : nil,
-                                     fightStatsFocusRequest: fightStatsFocusVideoID == video.id ? fightStatsFocusRequest : nil,
-                                     onResearch: { fightResearchTarget = video },
-                                     onNameWizard: { showNameWizard = true },
-                                     onCompareBatches: { batchComparison = ScenesView.CompareRequest(runs: $0, video: video) },
-                                     onSelectVideo: { selection = [$0.id] },
-                                     onReassignNewPerson: { person, video, suggested in
-                                         newPersonName = suggested
-                                         reassignVideo = video
-                                         reassignPerson = person
-                                     })
-                        .rememberedPaneWidth("pane.analyze.preview", min: 240, initial: 320, max: 440)
-                        .frame(maxHeight: .infinity)
-                } else {
-                    SourcesPanePlaceholder(videoCount: store.videos.count, selectionCount: selection.count)
-                        .rememberedPaneWidth("pane.analyze.preview", min: 240, initial: 320, max: 440)
-                        .frame(maxHeight: .infinity)
+                VStack(spacing: 0) {
+                    if let video = previewVideo {
+                        // Research opens through this view's top-level sheet — a
+                        // presentation modifier inside the split child re-reports
+                        // its min size mid-layout and trips AppKit's
+                        // constraint-loop guard (crash).
+                        VideoPreviewPane(video: video,
+                                         typeFocusRequest: typeFocusVideoID == video.id ? typeFocusRequest : nil,
+                                         fightStatsFocusRequest: fightStatsFocusVideoID == video.id ? fightStatsFocusRequest : nil,
+                                         onResearch: { fightResearchTarget = video },
+                                         onNameWizard: { showNameWizard = true },
+                                         onCompareBatches: { batchComparison = ScenesView.CompareRequest(runs: $0, video: video) },
+                                         onSelectVideo: { selection = [$0.id] },
+                                         onReassignNewPerson: { person, video, suggested in
+                                             newPersonName = suggested
+                                             reassignVideo = video
+                                             reassignPerson = person
+                                         })
+                            .frame(maxHeight: .infinity)
+                    } else {
+                        SourcesPanePlaceholder(videoCount: store.videos.count, selectionCount: selection.count)
+                            .frame(maxHeight: .infinity)
+                    }
+                    Divider()
+                    selectionActionsFooter
                 }
+                .rememberedPaneWidth("pane.analyze.preview", min: 240, initial: 320, max: 440)
+                .frame(maxHeight: .infinity)
             }
             .frame(maxWidth: .infinity, minHeight: 260, maxHeight: .infinity)
 
@@ -189,6 +195,32 @@ struct AnalyzeView: View {
         } message: {
             Text("The video stays in Home and in any other project, with its scenes, transcripts and timelines. Only its place in this project is removed.")
         }
+        .confirmationDialog(
+            store.isTeamAttachedProfile
+                ? (pendingSourceRemoval.count == 1 ? "Remove this source from this Mac?"
+                                                   : "Remove \(pendingSourceRemoval.count) sources from this Mac?")
+                : (pendingSourceRemoval.count == 1 ? "Delete this source?"
+                                                   : "Delete \(pendingSourceRemoval.count) sources?"),
+            isPresented: Binding(get: { !pendingSourceRemoval.isEmpty }, set: { if !$0 { pendingSourceRemoval = [] } }),
+            titleVisibility: .visible
+        ) {
+            Button(store.isTeamAttachedProfile ? "Remove from this Mac" : "Delete", role: .destructive) {
+                let videos = pendingSourceRemoval
+                pendingSourceRemoval = []
+                selection.subtract(videos.map(\.id))
+                store.removeSources(videos)
+            }
+        } message: {
+            if store.isTeamAttachedProfile {
+                let offloadable = pendingSourceRemoval.filter { $0.driveFileID != nil && $0.isPresent }.count
+                Text((offloadable > 0
+                      ? "\(offloadable) local cop\(offloadable == 1 ? "y is" : "ies are") removed; Google Drive keeps the file. "
+                      : "")
+                     + "The sources disappear from this Mac's lists but stay on record for your team.")
+            } else {
+                Text("Scenes, transcripts, analyze batches and people tags for these sources are deleted. Files in the profile's source folder move to the Trash.")
+            }
+        }
         .screenTitle("Sources", subtitle: "\(store.videos.count) source videos")
         .toolbar {
             if pageVisible {
@@ -213,76 +245,6 @@ struct AnalyzeView: View {
                     DriveMediaMenu(media: selectedVideos.filter { $0.driveFileID != nil }.map(\.driveMedia))
                         .disabled(!selectedVideos.contains { $0.driveFileID != nil })
 
-                    if store.isHomeProject {
-                        Menu {
-                            ForEach(store.projects.filter { !$0.isHome && !$0.archived }) { project in
-                                Button(project.name) {
-                                    store.addVideos(Array(selection), to: project.id)
-                                }
-                            }
-                            Divider()
-                            Button("New Project from Selection…", systemImage: "plus") {
-                                beginProjectFromSelection()
-                            }
-                        } label: {
-                            ToolbarBubbleLabel(text: "Add to Project…", systemImage: "folder.badge.plus")
-                        }
-                        .disabled(selection.isEmpty)
-                    } else {
-                        Button {
-                            showingProjectVideoPicker = true
-                        } label: {
-                            ToolbarBubbleLabel(text: "Add Existing Videos…", systemImage: "folder.badge.plus")
-                        }
-                        .help("Add videos that are already in another project")
-
-                        Button {
-                            pendingRemoval = selection
-                        } label: {
-
-                            ToolbarBubbleLabel(text: "Remove from Project…", systemImage: "minus.circle")
-
-                        }
-                        .disabled(selection.isEmpty)
-                        .help("Take the selected videos out of this project; they stay in Home")
-                    }
-
-                    Button {
-                        let videos = selectedVideos
-                        if !videos.isEmpty { startAnalysis(of: videos) }
-                    } label: {
-                        ToolbarBubbleLabel(
-                            text: selection.count > 1 ? "Analyze \(selection.count)" : selectedVideos.first.map { store.duplicateAnalysis(for: $0) != nil ? "Analyze Again" : "Analyze" } ?? "Analyze",
-                            systemImage: "sparkles")
-                    }
-                    .disabled(selection.isEmpty || store.isAnalyzing || checkingAnalysis || selectedVideos.contains { !$0.isPresent })
-                    .help(selectedVideos.contains { !$0.isPresent } ? VideoRecord.notPresentReason : selection.count > 1
-                          ? "Analyzes the \(selection.count) selected videos back to back with the same plan — each lands in its own analyze batch on the Scenes screen"
-                          : selectedVideos.first.map { store.analysisRequestHelp(for: $0) } ?? "Select a video to analyze.")
-
-                    Button {
-                        showAnalyzeWizard = true
-                    } label: {
-
-                        ToolbarBubbleLabel(text: "Run Full Pipeline", systemImage: "wand.and.rays")
-
-                    }
-                    .disabled(selection.isEmpty || store.isPipelineRunning || selectedVideos.contains { !$0.isPresent })
-                    .help("Analyze the selected videos and generate reels from them in one run")
-                    Button {
-                        showGenerateSheet = true
-                    } label: {
-                        ToolbarBubbleLabel(text: "Generate Video…", systemImage: "wand.and.stars")
-                    }
-                    .disabled(selection.isEmpty || store.isAnalyzing || selectedVideos.contains { !$0.isPresent })
-                    .help(selectedVideos.contains { !$0.isPresent } ? VideoRecord.notPresentReason
-                          : "Describe a video to make from the selected sources; the AI Wizard is filled in from your words")
-                    Button {
-                        showDuplicateScan = true
-                    } label: {
-                        ToolbarBubbleLabel(text: "Scan for Duplicates…", systemImage: "rectangle.on.rectangle")
-                    }
-                    .help("Find source videos that are copies of each other")
                 }
             }
         }
@@ -425,6 +387,155 @@ struct AnalyzeView: View {
 
     /// A multi-selection runs back to back under one plan, one analyze batch
     /// per video; fine-trim only applies to single-video runs.
+    private struct StepsKey: Equatable {
+        var videoID: Int64?
+        var type: String?
+        var peopleDetectedAt: String?
+        var runsVersion: Int
+        var scenesVersion: Int
+        var transcriptCountsVersion: Int
+        var peopleVersion: Int
+        var passes: [AnalysisPassRecord]
+        var hasCheckpoint: Bool
+        var previewed: Bool
+    }
+    @State private var stepsMemo = MemoBox<StepsKey, [AnalysisSteps.Step]>()
+
+    /// Steps the previewed recording is still missing; empty hides the button.
+    private var missingSteps: [AnalysisSteps.Step] {
+        guard let video = previewVideo else { return [] }
+        let key = StepsKey(videoID: video.id, type: video.videoType, peopleDetectedAt: video.peopleDetectedAt,
+                           runsVersion: store.analysisRunsVersion, scenesVersion: store.scenesVersion,
+                           transcriptCountsVersion: store.transcriptCountsVersion, peopleVersion: store.videoPeopleVersion,
+                           passes: store.analysisPasses,
+                           hasCheckpoint: store.analysisCheckpoints[video.id] != nil,
+                           previewed: store.analysisRequestPreviews[video.id] != nil)
+        return stepsMemo(key) {
+            let report = AnalysisCoverage.report(
+                video: video, activeRun: store.activeLayer(videoID: video.id).run,
+                scenes: store.scenes.filter { $0.videoID == video.id },
+                transcriptCount: store.transcriptCounts[video.id] ?? 0,
+                passes: store.analysisPasses, hasCheckpoint: store.analysisCheckpoints[video.id] != nil,
+                duplicateOf: store.duplicateAnalysis(for: video))
+            return AnalysisSteps.missing(video: video, report: report,
+                                         peopleCount: store.videoPeopleCounts[video.id] ?? 0,
+                                         passes: store.analysisPasses)
+        }
+    }
+
+    private func stepsInFlight(_ video: VideoRecord) -> Bool {
+        store.analyzingVideoIDs.contains(video.id) || store.transcribingVideoIDs.contains(video.id)
+            || store.isDetectingPeople || store.fightScoringInFlight.contains(video.id)
+    }
+
+    /// Selection actions pinned under the detail column: the missing-steps
+    /// button keeps its text, the rest are icon-only with tooltips. Small
+    /// bordered buttons that wrap; a short fixed height outside the pane's
+    /// scroll is safe for the split view.
+    private var selectionActionsFooter: some View {
+        let videos = selectedVideos
+        let absent = videos.contains { !$0.isPresent }
+        let steps = missingSteps
+        return FlowLayout(spacing: 6) {
+            if let video = previewVideo, !steps.isEmpty {
+                let busy = stepsInFlight(video)
+                Button(AnalysisSteps.buttonTitle(count: steps.count)) {
+                    store.runMissingAnalysisSteps(steps, video: video)
+                }
+                .buttonStyle(.borderedProminent)
+                .disabled(busy || store.isAnalyzing || !video.isPresent)
+                .help(video.isPresent
+                      ? "Runs the analysis steps this \(video.type?.label.lowercased() ?? "recording") is missing: "
+                        + steps.map(\.title).joined(separator: ", ")
+                      : VideoRecord.notPresentReason)
+                if busy { ProgressView().controlSize(.small) }
+            }
+            iconButton(selection.count > 1 ? "Analyze \(selection.count) videos"
+                       : videos.first.map { store.duplicateAnalysis(for: $0) != nil ? "Analyze again" : "Analyze" } ?? "Analyze",
+                       systemImage: "sparkles",
+                       help: absent ? VideoRecord.notPresentReason : selection.count > 1
+                           ? "Analyzes the \(selection.count) selected videos back to back with the same plan — each lands in its own analyze batch on the Scenes screen"
+                           : videos.first.map { store.analysisRequestHelp(for: $0) } ?? "Select a video to analyze.") {
+                if !videos.isEmpty { startAnalysis(of: videos) }
+            }
+            .disabled(selection.isEmpty || store.isAnalyzing || checkingAnalysis || absent)
+            iconButton("Run full pipeline", systemImage: "arrow.triangle.turn.up.right.diamond",
+                       help: "Analyze the selected videos and generate reels from them in one run") {
+                showAnalyzeWizard = true
+            }
+            .disabled(selection.isEmpty || store.isPipelineRunning || absent)
+            iconButton("Generate with AI Wizard", systemImage: "wand.and.stars",
+                       help: absent ? VideoRecord.notPresentReason
+                           : "Open the AI Wizard on the selected videos' analysis to generate a video from them") {
+                store.openWizard(with: videos)
+            }
+            .disabled(selection.isEmpty || absent)
+            iconButton("Build in AI Builder", systemImage: "hammer",
+                       help: absent ? VideoRecord.notPresentReason
+                           : "Create a timeline with the selected videos and open it in the AI Builder") {
+                store.buildTimeline(from: videos)
+            }
+            .disabled(selection.isEmpty || absent)
+            if store.isHomeProject {
+                Menu {
+                    ForEach(store.projects.filter { !$0.isHome && !$0.archived }) { project in
+                        Button(project.name) {
+                            store.addVideos(Array(selection), to: project.id)
+                        }
+                    }
+                    Divider()
+                    Button("New Project from Selection…", systemImage: "plus") {
+                        beginProjectFromSelection()
+                    }
+                } label: {
+                    Image(systemName: "folder.badge.plus")
+                        .accessibilityLabel("Add to project")
+                }
+                .fixedSize()
+                .disabled(selection.isEmpty)
+                .help("Add the selected videos to a project")
+            } else {
+                iconButton("Add existing videos", systemImage: "folder.badge.plus",
+                           help: "Add videos that are already in another project") {
+                    showingProjectVideoPicker = true
+                }
+                iconButton("Remove from project", systemImage: "minus.circle",
+                           help: "Take the selected videos out of this project; they stay in Home") {
+                    pendingRemoval = selection
+                }
+                .disabled(selection.isEmpty)
+            }
+            iconButton("Scan for duplicates", systemImage: "rectangle.on.rectangle",
+                       help: "Find source videos that are copies of each other") {
+                showDuplicateScan = true
+            }
+            iconButton(store.isTeamAttachedProfile ? "Remove from this Mac" : "Delete source",
+                       systemImage: "trash",
+                       help: store.isTeamAttachedProfile
+                           ? "Remove the selected sources from this Mac: local copies are offloaded to Google Drive and the rows are hidden here; teammates keep them"
+                           : "Delete the selected sources with their scenes, transcripts and batches; files in the profile's source folder go to the Trash") {
+                pendingSourceRemoval = videos
+            }
+            .disabled(selection.isEmpty || store.isAnalyzing || store.isBuilderRendering
+                      || store.isWizardRunning || store.isPipelineRunning)
+        }
+        .buttonStyle(.bordered)
+        .controlSize(.small)
+        .lineLimit(1)
+        .fixedSize(horizontal: false, vertical: true)
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(10)
+    }
+
+    private func iconButton(_ title: String, systemImage: String, help: String,
+                            action: @escaping () -> Void) -> some View {
+        Button(action: action) {
+            Image(systemName: systemImage)
+                .accessibilityLabel(title)
+        }
+        .help(help)
+    }
+
     private func startAnalysis(of videos: [VideoRecord]) {
         guard videos.allSatisfy(\.isPresent) else { store.presentError(VideoRecord.notPresentReason); return }
         let unfinished = videos.filter { store.analysisCheckpoints[$0.id] != nil }
@@ -608,22 +719,29 @@ struct AnalyzeView: View {
         let summary = tableSummary
         return Table(summary.videos, selection: $selection, sortOrder: $sortOrder) {
             TableColumn("File") { video in
-                HStack {
-                    if video.driveFileID != nil { DriveMediaBadge(media: video.driveMedia) }
-                    DriveSourceProgress(media: video.driveMedia)
+                HStack(spacing: Theme.spaceXS) {
                     // No gesture on the cell: a SwiftUI tap in a table cell
                     // makes AppKit apply the row selection only after mouse
                     // up, so the highlight lagged by the length of the click.
                     // Double-click rename comes from the table's primary action.
                     Text(video.filename)
+                        .lineLimit(1)
                         .help("Double-click to rename")
-                    if video.driveFileID != nil { DriveFetchIndicator(media: video.driveMedia) }
                     if !video.isPresent {
                         Label("Not on this Mac", systemImage: "externaldrive.badge.questionmark")
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
                     }
+                    Spacer(minLength: Theme.spaceXS)
+                    // Badges keep one order at the column's right edge: cloud
+                    // (with its transfer state), then the AI info stars.
+                    DriveSourceProgress(media: video.driveMedia)
+                    if video.driveFileID != nil {
+                        DriveMediaBadge(media: video.driveMedia)
+                        DriveFetchIndicator(media: video.driveMedia)
+                    }
                     AIInfoButton(video: video)
                 }
+                .frame(maxWidth: .infinity, alignment: .leading)
                 // Table cells are hosted per row by AppKit. A recycled cell can
                 // still receive an observation update (Drive job status) after
                 // the host environment is gone, and its store-reading children
@@ -1323,6 +1441,7 @@ private struct VideoPreviewPane: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+
         }
         .padding(10)
         .task(id: "\(video.id)|\(video.path ?? "")|\(video.locallyDownloaded ?? false)|\(video.driveOffloaded)") {

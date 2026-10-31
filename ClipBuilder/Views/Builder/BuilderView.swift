@@ -18,6 +18,8 @@ struct BuilderView: View {
     @State private var wizardModel: WizardSheetModel?
     @State private var pendingPickerPreview: WizardSheetModel?
     @State private var showImagePicker = false
+    @State private var showGenerateImage = false
+    @State private var generateImagePrefill = ""
     @State private var confirmClear = false
     @State private var showAllTimelines = false
     #if DEBUG
@@ -159,7 +161,10 @@ struct BuilderView: View {
                                     discardWizard: discardWizard, openWizardPicker: openWizardPicker,
                                     scriptTools: scriptTools)
                 }
-                    .rememberedPaneWidth("pane.builder.browser", min: 250, initial: 300, max: 480)
+                    // Wide enough for the four browser tabs (a segmented picker
+                    // never compresses) and the Wizard's provider/model row;
+                    // narrower restored widths clipped both.
+                    .rememberedPaneWidth("pane.builder.browser", min: 320, initial: 340, max: 480)
                     .frame(maxHeight: .infinity, alignment: .top)
                 // Preview/inspector above, timeline below, with a draggable
                 // divider between them; the timeline's height is remembered.
@@ -216,6 +221,7 @@ struct BuilderView: View {
             .accessibilityHidden(true)
         }
         .screenTitle(store.openTimeline?.name ?? "Timeline", subtitle: "\(store.activeProject?.name ?? "Project") · \(model.document.videoTrack.count) clips · \(model.totalDuration.timecode)")
+        .askAI(BuilderAssistant())
         .sheet(isPresented: $showDubSetup) { DubSetupSheet() }
         .sheet(isPresented: $showAllTimelines) { TimelinesView(presentedAsSheet: true) }
         .toolbar {
@@ -279,6 +285,17 @@ struct BuilderView: View {
             wizardModel = store.builderWizard
             if browserTab == "wizard" || browserTab == "scripts" { ensureWizard() }
         }
+        .onChange(of: model.pendingGenerateImagePrompt) { _, prompt in
+            guard let prompt else { return }
+            generateImagePrefill = prompt
+            model.pendingGenerateImagePrompt = nil
+            showGenerateImage = true
+        }
+        .onChange(of: model.pendingAssistantWizard) { _, token in
+            guard token != nil, let wizard = store.builderWizard else { return }
+            showWizard(wizard)
+            model.pendingAssistantWizard = nil
+        }
         .onChange(of: browserTab) { _, tab in
             let restored = ClipBrowserPane.restoredTab(tab)
             if restored != tab { browserTab = restored; return }
@@ -336,6 +353,9 @@ struct BuilderView: View {
             ImagePickerSheet { urls in
                 for url in urls { model.addImage(path: url.path) }
             }
+        }
+        .sheet(isPresented: $showGenerateImage, onDismiss: { generateImagePrefill = "" }) {
+            GenerateImageSheet(builder: model, prefill: generateImagePrefill)
         }
         #if DEBUG
         .sheet(isPresented: $showScriptPreview) { BuilderScriptDebugView() }
@@ -412,6 +432,7 @@ struct BuilderView: View {
 
             BuilderAddMenu(showScenePicker: $showScenePicker,
                            showImagePicker: $showImagePicker,
+                           showGenerateImage: $showGenerateImage,
                            showBRollPicker: $showBRollPicker)
 
             Divider().frame(height: 16)

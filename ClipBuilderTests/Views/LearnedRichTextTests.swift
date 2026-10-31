@@ -46,4 +46,25 @@ struct LearnedRichTextTests {
         #expect(String(LearnedRichText.inline("**bold** and *it*").characters) == "bold and it")
         #expect(String(LearnedRichText.inline("a * b").characters) == "a * b")
     }
+
+    @Test("Markdown headings and pipe tables from AI reports become titled blocks and tables")
+    func markdownReport() {
+        let source = """
+            # Peace Grappler: What Worked
+            ## Highest-Performing Posts
+            | Post | Reach |
+            |------|-------|
+            | Lazy Boy | 89,833 |
+            | Walkout | 80,953 |
+            Reels are the core engine.
+            #hashtag is text
+            """
+        let blocks = LearnedRichText.blocks(source)
+        #expect(blocks == [
+            .titled("Peace Grappler: What Worked", level: 1),
+            .titled("Highest-Performing Posts", level: 2),
+            .table([["Post", "Reach"], ["Lazy Boy", "89,833"], ["Walkout", "80,953"]]),
+            .paragraph("Reels are the core engine.\n#hashtag is text"),
+        ])
+    }
 }

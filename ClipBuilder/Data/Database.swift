@@ -600,6 +600,18 @@ actor Database {
         PRIMARY KEY (account_id, snapshot_date)
     );
 
+    CREATE TABLE IF NOT EXISTS ig_ai_reports (
+        id TEXT PRIMARY KEY,
+        account_id INTEGER NOT NULL REFERENCES ig_accounts(id) ON DELETE CASCADE,
+        period_key TEXT NOT NULL,
+        prompt TEXT NOT NULL,
+        markdown TEXT NOT NULL,
+        provider TEXT NOT NULL,
+        model TEXT,
+        created_at TEXT NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_ig_ai_reports_account ON ig_ai_reports(account_id, created_at);
+
     CREATE TABLE IF NOT EXISTS ig_report_media (
         id INTEGER PRIMARY KEY,
         account_id INTEGER NOT NULL REFERENCES ig_accounts(id) ON DELETE CASCADE,
@@ -787,6 +799,11 @@ actor Database {
             for name in ["active_run_key", "active_transcription_key"] where !videoColumns.contains(name) {
                 try connection.execute("ALTER TABLE videos ADD COLUMN \(name) TEXT")
             }
+            // Hidden sources: removed from a team-attached profile stay on
+            // record for teammates and sync, but leave this Mac's lists.
+            if !videoColumns.contains("hidden") {
+                try connection.execute("ALTER TABLE videos ADD COLUMN hidden INTEGER NOT NULL DEFAULT 0")
+            }
             if try !connection.columnNames(of: "analysis_passes").contains("run_key") {
                 try connection.execute("ALTER TABLE analysis_passes ADD COLUMN run_key TEXT")
             }
@@ -833,7 +850,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 36
+    static let schemaVersion: Int64 = 38
 
     nonisolated static func migrateTranscriptEditedWords(_ db: SQLiteConnection) throws {
         if try !db.columnNames(of: "transcripts").contains("original_words") {

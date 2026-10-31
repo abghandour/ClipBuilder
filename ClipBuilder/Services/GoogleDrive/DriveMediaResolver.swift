@@ -58,6 +58,9 @@ actor DriveMediaResolver {
 
     func endOffload(_ path: String) { removing.remove(path) }
 
+    /// Whether any player, probe or render still holds a lease on the file.
+    func isInUse(_ path: String) -> Bool { uses[path, default: 0] > 0 }
+
     /// Called before ffmpeg/ffprobe launch, covering render, audio extraction,
     /// analysis, export and all their specialized filter paths.
     func prepareInputs(_ arguments: [String], probe: Bool = false) async throws -> [DriveMediaLease] {

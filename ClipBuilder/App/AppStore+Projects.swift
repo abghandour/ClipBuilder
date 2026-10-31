@@ -231,6 +231,98 @@ extension AppStore {
         }
     }
 
+    /// The active profile belongs to a team: its records are shared, so a
+    /// removed source is offloaded and hidden here rather than deleted.
+    var isTeamAttachedProfile: Bool {
+        activeProfile.teamID != nil && activeProfile.profileID != nil
+    }
+
+    /// The Sources footer's remove action. Team-attached profile: the local
+    /// copy is offloaded to Drive when one exists and the row is hidden on
+    /// this Mac; teammates keep it. Otherwise the row and everything that
+    /// hangs off it are deleted and a file inside the profile's source
+    /// folder goes to the Trash (files elsewhere are left alone).
+    func removeSources(_ videos: [VideoRecord]) {
+        guard !videos.isEmpty, let database else { return }
+        let ids = videos.map(\.id)
+        let profile = activeProfile
+        let generation = profileGeneration
+        if isTeamAttachedProfile {
+            let offloadable = videos.map(\.driveMedia).filter {
+                $0.fileID != nil && !$0.offloaded && FileManager.default.fileExists(atPath: $0.path)
+            }
+            Task {
+                do {
+                    // Hide first: the Sources preview player holds a lease on
+                    // the file until the row leaves the list, and an offload
+                    // refuses a file in use.
+                    try await database.setVideosHidden(ids, true)
+                    guard generation == profileGeneration else { return }
+                    await refreshAllNow()
+                    if !offloadable.isEmpty {
+                        let deadline = ContinuousClock.now + .seconds(5)
+                        while ContinuousClock.now < deadline {
+                            var busy = false
+                            for item in offloadable where await DriveMediaResolver.shared.isInUse(item.path) { busy = true }
+                            if !busy { break }
+                            try await Task.sleep(for: .milliseconds(100))
+                        }
+                        do {
+                            try await offloadReconnecting(offloadable, profile: profile.profileName)
+                        } catch {
+                            // Keep the rows visible rather than hiding a file that is still here.
+                            try? await database.setVideosHidden(ids, false)
+                            refreshAll()
+                            throw error
+                        }
+                    }
+                    guard generation == profileGeneration else { return }
+                    appendLog(\.analysisLog, ["Hid \(ids.count) source(s) on this Mac"
+                        + (offloadable.isEmpty ? "" : " and removed \(offloadable.count) local cop\(offloadable.count == 1 ? "y" : "ies")")])
+                    refreshAll()
+                } catch { presentError("Could not remove the sources: " + GoogleDriveError.message(for: error)) }
+            }
+            return
+        }
+        let folder = profile.sourceFolderURL.standardizedFileURL.path
+        Task {
+            do {
+                try await database.deleteVideos(ids)
+                guard generation == profileGeneration else { return }
+                let trashed = await Task.detached(priority: .utility) { () -> Int in
+                    var count = 0
+                    for video in videos {
+                        guard let path = video.path else { continue }
+                        let url = URL(fileURLWithPath: path).standardizedFileURL
+                        guard url.deletingLastPathComponent().path == folder,
+                              FileManager.default.fileExists(atPath: url.path) else { continue }
+                        if (try? FileManager.default.trashItem(at: url, resultingItemURL: nil)) != nil { count += 1 }
+                    }
+                    return count
+                }.value
+                appendLog(\.analysisLog, ["Deleted \(ids.count) source(s)" + (trashed > 0 ? ", \(trashed) file(s) moved to the Trash" : "")])
+                refreshAll()
+            } catch { presentError("Could not delete the sources", error) }
+        }
+    }
+
+    /// Offload, and when Google's session has lapsed, open the sign-in flow
+    /// (the same one Drive jobs use), wait for it, and try once more.
+    private func offloadReconnecting(_ media: [DriveMedia], profile: String) async throws {
+        do {
+            try await googleDrive.offload(media, profile: profile)
+        } catch GoogleDriveError.reconnect {
+            googleDrive.connect(profile: profile)
+            // Sign-in happens in the browser; give it a generous window.
+            let deadline = ContinuousClock.now + .seconds(180)
+            while googleDrive.connecting.contains(profile), ContinuousClock.now < deadline {
+                try await Task.sleep(for: .milliseconds(250))
+            }
+            guard googleDrive.states[profile]?.isConnected == true else { throw GoogleDriveError.reconnect }
+            try await googleDrive.offload(media, profile: profile)
+        }
+    }
+
     func availableVideosForProjectPicker() async -> [VideoRecord] {
         guard let database, let activeProjectID else { return [] }
         return (try? await database.fetchVideosNotInProject(activeProjectID)) ?? []

@@ -69,6 +69,7 @@ struct InstagramView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .screenTitle(tab == .posts ? "Instagram — Posts" : "Instagram — Reports", subtitle: subtitle)
+        .askAI(tab == .reports ? ReportAssistant() : nil)
         .toolbar { if pageVisible { toolbarContent } }
         .sheet(isPresented: $addingAccount) { addAccountSheet }
         .sheet(item: $detailMedia) { media in

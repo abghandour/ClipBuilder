@@ -347,6 +347,13 @@ final class AppStore {
         }
     }
 
+    /// Sources → AI Wizard with one video selected: Express picks that
+    /// source and opens its Footage card; the visible form consumes and
+    /// clears it.
+    var pendingExpressSourcePath: String?
+    /// Ask AI on the AI Wizard page; the visible form consumes and clears it.
+    var pendingWizardAssistantRequest: WizardAssistantRequest?
+
     // Wizard job
     var isWizardRunning = false
     /// True while a Builder pre-fill plan runs — drives the Builder's
@@ -519,6 +526,7 @@ final class AppStore {
     var igDownloadingMediaIDs: Set<Int64> = []
     /// The Reports tab's assembled report for the selected account.
     var igReport: InstagramReport?
+    var pendingIGAIReport: AIReportRecord?
     var igReportPeriod: ReportPeriod = ReportPeriod.from(
         id: UserDefaults.standard.string(forKey: "instagram.reportPeriod") ?? "last30")
     var isLoadingIGReport = false
@@ -1063,6 +1071,9 @@ final class AppStore {
         igMedia = []
         igTemplatedMediaIDs = []
         igReport = nil
+        pendingIGAIReport = nil
+        pendingWizardAssistantRequest = nil
+        pendingExpressSourcePath = nil
         pendingWizardTemplate = nil
         wizardPromptRequests = [:]
         pendingWizardSelectionReview = nil

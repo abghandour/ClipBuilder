@@ -40,11 +40,17 @@ struct BuilderWizardRequestHeader: View {
                     }
                     .pickerStyle(.menu)
                     .labelsHidden()
-                    .fixedSize()
+                    .lineLimit(1)
+                    .frame(maxWidth: 220)
                     .disabled(model.busy || (model.phase == .awaitingPrerequisites || model.phase == .awaitingReply))
                     .onChange(of: model.agentModel) { _, _ in model.saveModelPreference() }
                     .help("The model this provider runs for Builder edits. Default uses the provider's model from Settings → AI.")
                 }
+                Spacer(minLength: 0)
+            }
+            // Second row: the pickers alone can fill the pane's width, so the
+            // history, help and Run controls never share a line with them.
+            HStack(spacing: Theme.spaceXS) {
                 Spacer(minLength: 0)
                 Menu {
                     ForEach(model.history, id: \.self) { request in

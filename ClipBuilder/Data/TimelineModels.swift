@@ -735,6 +735,10 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     var cameraPathSource: String?
     /// Resolved picture retained independently of future framing choices.
     var framingPlan: FramingPlan?
+    /// The picture the user asked for in the Builder inspector, with the same
+    /// controls as Express. `framingPlan` is its resolution; Wizard-made
+    /// clips carry a plan and no request until the inspector sets one.
+    var framingRequest: Clip_Builder.Framing?   // the request struct, not `TimelineClip.Framing`
     var framingProgramAudio: FramingProgramAudio?
 
     /// How a wide main clip in Full Screen is framed.
@@ -871,6 +875,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case cameraPath = "camera_path"
         case cameraPathSource = "camera_path_source"
         case framingPlan = "framing_plan"
+        case framingRequest = "framing_request"
         case framingProgramAudio = "framing_program_audio"
         case speed
     }
@@ -915,6 +920,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         areaFocus = try container.decodeIfPresent(AreaFocus.self, forKey: .areaFocus)
         framingProgramAudio = try container.decodeIfPresent(FramingProgramAudio.self, forKey: .framingProgramAudio)
         framingPlan = try container.decodeIfPresent(FramingPlan.self, forKey: .framingPlan)
+        framingRequest = try container.decodeIfPresent(Clip_Builder.Framing.self, forKey: .framingRequest)
         centerStage = try container.decodeIfPresent(Bool.self, forKey: .centerStage) ?? false
         if let path = try container.decodeIfPresent([CameraPathKeyframe].self, forKey: .cameraPath), path.count >= 2 {
             cameraPath = path
@@ -987,6 +993,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         try container.encodeIfPresent(areaFocus, forKey: .areaFocus)
         try container.encodeIfPresent(framingProgramAudio, forKey: .framingProgramAudio)
         try container.encodeIfPresent(framingPlan, forKey: .framingPlan)
+        try container.encodeIfPresent(framingRequest, forKey: .framingRequest)
         try container.encode(captions, forKey: .captions)
         try container.encode(centerStage, forKey: .centerStage)
         if let cameraPath, cameraPath.count >= 2 {
@@ -1024,6 +1031,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             && lhs.effect == rhs.effect && lhs.cropXFrac == rhs.cropXFrac && lhs.freeCrops == rhs.freeCrops && lhs.captions == rhs.captions
             && lhs.screenCrop == rhs.screenCrop && lhs.areaWindow == rhs.areaWindow && lhs.areaRegion == rhs.areaRegion
             && lhs.areaFocus == rhs.areaFocus && lhs.framingPlan == rhs.framingPlan
+            && lhs.framingRequest == rhs.framingRequest
             && lhs.framingProgramAudio == rhs.framingProgramAudio
             && lhs.cutawaySourceWindow == rhs.cutawaySourceWindow
     }
@@ -1162,6 +1170,8 @@ nonisolated struct ImageOverlayItem: Codable, Sendable, Equatable, Identifiable 
     var xFrac: Double = 0.5             // center, as fraction of frame width
     var yFrac: Double = 0.5             // center, as fraction of frame height
     var wFrac: Double = 0.3             // width as fraction of frame width
+    /// Absolute timeline seconds; nil keeps static placement.
+    var track: [ImageTrackKey]?
     var opacity: Double = 1
     var transIn: String = "fade"
     var transOut: String = "fade"
@@ -1178,7 +1188,7 @@ nonisolated struct ImageOverlayItem: Codable, Sendable, Equatable, Identifiable 
     var displayName: String { url.deletingPathExtension().lastPathComponent }
 
     enum CodingKeys: String, CodingKey {
-        case path, opacity, unbounded
+        case path, opacity, unbounded, track
         case keepsPlacement = "keeps_placement"
         case startTime = "start_time"
         case endTime = "end_time"
@@ -1197,6 +1207,7 @@ nonisolated struct ImageOverlayItem: Codable, Sendable, Equatable, Identifiable 
 
     init(from decoder: Decoder) throws {
         let container = try decoder.container(keyedBy: CodingKeys.self)
+        track = try container.decodeIfPresent([ImageTrackKey].self, forKey: .track)
         path = try container.decodeIfPresent(String.self, forKey: .path) ?? ""
         startTime = try container.decodeIfPresent(Double.self, forKey: .startTime) ?? 0
         endTime = try container.decodeIfPresent(Double.self, forKey: .endTime) ?? 3
@@ -1213,7 +1224,7 @@ nonisolated struct ImageOverlayItem: Codable, Sendable, Equatable, Identifiable 
     static func == (lhs: ImageOverlayItem, rhs: ImageOverlayItem) -> Bool {
         lhs.uid == rhs.uid && lhs.path == rhs.path && lhs.startTime == rhs.startTime
             && lhs.endTime == rhs.endTime && lhs.xFrac == rhs.xFrac && lhs.yFrac == rhs.yFrac
-            && lhs.wFrac == rhs.wFrac && lhs.opacity == rhs.opacity
+            && lhs.wFrac == rhs.wFrac && lhs.opacity == rhs.opacity && lhs.track == rhs.track
             && lhs.transIn == rhs.transIn && lhs.transOut == rhs.transOut
             && lhs.unbounded == rhs.unbounded && lhs.keepsPlacement == rhs.keepsPlacement
     }

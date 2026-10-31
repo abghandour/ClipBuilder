@@ -334,6 +334,20 @@ extension AppStore {
 
     // MARK: - Wizard
 
+    /// "Generate with AI Wizard" from Sources. One video: AI Wizard Express
+    /// opens with it as the source and its Footage card open, so the footage
+    /// can be chosen. Several: the full Wizard opens on their active batches.
+    func openWizard(with videos: [VideoRecord]) {
+        guard !videos.isEmpty else { return }
+        if videos.count == 1, let path = videos[0].path {
+            pendingExpressSourcePath = path
+            requestedSection = .wizardMini
+            return
+        }
+        pendingWizardPrompt = WizardPromptHandoff(description: "", videoIDs: Set(videos.map(\.id)))
+        requestedSection = .wizard
+    }
+
     /// "Generate Video" from the Analyze tab: hand the description to the
     /// Wizard immediately (so the user lands on a live form), then analyze
     /// any un-analyzed selections and AI-parse the description into settings,

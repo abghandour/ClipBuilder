@@ -192,6 +192,22 @@ struct MiniWizardView: View {
         }
         // Navigation from a finished step (generate, keep) reopens the page.
         .onChange(of: currentRun?.requestedCard) { _, _ in collapsedCard = nil }
+        // `initial` so a request parked while this form was being re-created
+        // (profile switch, page hidden) runs as soon as it is on screen.
+        .onChange(of: store.pendingWizardAssistantRequest, initial: true) { _, request in
+            guard let request, store.wizardMode == .express, pageVisible else { return }
+            store.pendingWizardAssistantRequest = nil
+            runAssistantRequest(request.text)
+        }
+        // Sources → AI Wizard with one video: take it as the source and open
+        // Footage so its scenes, exchanges or transcript picks can be chosen.
+        .onChange(of: store.pendingExpressSourcePath, initial: true) { _, path in
+            guard let path, store.wizardMode == .express, pageVisible else { return }
+            store.pendingExpressSourcePath = nil
+            instructionsFocused = false
+            videoPath = path
+            open(.footage)
+        }
         .onChange(of: autoLoadKey, initial: true) { _, key in autoLoad(key) }
         // A load skipped while another run was busy, or while sources were
         // still loading, happens once that finishes.
@@ -543,6 +559,19 @@ struct MiniWizardView: View {
         loadedPreset = MiniWizardPresetStore.loaded(profileName: profileName)
         settingsProfile = profileName
         store.refreshMiniQASections()
+    }
+
+    /// Ask AI: the text becomes the Highlights instructions and Generate is pressed.
+    private func runAssistantRequest(_ text: String) {
+        guard selectedVideo != nil else {
+            store.presentNotice("Ask AI", "Choose a source video first.")
+            return
+        }
+        instructionsFocused = false
+        instructions.wrappedValue = text
+        saveInstructions()
+        footageKind = .highlights
+        store.generateMiniFootage(flow: flow)
     }
 
     private func saveInstructions() {

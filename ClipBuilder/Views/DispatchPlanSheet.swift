@@ -581,7 +581,9 @@ struct DispatchPlanSheet: View {
                 Text("Ready to tag scenes with the recommended model and automatic sampling. Change the plan only when you need a different result.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
             }
+            .frame(maxWidth: .infinity, alignment: .leading)
             .padding()
 
             Form {
@@ -805,8 +807,18 @@ struct DispatchPlanSheet: View {
     private var instructionsSection: some View {
         VStack(alignment: .leading, spacing: 6) {
             HStack {
-                SectionLabel("Generic instructions — apply to every video (optional)")
-                Spacer()
+                // Not `SectionLabel`: that one is fixed-size, and with the two
+                // menus beside it the row outgrew the 460 pt column, which then
+                // centred its widest child and pushed the whole plan off the
+                // sheet's left edge.
+                Text("Generic instructions — apply to every video (optional)")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .textCase(.uppercase)
+                    .lineLimit(1)
+                    .truncationMode(.tail)
+                    .layoutPriority(-1)
+                Spacer(minLength: Theme.spaceS)
                 if !namedPeople.isEmpty {
                     Menu("People") {
                         ForEach(namedPeople) { person in
@@ -844,7 +856,9 @@ struct DispatchPlanSheet: View {
             Text("Context the model can't see — e.g. “focus on the athlete in black”, “this is a seminar recording; tag technique demos”. Applies to every analysis run until cleared.")
                 .font(.caption)
                 .foregroundStyle(.tertiary)
+                .fixedSize(horizontal: false, vertical: true)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     // MARK: - Choices

@@ -33,5 +33,6 @@ struct WizardHostView: View {
                     .id(store.activeProfile.profileName)
             }
         }
+        .askAI(WizardAssistant())
     }
 }

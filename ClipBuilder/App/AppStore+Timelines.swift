@@ -76,6 +76,33 @@ extension AppStore {
         }
     }
 
+    /// "Build in AI Builder" from Sources: a new timeline holding each
+    /// selected video as one full-length clip, opened in the Builder.
+    func buildTimeline(from videos: [VideoRecord]) {
+        guard videos.allSatisfy(\.isPresent) else { presentError(VideoRecord.notPresentReason); return }
+        guard !videos.isEmpty, let database, let projectID = activeProjectID else { return }
+        var document = TimelineDocument()
+        document.renderSettings = activeProfile.defaultRenderSettings
+        guard let data = try? JSONEncoder().encode(document),
+              let json = String(data: data, encoding: .utf8) else { return }
+        let name = videos.count == 1
+            ? (videos[0].filename as NSString).deletingPathExtension
+            : "\(videos.count) sources"
+        Task {
+            do {
+                let id = try await database.createTimeline(projectID: projectID, name: name,
+                                                           documentJSON: json)
+                timelines = try await database.fetchTimelines(projectID: projectID)
+                projects = try await database.fetchProjects()
+                guard activeProjectID == projectID,
+                      let timeline = timelines.first(where: { $0.id == id }) else { return }
+                openTimelineRecord(timeline)
+                videos.forEach { builder.addVideo($0) }
+                selectSection(.timelines)
+            } catch { presentError("Could not create a timeline for the sources", error) }
+        }
+    }
+
     func openTimelineRecord(_ timeline: TimelineRecord, state: ProjectUIState? = nil) {
         if timeline.isWizard {
             duplicateTimeline(timeline, openCopy: true)
