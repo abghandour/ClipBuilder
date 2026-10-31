@@ -49,6 +49,13 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     /// Google Drive folder every member uploads new sources into; shared through Team Sync.
     var teamDriveFolderID: String?
     var teamDriveFolderName: String?
+    /// nil when no folder is chosen. Clearing stores empty strings rather than
+    /// nil so the cleared value travels through Team Sync as an edit, not as a
+    /// key this client has never seen (which the adoption guard would re-adopt).
+    var teamDriveFolder: (id: String, name: String)? {
+        guard let id = teamDriveFolderID, !id.isEmpty else { return nil }
+        return (id, teamDriveFolderName ?? "")
+    }
     var learnedSharing = LearnedSharing()
     var profileName: String
     var brandName: String

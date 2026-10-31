@@ -472,8 +472,17 @@ struct GoogleDriveBrowserSheet: View {
     /// The remembered upload folder, else the default
     /// Clip Builder › <profile> › <project>, else nil (My Drive's root).
     private func initialUploadFolder(client: GoogleDriveClient) async -> DriveFile? {
-        if let remembered = try? await store.googleDrive.uploadFolder(
-            profile: profile, project: projectName, teamFolderID: store.activeProfile.teamDriveFolderID) {
+        if let team = store.activeProfile.teamDriveFolder {
+            // A team folder this account cannot open is reported, not quietly
+            // replaced by a private folder teammates cannot read.
+            do {
+                return try await store.googleDrive.uploadFolder(profile: profile, project: projectName, teamFolderID: team.id)
+            } catch {
+                self.error = "The team upload folder “\(team.name)” isn't available to this Google account: \(GoogleDriveError.message(for: error))"
+                return nil
+            }
+        }
+        if let remembered = try? await store.googleDrive.uploadFolder(profile: profile, project: projectName) {
             return remembered
         }
         do {

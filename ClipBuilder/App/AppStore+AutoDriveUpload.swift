@@ -49,7 +49,7 @@ extension AppStore {
                 let project = projects.first { $0.id == projectID } ?? projects.first { $0.isHome }
                 let projectName = project?.name ?? "Home"
                 let folder = try await googleDrive.uploadFolder(
-                    profile: profile.profileName, project: projectName, teamFolderID: profile.teamDriveFolderID)
+                    profile: profile.profileName, project: projectName, teamFolderID: profile.teamDriveFolder?.id)
                 // Another upload may have started or finished during folder lookup.
                 var media: [DriveMedia] = []
                 for candidate in decision.candidates {

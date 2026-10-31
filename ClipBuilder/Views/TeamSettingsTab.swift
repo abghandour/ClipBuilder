@@ -50,15 +50,15 @@ struct TeamSettingsTab: View {
                         AutoDriveUploadToggle()
                         LabeledContent("Team upload folder") {
                             HStack(spacing: 8) {
-                                Text(store.activeProfile.teamDriveFolderName ?? "Not set")
-                                    .foregroundStyle(store.activeProfile.teamDriveFolderID == nil ? .secondary : .primary)
+                                Text(store.activeProfile.teamDriveFolder?.name ?? "Not set")
+                                    .foregroundStyle(store.activeProfile.teamDriveFolder == nil ? .secondary : .primary)
                                     .lineLimit(1)
                                 Button("Choose…") { choosingTeamFolder = true }
                                     .fixedSize()
-                                if store.activeProfile.teamDriveFolderID != nil {
+                                if store.activeProfile.teamDriveFolder != nil {
                                     Button("Clear") {
-                                        store.activeProfile.teamDriveFolderID = nil
-                                        store.activeProfile.teamDriveFolderName = nil
+                                        store.activeProfile.teamDriveFolderID = ""
+                                        store.activeProfile.teamDriveFolderName = ""
                                         store.saveActiveProfile()
                                     }
                                     .fixedSize()

@@ -133,6 +133,31 @@ extension SyncMappingTests {
         #expect(applied.tasteCategories[0].exemplarFrames == receiver.tasteCategories[0].exemplarFrames)
     }
 
+    @Test("Team upload folder: a local clear wins over a remote that still has the folder, and id/name move together")
+    func mergeTeamDriveFolder() throws {
+        var original = BrandProfile(name: "Shared")
+        original.teamDriveFolderID = "folder-a"
+        original.teamDriveFolderName = "Shared with me › A"
+        let baseline = try TeamProfileDocument.encode(original)
+        var local = original
+        local.teamDriveFolderID = ""
+        local.teamDriveFolderName = ""
+        #expect(local.teamDriveFolder == nil)
+        let cleared = try TeamProfileDocument.merging(TeamProfileDocument.encode(original), into: local, baseline: baseline)
+        #expect(cleared.teamDriveFolder == nil)
+        var remote = original
+        remote.teamDriveFolderID = "folder-c"
+        remote.teamDriveFolderName = "Shared with me › C"
+        var localPick = original
+        localPick.teamDriveFolderID = "folder-b"
+        localPick.teamDriveFolderName = "Shared with me › B"
+        let merged = try TeamProfileDocument.merging(TeamProfileDocument.encode(remote), into: localPick, baseline: baseline)
+        #expect(merged.teamDriveFolder?.id == "folder-b")
+        #expect(merged.teamDriveFolder?.name == "Shared with me › B")
+        let adopted = try TeamProfileDocument.merging(TeamProfileDocument.encode(remote), into: original, baseline: baseline)
+        #expect(adopted.teamDriveFolder?.id == "folder-c")
+    }
+
     @Test("Routing merges retain recommendations for separate tasks from both members")
     func mergeAIRouting() throws {
         var original = BrandProfile(name: "Shared")
