@@ -112,7 +112,26 @@ nonisolated struct TextDecorPainter {
         if d.strikethrough == true {
             rules.append(CGRect(x: origin.x, y: origin.y + CTFontGetXHeight(font) / 2, width: width, height: max(1, CTFontGetUnderlineThickness(font))))
         }
-        if d.shadowOn == true, d.shadowStyle != "soft" {
+        if d.shadowOn == true, d.shadowStyle == "glow" {
+            let silhouette = CGMutablePath()
+            silhouette.addPath(glyphPath(line, origin: origin))
+            for rect in rules { silhouette.addRect(rect) }
+            if silhouette.isEmpty {
+                // Colour glyphs (emoji) have no outline: blur the drawn run itself.
+                context.saveGState()
+                context.setAlpha(shadowColor.alpha)
+                context.beginTransparencyLayer(auxiliaryInfo: nil)
+                for pass in 0..<max(1, min(3, Int(d.shadowStrength ?? 2))) {
+                    context.setShadow(offset: .zero, blur: (d.shadowBlur ?? 0.3) * size * (1 - CGFloat(pass) * 0.3), color: shadowColor.copy(alpha: 1))
+                    CTLineDraw(line, context)
+                }
+                context.endTransparencyLayer()
+                context.restoreGState()
+            } else {
+                glow(silhouette, blur: (d.shadowBlur ?? 0.3) * size, color: shadowColor,
+                     passes: Int(d.shadowStrength ?? 2), stroke: stroke, in: context)
+            }
+        } else if d.shadowOn == true, d.shadowStyle != "soft" {
             // Hard: one sharp copy at the offset. Extrude: copies from the
             // offset back to the text, one pixel apart, so the letters look
             // like solid blocks. Colour glyphs (emoji) have no outline path
@@ -153,6 +172,29 @@ nonisolated struct TextDecorPainter {
             }
         }
         if opacity < 1 { context.endTransparencyLayer() }
+    }
+
+    /// A centred halo: the silhouette filled in the glow colour and blurred,
+    /// stacked `passes` times (each pass tighter than the last) so the glow
+    /// stays bright next to the letters and fades out wide. One CoreGraphics
+    /// shadow pass alone reads as a faint smudge at this size.
+    private func glow(_ path: CGPath, blur: CGFloat, color: CGColor, passes: Int, stroke: CGFloat, in context: CGContext) {
+        guard blur > 0, passes > 0 else { return }
+        context.saveGState()
+        context.setAlpha(color.alpha)
+        context.beginTransparencyLayer(auxiliaryInfo: nil)
+        context.setFillColor(color.copy(alpha: 1)!)
+        context.setStrokeColor(color.copy(alpha: 1)!)
+        context.setLineWidth(max(stroke, blur * 0.15))
+        context.setLineJoin(.round)
+        for pass in 0..<max(1, min(3, passes)) {
+            let radius = blur * (1 - CGFloat(pass) * 0.3)
+            context.setShadow(offset: .zero, blur: radius, color: color.copy(alpha: 1))
+            context.addPath(path)
+            context.drawPath(using: .fillStroke)
+        }
+        context.endTransparencyLayer()
+        context.restoreGState()
     }
 
     private func hardShadow(_ path: CGPath, offset: CGSize, color: CGColor, stroke: CGFloat,

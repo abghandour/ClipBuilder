@@ -26,6 +26,17 @@ struct TextShadowPresetsTests {
         #expect(TextShadowPresets.matching(nudged) == nil)
     }
 
+    @Test func inheritedGlowStrengthDoesNotUnmatchOtherPresets() throws {
+        let soft = try #require(TextShadowPresets.all.first { $0.name == "Soft drop" })
+        var inherited = TextShadowPresets.apply(soft, to: nil)
+        inherited.shadowStrength = 3
+        #expect(TextShadowPresets.matching(inherited)?.name == "Soft drop")
+        let glow = try #require(TextShadowPresets.all.first { $0.name == "Glow" })
+        var strong = TextShadowPresets.apply(glow, to: nil)
+        strong.shadowStrength = 3
+        #expect(TextShadowPresets.matching(strong) == nil)
+    }
+
     @Test func everyPresetRoundTripsThroughMatching() {
         for preset in TextShadowPresets.all {
             #expect(TextShadowPresets.matching(TextShadowPresets.apply(preset, to: nil))?.name == preset.name, "\(preset.name)")

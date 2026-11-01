@@ -107,6 +107,25 @@ struct TextLookExtractionTests {
         #expect(parsed.notes.contains { $0.contains("typewriter") })
     }
 
+    @Test func glowBecomesTheGlowShadowPresetOnTextAndEmphasis() throws {
+        let response = """
+        {"captions": {"present": true, "font_family": "Inter", "color": "#FFFFFF", "size": 60, "glow": true, "glow_color": "#FFFFFF",
+          "emphasis": "scale", "emphasis_look": {"font_weight": 900, "size_scale": 1.4, "glow": true, "glow_color": "#FFD60A"}}}
+        """
+        let parsed = TextLookExtraction.parse(response, targets: [.captions], fonts: .init(library: ["Inter"]))
+        let style = try #require(parsed.caption)
+        let text = try #require(style.text?.decor).resolved()
+        #expect(text.shadowOn == true && text.shadowStyle == "glow" && text.shadowColor == "#ffffff")
+        #expect(TextShadowPresets.matching(text)?.name == "Glow")
+        let emphasis = try #require(style.emphasisDecor?.decor).resolved()
+        #expect(emphasis.shadowStyle == "glow" && emphasis.shadowColor == "#ffd60a")
+        let off = TextLookExtraction.parse("""
+        {"captions": {"present": true, "font_family": "Inter", "size": 60, "glow": true,
+          "highlight_look": {"glow": false}}}
+        """, targets: [.captions], fonts: .init(library: ["Inter"]))
+        #expect(off.caption?.highlightDecor?.decor?.shadowOn == false)
+    }
+
     @Test func captionsAbsentOrUnrequestedAreNil() {
         let absent = TextLookExtraction.parse(#"{"captions": {"present": false}}"#, targets: [.captions], fonts: .init())
         #expect(absent.caption == nil)

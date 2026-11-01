@@ -117,8 +117,8 @@ nonisolated enum TextLookExtraction {
         }
         if targets.contains(.captions) {
             lines.append("""
-            "captions": {"present": true|false, "font_family": "<typeface>", "font_category": "<category>", "font_style": "<style words>", "font_weight": <100-900>, "italic": true|false, "letter_spacing_em": <-0.1..0.3>, "color": "#hex", "uppercase": true|false, "size": <24-120, the font size in pixels on a frame scaled to 1080 px wide; a capital letter stands about 0.7 × the font size, so measure the capital height as a fraction of the frame width, × 1080, ÷ 0.7>, "position": "bottom|middle|top", "alignment": "leading|center|trailing", "words_per_page": <1-8>, "bg_on": true|false, "bg_color": "#hex", "bg_radius": <0-60 px>, "stroke_width": <0-6>, "shadow": true|false, "highlight": "none|color|box|scale", "highlight_color": "#hex", "highlight_look": {"font_family": "<typeface>", "font_category": "<category>", "font_style": "<style words>", "font_weight": <100-900>, "italic": true|false, "size_scale": <0.6-1.6 relative to the regular words>} or null, "emphasis": "none|color|scale|both|font", "emphasis_color": "#hex", "emphasis_look": {same keys as highlight_look} or null, "animation": "none|pop|slide-up|fade", "reveal": "none|word", "reveal_motion": true|false, "emoji": true|false, "unsupported": "<effects you saw that none of the options express, or empty>"}
-            Caption rules: captions are the subtitles of the spoken words, usually a few words per page near the bottom or middle. "highlight" is how the word being spoken is marked (a different color, a colored box behind it, or a bigger size). "emphasis" is how key words are marked; "font" when they switch to a different typeface (an italic serif dropped into a bold sans line, a script word, ...). "highlight_look" / "emphasis_look" describe the face of the lit or emphasised words ONLY when it differs from the regular words (different typeface, italic, or size); null otherwise. "reveal":"word" when words appear one at a time; "reveal_motion" when each word also pops or slides in. "animation" is how each caption page enters.
+            "captions": {"present": true|false, "font_family": "<typeface>", "font_category": "<category>", "font_style": "<style words>", "font_weight": <100-900>, "italic": true|false, "letter_spacing_em": <-0.1..0.3>, "color": "#hex", "uppercase": true|false, "size": <24-120, the font size in pixels on a frame scaled to 1080 px wide; a capital letter stands about 0.7 × the font size, so measure the capital height as a fraction of the frame width, × 1080, ÷ 0.7>, "position": "bottom|middle|top", "alignment": "leading|center|trailing", "words_per_page": <1-8>, "bg_on": true|false, "bg_color": "#hex", "bg_radius": <0-60 px>, "stroke_width": <0-6>, "shadow": true|false, "glow": true|false (a bright blurred halo around the letters, usually white), "glow_color": "#hex", "highlight": "none|color|box|scale", "highlight_color": "#hex", "highlight_look": {"font_family": "<typeface>", "font_category": "<category>", "font_style": "<style words>", "font_weight": <100-900>, "italic": true|false, "size_scale": <0.6-1.6 relative to the regular words>, "glow": true|false, "glow_color": "#hex"} or null, "emphasis": "none|color|scale|both|font", "emphasis_color": "#hex", "emphasis_look": {same keys as highlight_look} or null, "animation": "none|pop|slide-up|fade", "reveal": "none|word", "reveal_motion": true|false, "emoji": true|false, "unsupported": "<effects you saw that none of the options express, or empty>"}
+            Caption rules: captions are the subtitles of the spoken words, usually a few words per page near the bottom or middle. "highlight" is how the word being spoken is marked (a different color, a colored box behind it, or a bigger size). "emphasis" is how key words are marked; "font" when they switch to a different typeface (an italic serif dropped into a bold sans line, a script word, ...). "highlight_look" / "emphasis_look" describe the face of the lit or emphasised words ONLY when it differs from the regular words (different typeface, italic, size, or a glow only those words have); null otherwise. "reveal":"word" when words appear one at a time; "reveal_motion" when each word also pops or slides in. "animation" is how each caption page enters.
             """)
         }
         if targets.contains(.nameTag) {
@@ -340,6 +340,7 @@ nonisolated enum TextLookExtraction {
         var text = CaptionWordDecor()
         text.italic = raw["italic"] as? Bool ?? (match?.italic == true ? true : nil)
         text.size = size
+        if raw["glow"] as? Bool == true { text.decor = glowDecor(color: color(raw["glow_color"])) }
         if text != CaptionWordDecor() { style.text = text }
         return (style, fontNote)
     }
@@ -366,8 +367,21 @@ nonisolated enum TextLookExtraction {
         if let scale = number(raw["size_scale"]) {
             decor.size = min(120, max(24, (regularSize * min(1.6, max(0.6, scale))).rounded()))
         }
+        switch raw["glow"] as? Bool {
+        case true?: decor.decor = glowDecor(color: color(raw["glow_color"]))
+        case false?: decor.decor = TextDecor(shadowOn: false) // explicit: these words do not inherit the regular glow
+        default: break
+        }
         guard family != nil || decor != CaptionWordDecor() else { return nil }
         return (family, decor, note)
+    }
+
+    /// The Glow shadow preset, in the halo colour the model saw.
+    static func glowDecor(color: String?) -> TextDecor {
+        guard let preset = TextShadowPresets.all.first(where: { $0.name == "Glow" }) else { return TextDecor() }
+        var decor = TextShadowPresets.apply(preset, to: nil)
+        if let color { decor.shadowColor = color }
+        return decor
     }
 
     /// Map a free-form caption entrance onto pop / slide-up / fade.

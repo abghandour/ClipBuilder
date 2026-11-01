@@ -15,8 +15,8 @@ nonisolated enum TextShadowPresets {
                shadow: TextDecor(shadowOn: true, shadowColor: "#000000", shadowOpacity: 0.75, shadowX: 0, shadowY: -0.08, shadowBlur: 0.15, shadowStyle: "soft")),
         Preset(name: "Lifted", help: "A wider, softer shadow that floats the text off the footage.",
                shadow: TextDecor(shadowOn: true, shadowColor: "#000000", shadowOpacity: 0.6, shadowX: 0, shadowY: -0.18, shadowBlur: 0.45, shadowStyle: "soft")),
-        Preset(name: "Glow", help: "A centred halo in the shadow colour with no offset.",
-               shadow: TextDecor(shadowOn: true, shadowColor: "#ffffff", shadowOpacity: 0.9, shadowX: 0, shadowY: 0, shadowBlur: 0.35, shadowStyle: "soft")),
+        Preset(name: "Glow", help: "A bright centred halo in the shadow colour, the neon caption look; Strength stacks it denser.",
+               shadow: TextDecor(shadowOn: true, shadowColor: "#ffffff", shadowOpacity: 1, shadowX: 0, shadowY: 0, shadowBlur: 0.3, shadowStyle: "glow", shadowStrength: 2)),
         Preset(name: "Hard offset", help: "One sharp copy of the letters down and to the right.",
                shadow: TextDecor(shadowOn: true, shadowColor: "#000000", shadowOpacity: 1, shadowX: 0.05, shadowY: -0.05, shadowBlur: 0, shadowStyle: "hard")),
         Preset(name: "Retro 3D", help: "Solid block letters: copies stacked from the offset back to the text.",
@@ -25,7 +25,7 @@ nonisolated enum TextShadowPresets {
                shadow: TextDecor(shadowOn: true, shadowColor: "#000000", shadowOpacity: 0.35, shadowX: 0.25, shadowY: -0.25, shadowBlur: 0, shadowStyle: "extrude")),
     ]
 
-    static let shadowKeys: [WritableKeyPath<TextDecor, Double?>] = [\.shadowOpacity, \.shadowX, \.shadowY, \.shadowBlur]
+    static let shadowKeys: [WritableKeyPath<TextDecor, Double?>] = [\.shadowOpacity, \.shadowX, \.shadowY, \.shadowBlur, \.shadowStrength]
 
     /// Copies the preset's shadow fields over `stored`; everything else is untouched.
     static func apply(_ preset: Preset, to stored: TextDecor?) -> TextDecor {
@@ -44,7 +44,11 @@ nonisolated enum TextShadowPresets {
             let candidate = apply(preset, to: TextDecor()).resolved()
             return candidate.shadowOn == resolved.shadowOn && candidate.shadowColor?.lowercased() == resolved.shadowColor?.lowercased()
                 && candidate.shadowStyle == resolved.shadowStyle
-                && shadowKeys.allSatisfy { abs((candidate[keyPath: $0] ?? 0) - (resolved[keyPath: $0] ?? 0)) < 0.001 }
+                && shadowKeys.allSatisfy {
+                    // Strength only shapes a glow; an inherited value must not unmatch the other looks.
+                    $0 == \.shadowStrength && candidate.shadowStyle != "glow"
+                        || abs((candidate[keyPath: $0] ?? 0) - (resolved[keyPath: $0] ?? 0)) < 0.001
+                }
         }
     }
 }

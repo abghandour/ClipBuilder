@@ -16,7 +16,7 @@ struct TextDecorPainterTests {
         return Array(UnsafeBufferPointer(start: context.data!.assumingMemoryBound(to: UInt8.self), count: 360 * 180 * 4))
     }
 
-    @Test(arguments: ["color", "stroke", "shadow", "hardShadow", "extrude", "background", "border", "italic", "underline", "strikethrough", "spacing", "weight", "casing", "size", "opacity"], [false, true])
+    @Test(arguments: ["color", "stroke", "shadow", "hardShadow", "extrude", "glow", "background", "border", "italic", "underline", "strikethrough", "spacing", "weight", "casing", "size", "opacity"], [false, true])
     func decorationsChangePixels(_ kind: String, _ white: Bool) async throws {
         try await Task.detached {
             var base = TextDecor(color: "#888888")
@@ -27,6 +27,7 @@ struct TextDecorPainterTests {
             case "shadow": base.shadowOn = true; base.shadowX = 0.2; base.shadowColor = "#ff0000"
             case "hardShadow": base.shadowOn = true; base.shadowX = 0.2; base.shadowColor = "#ff0000"; base.shadowStyle = "hard"
             case "extrude": base.shadowOn = true; base.shadowX = 0.2; base.shadowY = -0.2; base.shadowColor = "#ff0000"; base.shadowStyle = "extrude"
+            case "glow": base.shadowOn = true; base.shadowColor = "#ff0000"; base.shadowStyle = "glow"; base.shadowBlur = 0.3; base.shadowStrength = 2
             case "background": base.bgOn = true; base.bgColor = "#0000ff"; base.bgPaddingX = 0.3
             case "border": base.borderOn = true; base.borderWidth = 5; base.borderColor = "#ff0000"
             case "italic": base.italic = true
@@ -41,6 +42,29 @@ struct TextDecorPainterTests {
             let changed = try Self.pixels(decor: base, white: white)
             let different = zip(original, changed).filter { $0 != $1 }.count
             #expect(different > 30, "\(kind) changes pixels on both black and white")
+        }.value
+    }
+
+    @Test("A glow lights far more of the surround than a soft shadow of the same colour, and strength adds to it")
+    func glowIsBrighterThanSoftHalo() async throws {
+        try await Task.detached {
+            func litPixels(_ decor: TextDecor) throws -> Int {
+                // Red channel above the grey text's own value: only halo pixels count.
+                let bytes = try Self.pixels(decor: decor)
+                var lit = 0
+                for index in stride(from: 0, to: bytes.count, by: 4) where bytes[index] > 160 && bytes[index + 1] < 60 { lit += 1 }
+                return lit
+            }
+            var soft = TextDecor(color: "#888888")
+            soft.shadowOn = true; soft.shadowColor = "#ff0000"; soft.shadowOpacity = 1
+            soft.shadowX = 0; soft.shadowY = 0; soft.shadowBlur = 0.3; soft.shadowStyle = "soft"
+            var glow = soft
+            glow.shadowStyle = "glow"; glow.shadowStrength = 1
+            var dense = glow
+            dense.shadowStrength = 3
+            let softLit = try litPixels(soft), glowLit = try litPixels(glow), denseLit = try litPixels(dense)
+            #expect(glowLit > softLit * 2, "glow \(glowLit) vs soft \(softLit)")
+            #expect(denseLit >= glowLit, "strength 3 \(denseLit) vs 1 \(glowLit)")
         }.value
     }
 

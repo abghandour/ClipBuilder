@@ -75,7 +75,7 @@ nonisolated enum TextStyleClipboard {
         case .shadow:
             target.shadowOn = from.shadowOn; target.shadowColor = from.shadowColor; target.shadowOpacity = from.shadowOpacity
             target.shadowX = from.shadowX; target.shadowY = from.shadowY; target.shadowBlur = from.shadowBlur
-            target.shadowStyle = from.shadowStyle
+            target.shadowStyle = from.shadowStyle; target.shadowStrength = from.shadowStrength
         case .background:
             target.bgOn = from.bgOn; target.bgColor = from.bgColor; target.bgOpacity = from.bgOpacity
             target.bgRadius = from.bgRadius; target.bgPaddingX = from.bgPaddingX; target.bgPaddingY = from.bgPaddingY

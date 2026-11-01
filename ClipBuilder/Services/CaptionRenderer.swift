@@ -354,8 +354,10 @@ nonisolated struct CaptionRenderer: Sendable {
         let effectFontSize = fonts.map { CTFontGetSize($0.font) }.max() ?? fontSize
         let effectInset = resolved.hasTextDecor ? Int(ceil(effects.map { d in
             let border = d.borderOn == true ? (d.borderWidth ?? 2) * CGFloat(videoWidth) / 1080 : 0
-            let blur = d.shadowStyle == "soft" ? (d.shadowBlur ?? 0) * 2 : 0 // hard and extrude ignore blur
-            let shadow = d.shadowOn == true ? effectFontSize * (max(abs(d.shadowX ?? 0), abs(d.shadowY ?? 0)) + blur) : 0
+            // Hard and extrude ignore blur; a glow spreads about three blur radii.
+            let blur = d.shadowStyle == "soft" ? (d.shadowBlur ?? 0) * 2 : d.shadowStyle == "glow" ? (d.shadowBlur ?? 0.3) * 3 : 0
+            let offset = d.shadowStyle == "glow" ? 0 : max(abs(d.shadowX ?? 0), abs(d.shadowY ?? 0))
+            let shadow = d.shadowOn == true ? effectFontSize * (offset + blur) : 0
             return border + shadow + (d.strokeOn == true ? (d.strokeWidth ?? 1) * CGFloat(videoWidth) / 1080 : 0)
         }.max() ?? 0)) : 0
         let boxWidth = contentWidth + (motionX + effectInset) * 2

@@ -14,7 +14,8 @@ nonisolated enum TextLookSummary {
         guard resolved.shadowOn == true else { return "Off" }
         let name =
             TextShadowPresets.matching(resolved)?.name
-            ?? (resolved.shadowStyle == "extrude" ? "3D extrude" : resolved.shadowStyle == "hard" ? "Hard" : "Soft")
+            ?? (resolved.shadowStyle == "extrude" ? "3D extrude" : resolved.shadowStyle == "hard" ? "Hard"
+                : resolved.shadowStyle == "glow" ? "Glow" : "Soft")
         let count = overrideCount(stored, prefix: "shadow")
         return count == 0 ? name : "\(name) · \(count) override\(count == 1 ? "" : "s")"
     }

@@ -196,7 +196,11 @@ struct TextLookInspectorSections: View {
                     .help(help("shadowPreset"))
                     color("Colour", \.shadowColor, "shadowColor")
                     number("Opacity", \.shadowOpacity, "shadowOpacity", 0...1)
-                    choices("Style", \.shadowStyle, "shadowStyle", [("soft", "Soft"), ("hard", "Hard"), ("extrude", "3D extrude")])
+                    choices("Style", \.shadowStyle, "shadowStyle", [("soft", "Soft"), ("hard", "Hard"), ("extrude", "3D extrude"), ("glow", "Glow")])
+                    if resolved.shadowStyle == "glow" {
+                        number("Blur", \.shadowBlur, "shadowBlur", 0...3)
+                        number("Strength", \.shadowStrength, "shadowStrength", 1...3)
+                    } else {
                     HStack(alignment: .center, spacing: Theme.spaceS) {
                         OverrideLabel(
                             text: "Offset", isSet: decor?.shadowX != nil || decor?.shadowY != nil, parent: defaultLabel
@@ -215,6 +219,7 @@ struct TextLookInspectorSections: View {
                     }.help(help("shadowOffset"))
                     if resolved.shadowStyle == "soft" {
                         number("Blur", \.shadowBlur, "shadowBlur", 0...3)
+                    }
                     }
                 }
             }

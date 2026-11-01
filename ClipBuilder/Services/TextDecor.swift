@@ -25,8 +25,12 @@ nonisolated struct TextDecor: Codable, Hashable, Sendable {
     var shadowX: Double?
     var shadowY: Double?
     var shadowBlur: Double?
-    /// "soft" blurs, "hard" is one sharp copy, "extrude" stacks copies into a solid 3D wedge.
+    /// "soft" blurs, "hard" is one sharp copy, "extrude" stacks copies into a
+    /// solid 3D wedge, "glow" is a centred halo (offset ignored) drawn in
+    /// `shadowStrength` stacked passes so it reads bright and dense.
     var shadowStyle: String?
+    /// Glow passes, 1 (faint) to 3 (dense); nil inherits.
+    var shadowStrength: Double?
     var bgOn: Bool?
     var bgColor: String?
     var bgOpacity: Double?
@@ -42,7 +46,7 @@ nonisolated struct TextDecor: Codable, Hashable, Sendable {
     var underlineColor: String?
     var underlineThickness: Double?
 
-    static let shadowStyles = ["soft", "hard", "extrude"]
+    static let shadowStyles = ["soft", "hard", "extrude", "glow"]
 
     static let defaults = TextDecor(
         color: "#ffffff",
@@ -67,6 +71,7 @@ nonisolated struct TextDecor: Codable, Hashable, Sendable {
         shadowY: -0.08,
         shadowBlur: 0.15,
         shadowStyle: "soft",
+        shadowStrength: 2,
         bgOn: false,
         bgColor: "#000000",
         bgOpacity: 1,
@@ -104,6 +109,7 @@ nonisolated struct TextDecor: Codable, Hashable, Sendable {
         result.shadowY = shadowY ?? base.shadowY
         result.shadowBlur = shadowBlur ?? base.shadowBlur
         result.shadowStyle = shadowStyle ?? base.shadowStyle
+        result.shadowStrength = shadowStrength ?? base.shadowStrength
         result.bgOn = bgOn ?? base.bgOn
         result.bgColor = bgColor ?? base.bgColor
         result.bgOpacity = bgOpacity ?? base.bgOpacity
@@ -132,6 +138,7 @@ nonisolated struct TextDecor: Codable, Hashable, Sendable {
         if let number = value.bgRadius { value.bgRadius = number.isFinite ? min(80, max(0, number)) : Self.defaults.bgRadius }
         if let number = value.bgPaddingX { value.bgPaddingX = number.isFinite ? min(3, max(0, number)) : Self.defaults.bgPaddingX }
         if let number = value.bgPaddingY { value.bgPaddingY = number.isFinite ? min(3, max(0, number)) : Self.defaults.bgPaddingY }
+        if let number = value.shadowStrength { value.shadowStrength = number.isFinite ? min(3, max(1, number.rounded())) : Self.defaults.shadowStrength }
         if let number = value.shadowBlur { value.shadowBlur = number.isFinite ? min(3, max(0, number)) : Self.defaults.shadowBlur }
         if let number = value.shadowX { value.shadowX = number.isFinite ? min(3, max(-3, number)) : Self.defaults.shadowX }
         if let number = value.shadowY { value.shadowY = number.isFinite ? min(3, max(-3, number)) : Self.defaults.shadowY }
