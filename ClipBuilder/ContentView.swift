@@ -38,6 +38,9 @@ struct ClipBuilderApp: App {
     @NSApplicationDelegateAdaptor(TerminationDelegate.self) private var terminationDelegate
 
     init() {
+        // Tooltips (`.help`) appear after 300 ms instead of AppKit's default
+        // second or more. `register` keeps a user override in the app domain.
+        UserDefaults.standard.register(defaults: ["NSInitialToolTipDelay": 300])
 #if PERFORMANCE_BASELINE
         let store = PerformanceBaseline.makeStore()
 #else
@@ -114,6 +117,9 @@ struct ClipBuilderApp: App {
                 Button("Next Timeline") { store.cycleTimeline(offset: 1) }
                     .keyboardShortcut("]", modifiers: [.command, .option])
                     .disabled(store.openTimelineID == nil)
+                Divider()
+                Button("Ask AI…") { store.assistant.openRequest = UUID() }
+                    .keyboardShortcut("a", modifiers: [.command, .shift])
             }
             if BugReporting.isConfigured {
                 BugReporterCommands()

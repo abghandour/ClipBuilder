@@ -3,6 +3,16 @@ import Foundation
 import UniformTypeIdentifiers
 
 extension AppStore {
+    /// Sources' "Analyze N steps" footer and Ask AI's missing-step actions
+    /// stay off while any step a batch would run is already running here:
+    /// the batch's own call for that step would return at once and the
+    /// step would be left undone.
+    var isMissingStepsBatchBusy: Bool {
+        AnalysisSteps.batchBusy(batchRunning: analysisStepBatch != nil, analyzing: isAnalyzing,
+                                detectingPeople: isDetectingPeople, transcribing: !transcribingVideoIDs.isEmpty,
+                                fightScoring: !fightScoringInFlight.isEmpty, mappingSpeakers: !speakerMappingVideoIDs.isEmpty)
+    }
+
     // MARK: - Analysis
 
     /// Batch name stamped at analysis time: "<video name without extension>

@@ -450,7 +450,7 @@ extension AppStore {
         let customDuration = defaults.object(forKey: WizardDefaults.customDurationKey) == nil
             ? 20 : defaults.integer(forKey: WizardDefaults.customDurationKey)
         step1.targetDurationSeconds = durationMode.duration
-            ?? (durationMode == .custom ? min(180, max(3, customDuration)) : nil)
+            ?? (durationMode == .custom ? WizardDefaults.clampedCustomDuration(customDuration) : nil)
         let taste = defaults.string(forKey: "wizard.tastePreset") ?? ""
         step1.tastePreset = taste.isEmpty ? nil : taste
         let branding = WizardDefaults.brandingOverride(defaults: defaults).resolved(defaults: defaults)

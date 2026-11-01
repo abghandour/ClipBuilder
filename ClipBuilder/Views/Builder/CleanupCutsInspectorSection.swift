@@ -40,6 +40,13 @@ struct CleanupCutsInspectorSection: View {
                 .foregroundStyle(.secondary)
         }
         .task(id: videoIDs) { await reload(videoIDs) }
+        // A Refresh here (decisions changed in Transcript Tools) updates Ask
+        // AI's count too; BuilderCleanupCutsPublisher keeps it current otherwise.
+        .onChange(of: total) { _, total in
+            store.assistant.updatePageState(BuilderAssistant().page,
+                BuilderAssistant.cleanupCutsState(total, timelineID: store.builder.timelineID,
+                                                  revision: store.builder.revision))
+        }
     }
 
     private func reload(_ videoIDs: Set<Int64>) async {

@@ -43,6 +43,12 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     case gap
     /// Instagram report using only the current analytics snapshot. Prompt: ReportAssistant.
     case report
+    /// Ask AI on every page (docs/Page-Assistant-Plan.md, Phase 3): ranks the
+    /// page's rule suggestions, or reads a typed request as one catalogue
+    /// action plus a whitelisted settings patch. Prompt:
+    /// `PageAssistantPrompt.build`; JSON parsed by `PageAssistantPrompt`.
+    /// Not an AppJob: bounded by a 12 s timeout in `AssistantModel`.
+    case assist
     /// Reads text looks (overlay layout, caption style, name tag style and,
     /// from a video, their animations) out of a reference image or clip.
     /// Prompt: `TextLookExtraction.prompt`.
@@ -134,7 +140,7 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     static let configurable: [AITask] = [
         .analysis, .people, .exchanges, .highlights, .framing, .broll, .wizard, .critique, .research, .fightResearch, .personResearch,
         .parse, .captions, .hooks, .tagText, .storyCard, .distill, .overlay, .naming, .curate, .search, .soundbites, .cover, .dedupe, .trim,
-        .gap, .report, .onboard, .route,
+        .gap, .report, .assist, .onboard, .route,
     ]
     // `.imageGeneration` is not routable: it only runs through the Gemini CLI's
     // Nano Banana extension (`AIService.generateImage`), like `.translate`.

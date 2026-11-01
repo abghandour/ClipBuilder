@@ -68,6 +68,9 @@ struct AssetBrowserView: View {
             }
         }
         .screenTitle(kind.title, subtitle: subtitle)
+        // Fonts is embedded in Text Looks, whose own Ask AI covers it.
+        .askAI(kind == .fonts ? nil : AssetsAssistant(kind: kind), pageState: kind == .fonts ? nil : assistantState)
+        .onAssistantCommand("\(kind.rawValue).") { runAssistantCommand($0) }
         .toolbar {
             if pageVisible {
                 ToolbarItemGroup {
@@ -544,6 +547,33 @@ struct AssetBrowserView: View {
             if let playingID, !items.contains(where: { $0.id == playingID }) { stopPlayback() }
             if kind == .images || kind == .bumpers { loadMetadata() }
             if kind == .bumpers { store.refreshBumpers() }
+        }
+    }
+
+    // MARK: - Ask AI
+
+    /// What Ask AI reads from this browser (AssetsAssistant): the visible
+    /// folder's counts and, for images, how many lack AI tags.
+    private var assistantState: AssistantPageState {
+        let visible = filteredItems
+        let files = visible.filter { !$0.isFolder }
+        return AssistantPageState(
+            counts: ["files": files.count, "folders": visible.count - files.count,
+                     "untagged": kind == .images ? files.count { metadata[$0.url.path] == nil } : 0,
+                     "tagging": analyzingPaths.count],
+            values: ["folder": path.joined(separator: " › ")])
+    }
+
+    private func runAssistantCommand(_ command: AssistantCommand) {
+        switch command.actionID.dropFirst(kind.rawValue.count + 1) {
+        case "add": showingImporter = true
+        case "folder":
+            newFolderName = ""
+            showingNewFolder = true
+        case "finder": NSWorkspace.shared.open(currentFolder)
+        case "tag" where kind == .images: if analyzingPaths.isEmpty { analyzeVisibleImages() }
+        case "ask" where kind == .images: if !items.filter({ !$0.isFolder }).isEmpty { showingAskImages = true }
+        default: break
         }
     }
 

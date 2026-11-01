@@ -24,6 +24,12 @@ enum UITiming {
         navigationChanged(screen: "Express", to: kind)
     }
 
+    /// The Ask AI popover was asked to open on `page` (toolbar click or
+    /// ⌘⇧A); `AskAIPopover` closes it with `responseReady(screen: "Ask AI")`.
+    static func askAIOpened(page: String) {
+        navigationChanged(screen: "Ask AI", to: page)
+    }
+
     private static func navigationChanged(screen: String, to destination: String) {
         PerfSignpost.end(navigation[screen]?.interval)
         navigation[screen] = (destination, uptime, PerfSignpost.begin("ui.navigation", metadata: "\(screen): \(destination)"))
@@ -70,7 +76,7 @@ enum UITiming {
 
     /// Call when the thing the selection drives (a preview, a pane) is ready.
     static func responseReady(screen: String, what: String) {
-        if screen == "Sidebar" || screen == "Express" {
+        if screen == "Sidebar" || screen == "Express" || screen == "Ask AI" {
             guard let pending = navigation[screen], pending.destination == what else { return }
             PerfSignpost.end(pending.interval)
             navigation[screen] = nil

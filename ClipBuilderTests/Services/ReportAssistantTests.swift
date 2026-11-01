@@ -84,4 +84,83 @@ struct ReportAssistantTests {
         try await database.deleteIGAccount(id: accountID)
         #expect(try await database.fetchIGAIReports(accountID: accountID).isEmpty)
     }
+
+    // MARK: - Context and suggestions
+
+    private func reelsAndFeed(reelReach: Double, feedReach: Double) -> InstagramReport {
+        var report = fixture(posts: 0)
+        report.posts.rows = [
+            .init(media: IGReportMediaRow(id: 1, accountID: 1, shortcode: "r", mediaType: "VIDEO", productType: "REELS",
+                caption: "", captionTruncated: false, postedAt: date, likeCount: 1, commentsCount: 0, source: "graph",
+                metrics: ["reach": reelReach, "saved": 3])),
+            .init(media: IGReportMediaRow(id: 2, accountID: 1, shortcode: "f", mediaType: "IMAGE", productType: "FEED",
+                caption: "", captionTruncated: false, postedAt: date, likeCount: 1, commentsCount: 0, source: "graph",
+                metrics: ["reach": feedReach])),
+        ]
+        return report
+    }
+
+    @Test func snapshotSplitsReelsFromFeed() {
+        let snapshot = ReportAssistant.snapshot(report: reelsAndFeed(reelReach: 300, feedReach: 100), account: account, isLoading: false)
+        #expect(snapshot.reels == 1)
+        #expect(snapshot.reelsReach == 300)
+        #expect(snapshot.feedReach == 100)
+        #expect(snapshot.saves == 3)
+        #expect(snapshot.followerDelta == 200)
+    }
+
+    @Test func summaryLineAndExamplesBecomeSuggestions() {
+        let context = ReportAssistant.context(ReportAssistant.snapshot(report: reelsAndFeed(reelReach: 300, feedReach: 100),
+                                                                       account: account, isLoading: false))
+        #expect(context.summaryLine == "Reports · @fixture · Last 30 Days · 2 posts")
+        let rows = ReportAssistant().suggestions(for: context)
+        #expect(rows.map(\.title) == ReportAssistant().examples)
+        #expect(rows.map(\.actionID) == ["reports.ask.0", "reports.ask.1", "reports.ask.2"])
+        #expect(rows[0].id == "reports.worked.reels")
+        #expect(rows[0].reason == "Reels out-reached feed 3:1 in the last 30 days")
+        #expect(rows[1].reason == "3 saves across 2 posts")
+        #expect(rows[2].reason == "Followers +200 (20.0%) in the last 30 days")
+    }
+
+    @Test func feedWinningChangesTheReasonAndID() {
+        let context = ReportAssistant.context(ReportAssistant.snapshot(report: reelsAndFeed(reelReach: 100, feedReach: 140),
+                                                                       account: account, isLoading: false))
+        let first = ReportAssistant().suggestions(for: context).first
+        #expect(first?.id == "reports.worked.feed")
+        #expect(first?.reason == "Feed posts out-reached reels 1.4:1 in the last 30 days")
+    }
+
+    @Test func aDismissedReportRowReturnsForANewReport() {
+        let rows = { (reels: Double, feed: Double) in
+            ReportAssistant().suggestions(for: ReportAssistant.context(ReportAssistant.snapshot(
+                report: self.reelsAndFeed(reelReach: reels, feedReach: feed), account: self.account, isLoading: false)))
+        }
+        let before = rows(300, 100)
+        let after = rows(600, 200)
+        // Same winner, same 3:1 wording: the id and reason text repeat, the report does not.
+        #expect(before[0].id == after[0].id)
+        #expect(before[0].reason == after[0].reason)
+        #expect(before[0].dismissKey != after[0].dismissKey)
+        #expect(AssistantModel.merge(rules: after, ranked: nil, dismissed: [before[0].dismissKey]).map(\.id).contains(after[0].id))
+        #expect(rows(300, 100)[0].dismissKey == before[0].dismissKey)
+    }
+
+    @Test func noAccountOrNoDataIsAnInsight() {
+        let none = ReportAssistant().suggestions(for: ReportAssistant.context(.init()))
+        #expect(none.map(\.id) == ["reports.account.none"])
+        #expect(none.first?.kind == .insight)
+        let empty = InstagramReport(period: .last7, periodLabel: "Last 7 Days", generatedAt: date)
+        let rows = ReportAssistant().suggestions(for: ReportAssistant.context(
+            ReportAssistant.snapshot(report: empty, account: account, isLoading: false)))
+        #expect(rows.map(\.id) == ["reports.data.none"])
+        let loading = ReportAssistant.context(ReportAssistant.snapshot(report: nil, account: account, isLoading: true))
+        #expect(ReportAssistant().suggestions(for: loading).isEmpty)
+        #expect(loading.summaryLine == "Reports · @fixture · loading")
+    }
+
+    @Test func ratioFormatting() {
+        #expect(ReportAssistant.ratio(300, 100) == "3:1")
+        #expect(ReportAssistant.ratio(140, 100) == "1.4:1")
+        #expect(ReportAssistant.ratio(5, 0) == "5:1")
+    }
 }

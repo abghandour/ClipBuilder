@@ -264,6 +264,8 @@ struct ScenesView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .screenTitle("Scenes", subtitle: selectedSceneIDs.count > 1 ? "\(selectedSceneIDs.count) of \(filtered.count) scenes selected" : favoritesOnly ? "\(filtered.count) favorite scenes" : stackedAway > 0 ? "\(filtered.count) moments — \(filtered.count + stackedAway) scenes" : "\(filtered.count) scenes")
+        .askAI(ScenesAssistant(), pageState: assistantState(contents))
+        .onAssistantCommand("scenes.") { runAssistantCommand($0, contents: contents) }
         .background {
             if pageVisible {
                 Color.clear.searchable(text: $searchText, prompt: "Filter by file or tag")
@@ -399,6 +401,76 @@ struct ScenesView: View {
         .onChange(of: store.projectStateVersion) { aiMatches = nil; restoreProjectState(); applySearchResult() }
         .onChange(of: searchJob, initial: true) { applySearchResult() }
         .onChange(of: persistedSceneState) { saveProjectState() }
+    }
+
+    // MARK: - Ask AI
+
+    /// What Ask AI reads from this page (ScenesAssistant): the grid's
+    /// filters, sort, selection and counts.
+    private func assistantState(_ contents: GridContents) -> AssistantPageState {
+        let scenes = store.scenes
+        return AssistantPageState(
+            counts: ["scenes": scenes.count, "visible": contents.scenes.count,
+                     "favorites": scenes.count(where: \.favorite), "scored": scenes.count { $0.score != nil },
+                     "hidden": scenes.count(where: \.excluded), "selected": selectedSceneIDs.count,
+                     "batches": selectedRunIDs.count, "favoriteCandidates": favoriteCandidates.count],
+            flags: ["favoritesOnly": favoritesOnly, "showHidden": showHidden, "sortByScore": sortByScore,
+                    "filtersActive": filtersActive, "aiSearch": aiMatches != nil],
+            values: ["tag": tagFilter ?? "", "search": searchText],
+            selection: contents.scenes.filter { selectedSceneIDs.contains($0.id) }
+                .map { "\($0.videoFilename) \($0.startTime.timecode)" })
+    }
+
+    private func runAssistantCommand(_ command: AssistantCommand, contents: GridContents) {
+        // "Sort by score and clear the filters": Clear runs first so the
+        // answer's settings patch is what stays, not wiped by the clear.
+        if command.actionID == "scenes.filters.clear" {
+            clearFilters()
+            applyAssistantSettings(command.settings)
+            return
+        }
+        // Otherwise the patch lands before the action, which then sees it.
+        applyAssistantSettings(command.settings)
+        switch command.actionID {
+        case "scenes.favorites.ai": if !favoriteCandidates.isEmpty { showAIFavorites = true }
+        case "scenes.search":
+            if let query = command.text, !query.isEmpty, !searchCandidates.isEmpty {
+                SceneSearchSheet.start(query: query, candidates: searchCandidates,
+                    context: SceneSearchContext(runIDs: selectedRunIDs, tag: tagFilter, text: searchText,
+                        minimumScore: minScore, showHidden: showHidden, favoritesOnly: favoritesOnly),
+                    provider: nil, model: nil, store: store)
+            } else {
+                showAskSheet = true
+            }
+        case "scenes.sort.score": sortByScore = true
+        case "scenes.generate": if !contents.scenes.isEmpty { showGenerateSheet = true }
+        default: break
+        }
+    }
+
+    /// Ask AI settings patch (ScenesAssistant.settings).
+    private func applyAssistantSettings(_ settings: [String: String]?) {
+        for (key, value) in settings ?? [:] {
+            switch key {
+            case "favoritesOnly": favoritesOnly = value == AssistantSetting.true
+            case "sortByScore": sortByScore = value == AssistantSetting.true
+            case "tagFilter": tagFilter = value == ScenesAssistant.anyTag || value.isEmpty ? nil : value
+            case "searchText": searchText = value
+            default: break
+            }
+        }
+    }
+
+    /// Ask AI "Clear filters": every grid filter and the score sort off.
+    private func clearFilters() {
+        tagFilter = nil
+        sortByScore = false
+        minScore = 0
+        showSequenceParts = false
+        showHidden = false
+        favoritesOnly = false
+        searchText = ""
+        aiMatches = nil
     }
 
     private var searchJob: AppJob? {

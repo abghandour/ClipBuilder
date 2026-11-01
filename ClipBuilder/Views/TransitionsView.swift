@@ -78,6 +78,22 @@ struct TransitionsView: View {
         }
         .padding()
         .screenTitle("Transitions", subtitle: subtitle)
+        .askAI(TransitionsAssistant(), pageState: AssistantPageState(
+            counts: ["effects": effects.count, "previews": previews.count,
+                     "allowed": aiTransitionAvailability.subtracting(effects.filter { $0.category == .cut }.map(\.name)).count],
+            flags: ["rendering": renderAllTask != nil, "limited": aiTransitionsLimited],
+            values: ["tab": tab]))
+        .onAssistantCommand("transitions.") { command in
+            switch command.actionID {
+            case "transitions.render": if renderAllTask == nil { renderAll() }
+            case "transitions.palette.all": setAITransitionAvailability(Set(effects.map(\.name)))
+            case "transitions.palette.cuts": setAITransitionAvailability([])
+            case "transitions.finder":
+                try? FileManager.default.createDirectory(at: EffectPreviewRenderer.directory, withIntermediateDirectories: true)
+                NSWorkspace.shared.open(EffectPreviewRenderer.directory)
+            default: break
+            }
+        }
         .toolbar {
             if pageVisible {
                 ToolbarItemGroup {

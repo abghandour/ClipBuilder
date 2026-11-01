@@ -63,10 +63,15 @@ struct SceneSearchSheet: View {
     private func run() {
         let query = query.trimmingCharacters(in: .whitespacesAndNewlines)
         guard !query.isEmpty else { return }
-        let store = store
-        let candidates = candidates
-        let context = context
         let (provider, model) = ModelPicker.parse(modelTag)
+        Self.start(query: query, candidates: candidates, context: context, provider: provider, model: model, store: store)
+        dismiss()
+    }
+
+    /// The Scene Search job this sheet's Search starts; Ask AI on Scenes
+    /// starts the same job with the task's default routing (nil provider).
+    static func start(query: String, candidates: [SceneRecord], context: SceneSearchContext,
+                      provider: String?, model: String?, store: AppStore) {
         store.jobs.start(.sceneSearch, title: "Scene Search — \(query)",
                          project: store.activeProject, profileGeneration: store.profileGeneration) { log in
             let result = try await store.findScenes(matching: query, in: candidates, provider: provider, model: model, log: log)
@@ -75,6 +80,5 @@ struct SceneSearchSheet: View {
             }
             return .sceneSearch(query: query, ids: result.value, provenance: result.provenance, context: context)
         }
-        dismiss()
     }
 }

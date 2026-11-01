@@ -55,6 +55,19 @@ struct ScreenCropsView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .screenTitle("Screen Layouts", subtitle: navigationSubtitle)
+        .askAI(ScreenLayoutsAssistant(), pageState: AssistantPageState(
+            counts: ["saved": layouts.count, "builtIn": builtInLayouts.count, "usable": usableLayouts.count],
+            flags: ["aiEnabled": aiLayoutsEnabled], values: ["selected": selectedName ?? ""]))
+        .onAssistantCommand("layouts.") { command in
+            switch command.actionID {
+            case "layouts.new": createLayout()
+            case "layouts.ai.on": aiLayoutsEnabled = true
+            case "layouts.finder":
+                try? FileManager.default.createDirectory(at: ScreenCropStore.directory, withIntermediateDirectories: true)
+                NSWorkspace.shared.open(ScreenCropStore.directory)
+            default: break
+            }
+        }
         .toolbar { if pageVisible { screenCropToolbarContent } }
         .alert("Rename Screen Layout", isPresented: $renamePrompt) {
             TextField("Name", text: $renameText)

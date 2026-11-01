@@ -24,6 +24,7 @@ struct TimelinesView: View {
         } else {
             content
                 .screenTitle("Timelines", subtitle: subtitle)
+                .askAI(TimelinesAssistant())
                 .toolbar {
                     if pageVisible {
                         ToolbarItemGroup {

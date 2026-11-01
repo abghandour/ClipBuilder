@@ -86,33 +86,81 @@ private struct AskAIToolbar: ViewModifier {
     // compared, so writing it into the environment would invalidate the whole
     // page subtree on every parent pass.
     let assistant: (any PageAssistant)?
+    /// The page's filter, sort and selection snapshot; merged into
+    /// `store.assistant.pageState` under the assistant's page.
+    let pageState: AssistantPageState?
     @State private var showing = false
-    @State private var outcome: AskAIOutcome?
 
     func body(content: Content) -> some View {
-        content.toolbar {
-            if pageVisible, let assistant {
-                ToolbarItem(placement: .automatic) {
-                    Button("Ask AI", systemImage: "sparkles") { showing = true }
-                        .lineLimit(1).fixedSize()
-                        .popover(isPresented: $showing) {
-                            AskAIPopover(assistant: assistant, outcome: outcome) { text in
-                                showing = false
-                                outcome = assistant.handle(text, store: store)
-                                if case .unavailable(let message) = outcome {
-                                    store.presentNotice("Ask AI", message)
-                                }
-                            }
+        content
+            .toolbar {
+                if pageVisible, let assistant {
+                    ToolbarItem(placement: .automatic) {
+                        Button("Ask AI", systemImage: "sparkles") {
+                            UITiming.askAIOpened(page: assistant.page)
+                            showing = true
                         }
+                            .lineLimit(1).fixedSize()
+                            .help("Ask AI about this page (⌘⇧A)")
+                            .popover(isPresented: $showing) {
+                                AskAIPopover(assistant: assistant) { showing = false }
+                            }
+                    }
                 }
             }
-        }
+            .onChange(of: pageState, initial: true) { _, state in
+                guard let assistant, let state else { return }
+                store.assistant.updatePageState(assistant.page, state)
+            }
+            .onChange(of: store.assistant.openRequest) { _, request in
+                guard request != nil, pageVisible, let assistant else { return }
+                store.assistant.openRequest = nil
+                UITiming.askAIOpened(page: assistant.page)
+                showing = true
+            }
     }
 }
 
 extension View {
     /// Apply before the page's primary-action toolbar. Nil adds no button.
-    func askAI(_ assistant: (any PageAssistant)?) -> some View {
-        modifier(AskAIToolbar(assistant: assistant))
+    /// `pageState` publishes view-local filters and selection the
+    /// assistant's context cannot read from the store.
+    func askAI(_ assistant: (any PageAssistant)?, pageState: AssistantPageState? = nil) -> some View {
+        modifier(AskAIToolbar(assistant: assistant, pageState: pageState))
+    }
+}
+
+/// Runs Ask AI actions that need this page's own state (a sheet toggle, the
+/// selection): consumes `store.assistant.pendingCommand` when it belongs to
+/// `prefix` (`AssistantCommand.belongs(to:)`) and the page is visible,
+/// including when the page becomes visible after the command was sent from
+/// another page. Another page's command is left for that page.
+private struct AssistantCommandHandler: ViewModifier {
+    @Environment(AppStore.self) private var store
+    @Environment(\.workspacePageVisible) private var pageVisible
+    let prefix: String
+    let perform: (AssistantCommand) -> Void
+
+    func body(content: Content) -> some View {
+        content
+            .onChange(of: store.assistant.pendingCommand, initial: true) { _, _ in consume() }
+            .onChange(of: pageVisible) { _, _ in consume() }
+    }
+
+    private func consume() {
+        guard pageVisible, let command = store.assistant.pendingCommand,
+              command.belongs(to: prefix) else { return }
+        // Clear only the command being run, read just now.
+        store.assistant.pendingCommand = nil
+        perform(command)
+    }
+}
+
+extension View {
+    /// See `AssistantCommandHandler`. `prefix` is the page's action id
+    /// namespace, e.g. "sources.", or the namespace its commands are sent
+    /// with ("express.", "full.").
+    func onAssistantCommand(_ prefix: String, perform: @escaping (AssistantCommand) -> Void) -> some View {
+        modifier(AssistantCommandHandler(prefix: prefix, perform: perform))
     }
 }

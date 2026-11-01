@@ -52,6 +52,11 @@ struct PeopleView: View {
         Self.researchTargets(selected: selectedPeople, visible: visiblePeople)
     }
 
+    /// Refresh Research is enabled (toolbar and Ask AI).
+    private var canResearch: Bool {
+        PeopleAssistant.researchAvailable(targets: peopleToResearch, inFlight: store.personResearchInFlight)
+    }
+
     /// People with footage in the current project; Home (or no project)
     /// lists the whole profile. Merge targets stay profile-wide.
     private var projectPeople: [PersonRecord] {
@@ -205,6 +210,40 @@ struct PeopleView: View {
         displayedContents(for: person).scenes
     }
 
+    // MARK: - Ask AI
+
+    /// What Ask AI reads from this page (PeopleAssistant).
+    private var assistantState: AssistantPageState {
+        let visible = visiblePeople
+        return AssistantPageState(
+            counts: ["people": projectPeople.count, "visible": visible.count, "hidden": hiddenPeople.count,
+                     "unnamed": visible.count(where: \.needsConfirmation),
+                     "unresearched": Self.researchTargets(selected: [], visible: visible)
+                         .count { !store.personResearchInFlight.contains($0.id) },
+                     "selected": selectedPersonIDs.count,
+                     "personScenes": selectedPerson.map { displayedScenes(for: $0).count } ?? 0],
+            flags: ["research.available": canResearch],
+            values: ["bucket": bucketFilter.label],
+            selection: selectedPeople.map(\.displayName))
+    }
+
+    private func runAssistantCommand(_ command: AssistantCommand) {
+        switch command.actionID {
+        case "people.research":
+            // The toolbar button's own guard and call.
+            guard canResearch else {
+                store.presentNotice("Ask AI", "Nobody here needs research right now.")
+                return
+            }
+            store.researchPeople(peopleToResearch, reason: "refresh")
+        case "people.unknown": bucketFilter = .unknown
+        case "people.merge": if selectedPeople.count > 1 { mergeRequest = MergeRequest(people: selectedPeople) }
+        case "people.generate":
+            if let person = selectedPerson, !displayedScenes(for: person).isEmpty { showGenerateSheet = true }
+        default: break
+        }
+    }
+
     var body: some View {
         Group {
             if projectPeople.isEmpty {
@@ -234,6 +273,8 @@ struct PeopleView: View {
             if store.people.contains(where: { $0.id == requested }) { selectedPersonIDs = [requested] }
         }
         .screenTitle("People", subtitle: hiddenPeople.isEmpty ? "\(projectPeople.count) \(store.isHomeProject ? "detected" : "in this project")" : "\(visiblePeople.count) \(store.isHomeProject ? "detected" : "in this project") · \(hiddenPeople.count) hidden")
+        .askAI(PeopleAssistant(), pageState: assistantState)
+        .onAssistantCommand("people.") { runAssistantCommand($0) }
         .toolbar {
             if pageVisible {
                 if let snapshot = store.previousPeopleMerge {
@@ -249,8 +290,7 @@ struct PeopleView: View {
                 } label: {
                     ToolbarBubbleLabel(text: "Refresh Research", systemImage: "arrow.clockwise.circle")
                 }
-                .disabled(!peopleToResearch.contains { !$0.isUnnamed && !$0.name.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty }
-                          || peopleToResearch.allSatisfy { store.personResearchInFlight.contains($0.id) })
+                .disabled(!canResearch)
                 .help("Search the web for the selected people's profile fields and role — or, with nothing selected, propose a role for everyone without one. You review every value before it is saved.")
                 if selectedPeople.count > 1 {
                     Button {

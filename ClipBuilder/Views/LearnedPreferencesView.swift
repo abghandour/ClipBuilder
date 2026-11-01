@@ -73,6 +73,20 @@ struct LearnedPreferencesView: View {
             .frame(maxWidth: .infinity)
         }
         .screenTitle("AI Lessons", subtitle: "What the AI has learned and which feature reads it")
+        .askAI(LessonsAssistant(), pageState: AssistantPageState(
+            counts: ["reviews": onboarding.reviewCount, "onboarding.done": onboarding.completed,
+                     "onboarding.total": document == nil ? 0 : onboarding.total,
+                     "contributors": visibleContributors.count],
+            flags: ["home": hasHome, "nickname": hasNickname, "busy": busy]))
+        .onAssistantCommand("lessons.") { command in
+            switch command.actionID {
+            case "lessons.gaps": showGapReport = true
+            case "lessons.rules":
+                settingsTab = "taste"
+                openSettings()
+            default: break
+            }
+        }
         .toolbar {
             if pageVisible {
                 ToolbarItemGroup {

@@ -53,6 +53,8 @@ struct LibraryView: View {
             store.outputsScrollID = nil
         }
         .screenTitle("Exports", subtitle: "\(sorted.count) of \(store.generatedVideos.count) videos")
+        .askAI(ExportsAssistant(), pageState: assistantState)
+        .onAssistantCommand("exports.") { runAssistantCommand($0) }
         .toolbar {
             if pageVisible {
                 ToolbarItem {
@@ -146,6 +148,96 @@ struct LibraryView: View {
             Button("Cancel", role: .cancel) { builderTarget = nil }
         } message: {
             Text("The Builder already has clips on its timeline. Opening \(builderTarget?.filename ?? "this video") replaces them. You can undo this with ⌘Z.")
+        }
+    }
+
+    // MARK: - Ask AI
+
+    private struct TallyKey: Equatable {
+        var membership: Set<Int64>
+        var videos: [GeneratedVideoRecord]
+    }
+    @State private var tallyMemo = MemoBox<TallyKey, ExportsAssistant.Tally>()
+
+    /// The shown folder's videos, newest first, and their gaps.
+    private var tally: ExportsAssistant.Tally { tally(for: selectedFolder) }
+
+    private func tally(for folder: String?) -> ExportsAssistant.Tally {
+        let membership = OutputFolders.membership(for: folder, in: folders)
+        return tallyMemo(TallyKey(membership: membership, videos: store.generatedVideos)) {
+            ExportsAssistant.tally(store.generatedVideos.filter { membership.contains($0.id) })
+        }
+    }
+
+    /// What Ask AI reads from this page (ExportsAssistant).
+    private var assistantState: AssistantPageState {
+        let tally = tally
+        let targets = tally.targets
+        var values = ["folder": selectedFolder ?? "all",
+                      "folders": ExportsAssistant.encodeFolders(folders.map { ($0.id, $0.title) })]
+        let ids: [(String, Int64?)] = [("target.newest", targets.newest), ("target.cover", targets.cover),
+                                       ("target.flagged", targets.flagged), ("target.noText", targets.noText),
+                                       ("target.publish", targets.publish), ("target.hooks", targets.hooks),
+                                       ("target.review", targets.review)]
+        for (key, id) in ids { values[key] = id.map(String.init) ?? "" }
+        let newest = targets.newest.flatMap { id in store.generatedVideos.first { $0.id == id } }
+        values["newest"] = newest?.filename ?? ""
+        let flags = ["newest.published": newest?.instagramMediaID != nil,
+                     "newest.publishable": newest.map(ExportsAssistant.isPublishable) ?? true]
+        return AssistantPageState(counts: tally.counts, flags: flags, values: values)
+    }
+
+    private func runAssistantCommand(_ command: AssistantCommand) {
+        // Ask AI settings patch (ExportsAssistant.settings) first, so an
+        // action sent with a folder change picks its video in that folder.
+        // The targets come from that folder directly, not from @State read
+        // back in the same pass.
+        var folder = selectedFolder
+        if let requested = command.settings?["selectedFolder"] {
+            folder = OutputFolders.resolvedSelection(requested, in: folders)
+            selectedFolder = folder
+        }
+        let targets = tally(for: folder).targets
+        let folderName = folders.first { $0.id == (folder ?? "all") }?.title ?? "this folder"
+        func video(_ id: Int64?, _ none: String) -> GeneratedVideoRecord? {
+            guard let found = id.flatMap({ id in store.generatedVideos.first { $0.id == id } }) else {
+                store.presentNotice("Ask AI", none)
+                return nil
+            }
+            return found
+        }
+        func writePostText(_ video: GeneratedVideoRecord) {
+            guard !store.isWritingPostText(for: video) else {
+                store.presentNotice("Ask AI", "Already writing post text for \(video.filename).")
+                return
+            }
+            store.writePostText(for: video)
+        }
+        let empty = "\(folderName) has no videos."
+        switch command.actionID {
+        case "exports.publish":
+            publishTarget = video(targets.publish, "No video in \(folderName) is ready to publish.") ?? publishTarget
+        case "exports.cover":
+            coverTarget = video(targets.cover, "Every video in \(folderName) has a cover frame.") ?? coverTarget
+        case "exports.review": reviewTarget = video(targets.review, empty) ?? reviewTarget
+        case "exports.flags": if let video = video(targets.flagged, "No video in \(folderName) has review flags.") { openInBuilder(video) }
+        case "exports.builder": if let video = video(targets.newest, empty) { openInBuilder(video) }
+        case "exports.hooks.compare":
+            hookTarget = video(targets.hooks, "No video in \(folderName) has a hook comparison.") ?? hookTarget
+        case "exports.text":
+            if let video = video(targets.noText, "Every video in \(folderName) has post text.") { writePostText(video) }
+        case "exports.publish.newest":
+            guard let video = video(targets.newest, empty) else { return }
+            if let problem = ExportsAssistant.newestProblem(command.actionID, name: video.filename,
+                                                           published: video.instagramMediaID != nil,
+                                                           publishable: ExportsAssistant.isPublishable(video)) {
+                store.presentNotice("Ask AI", problem)
+            } else {
+                publishTarget = video
+            }
+        case "exports.cover.newest": coverTarget = video(targets.newest, empty) ?? coverTarget
+        case "exports.text.newest": if let video = video(targets.newest, empty) { writePostText(video) }
+        default: break
         }
     }
 

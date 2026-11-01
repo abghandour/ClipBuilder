@@ -301,6 +301,7 @@ nonisolated enum AICatalog {
         "trim": "Trim suggestion",
         "gap": "Content gap report",
         "report": "AI Report",
+        "assist": "Page Assistant",
         "onboard": "Profile starter",
         // Not in Settings → AI's routing list; the Mini wizard's gear sets it.
         "translate": "Caption translation",
@@ -336,6 +337,7 @@ nonisolated enum AICatalog {
         "trim": "claude",
         "gap": "claude",
         "report": "claude",
+        "assist": "claude",
         "onboard": "claude",
     ]
 
@@ -514,6 +516,11 @@ nonisolated enum AICatalog {
                  ("claude", "claude-haiku-4-5-20251001"),
                  ("gemini", "gemini-3.8-flash")],
         "report": [("claude", "claude-sonnet-5-5"),
+                   ("antigravity", "gemini-3.1-pro-high"),
+                   ("gemini", "gemini-3.1-pro-preview")],
+        // Ask AI: ranks a page's suggestions or reads one typed request,
+        // under a 12 s cap, so the same short chain as the AI Report.
+        "assist": [("claude", "claude-sonnet-5-5"),
                    ("antigravity", "gemini-3.1-pro-high"),
                    ("gemini", "gemini-3.1-pro-preview")],
         // Content gap report reasons over the whole library's state.

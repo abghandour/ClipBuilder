@@ -390,7 +390,7 @@ struct WizardView: View {
     private var manualTargetDuration: Int {
         switch durationMode {
         case .custom:
-            min(180, max(3, customDuration))
+            WizardDefaults.clampedCustomDuration(customDuration)
         default:
             durationMode.duration ?? 20
         }
@@ -513,6 +513,12 @@ struct WizardView: View {
             }
             startGeneration()
         }
+        // Ask AI actions that need this form's state (WizardAssistant.actions):
+        // only the full Wizard's own commands, also when the page comes back
+        // into view after one was sent.
+        .onAssistantCommand("\(WizardAssistant.fullNamespace).") { runAssistantCommand($0) }
+        // What Ask AI reads: the form as resolved here.
+        .onChange(of: assistantPage, initial: true) { _, page in store.assistant.fullPage = page }
         .onChange(of: entryMode) { _, _ in
             open(.source)
             reviewingIdea = false
@@ -539,7 +545,7 @@ struct WizardView: View {
             }
         }
         .onChange(of: customDuration) { _, value in
-            let clamped = min(180, max(3, value))
+            let clamped = WizardDefaults.clampedCustomDuration(value)
             if clamped != value { customDuration = clamped }
         }
         .onChange(of: limitTransitions) { _, limited in
@@ -971,19 +977,60 @@ struct WizardView: View {
         return runSummary
     }
 
+    /// What the Generate button does now. The button and Ask AI's Generate
+    /// both dispatch on it, so they always run the same operation.
+    enum GenerateRoute: Equatable {
+        case stopFindingFootage, stopWizard, renderKept, start, findMoments
+    }
+
+    var generateRoute: GenerateRoute { generateRoute(flow: cardFlow) }
+
+    func generateRoute(flow: WizardCardFlow) -> GenerateRoute {
+        if isFindingFootage { return .stopFindingFootage }
+        if store.isWizardRunning { return .stopWizard }
+        if flow.settingsRenders { return .renderKept }
+        if reviewWorkflow == .automatic || needsFootageProposal || capabilities.sources == .podcastRecording { return .start }
+        return .findMoments
+    }
+
+    /// The Generate button's enabled state for `generateRoute`.
+    var generateEnabled: Bool {
+        let flow = cardFlow
+        return generateEnabled(route: generateRoute(flow: flow), flow: flow)
+    }
+
+    func generateEnabled(route: GenerateRoute, flow: WizardCardFlow) -> Bool {
+        switch route {
+        case .stopFindingFootage, .stopWizard: false
+        case .renderKept: !flow.isBusy && !store.isOpeningWizardInEditor(projectID: store.activeProjectID)
+        case .start, .findMoments: canStart
+        }
+    }
+
+    /// Every kept selection renders (or opens in the Builder), as Express
+    /// renders its kept candidates.
+    func renderKeptSelections(mode: WizardBatchMode = .render) {
+        store.generateWizardSelections(options: presentationOptions(), oneReel: outputMode == .oneReel,
+                                       selectionIDs: Set(visibleSelections.map(\.id)), mode: mode)
+    }
+
+    /// Open in Editor shows only when Generate renders saved takes.
+    var openInEditorShown: Bool { generateRoute == .renderKept }
+    var openInEditorEnabled: Bool { openInEditorShown && generateEnabled }
+
     /// Open in Editor, next to Generate: the kept takes as Builder timelines
     /// with every Settings choice applied. Only when Generate renders saved
     /// takes; the AI planning modes have nothing to open yet.
     @ViewBuilder var openInEditorAction: some View {
-        if !isFindingFootage, !store.isWizardRunning, let flow = Optional(cardFlow), flow.settingsRenders {
+        if openInEditorShown {
+            let flow = cardFlow
             Button {
-                store.generateWizardSelections(options: presentationOptions(), oneReel: outputMode == .oneReel,
-                                               selectionIDs: Set(visibleSelections.map(\.id)), mode: .openInEditor)
+                renderKeptSelections(mode: .openInEditor)
             } label: {
                 Label("Open in Editor", systemImage: "hammer")
             }
             .labelStyle(.iconOnly).controlSize(.large)
-            .disabled(flow.isBusy || store.isOpeningWizardInEditor(projectID: store.activeProjectID))
+            .disabled(!openInEditorEnabled)
             .help(flow.outputCount(oneReel: outputMode == .oneReel) == 1
                   ? "Open in Editor: build the kept take as a Builder timeline with these settings, without rendering"
                   : "Open in Editor: build \(flow.outputCount(oneReel: false)) Builder timelines, one per kept selection, without rendering")
@@ -991,29 +1038,29 @@ struct WizardView: View {
     }
 
     @ViewBuilder var generationAction: some View {
-        if isFindingFootage {
+        switch generateRoute {
+        case .stopFindingFootage:
             Button("Stop finding footage", role: .destructive) { store.cancelGenerateRequest() }
                 .lineLimit(1).fixedSize()
-        } else if store.isWizardRunning {
+        case .stopWizard:
             Button(role: .destructive) { store.cancelWizard() } label: {
                 Label("Stop", systemImage: "stop.fill")
             }
             .controlSize(.large).lineLimit(1).fixedSize()
-        } else if let flow = Optional(cardFlow), flow.settingsRenders {
-            // Every kept selection renders, as Express renders its kept candidates.
+        case .renderKept:
+            let flow = cardFlow
             Button {
-                store.generateWizardSelections(options: presentationOptions(), oneReel: outputMode == .oneReel,
-                                               selectionIDs: Set(visibleSelections.map(\.id)))
+                renderKeptSelections()
             } label: {
                 Label(flow.generateTitle(oneReel: outputMode == .oneReel), systemImage: "film")
             }
             .controlSize(.large).lineLimit(1).fixedSize()
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.return, modifiers: .command)
-            .disabled(flow.isBusy || store.isOpeningWizardInEditor(projectID: store.activeProjectID))
+            .disabled(!generateEnabled)
             .help(flow.outputCount(oneReel: outputMode == .oneReel) == 1 ? "Render one video from the kept take"
                   : "Render \(flow.outputCount(oneReel: false)) videos, one per kept selection")
-        } else if reviewWorkflow == .automatic || needsFootageProposal || capabilities.sources == .podcastRecording {
+        case .start:
             Button {
                 startGeneration()
             } label: {
@@ -1022,13 +1069,13 @@ struct WizardView: View {
             .controlSize(.large).lineLimit(1).fixedSize()
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.return, modifiers: .command)
-            .disabled(!canStart)
-        } else {
+            .disabled(!generateEnabled)
+        case .findMoments:
             Button("Find the moments", systemImage: "wand.and.stars", action: findMoments)
                 .controlSize(.large).lineLimit(1).fixedSize()
                 .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.return, modifiers: .command)
-                .disabled(!canStart)
+                .disabled(!generateEnabled)
         }
     }
 
@@ -1248,6 +1295,103 @@ struct WizardView: View {
         }
     }
 
+    // MARK: - Ask AI
+
+    /// What Ask AI reads from the full Wizard (WizardAssistant.FullPage):
+    /// the Source card's resolved selection, the kept takes it shows and
+    /// the presentation the run will apply.
+    var assistantPage: WizardAssistant.FullPage {
+        var page = WizardAssistant.FullPage()
+        page.projectID = store.activeProjectID
+        if capabilities.sources == .podcastRecording {
+            page.sourceSummary = store.videos.first { $0.path == highlightVideoPath }?.filename ?? "Choose a recording"
+            page.poolScenes = store.scenes.count { scene in sourceVideoIDs.contains(scene.videoID) }
+        } else {
+            page.sourceSummary = sourceSummary
+            page.poolScenes = sourcePool.count
+        }
+        page.poolVideos = sourceVideoIDs.count
+        page.keptTakes = visibleSelections.count { $0.selection.bestTakeID != nil }
+        page.presentation = assistantPresentation
+        let flow = cardFlow
+        let route = generateRoute(flow: flow)
+        page.canGenerate = generateEnabled(route: route, flow: flow)
+        page.canOpenInEditor = route == .renderKept && page.canGenerate
+        return page
+    }
+
+    /// The choices `presentationOptions()` will apply, read from the same
+    /// answers (without its music-library scan).
+    private var assistantPresentation: WizardAssistant.FullPresentation {
+        var p = WizardAssistant.FullPresentation()
+        let text = textMode.output(transcriptsAvailable: lookTranscriptsAvailable, recipe: lookRecipe.id)
+        p.captions = text.captions
+        p.headlines = text.headlines
+        p.nameTags = lookCapabilities.offersCameraFocus && nameTags
+        p.safeAreaOnly = safeAreaOnly
+        p.safeAreaPlatforms = safeAreaPlatforms.split(separator: ",").map(String.init)
+        p.useBRoll = useBRoll
+        p.critiqueLoop = critiqueLoop
+        p.music = audioMode.useMusic && libraryMusicCount > 0
+        p.muteSource = audioMode.muteSource && p.music
+        p.musicTrack = musicTrackRaw.isEmpty ? nil : musicTrackRaw
+        p.captionStyle = captionStyleID.map { id in
+            (store.activeProfile.captionStyles ?? []).first { $0.id.uuidString == id }?.name ?? id
+        }
+        p.captionPosition = captionPosition
+        p.captionLanguage = captionLanguage.isEmpty ? nil : captionLanguage
+        p.dubLanguage = dubLanguage.isEmpty ? nil : dubLanguage
+        p.overlayStyle = overlayStyleRaw.isEmpty ? nil : overlayStyleRaw
+        p.branding = brandingOverride == .savedDefault ? nil : brandingOverride.title
+        p.format = effectiveRenderSettings.preset.label
+        p.strikeStats = strikeStats
+        p.fightResearch = useFightResearch
+        p.favoritesOnly = favoritesOnly
+        let people = selectedSourcePeople
+        p.people = projectPeople.filter { people.contains($0.key) }.map(\.displayName)
+        return p
+    }
+
+    /// The same calls Generate, Open in Editor and the history bar make,
+    /// through the same route and checks as the buttons.
+    private func runAssistantCommand(_ command: AssistantCommand) {
+        if let patch = command.settings { WizardAssistant.applyFull(patch) }
+        switch command.actionID {
+        case "wizard.generate":
+            guard generateEnabled else {
+                store.presentNotice("Ask AI", generateUnavailableMessage)
+                return
+            }
+            switch generateRoute {
+            case .renderKept: renderKeptSelections()
+            case .start: startGeneration()
+            case .findMoments: findMoments()
+            case .stopFindingFootage, .stopWizard: break
+            }
+        case "wizard.openInEditor":
+            guard openInEditorEnabled else {
+                store.presentNotice("Ask AI", openInEditorShown ? generateUnavailableMessage
+                                    : "Open in Editor needs kept takes. Keep a take in Footage first.")
+                return
+            }
+            renderKeptSelections(mode: .openInEditor)
+        case "wizard.history":
+            // The history bar sits with Generate under Settings.
+            open(.settings)
+        default:
+            break
+        }
+    }
+
+    private var generateUnavailableMessage: String {
+        switch generateRoute {
+        case .stopFindingFootage: "The Wizard is finding footage. Wait for it, or press Stop."
+        case .stopWizard: "The Wizard is already working."
+        case .renderKept: "Wait for the current render or Open in Editor to finish, then press Generate."
+        case .start, .findMoments: "Choose sources and footage first, then press Generate."
+        }
+    }
+
     func startGeneration() {
         if needsFootageProposal {
             guard canStart else { return }
@@ -1312,7 +1456,7 @@ struct WizardView: View {
         }
 
         if let duration = parsed.targetDurationSeconds {
-            customDuration = min(180, max(3, duration))
+            customDuration = WizardDefaults.clampedCustomDuration(duration)
             durationModeRaw = WizardDurationMode.custom.rawValue
         }
         if capabilities.offersCameraFocus, let framing = parsed.highlightFraming {
@@ -1438,7 +1582,7 @@ struct WizardView: View {
         options.useFightResearch = pasted?.useFightResearch ?? useFightResearch
         options.aiInstructions = aiInstructions
         options.targetDurationSeconds = durationMode.duration
-            ?? (durationMode == .custom ? min(180, max(3, customDuration)) : nil)
+            ?? (durationMode == .custom ? WizardDefaults.clampedCustomDuration(customDuration) : nil)
         options.formatPreset = formatPreset
         options.useBRoll = useBRoll
         options.brollInstructions = brollInstructions

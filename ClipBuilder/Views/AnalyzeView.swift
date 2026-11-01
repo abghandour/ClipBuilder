@@ -109,6 +109,61 @@ struct AnalyzeView: View {
         store.videos.filter { selection.contains($0.id) }
     }
 
+    // MARK: - Ask AI
+
+    /// What Ask AI reads from this page: the footer's missing-step counts,
+    /// the selection and the sort (SourcesAssistant).
+    private var assistantState: AssistantPageState {
+        let missing = allMissingSteps
+        var counts = ["missing.files": missing.count, "selected": selection.count]
+        for step in AnalysisSteps.Step.allCases {
+            counts["missing.\(step.rawValue)"] = missing.values.count { $0.contains(step) }
+        }
+        return AssistantPageState(
+            counts: counts,
+            flags: ["selected.fight": previewVideo?.type?.supportsFightFeatures == true],
+            values: ["sort": sortOrder.isEmpty ? "default" : "custom"],
+            selection: selectedVideos.map(\.filename))
+    }
+
+    /// Missing steps of every file, narrowed to `only` (all steps when nil),
+    /// behind the footer's own busy guard, checked again now that the
+    /// command runs.
+    private func runMissingSteps(only step: AnalysisSteps.Step? = nil) {
+        guard !store.isMissingStepsBatchBusy else {
+            store.presentNotice("Ask AI", "Analysis is already running on this page. Try again when it finishes.")
+            return
+        }
+        let missing = step.map { step in allMissingSteps.compactMapValues { $0.contains(step) ? [step] : nil } }
+            ?? allMissingSteps
+        guard !missing.isEmpty else { return }
+        store.runMissingAnalysisSteps(missing, videos: store.videos, syncWhenDone: true)
+    }
+
+    private func runAssistantCommand(_ command: AssistantCommand) {
+        switch command.actionID {
+        case "sources.add": showingImporter = true
+        case "sources.analyze.missing": runMissingSteps()
+        case "sources.transcribe.missing": runMissingSteps(only: .transcript)
+        case "sources.speakers.name": runMissingSteps(only: .speakerNames)
+        case "sources.duplicates.scan": showDuplicateScan = true
+        case "sources.names.suggest":
+            if selection.isEmpty {
+                selection = Set(store.videos.filter { SourcesAssistant.isCameraName($0.filename) }.map(\.id))
+            }
+            if !selection.isEmpty { showNameWizard = true }
+        case "sources.wizard.open":
+            if !selectedVideos.isEmpty { store.openWizard(with: selectedVideos) }
+        case "sources.fight.research":
+            if let video = previewVideo, video.type?.supportsFightFeatures == true { fightResearchTarget = video }
+        case "sources.fight.story":
+            if let video = previewVideo, video.type?.supportsFightFeatures == true { fightStoryTarget = video }
+        case "sources.soundbites":
+            if let video = previewVideo ?? selectedVideos.first { soundbiteVideo = video }
+        default: break
+        }
+    }
+
     var body: some View {
         VStack(spacing: 0) {
             HSplitView {
@@ -231,6 +286,8 @@ struct AnalyzeView: View {
             }
         }
         .screenTitle("Sources", subtitle: "\(store.videos.count) source videos")
+        .askAI(SourcesAssistant(), pageState: assistantState)
+        .onAssistantCommand("sources.") { runAssistantCommand($0) }
         .toolbar {
             if pageVisible {
                 ToolbarItemGroup {
@@ -462,9 +519,7 @@ struct AnalyzeView: View {
         let missing = allMissingSteps
         let summary = AnalysisSteps.summary(missing)
         let running = store.analysisStepBatch != nil
-        let busy = running || store.isAnalyzing || store.isDetectingPeople
-            || !store.transcribingVideoIDs.isEmpty || !store.fightScoringInFlight.isEmpty
-            || !store.speakerMappingVideoIDs.isEmpty
+        let busy = store.isMissingStepsBatchBusy
         return HStack(spacing: Theme.spaceS) {
             if running {
                 ProgressView().controlSize(.small)

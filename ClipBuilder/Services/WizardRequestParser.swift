@@ -52,7 +52,7 @@ nonisolated enum WizardRequestParser {
         let portuguese = ["um", "dois", "tres", "quatro", "cinco", "seis", "sete", "oito", "nove", "dez", "onze", "doze", "treze", "catorze", "quinze", "dezesseis", "dezessete", "dezoito", "dezenove", "vinte"]
         consume(#"\b(\d{1,3}):([0-5]\d)\b"#) { match, source in
             let seconds = (Int(source.substring(with: match.range(at: 1))) ?? 0) * 60 + (Int(source.substring(with: match.range(at: 2))) ?? 0)
-            request.targetDurationSeconds = min(180, max(3, seconds))
+            request.targetDurationSeconds = WizardDefaults.clampedCustomDuration(seconds)
         }
         let words = (numbers + portuguese + ["uma", "três"]).joined(separator: "|")
         consume("\\b(\\d+|" + words + ")[-\\s]*(seconds?|sec|s|minutes?|min|m|segundos?|minutos?)\\b") { match, source in
@@ -61,7 +61,7 @@ nonisolated enum WizardRequestParser {
             // Capped before the minutes multiply: a huge number would overflow it.
             let value = min(parsed, 10_000)
             let unit = source.substring(with: match.range(at: 2)).lowercased()
-            request.targetDurationSeconds = min(180, max(3, value * (unit.hasPrefix("m") ? 60 : 1)))
+            request.targetDurationSeconds = WizardDefaults.clampedCustomDuration(value * (unit.hasPrefix("m") ? 60 : 1))
         }
         consume(#"\b(?:no music|without music|sem m[uú]sica)\b"#) { _, _ in request.useMusic = false }
         consume(#"\b(?:music|m[uú]sica)\b"#) { _, _ in if request.useMusic == nil { request.useMusic = true } }

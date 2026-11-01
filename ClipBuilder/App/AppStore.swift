@@ -21,6 +21,7 @@ import UniformTypeIdentifiers
 //   AppStore+FightResearch.swift   fight research
 //   AppStore+Instagram.swift       Instagram accounts, media, publishing
 //   AppStore+Jobs.swift            AppJobs starters (camera path, ...)
+//   AppStore+Assistant.swift       AssistantModel: Ask AI page state, suggestions, ⌘⇧A
 //   AppStore+ImageSearch.swift     image library search
 //   AppStore+ReelModels.swift      on-device reel models
 //   AppStore+AutoDriveUpload.swift source discovery queue and team source uploads
@@ -88,6 +89,8 @@ final class AppStore {
     var teamSyncCoordinator: TeamSyncCoordinator { teamSync.coordinator }
     let jobs = AppJobs()
     let dubReviews = DubReviewCoordinator()
+    /// Ask AI on every page: page state, suggestions, ⌘⇧A (AppStore+Assistant.swift).
+    let assistant = AssistantModel()
     let googleDrive = GoogleDriveTransfers.shared
     @ObservationIgnored var sourceDiscoveryTasks: [String: Task<Void, Never>] = [:]
     @ObservationIgnored var didShowAutoDriveUploadNotice = false
@@ -115,6 +118,7 @@ final class AppStore {
         didSet {
             scheduleProjectStateSave()
             updateBugReportContext()
+            if oldValue != selectedSection { assistant.pageChanged() }
         }
     }
     var isShowingProjectsHome = false { didSet { updateBugReportContext() } }
@@ -1115,6 +1119,7 @@ final class AppStore {
         igReport = nil
         pendingIGAIReport = nil
         pendingWizardAssistantRequest = nil
+        assistant.reset()
         pendingExpressSourcePath = nil
         pendingWizardTemplate = nil
         wizardPromptRequests = [:]

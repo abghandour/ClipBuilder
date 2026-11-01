@@ -851,7 +851,7 @@ actor WizardEngine {
 
         var parsed = ParsedWizardRequest()
         if let duration = (object["target_duration_seconds"] as? NSNumber)?.intValue, duration > 0 {
-            parsed.targetDurationSeconds = min(180, max(3, duration))
+            parsed.targetDurationSeconds = WizardDefaults.clampedCustomDuration(duration)
         }
         let knownTags = Set(tagVocabulary.map { $0.lowercased() })
         parsed.contentTags = (object["content_tags"] as? [String] ?? [])

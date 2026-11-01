@@ -9,6 +9,8 @@ struct ProjectsHomeView: View {
     @State private var renameText = ""
     @State private var deleteTarget: ProjectRecord?
     @State private var archivedExpanded = false
+    @AppStorage("settings.selectedTab") private var settingsTab = "profile"
+    @Environment(\.openSettings) private var openSettings
 
     private var activeProjects: [ProjectRecord] {
         store.projects.filter { project in
@@ -74,6 +76,16 @@ struct ProjectsHomeView: View {
             .padding(Theme.spaceL)
         }
         .screenTitle("Projects", subtitle: "\(store.projects.count(where: { !$0.archived })) active, \(store.projects.count(where: \.archived)) archived")
+        .askAI(ProjectsAssistant())
+        .onAssistantCommand("projects.") { command in
+            switch command.actionID {
+            case "projects.new": beginNewProject()
+            case "projects.starter":
+                settingsTab = "taste"
+                openSettings()
+            default: break
+            }
+        }
         .searchable(text: $searchText, prompt: "Search projects")
         .toolbar {
             ToolbarItem(placement: .primaryAction) {

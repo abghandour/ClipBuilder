@@ -2133,6 +2133,19 @@ final class BuilderTimelineModel {
         documentDidChange()
     }
 
+    /// Ask AI "Turn on captions" (`BuilderAssistant.turningCaptionsOn`): the
+    /// track setting and every main clip that switched captions off, as one
+    /// undo step. False when nothing changed.
+    @discardableResult
+    func turnOnCaptions(position: String = "bottom") -> Bool {
+        let updated = BuilderAssistant.turningCaptionsOn(document, position: position)
+        guard updated != document else { return false }
+        registerUndo("Turn On Captions")
+        document = updated
+        documentDidChange()
+        return true
+    }
+
     // MARK: - Sound track
 
     func addSound(name: String, at time: Double? = nil, duration: Double = 10) {

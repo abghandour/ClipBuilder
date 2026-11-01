@@ -139,6 +139,15 @@ struct TextLooksView: View {
             if let countError { FormCaption(countError, tone: .warning).padding(8) }
         }
         .screenTitle("Text Looks", subtitle: tab.rawValue)
+        .askAI(TextLooksAssistant(), pageState: AssistantPageState(values: ["tab": tab.rawValue]))
+        .onAssistantCommand("text.") { command in
+            if command.actionID == "text.create" {
+                showTextLookWizard = true
+            } else if command.actionID.hasPrefix("text.tab."),
+                      let target = TextLooksTab(rawValue: String(command.actionID.dropFirst("text.tab.".count))) {
+                tab = target
+            }
+        }
         .toolbar {
             if pageVisible {
                 ToolbarItem {

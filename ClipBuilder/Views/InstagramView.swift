@@ -69,7 +69,9 @@ struct InstagramView: View {
         }
         .frame(maxWidth: .infinity, maxHeight: .infinity)
         .screenTitle(tab == .posts ? "Instagram — Posts" : "Instagram — Reports", subtitle: subtitle)
-        .askAI(tab == .reports ? ReportAssistant() : nil)
+        .askAI(tab == .reports ? ReportAssistant() : InstagramPostsAssistant(),
+               pageState: tab == .posts ? assistantState : nil)
+        .onAssistantCommand(tab == .posts ? "instagram." : "instagram-reports.") { runAssistantCommand($0) }
         .toolbar { if pageVisible { toolbarContent } }
         .sheet(isPresented: $addingAccount) { addAccountSheet }
         .sheet(item: $detailMedia) { media in
@@ -105,6 +107,26 @@ struct InstagramView: View {
             .sorted { ReelPerformance.score($0.stats) > ReelPerformance.score($1.stats) }
             .prefix(5)
         store.learnFromReels(Array(top))
+    }
+
+    // MARK: - Ask AI (posts tab)
+
+    /// What Ask AI reads from the posts grid (InstagramPostsAssistant).
+    private var assistantState: AssistantPageState {
+        AssistantPageState(counts: ["studied": store.igMedia.count { studiedIDs.contains($0.id) },
+                                    "learnSelection": learnSelection.count],
+                           values: ["sort": sortOrder.rawValue])
+    }
+
+    private func runAssistantCommand(_ command: AssistantCommand) {
+        switch command.actionID {
+        case "instagram.account.add": addingAccount = true
+        case "instagram.learn.top": if !store.isStudyingTaste { learnTopPerformers() }
+        case "instagram.learn.selected": if !store.isStudyingTaste, !learnSelection.isEmpty { learnSelected() }
+        case "instagram.reel.top":
+            detailMedia = store.igMedia.max { ReelPerformance.score($0.stats) < ReelPerformance.score($1.stats) }
+        default: break
+        }
     }
 
     private var subtitle: String {

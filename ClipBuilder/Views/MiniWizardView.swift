@@ -202,6 +202,12 @@ struct MiniWizardView: View {
             store.pendingWizardAssistantRequest = nil
             runAssistantRequest(request.text)
         }
+        // Ask AI suggestions and actions that need this form's settings and
+        // flow: only Express's own commands, also when the page comes back
+        // into view after one was sent.
+        .onAssistantCommand("\(WizardAssistant.expressNamespace).") { runAssistantCommand($0) }
+        // What Ask AI reads: the form as resolved here, not the remembered answers.
+        .onChange(of: assistantPage, initial: true) { _, page in store.assistant.expressPage = page }
         // Sources → AI Wizard with one video: take it as the source and open
         // Footage so its scenes, exchanges or transcript picks can be chosen.
         .onChange(of: store.pendingExpressSourcePath, initial: true) { _, path in
@@ -641,6 +647,101 @@ struct MiniWizardView: View {
         saveInstructions()
         footageKind = .highlights
         store.generateMiniFootage(flow: flow)
+    }
+
+    // MARK: - Ask AI
+
+    private var introAvailable: Bool { store.bumpers.contains { $0.placements.contains(.intro) } }
+    private var outroAvailable: Bool { store.bumpers.contains { $0.placements.contains(.outro) } }
+
+    /// The Generate footer's own condition (`generateFooter` plus the
+    /// panel's disabled state).
+    private var canGenerateKept: Bool {
+        guard let run = currentRun, flow.canExpand(.settings), settingsProfile == profileName else { return false }
+        return run.keptCount > 0 && !store.isWizardRunning && !store.isOpeningWizardInEditor(projectID: run.projectID)
+    }
+
+    /// The Highlights candidate selected in Footage, when the run on screen has one.
+    private var selectedCandidate: MiniWizardCandidate? {
+        guard let run = currentRun, run.footageKind == .highlights, let id = run.selectedSelectionID else { return nil }
+        return run.candidates.first { $0.id == id }
+    }
+
+    /// What Ask AI reads from Express (WizardAssistant.ExpressPage).
+    private var assistantPage: WizardAssistant.ExpressPage {
+        var page = WizardAssistant.ExpressPage()
+        let flow = flow
+        page.projectID = store.activeProjectID
+        page.sourceName = selectedVideo?.filename
+        page.sourceSeconds = selectedVideo?.duration
+        page.hasTranscript = hasTranscript
+        page.footageKind = flow.effectiveFootageKind
+        page.length = length
+        page.settings = miniSettings.effective(for: flow, introAvailable: introAvailable, outroAvailable: outroAvailable)
+        page.keptCount = currentRun?.keptCount ?? 0
+        page.canGenerate = canGenerateKept
+        page.selectedCandidate = selectedCandidate?.selection.name
+        return page
+    }
+
+    /// Ask AI actions (WizardAssistant.actions): the same calls this form's
+    /// own controls make, with their checks.
+    private func runAssistantCommand(_ command: AssistantCommand) {
+        // An Ask AI settings patch (WizardAssistant.expressSettings) lands
+        // first, so an action sent with it runs on the new settings.
+        if let patch = command.settings, settingsProfile == profileName {
+            var instructionsText: String?
+            WizardAssistant.applyExpress(patch, settings: &miniSettings, length: &length, instructions: &instructionsText)
+            if let instructionsText {
+                instructions.wrappedValue = instructionsText
+                saveInstructions()
+            }
+        }
+        if command.isSettingsOnly { return }
+        let id = command.actionID
+        if let toggle = WizardAssistant.expressToggles.first(where: {
+            id == WizardAssistant.setActionID($0.field, on: true, express: true)
+                || id == WizardAssistant.setActionID($0.field, on: false, express: true)
+        }) {
+            guard settingsProfile == profileName else { return }
+            miniSettings[keyPath: toggle.keyPath] = id.hasSuffix(".on")
+            return
+        }
+        switch id {
+        case "express.length.30":
+            length = .thirty
+        case "wizard.history":
+            open(.footage)
+        case "wizard.regenerate":
+            // The candidate's own Regenerate (MiniHighlightReviewView): the
+            // selected one, with the typed note or the note already on it.
+            guard !store.isWizardRunning else {
+                store.presentNotice("Ask AI", "The Wizard is already working.")
+                return
+            }
+            guard let candidate = selectedCandidate else {
+                store.presentNotice("Ask AI", "Select a Highlights candidate in Footage first, then Regenerate.")
+                return
+            }
+            var note = candidate.note
+            if let typed = command.text?.trimmingCharacters(in: .whitespacesAndNewlines), !typed.isEmpty {
+                note = typed
+                if let index = store.miniRun?.candidates.firstIndex(where: { $0.id == candidate.id }) {
+                    store.miniRun?.candidates[index].note = typed
+                }
+            }
+            store.regenerateMiniCandidate(selectionID: candidate.id, note: note)
+        case "wizard.generate", "wizard.openInEditor":
+            guard canGenerateKept, let run = currentRun else {
+                store.presentNotice("Ask AI", store.isWizardRunning ? "The Wizard is already working."
+                                    : "Keep footage in 2 Footage first, then Generate.")
+                return
+            }
+            store.generateMiniVideosRecordingPicks(settings: miniSettings, flow: flow, batchID: run.batchID,
+                                                   mode: id == "wizard.openInEditor" ? .openInEditor : .render)
+        default:
+            break
+        }
     }
 
     private func saveInstructions() {

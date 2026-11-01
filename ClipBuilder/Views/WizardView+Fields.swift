@@ -82,7 +82,7 @@ extension WizardView {
                         .multilineTextAlignment(.trailing)
                         .frame(width: 58)
                         .fieldHelp(WizardFieldHelp.customLength)
-                    Stepper("Custom length", value: $customDuration, in: 3...180)
+                    Stepper("Custom length", value: $customDuration, in: WizardDefaults.customDurationRange)
                         .labelsHidden()
                         .fieldHelp(WizardFieldHelp.customLength)
                     Text("seconds")

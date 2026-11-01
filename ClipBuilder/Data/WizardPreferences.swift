@@ -263,6 +263,12 @@ nonisolated enum WizardDefaults {
     static let textModeKey = "wizard.textMode"
     static let durationModeKey = "wizard.durationMode"
     static let customDurationKey = "wizard.targetDuration"
+    /// Seconds a custom target duration may be: the Stepper's range and the
+    /// clamp every path applies (form, request parser, Ask AI whitelist).
+    static let customDurationRange: ClosedRange<Int> = 3...180
+    static func clampedCustomDuration(_ seconds: Int) -> Int {
+        min(customDurationRange.upperBound, max(customDurationRange.lowerBound, seconds))
+    }
     static let layoutModeKey = "wizard.layoutMode"
     static let brandingModeKey = "wizard.brandingMode"
     static let brandingOverrideKey = "wizard.brandingOverride"

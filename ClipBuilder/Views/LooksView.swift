@@ -64,6 +64,18 @@ struct LooksView: View {
         }
         .padding()
         .screenTitle("Effects", subtitle: subtitle)
+        .askAI(LooksAssistant(), pageState: AssistantPageState(
+            counts: ["available": availableIDs?.count ?? 0, "previews": previews.count],
+            flags: ["rendering": renderTask != nil],
+            values: ["sample": samples.videoA?.lastPathComponent ?? ""]))
+        .onAssistantCommand("looks.") { command in
+            switch command.actionID {
+            case "looks.render":
+                if renderTask == nil, availableIDs != nil, store.database != nil { render(EffectCatalog.ids) }
+            case "looks.sample": pickingSample = true
+            default: break
+            }
+        }
         .toolbar {
             if pageVisible {
                 ToolbarItemGroup {

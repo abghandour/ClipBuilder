@@ -4,6 +4,12 @@ import Foundation
 /// Sources pane's "Analyze (N steps)" footer. Renaming and video generation
 /// are not analysis and never count.
 nonisolated enum AnalysisSteps {
+    /// True when a missing-steps batch must not start (`AppStore.isMissingStepsBatchBusy`).
+    static func batchBusy(batchRunning: Bool, analyzing: Bool, detectingPeople: Bool, transcribing: Bool,
+                          fightScoring: Bool, mappingSpeakers: Bool) -> Bool {
+        batchRunning || analyzing || detectingPeople || transcribing || fightScoring || mappingSpeakers
+    }
+
     enum Step: String, CaseIterable, Sendable {
         case people, scenes, transcript, speakerNames, exchanges, fightScore
 

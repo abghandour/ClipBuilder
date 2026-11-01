@@ -222,6 +222,7 @@ struct BuilderView: View {
         }
         .screenTitle(store.openTimeline?.name ?? "Timeline", subtitle: "\(store.activeProject?.name ?? "Project") · \(model.document.videoTrack.count) clips · \(model.totalDuration.timecode)")
         .askAI(BuilderAssistant())
+        .background { BuilderCleanupCutsPublisher() }
         .sheet(isPresented: $showDubSetup) { DubSetupSheet() }
         .sheet(isPresented: $showAllTimelines) { TimelinesView(presentedAsSheet: true) }
         .toolbar {
