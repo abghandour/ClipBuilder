@@ -32,7 +32,9 @@ struct WizardHighlightStorageTests {
 
         let first = try await db.insertWizardHighlight(draft(projectID, plan: plan))
         #expect(first.videoHashes == [hash])
-        #expect(first.footage == scenes.map { HighlightFootageRef(sceneID: $0.id, videoHash: hash, start: $0.startTime, end: $0.endTime) })
+        // Footage is recorded by ascending scene id, whatever order the ids were handed out in.
+        #expect(first.footage == scenes.sorted { $0.id < $1.id }
+            .map { HighlightFootageRef(sceneID: $0.id, videoHash: hash, start: $0.startTime, end: $0.endTime) })
         #expect(first.highlightFlow == .expressHighlights && first.author == "Tester" && first.note == "first")
         #expect(first.settings?.length == "15" && first.settings?.options.projectID == projectID)
         #expect(first.plan?.clips.map(\.sceneID) == scenes.map(\.id))
