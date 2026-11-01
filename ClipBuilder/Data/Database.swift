@@ -14,6 +14,7 @@ import CryptoKit
 //   Database+Transcripts.swift   transcripts, speaker attribution
 //   Database+WizardSelections.swift selections and their saved takes
 //   Database+TranscriptPicks.swift  Express transcript picks and their saved selections
+//   Database+WizardHighlights.swift highlight history, Express Q&A picks
 //   Database+Generated.swift     generated videos, reviews, preferences, lessons, wizard research
 //   Database+Fights.swift        fight events, fight research
 //   Database+Instagram.swift     Instagram accounts, media, reports
@@ -108,7 +109,8 @@ actor Database {
         original_start REAL NOT NULL,
         original_end REAL NOT NULL,
         scene_id INTEGER REFERENCES scenes(id) ON DELETE SET NULL,
-        created_at TEXT DEFAULT (datetime('now'))
+        created_at TEXT DEFAULT (datetime('now')),
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS fight_picks (
@@ -121,7 +123,8 @@ actor Database {
         original_end REAL NOT NULL,
         event_ids TEXT NOT NULL DEFAULT '[]',
         scene_id INTEGER REFERENCES scenes(id) ON DELETE SET NULL,
-        created_at TEXT DEFAULT (datetime('now'))
+        created_at TEXT DEFAULT (datetime('now')),
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE
     );
 
     CREATE TABLE IF NOT EXISTS moments (
@@ -306,6 +309,40 @@ actor Database {
         PRIMARY KEY (project_id, video_id)
     );
     CREATE INDEX IF NOT EXISTS idx_project_videos_video ON project_videos(video_id);
+
+    -- Highlight history (docs/Highlight-History-Plan.md): one row per
+    -- generated take or rendered reel. Footage is identified by video hash
+    -- and source time in footage_json; plan_json keeps this Mac's scene ids.
+    CREATE TABLE IF NOT EXISTS wizard_highlights (
+        id INTEGER PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        flow TEXT NOT NULL,
+        batch_id TEXT,
+        parent_id INTEGER REFERENCES wizard_highlights(id) ON DELETE SET NULL,
+        selection_id INTEGER REFERENCES wizard_selections(id) ON DELETE SET NULL,
+        take_id INTEGER REFERENCES wizard_selection_takes(id) ON DELETE SET NULL,
+        generated_video_id INTEGER REFERENCES generated_videos(id) ON DELETE SET NULL,
+        video_hashes_json TEXT NOT NULL DEFAULT '[]',
+        footage_json TEXT NOT NULL DEFAULT '[]',
+        settings_json TEXT NOT NULL DEFAULT '{}',
+        plan_json TEXT,
+        provenance_json TEXT,
+        note TEXT,
+        author TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_wizard_highlights_project ON wizard_highlights(project_id, created_at);
+
+    -- Express Q&A kept exchanges, one set per source video per project.
+    CREATE TABLE IF NOT EXISTS qa_picks (
+        id INTEGER PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        scene_id INTEGER NOT NULL REFERENCES scenes(id) ON DELETE CASCADE,
+        position INTEGER NOT NULL DEFAULT 0,
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(project_id, video_id, scene_id)
+    );
 
     CREATE TABLE IF NOT EXISTS timelines (
         id INTEGER PRIMARY KEY,
@@ -791,6 +828,25 @@ actor Database {
             if try !connection.columnNames(of: "generated_videos").contains("selection_take_id") {
                 try connection.execute("ALTER TABLE generated_videos ADD COLUMN selection_take_id INTEGER REFERENCES wizard_selection_takes(id) ON DELETE SET NULL")
             }
+            if try !connection.columnNames(of: "generated_videos").contains("review_flags_json") {
+                try connection.execute("ALTER TABLE generated_videos ADD COLUMN review_flags_json TEXT")
+            }
+            // Hook variants: renders of one timeline that differ only in the
+            // opening share a group id; each carries its hook's label.
+            let hookColumns = try connection.columnNames(of: "generated_videos")
+            for name in ["variant_group_id", "hook_label"] where !hookColumns.contains(name) {
+                try connection.execute("ALTER TABLE generated_videos ADD COLUMN \(name) TEXT")
+            }
+            // Schema 41 (highlight history): the full WizardPlan an automatic
+            // render used (area clips, B-roll, transitions, music). Local only;
+            // generated_videos is not team-synced.
+            if !hookColumns.contains("plan_json") {
+                try connection.execute("ALTER TABLE generated_videos ADD COLUMN plan_json TEXT")
+            }
+            let preferenceColumns = try connection.columnNames(of: "wizard_preferences")
+            for name in ["chosen_label", "rejected_label"] where !preferenceColumns.contains(name) {
+                try connection.execute("ALTER TABLE wizard_preferences ADD COLUMN \(name) TEXT")
+            }
             let requestColumns = try connection.columnNames(of: "analysis_runs")
             for name in ["request_hash", "request_json"] where !requestColumns.contains(name) {
                 try connection.execute("ALTER TABLE analysis_runs ADD COLUMN \(name) TEXT")
@@ -806,6 +862,14 @@ actor Database {
             }
             if try !connection.columnNames(of: "analysis_passes").contains("run_key") {
                 try connection.execute("ALTER TABLE analysis_passes ADD COLUMN run_key TEXT")
+            }
+            // Express picks are scoped to a project; legacy NULL rows are
+            // adopted by the first project that writes them.
+            for table in ["transcript_picks", "fight_picks"] {
+                if try !connection.columnNames(of: table).contains("project_id") {
+                    try connection.execute("ALTER TABLE \(table) ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE")
+                }
+                try connection.execute("CREATE INDEX IF NOT EXISTS idx_\(table)_project ON \(table)(project_id, video_id)")
             }
             let eventColumns = try connection.columnNames(of: "fight_events")
             for (name, type) in [("target_key", "TEXT"), ("end_time", "REAL"), ("outcome", "TEXT"),
@@ -829,6 +893,8 @@ actor Database {
                 if stamped < 35 { try Self.migrateTranscriptEditedWords(connection) }
                 try Self.migrateBrandSync(connection)
                 if stamped < 28 { try Self.seedFootageSync(connection) }
+                // Schema 41: projects and highlight history join team sync.
+                if stamped < 41 { try Self.seedFootageSync(connection, tables: SyncTable.history) }
                 // Legacy orphan data must not prevent opening the profile.
                 // Inspect only children of the rebuilt videos table.
                 for row in try connection.query("SELECT name FROM sqlite_master WHERE type = 'table'") {
@@ -850,7 +916,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 38
+    static let schemaVersion: Int64 = 42
 
     nonisolated static func migrateTranscriptEditedWords(_ db: SQLiteConnection) throws {
         if try !db.columnNames(of: "transcripts").contains("original_words") {

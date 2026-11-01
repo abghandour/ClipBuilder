@@ -57,6 +57,7 @@ extension AppStore {
         openTimelineID = nil
         // A failed run's Try Again must not replay into the project we left.
         lastWizardOptions = nil
+        resetHighlightHistory()
         wizardFailureMessage = nil
         videos = []
         scenes = []

@@ -104,7 +104,8 @@ extension AppStore {
                     do {
                         try await database.addPreference(chosenID: winner.id, rejectedID: loser.id,
                                                          chosenRationale: winner.rationale ?? "",
-                                                         rejectedRationale: loser.rationale ?? "")
+                                                         rejectedRationale: loser.rationale ?? "",
+                                                         chosenLabel: winner.hookLabel, rejectedLabel: loser.hookLabel)
                     } catch {
                         presentError("Could not save the preference", error)
                     }
@@ -529,6 +530,8 @@ extension AppStore {
                 wizardResults = WizardRunResults(videos: fresh)
                 await recordWizardTimelines(fresh, projectID: projectID,
                                             formatName: options.formatPreset)
+                await recordHighlights(forGenerated: fresh, projectID: projectID,
+                    capture: WizardHighlightCapture(flow: .fullAutomatic, settings: highlightSettings(options: options)))
             } else if !Task.isCancelled {
                 // Nothing produced and the user didn't stop it — surface the
                 // failure where the user is looking instead of leaving only a
@@ -815,8 +818,9 @@ extension AppStore {
     /// New multi-variation batches from the finished run become A/B picks;
     /// each choice is preference data for future generations.
     func queueComparisons(previousIDs: Set<Int64>) {
-        let fresh = generatedVideos.filter { !previousIDs.contains($0.id) && $0.batchID != nil }
-        let batches = Dictionary(grouping: fresh) { $0.batchID! }
+        // Hook variants group by their comparison id; wizard variations by run.
+        let fresh = generatedVideos.filter { !previousIDs.contains($0.id) && ($0.variantGroupID ?? $0.batchID) != nil }
+        let batches = Dictionary(grouping: fresh) { $0.variantGroupID ?? $0.batchID! }
             .filter { $0.value.count > 1 }
             .map { ComparisonBatch(id: $0.key, videos: $0.value.sorted { $0.id < $1.id }) }
             .sorted { ($0.videos.first?.id ?? 0) < ($1.videos.first?.id ?? 0) }

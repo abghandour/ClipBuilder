@@ -538,6 +538,39 @@ struct MultitrackRenderTests {
         #expect(abs(warm.duration - result.duration) < 0.05)
     }
 
+    @Test("speech polish changes only the audio and moves its level toward -16 dB")
+    func speechPolishChangesOnlyAudio() async throws {
+        let temp = try await TempDatabase()
+        let (source, scene) = try await seedScene(in: temp, hash: "speech-polish-fixture")
+        var clip = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 3)
+        clip.videoFile = source.path
+        var document = Fixtures.timelineDocument(clips: [clip])
+        document.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+        let renderer = MultitrackRenderer(render: RenderEngine(),
+            segmentCache: RenderSegmentCache(directory: temp.directory.url.appendingPathComponent("segments")))
+        let plain = try await renderCounting(renderer, document: document, scene: scene, database: temp.database)
+        defer { try? FileManager.default.removeItem(at: plain.result.url) }
+        document.renderSettings.speechPolish = SpeechPolishSettings(enabled: true, strength: .standard)
+        let polished = try await renderCounting(renderer, document: document, scene: scene, database: temp.database)
+        defer { try? FileManager.default.removeItem(at: polished.result.url) }
+        #expect(polished.lines.contains { $0.hasPrefix("Speech polish") })
+        #expect(!plain.lines.contains { $0.hasPrefix("Speech polish") })
+
+        let comparison = try await Self.compareDecoded(polished.result.url, plain.result.url)
+        #expect(comparison.videoTimingIdentical)
+        #expect(comparison.minimumSSIM >= 0.99)
+        #expect(!comparison.audioIdentical)
+
+        func meanLevel(_ url: URL) async -> Double {
+            let curve = await Analyzer.loudnessCurve(url: url)
+            return curve.isEmpty ? -70 : curve.reduce(0, +) / Double(curve.count)
+        }
+        let before = await meanLevel(plain.result.url)
+        let after = await meanLevel(polished.result.url)
+        #expect(abs(after - SpeechPolish.targetLoudness) < abs(before - SpeechPolish.targetLoudness),
+                "mean level \(before) dB -> \(after) dB")
+    }
+
     /// Renders `document` and reports the log, the successful video encodes
     /// (stream-copy concat/music calls are deliberately excluded) and the result.
     private func renderCounting(_ renderer: MultitrackRenderer, document: TimelineDocument, scene: SceneRecord,
@@ -1404,5 +1437,49 @@ extension MultitrackRenderTests {
         try await captions("Edited first", "Edited later")
         outputs.append(try await render(renderer).url)
         #expect(!messages.withLock { $0.contains { $0.hasPrefix("Assembly cache hit") } })
+    }
+}
+
+extension MultitrackRenderTests {
+    @Test("a Wizard music mix renders the audio overlayMusic gives the same input")
+    func wizardMusicMixMatchesOverlayMusic() async throws {
+        let temp = try await TempDatabase()
+        let (source, scene) = try await seedScene(in: temp, hash: "wizard-music-mix")
+        let musicURL = try await FixtureVideo.makeMusic(in: temp.directory.url, seconds: 8, name: "Wizard Beat")
+        var first = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 0, duration: 1.5)
+        first.videoFile = source.path
+        var second = Fixtures.timelineClip(sceneID: scene.id, sourceStart: 1.5, duration: 1.5, startTime: 1.5)
+        second.videoFile = source.path
+        second.originKey = "second"
+        var plain = Fixtures.timelineDocument(clips: [first, second])
+        plain.renderSettings = RenderSettings(preset: .custom, customWidth: 360, customHeight: 640)
+        var mixed = plain
+        var sound = SoundItem()
+        sound.name = "Wizard Beat"
+        sound.volume = 4
+        sound.duration = 3
+        mixed.soundTrack = [sound]
+        mixed.musicMix = TimelineDocument.wizardMusicMix
+        let renderer = MultitrackRenderer(render: RenderEngine())
+        let log = Mutex<[String]>([])
+        let candidate = try await MultitrackRenderer.$musicLibraryOverride.withValue(["Wizard Beat": musicURL]) {
+            try await renderer.render(document: mixed, scenes: [scene], profile: Fixtures.brand(), database: temp.database,
+                                      preview: true, emit: { line in log.withLock { $0.append(line) } })
+        }
+        defer { try? FileManager.default.removeItem(at: candidate.url) }
+        let silent = try await renderer.render(document: plain, scenes: [scene], profile: Fixtures.brand(),
+                                               database: temp.database, preview: true, emit: { _ in })
+        defer { try? FileManager.default.removeItem(at: silent.url) }
+        let reference = temp.directory.url.appendingPathComponent("overlay-music.mp4")
+        try await RenderEngine().overlayMusic(video: silent.url, music: musicURL, output: reference, volume: 4)
+        #expect(log.withLock { $0.contains("Adding music (Wizard Beat)...") })
+        #expect(!log.withLock { $0.contains { $0.hasPrefix("Building music track") } })
+        let comparison = try await Self.compareDecoded(candidate.url, reference)
+        #expect(comparison.videoTimingIdentical)
+        #expect(comparison.minimumSSIM >= 0.99)
+        #expect(try await Self.audioMatches(candidate.url, reference))
+        let candidateDuration = await FFmpeg.duration(of: candidate.url)
+        let referenceDuration = await FFmpeg.duration(of: reference)
+        #expect(abs(candidateDuration - referenceDuration) < 0.05)
     }
 }

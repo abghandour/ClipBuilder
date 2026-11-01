@@ -8,7 +8,7 @@ struct BRollReviewStorageTests {
         let db = temp.database
         let video = try await temp.seedVideo(sceneCount: 2)
         let project = try await db.createProject(profileName: "Test", name: "B-roll picks", videoIDs: [video])
-        let pick = try await db.addTranscriptPick(videoID: video, start: 0, end: 10)
+        let pick = try await db.addTranscriptPick(projectID: project, videoID: video, start: 0, end: 10)
         let options = WizardStep1Options()
         let initial = try await db.replaceMiniTranscriptSelections(projectID: project, videoID: video,
             miniBatch: "review", picks: [pick], rows: [], options: options)
@@ -18,8 +18,8 @@ struct BRollReviewStorageTests {
         var plan = first.take.plan
         plan.clips[0].brollCuts = [cut]
         try await db.updateWizardSelectionTakePlan(id: first.take.id, plan: plan)
-        try await db.setTranscriptPickRange(id: pick.id, start: 4, end: 9)
-        let picks = try await db.fetchTranscriptPicks(videoID: video)
+        try await db.setTranscriptPickRange(projectID: project, id: pick.id, start: 4, end: 9)
+        let picks = try await db.fetchTranscriptPicks(projectID: project, videoID: video)
         let recreated = try await db.replaceMiniTranscriptSelections(projectID: project, videoID: video,
             miniBatch: "review", picks: picks, rows: [], options: options)
         let take = try #require(recreated.first?.take)
@@ -66,8 +66,8 @@ extension BRollReviewStorageTests {
         let db = temp.database
         let video = try await temp.seedVideo(sceneCount: 1)
         let project = try await db.createProject(profileName: "Test", name: "Repeated picks", videoIDs: [video])
-        let first = try await db.addTranscriptPick(videoID: video, start: 0, end: 8)
-        let second = try await db.addTranscriptPick(videoID: video, start: 0, end: 8)
+        let first = try await db.addTranscriptPick(projectID: project, videoID: video, start: 0, end: 8)
+        let second = try await db.addTranscriptPick(projectID: project, videoID: video, start: 0, end: 8)
         let initial = try await db.replaceMiniTranscriptSelections(projectID: project, videoID: video,
             miniBatch: "duplicates", picks: [first, second], rows: [], options: .init())
         let sceneID = try #require(initial.first?.take.plan.clips.first?.sceneID)
@@ -87,8 +87,8 @@ extension BRollReviewStorageTests {
         let db = temp.database
         let video = try await temp.seedVideo(sceneCount: 1)
         let project = try await db.createProject(profileName: "Test", name: "Relaunch", videoIDs: [video])
-        let first = try await db.addTranscriptPick(videoID: video, start: 0, end: 8)
-        let second = try await db.addTranscriptPick(videoID: video, start: 0, end: 8)
+        let first = try await db.addTranscriptPick(projectID: project, videoID: video, start: 0, end: 8)
+        let second = try await db.addTranscriptPick(projectID: project, videoID: video, start: 0, end: 8)
         let initial = try await db.replaceMiniTranscriptSelections(projectID: project, videoID: video,
             miniBatch: "persistent", picks: [first, second], rows: [], options: .init())
         let secondTake = try #require(initial.last?.take)
@@ -99,13 +99,13 @@ extension BRollReviewStorageTests {
         try await db.updateWizardSelectionTakePlan(id: secondTake.id, plan: plan)
         let restored = try await db.miniSavedCandidates(projectID: project, miniBatch: "persistent")
         #expect(restored.last?.take.plan.clips[0].brollCuts == [cut])
-        let picks = try await db.fetchTranscriptPicks(videoID: video)
+        let picks = try await db.fetchTranscriptPicks(projectID: project, videoID: video)
         let rebuilt = try await db.replaceMiniTranscriptSelections(projectID: project, videoID: video,
             miniBatch: "persistent", picks: picks, rows: [], options: .init())
         #expect(rebuilt.first?.take.plan.clips[0].brollCuts == [])
         #expect(rebuilt.last?.take.plan.clips[0].brollCuts == [cut])
-        try await db.setTranscriptPickRange(id: second.id, start: 4, end: 8)
-        let trimmed = try await db.fetchTranscriptPicks(videoID: video)
+        try await db.setTranscriptPickRange(projectID: project, id: second.id, start: 4, end: 8)
+        let trimmed = try await db.fetchTranscriptPicks(projectID: project, videoID: video)
         let dropped = try await db.replaceMiniTranscriptSelections(projectID: project, videoID: video,
             miniBatch: "persistent", picks: trimmed, rows: [], options: .init())
         #expect(dropped.last?.take.plan.clips[0].brollCuts == [])

@@ -1,6 +1,6 @@
 import Foundation
 
-/// Express Fight metrics: picks are stored per video as the user adds them;
+/// Express Fight metrics: picks are stored per video and project as the user adds them;
 /// moving to Settings turns them into selections in list order.
 extension AppStore {
     /// Load the video's scored actions, fighter names and saved picks.
@@ -23,7 +23,7 @@ extension AppStore {
             do {
                 _ = try? await fightPickSaveTask?.value
                 try Task.checkCancellation()
-                let picks = try await database.fetchFightPicks(videoID: video.id)
+                let picks = try await database.fetchFightPicks(projectID: projectID, videoID: video.id)
                 guard generation == profileGeneration, activeProjectID == projectID else { return }
                 let events = fightEvents[video.id] ?? []
                 let actions = MiniWizardFightRules.actions(events: events, duration: video.duration)
@@ -68,6 +68,7 @@ extension AppStore {
     func addMiniFightPicks(_ units: [(range: ClosedRange<Double>, eventIDs: [Int64])]) {
         guard let run = currentFightRun(), !units.isEmpty, let database else { return }
         let videoID = run.video.id
+        let projectID = run.projectID
         let batchID = run.batchID
         let previous = fightPickSaveTask
         let generation = profileGeneration
@@ -77,7 +78,7 @@ extension AppStore {
             var added: [FightPick] = []
             do {
                 for unit in units {
-                    added.append(try await database.addFightPick(videoID: videoID, start: unit.range.lowerBound,
+                    added.append(try await database.addFightPick(projectID: projectID, videoID: videoID, start: unit.range.lowerBound,
                                                                  end: unit.range.upperBound, eventIDs: unit.eventIDs))
                 }
             } catch {
@@ -94,8 +95,9 @@ extension AppStore {
               let index = run.fight?.picks.firstIndex(where: { $0.id == id }) else { return }
         miniRuns[.fightMetrics]?.fight?.picks[index].start = start
         miniRuns[.fightMetrics]?.fight?.picks[index].end = end
+        let projectID = run.projectID
         enqueueFightPickWrite("Could not save the pick", batchID: run.batchID) { database in
-            try await database.setFightPickRange(id: id, start: start, end: end)
+            try await database.setFightPickRange(projectID: projectID, id: id, start: start, end: end)
         }
     }
 
@@ -111,17 +113,19 @@ extension AppStore {
             return pick
         }
         let videoID = run.video.id
+        let projectID = run.projectID
         let order = ordered.map(\.id)
         enqueueFightPickWrite("Could not reorder the picks", batchID: run.batchID) { database in
-            try await database.reorderFightPicks(videoID: videoID, ids: order)
+            try await database.reorderFightPicks(projectID: projectID, videoID: videoID, ids: order)
         }
     }
 
     func deleteMiniFightPick(_ id: Int64) {
         guard let run = currentFightRun(), run.fight?.picks.contains(where: { $0.id == id }) == true else { return }
         miniRuns[.fightMetrics]?.fight?.picks.removeAll { $0.id == id }
+        let projectID = run.projectID
         enqueueFightPickWrite("Could not delete the pick", batchID: run.batchID) { database in
-            try await database.deleteFightPick(id: id)
+            try await database.deleteFightPick(projectID: projectID, id: id)
         }
     }
 
@@ -129,8 +133,9 @@ extension AppStore {
         guard let run = currentFightRun(), run.fight?.picks.isEmpty == false else { return }
         miniRuns[.fightMetrics]?.fight?.picks = []
         let videoID = run.video.id
+        let projectID = run.projectID
         enqueueFightPickWrite("Could not remove the picks", batchID: run.batchID) { database in
-            try await database.deleteFightPicks(videoID: videoID)
+            try await database.deleteFightPicks(projectID: projectID, videoID: videoID)
         }
     }
 

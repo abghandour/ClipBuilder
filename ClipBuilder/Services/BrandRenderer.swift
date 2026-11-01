@@ -1,5 +1,6 @@
 import AppKit
 import Foundation
+import CryptoKit
 
 /// Renders the brand-kit elements the wizard burns into every reel: the
 /// corner watermark, the full-video result headline, the intro title card,
@@ -193,7 +194,10 @@ nonisolated enum BrandRenderer {
         guard let image = context.makeImage(),
               let data = NSBitmapImageRep(cgImage: image)
                   .representation(using: .png, properties: [:]) else { return nil }
-        let url = directory.appendingPathComponent("\(name)_\(UUID().uuidString.prefix(8)).png")
+        // Content-addressed: the same drawing lands on the same file, so the
+        // document the editor opens and the one assemble renders agree.
+        let digest = SHA256.hash(data: data).prefix(4).map { String(format: "%02X", $0) }.joined()
+        let url = directory.appendingPathComponent("\(name)_\(digest).png")
         do {
             try data.write(to: url)
             return url

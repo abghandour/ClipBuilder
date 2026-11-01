@@ -14,6 +14,8 @@ nonisolated enum ExpressPodcastRenderer {
         var extraction = MultitrackRenderer.windowed(document, from: 0, to: duration)
         for index in extraction.videoTrack.indices { extraction.videoTrack[index].captions = "none" }
         extraction.textOverlays.removeAll { $0.design == "nameTag" }
+        // Speech Polish runs once on the assembled reel, after music.
+        extraction.renderSettings.speechPolish = nil
         let contentWindows: [String: FreeCropRect]
         if let source = contentSource, let box = contentBox {
             contentWindows = [source.path: FreeCropRect(xFrac: box.x, yFrac: box.y, wFrac: box.w, hFrac: box.h)]

@@ -163,6 +163,10 @@ enum OverlayLaneEntry: Identifiable {
 final class BuilderTimelineModel {
     var pendingGenerateImagePrompt: String?
     var pendingAssistantWizard: UUID?
+    /// Moments of the generated video this timeline was opened from that
+    /// the pipeline was unsure about. Session-only, not saved in the document;
+    /// cleared whenever another timeline loads.
+    var reviewFlags: [ReviewFlag] = []
 
     nonisolated enum Mode: Sendable { case persistent, transient }
     let mode: Mode
@@ -447,6 +451,7 @@ final class BuilderTimelineModel {
         resetUndoHistory()
         pendingGenerateImagePrompt = nil
         pendingAssistantWizard = nil
+        reviewFlags = []
         self.profileName = profileName
         timelineID = nil
         // Remembered B-roll picks belong to the document they were made in.
@@ -482,6 +487,7 @@ final class BuilderTimelineModel {
         resetUndoHistory()
         pendingGenerateImagePrompt = nil
         pendingAssistantWizard = nil
+        reviewFlags = []
         suppressAutosave = true
         self.persistedRevision = persistedRevision
         revision = max(revision, persistedRevision)
@@ -507,6 +513,7 @@ final class BuilderTimelineModel {
         resetUndoHistory()
         pendingGenerateImagePrompt = nil
         pendingAssistantWizard = nil
+        reviewFlags = []
         suppressAutosave = true
         timelineID = nil
         lastBRollPick = nil
@@ -1209,6 +1216,23 @@ final class BuilderTimelineModel {
         clipIndex(uid).map { document.videoTrack[$0] }
     }
 
+    /// Select the flag's clip (by origin, else the main clip under its time)
+    /// and move the playhead to the flagged moment.
+    func jump(to flag: ReviewFlag) {
+        func covers(_ clip: TimelineClip) -> Bool {
+            flag.time >= clip.startTime - 0.001 && flag.time < clip.startTime + clip.duration
+        }
+        // Split pieces share an origin: the one under the flag, else the first.
+        let pieces = flag.clipOriginKey.map { key in document.videoTrack.filter { $0.originKey == key } } ?? []
+        let target = pieces.first(where: covers) ?? pieces.min { $0.startTime < $1.startTime }
+            ?? document.videoTrack.filter { !$0.isCutaway && covers($0) }.min { $0.track < $1.track }
+        if let target {
+            selection = .clip(target.uid)
+            focusedTrack = target.track
+        }
+        playhead = Self.snap(min(max(0, flag.time), totalDuration))
+    }
+
     func scene(for clip: TimelineClip) -> SceneRecord? {
         clip.sceneID.flatMap { scenesByID[$0] }
     }
@@ -1777,6 +1801,58 @@ final class BuilderTimelineModel {
         return .success(ClipSplitResult(head: pieces.head.uid, tail: pieces.tail.uid,
                                        at: clip(pieces.tail.uid)?.startTime ?? at,
                                        sourceStart: sourceStart, sourceCut: cut, sourceEnd: end))
+    }
+
+    /// A clip's video and resolved source start for cleanup cuts: a scene
+    /// clip through its scene (an untrimmed one starts where the scene
+    /// does), a file clip through `videoIDsByPath` (Library paths).
+    func cutSource(for clip: TimelineClip, videoIDsByPath: [String: Int64]) -> TimelineDocument.CutSource? {
+        guard !clip.bumper else { return nil }
+        if let scene = scene(for: clip) {
+            return .init(videoID: scene.videoID, sourceStart: clip.sourceStart ?? scene.startTime)
+        }
+        guard let path = clip.videoFile, let videoID = videoIDsByPath[path] else { return nil }
+        return .init(videoID: videoID, sourceStart: clip.sourceStart ?? 0)
+    }
+
+    /// How many of the given cuts (source seconds per video id) fall inside
+    /// the timeline's main clips.
+    func cleanupCutCount(_ cuts: [Int64: [ClosedRange<Double>]], videoIDsByPath: [String: Int64]) -> Int {
+        cuts.reduce(0) { total, entry in
+            total + document.cutCount(entry.value, videoID: entry.key) { cutSource(for: $0, videoIDsByPath: videoIDsByPath) }
+        }
+    }
+
+    /// Cut the accepted cleanup cuts out of every main clip of their videos
+    /// as one undo step. Returns the seconds removed from the timeline.
+    @discardableResult
+    func applyAcceptedCleanupCuts(_ cuts: [Int64: [ClosedRange<Double>]], videoIDsByPath: [String: Int64]) -> Double {
+        var updated = document
+        for (videoID, ranges) in cuts.sorted(by: { $0.key < $1.key }) {
+            updated = updated.applyingCuts(ranges, videoID: videoID) { cutSource(for: $0, videoIDsByPath: videoIDsByPath) }
+        }
+        guard updated != document else { return 0 }
+        // Every track ripples together, so the timeline shortens by what the
+        // main footage's end moved up.
+        let mainLength = { (doc: TimelineDocument) in
+            doc.videoTrack.filter { !$0.bumper && $0.role == .main }.map { $0.startTime + $0.duration }.max() ?? 0
+        }
+        let removed = mainLength(document) - mainLength(updated)
+        registerUndo("Apply Cleanup Cuts")
+        document = updated
+        // The ripple drops items left shorter than a cut piece.
+        switch selection {
+        case .clip(let uid) where clip(uid) == nil: selection = nil
+        case .sound(let uid) where !document.soundTrack.contains(where: { $0.uid == uid }): selection = nil
+        case .text(let uid) where !document.textOverlays.contains(where: { $0.uid == uid }): selection = nil
+        case .image(let uid) where !document.imageOverlays.contains(where: { $0.uid == uid }): selection = nil
+        case .overlay(let uid) where !document.overlayBlocks.contains(where: { $0.uid == uid }): selection = nil
+        case .crop(let uid) where !document.cropBlocks.contains(where: { $0.uid == uid }): selection = nil
+        default: break
+        }
+        resolveAllLayouts()
+        documentDidChange()
+        return removed
     }
 
     func removeClip(_ uid: UUID) {

@@ -169,6 +169,9 @@ struct MiniWizardView: View {
             }
         }
         .task(id: sourceKey) { await loadSources() }
+        .task(id: HistoryKey(generation: store.profileGeneration, scope: historyScope)) {
+            if let scope = historyScope { await store.loadHighlightHistory(scope) }
+        }
         .onAppear(perform: restoreAnswers)
         .onChange(of: footageKind) { _, kind in
             UITiming.expressTabChanged(to: kind.rawValue)
@@ -245,7 +248,9 @@ struct MiniWizardView: View {
                     MiniCard(number: 2, title: "Footage",
                              summary: currentRun?.summary ?? flow.summary(for: .footage),
                              isOpen: !flow.isCollapsed(.footage),
-                             headerTap: headerTap(.footage)) {
+                             headerTap: headerTap(.footage),
+                             accessory: historyScope.map { AnyView(historyBar($0)) }) {
+                        if let scope = historyScope { historyCaption(scope) }
                         if !flow.isCollapsed(.footage) {
                             if selectedVideo == nil {
                                 FormCaption("Pick a source in 1 Source first.")
@@ -302,6 +307,70 @@ struct MiniWizardView: View {
                 .padding(Theme.spaceL)
                 .frame(maxWidth: .infinity, alignment: .leading)
             }
+        }
+    }
+
+    // MARK: - Highlight history
+
+    private struct HistoryKey: Equatable {
+        var generation: Int
+        var scope: HighlightHistoryScope?
+    }
+
+    /// Express history lists the project's saved highlights of this source.
+    private var historyScope: HighlightHistoryScope? {
+        guard let projectID = store.activeProjectID, let video = selectedVideo, !video.hash.isEmpty else { return nil }
+        return .express(projectID: projectID, videoHash: video.hash)
+    }
+
+    private func historyBar(_ scope: HighlightHistoryScope) -> some View {
+        HighlightHistoryBar(entries: store.highlightHistory(scope), selectedID: store.selectedHighlightIDs[scope],
+            unavailable: store.unavailableHighlightIDs, disabled: store.isWizardRunning || settingsProfile != profileName,
+            reRenderTitle: "Re-render",
+            reRenderHelp: "Open this highlight and render it again with its settings",
+            onSelect: { openHighlight($0) }, onOpen: { openHighlight($0) },
+            onReRender: { openHighlight($0, thenRender: true) })
+    }
+
+    @ViewBuilder
+    private func historyCaption(_ scope: HighlightHistoryScope) -> some View {
+        if let id = store.selectedHighlightIDs[scope] {
+            HighlightHistoryCaption(warning: store.highlightOpenWarnings[id],
+                detail: store.openedExpressBatch(for: id) != nil
+                    ? store.selectedHighlight(scope).map { record in
+                        "Opened " + ([HighlightHistoryNavigation.shortLabel(for: record),
+                                      HighlightHistoryNavigation.planSummary(record.plan)]
+                            .compactMap { $0 }.joined(separator: " · ")) + ". Its settings are in Settings."
+                    } : nil)
+        }
+    }
+
+    /// Open: the entry's plan becomes the Highlights candidate and its
+    /// Settings, length and output mode replace the page's. Re-render opens
+    /// it first unless it is the run on screen, then renders.
+    private func openHighlight(_ id: Int64, thenRender: Bool = false) {
+        guard let scope = historyScope, let video = selectedVideo else { return }
+        Task {
+            let batch: String
+            if thenRender, let existing = store.openedExpressBatch(for: id) {
+                batch = existing
+            } else {
+                guard let opened = await store.openExpressHighlight(id: id, scope: scope, video: video),
+                      selectedVideo?.id == video.id else { return }
+                instructionsFocused = false
+                footageKind = .highlights
+                length = opened.length
+                if let mini = opened.mini { miniSettings = mini }
+                if let mode = opened.outputMode { miniSettings.outputMode = mode }
+                collapsedCard = nil
+                batch = opened.batchID
+            }
+            guard thenRender else { return }
+            var renderFlow = flow
+            renderFlow.footageKind = .highlights
+            renderFlow.length = store.miniRuns[.highlights]?.length ?? length
+            renderFlow.outputMode = miniSettings.outputMode
+            store.generateMiniVideos(settings: miniSettings, flow: renderFlow, batchID: batch)
         }
     }
 

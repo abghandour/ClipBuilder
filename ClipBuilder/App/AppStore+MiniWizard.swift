@@ -136,6 +136,8 @@ extension AppStore {
                         length: flow.length, batchID: batch, candidates: candidates, options: options,
                         selectedSelectionID: candidates.first?.id)
                     appendLog(\.wizardLog, ["Express: \(candidates.count) candidates ready to review."])
+                    await recordHighlightCandidates(candidates, projectID: projectID, flow: .expressHighlights,
+                        batchID: batch, settings: highlightSettings(options: options, length: flow.length))
                     await refreshWizardSelections()
                 } catch is CancellationError {
                     if generation == profileGeneration { appendLog(\.wizardLog, ["Finding Express footage stopped."]) }
@@ -204,6 +206,13 @@ extension AppStore {
                     miniRun?.candidates[index].note = ""
                     miniRun?.selectedSelectionID = selectionID
                     miniRun?.requestedCard = .footage
+                    if let candidate = miniRun?.candidates[index] {
+                        let parent = try? await database.latestHighlightID(projectID: run.projectID, selectionID: selectionID)
+                        let typed = note.trimmingCharacters(in: .whitespacesAndNewlines)
+                        await recordHighlightCandidates([candidate], projectID: run.projectID, flow: .expressHighlights,
+                            batchID: run.batchID, settings: highlightSettings(options: run.options, length: run.length),
+                            parentID: parent, note: typed.isEmpty ? nil : typed)
+                    }
                     await refreshWizardSelections()
                 } catch is CancellationError {
                     if generation == profileGeneration { appendLog(\.wizardLog, ["Regenerating Express candidate stopped."]) }
@@ -255,7 +264,16 @@ extension AppStore {
                 try Task.checkCancellation()
                 guard generation == profileGeneration, activeProjectID == projectID else { return }
                 let people = people
-                let remembered = MiniWizardMemory.qaKept(profileName: activeProfile.profileName, videoID: video.id)
+                // Kept exchanges live in qa_picks per project; the old
+                // per-profile UserDefaults list is imported once.
+                let profileName = activeProfile.profileName
+                let legacyKept = MiniWizardMemory.qaKept(profileName: profileName, videoID: video.id)
+                _ = try? await qaPickSaveTask?.value
+                let remembered = Set(try await database.fetchQAPicks(projectID: projectID, videoID: video.id,
+                                                                     importing: legacyKept.sorted()))
+                if !legacyKept.isEmpty { MiniWizardMemory.saveQAKept([], profileName: profileName, videoID: video.id) }
+                try Task.checkCancellation()
+                guard generation == profileGeneration, activeProjectID == projectID else { return }
                 let qa = await Task.detached(priority: .userInitiated) {
                     let namedTurns = TranscriptSpeakers.named(speakers.turns, roster: speakers.roster)
                     let labels = rows.reduce(into: [Int64: String]()) { labels, row in
@@ -296,6 +314,72 @@ extension AppStore {
         miniRuns[.qa]?.qa = qa
     }
 
+    /// Ticking an exchange saves only that change (insert or delete the
+    /// toggled scenes' qa_picks rows), never a rewrite of the whole list,
+    /// so kept exchanges a teammate synced in are not deleted.
+    func setMiniQAKept(_ kept: Set<Int64>, batchID: String) {
+        guard let run = miniRun, run.batchID == batchID, run.footageKind == .qa,
+              run.projectID == activeProjectID, let qa = run.qa, let database else { return }
+        miniRun?.qa?.kept = kept
+        let sectionIDs = qa.sections.map(\.id)
+        let ordered = sectionIDs.filter(kept.contains) + kept.subtracting(sectionIDs).sorted()
+        let added = kept.subtracting(qa.kept)
+        let inserted = ordered.enumerated().filter { added.contains($0.element) }
+            .map { (sceneID: $0.element, position: $0.offset) }
+        let deleted = Array(qa.kept.subtracting(kept))
+        guard !inserted.isEmpty || !deleted.isEmpty else { return }
+        let projectID = run.projectID
+        let videoID = run.video.id
+        let previous = qaPickSaveTask
+        let generation = profileGeneration
+        qaPickSaveTask = Task {
+            _ = try? await previous?.value
+            do {
+                try await database.applyQAPickDelta(projectID: projectID, videoID: videoID,
+                                                    inserted: inserted, deleted: deleted)
+            } catch {
+                if generation == profileGeneration { presentError("Could not save the kept exchanges", error) }
+                throw error
+            }
+        }
+    }
+
+    /// After a Team Sync pull that changed Express picks, reload the picks
+    /// of every open Express run from the database, once that kind's pending
+    /// local writes have finished. A write queued meanwhile wins: the run is
+    /// left alone and the next pull reloads it.
+    func refreshMiniPicksAfterSync(changedTables: Set<String>) async {
+        guard let database, !isWizardRunning else { return }
+        let generation = profileGeneration
+        if changedTables.contains("transcript_picks"), let run = miniRuns[.transcript], run.transcript != nil {
+            let pending = transcriptPickSaveTask
+            _ = try? await pending?.value
+            if let picks = try? await database.fetchTranscriptPicks(projectID: run.projectID, videoID: run.video.id),
+               generation == profileGeneration, transcriptPickSaveTask == pending, !isWizardRunning,
+               miniRuns[.transcript]?.batchID == run.batchID, miniRuns[.transcript]?.transcript != nil {
+                miniRuns[.transcript]?.transcript?.picks = picks
+            }
+        }
+        if changedTables.contains("fight_picks"), let run = miniRuns[.fightMetrics], run.fight != nil {
+            let pending = fightPickSaveTask
+            _ = try? await pending?.value
+            if let picks = try? await database.fetchFightPicks(projectID: run.projectID, videoID: run.video.id),
+               generation == profileGeneration, fightPickSaveTask == pending, !isWizardRunning,
+               miniRuns[.fightMetrics]?.batchID == run.batchID, miniRuns[.fightMetrics]?.fight != nil {
+                miniRuns[.fightMetrics]?.fight?.picks = picks
+            }
+        }
+        if changedTables.contains("qa_picks"), let run = miniRuns[.qa], run.qa != nil {
+            let pending = qaPickSaveTask
+            _ = try? await pending?.value
+            if let kept = try? await database.fetchQAPicks(projectID: run.projectID, videoID: run.video.id),
+               generation == profileGeneration, qaPickSaveTask == pending, !isWizardRunning,
+               miniRuns[.qa]?.batchID == run.batchID, let qa = miniRuns[.qa]?.qa {
+                miniRuns[.qa]?.qa?.kept = Set(kept).intersection(qa.sections.map(\.id))
+            }
+        }
+    }
+
     /// Save the chosen ranges, preserving manual source-clock cutaways.
     func recordMiniQASelections(opening card: MiniWizardFlow.Card = .settings, then: @escaping @MainActor () -> Void = {}) {
         guard let run = miniRun, run.projectID == activeProjectID, run.footageKind == .qa,
@@ -310,6 +394,7 @@ extension AppStore {
                    activeProjectID == run.projectID, miniRun?.batchID == run.batchID { then() }
             }
             do {
+                _ = try? await qaPickSaveTask?.value
                 try await sceneEditSaveTask?.value
                 try await wizardSelectionSaveTask?.value
                 try Task.checkCancellation()
@@ -341,11 +426,14 @@ extension AppStore {
     /// Generate from the Generate panel. Q&A, Transcript and Fight metrics
     /// keep their footage as picks; their selections are written when
     /// Settings opens, so a panel used straight after launch writes them now.
-    func generateMiniVideosRecordingPicks(settings: MiniWizardSettings, flow: MiniWizardFlow, batchID: String) {
+    /// Open in Editor (`mode: .openInEditor`) records the picks the same way,
+    /// then builds the Builder timeline Generate would render.
+    func generateMiniVideosRecordingPicks(settings: MiniWizardSettings, flow: MiniWizardFlow, batchID: String,
+                                          mode: WizardBatchMode = .render) {
         guard let run = miniRun, run.batchID == batchID, !isWizardRunning else { return }
         let generate: @MainActor () -> Void = { [weak self] in
             guard let self, self.miniRun?.batchID == batchID else { return }
-            self.generateMiniVideos(settings: settings, flow: flow, batchID: batchID)
+            self.generateMiniVideos(settings: settings, flow: flow, batchID: batchID, mode: mode)
         }
         // Picks are saved again on every Generate: edits made in Footage after
         // Settings opened would otherwise render the earlier ranges.
@@ -362,7 +450,8 @@ extension AppStore {
         generate()
     }
 
-    func generateMiniVideos(settings miniSettings: MiniWizardSettings, flow: MiniWizardFlow, batchID: String) {
+    func generateMiniVideos(settings miniSettings: MiniWizardSettings, flow: MiniWizardFlow, batchID: String,
+                            mode: WizardBatchMode = .render) {
         guard let run = miniRun, run.batchID == batchID, run.projectID == activeProjectID,
               let database, !isWizardRunning else { return }
         let candidates = run.candidates.filter {
@@ -396,6 +485,8 @@ extension AppStore {
         let footageKind = run.footageKind
         let selectionIDs = candidates.map { ($0.id, $0.take.id) }
         let combinedName = candidates[0].selection.name
+        let highlight = WizardHighlightCapture(flow: WizardHighlightFlow(footageKind: footageKind),
+            settings: highlightSettings(options: options, run: run, mini: miniSettings, length: flow.length))
         generateWizardBatch(projectID: run.projectID, options: options, oneReel: true,
                             cameraFocus: flow.showsCameraFocus, formatName: run.options.formatPreset,
                             stopMessage: "Express rendering stopped.", failureTitle: "Could not generate Express reel",
@@ -418,7 +509,7 @@ extension AppStore {
         }, combine: { database, takes in
             try await database.recordMiniCombinedTake(projectID: run.projectID, miniBatch: batchID,
                                                       name: combinedName, takes: takes, options: run.options.step1)
-        }, source: .express, onResults: { [weak self] in
+        }, source: .express, highlight: highlight, mode: mode, onResults: { [weak self] in
             // Results is the root sheet; its dismissal leaves Mini ready for another render.
             guard let self, self.miniRun?.batchID == batchID, footageKind == self.miniRun?.footageKind else { return }
             self.miniRun?.requestedCard = .settings

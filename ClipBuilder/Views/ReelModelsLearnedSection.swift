@@ -51,6 +51,7 @@ struct ReelModelsLearnedSection: View {
                     modelCard(item)
                 }
             }
+            TeachingQueueSection()
             if !available.isEmpty {
                 VStack(alignment: .leading, spacing: 12) {
                     SectionLabel("Models from contributors")

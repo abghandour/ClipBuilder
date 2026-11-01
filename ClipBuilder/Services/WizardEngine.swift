@@ -15,7 +15,11 @@ import Foundation
 //   House style / Lessons     distillation (task .distill)
 //   Builder pre-fill          plan → TimelineDocument for the Builder (shared podcast cuts
 //                             in Services/Wizard/WizardPodcastTimeline.swift)
-//   Assembly                  accepted plan → finished reel, persisted with its take link
+//   Assembly                  accepted plan → finished reel, persisted with its take link:
+//                             prepareAssembly (the editable document and burn-ins, no encode)
+//                             then renderPrepared; editorDocument (Open in Editor) stops after
+//                             prepareAssembly. The document records caption, brand, content-box,
+//                             camera and music choices so the Builder re-renders the same reel.
 // Pure plan post-processing, podcast Q&A cuts and bounded transcript text live
 // in Services/Wizard/WizardPlanRules.swift; the critic in Services/ReelCritic.swift; assembly at the end of this file.
 
@@ -1028,9 +1032,7 @@ actor WizardEngine {
 
         if !signals.preferences.isEmpty {
             sections.append("### A/B Choices (the user compared variations — replicate what wins)\n"
-                + signals.preferences.map {
-                    "- CHOSE \"\($0.chosenRationale)\" OVER \"\($0.rejectedRationale)\""
-                }.joined(separator: "\n"))
+                + signals.preferences.map(HookVariantBuilder.preferenceLine).joined(separator: "\n"))
         }
 
         if !signals.publishedPerformance.isEmpty {
@@ -2775,7 +2777,8 @@ actor WizardEngine {
                   deferFinish: Bool = false,
                   emit: @escaping @Sendable (String) -> Void,
                   renderPlan: (@Sendable (WizardPlan, WizardOptions) async throws -> Void)? = nil,
-                  renderTake: (@Sendable (WizardSelectionTake, WizardOptions) async throws -> Void)? = nil) async throws -> WizardReelBatch.Finish? {
+                  renderTake: (@Sendable (WizardSelectionTake, WizardOptions) async throws -> Void)? = nil,
+                  editorSink: (@Sendable (TimelineDocument) async throws -> Void)? = nil) async throws -> WizardReelBatch.Finish? {
         guard let saved = try await database.wizardSelectionTake(id: take.id),
               let selection = try await database.wizardSelection(id: saved.selectionID) else {
             throw WizardSelectionError.missingTake
@@ -2802,7 +2805,27 @@ actor WizardEngine {
                                          profile: profile, database: database, batchID: batchID,
                                          tagTextPrepared: tagTextPrepared, preparedTagFields: preparedTagFields,
                                          deferFinish: deferFinish,
-                                         emit: emit, renderPlan: renderPlan)
+                                         emit: emit, renderPlan: renderPlan, editorSink: editorSink)
+    }
+
+    /// Open in Editor: the Builder document Generate would render for this
+    /// take — the same re-read, option merge, camera focus, pacing,
+    /// transitions, music, overlay style, beat snap and `prepareAssembly` as
+    /// `makeReel` — with title/outro cards encoded and nothing else rendered.
+    /// An unreviewed dub keeps the prepared lines; the Builder reviews them.
+    func editorDocument(take: WizardSelectionTake, options: WizardOptions,
+                        profile: BrandProfile, database: Database,
+                        batchID: String? = nil, tagTextPrepared: Bool = false,
+                        preparedTagFields: [PersonTagField] = [],
+                        emit: @escaping @Sendable (String) -> Void) async throws -> TimelineDocument {
+        let box = WizardEditorDocumentBox()
+        try await makeReel(take: take, options: options, profile: profile, database: database,
+                           batchID: batchID, tagTextPrepared: tagTextPrepared, preparedTagFields: preparedTagFields,
+                           emit: emit, editorSink: { box.set($0) })
+        guard let document = box.value else {
+            throw AIError.unusableResponse("The take produced no editable timeline.")
+        }
+        return document
     }
 
     /// Prepare each source once, before any clips are assembled or extracted in parallel.
@@ -2878,7 +2901,8 @@ actor WizardEngine {
                                  batchID: String? = nil, tagTextPrepared: Bool = false, preparedTagFields: [PersonTagField] = [],
                                  deferFinish: Bool = false,
                                  emit rawEmit: @escaping @Sendable (String) -> Void,
-                                 renderPlan: (@Sendable (WizardPlan, WizardOptions) async throws -> Void)? = nil) async throws -> WizardReelBatch.Finish? {
+                                 renderPlan: (@Sendable (WizardPlan, WizardOptions) async throws -> Void)? = nil,
+                                 editorSink: (@Sendable (TimelineDocument) async throws -> Void)? = nil) async throws -> WizardReelBatch.Finish? {
         var options = options
         // Highlights is a finder recipe. Saved highlight cuts use the podcast renderer,
         // including camera focus, captions, bumpers and branding chosen in step 2.
@@ -2949,16 +2973,29 @@ actor WizardEngine {
                 try await prepareCaptionTranslations(plan: plan, options: options, sceneMap: sceneMap,
                                                      database: database, emit: emit)
             }
+            if options.formatPreset != "podcast" {
+                plan = await snapCutsToBeats(plan, music: music, sceneMap: sceneMap, emit: emit)
+            }
             // Exercise the prepared render plan in tests without encoding or calling caption AI.
             if let renderPlan {
                 try await renderPlan(plan, options)
                 return nil
             }
-            if options.formatPreset != "podcast" {
-                plan = await snapCutsToBeats(plan, music: music, sceneMap: sceneMap, emit: emit)
+            var brollCache = WizardPodcastBRoll.Cache()
+            // Open in Editor: the document assemble would build and render, cards
+            // encoded where it points, and no video.
+            if let editorSink {
+                emit("Preparing the editable timeline...")
+                let scratch = try await render.makeScratchDirectory()
+                defer { try? FileManager.default.removeItem(at: scratch) }
+                let prepared = try await prepareAssembly(plan: plan, options: options, profile: profile,
+                    database: database, sceneMap: sceneMap, brollCache: &brollCache, batchID: batchID,
+                    scratch: scratch, reviewsDub: false, emit: emit)
+                try await materializeCards(prepared)
+                try await editorSink(prepared.document)
+                return nil
             }
             emit("Phase 3: Assembling the approved cuts...")
-            var brollCache = WizardPodcastBRoll.Cache()
             let result = try await assemble(plan: plan, music: music, options: options,
                 profile: profile, database: database, sceneMap: sceneMap,
                 brollCache: &brollCache, batchID: batchID, selectionTakeID: takeID, emit: emit)
@@ -3242,6 +3279,7 @@ actor WizardEngine {
         proxy.renderSettings.customWidth = max(240, options.renderSettings.width / 3)
         proxy.renderSettings.customHeight = max(240, options.renderSettings.height / 3)
         proxy.renderSettings.quality = .compact
+        proxy.renderSettings.speechPolish = nil
         proxy.addCaptions = false
         proxy.enableTextOverlays = false
         proxy.useMusic = false
@@ -3472,7 +3510,7 @@ actor WizardEngine {
         \(reviews.isEmpty ? "None." : reviews.map(reviewLines).joined(separator: "\n"))
 
         ## A/B Choices (the user picked one variation over another)
-        \(preferences.isEmpty ? "None." : preferences.map { "- CHOSE \"\($0.chosenRationale)\" OVER \"\($0.rejectedRationale)\"" }.joined(separator: "\n"))
+        \(preferences.isEmpty ? "None." : preferences.map(HookVariantBuilder.preferenceLine).joined(separator: "\n"))
 
         ## Free-Text Feedback (newest first)
         \(feedback.isEmpty ? "None." : feedback.map { "- \"\($0.feedback)\"" }.joined(separator: "\n"))
@@ -3669,10 +3707,18 @@ actor WizardEngine {
                 } else if var overlay = composition.texts.first {
                     overlay.startTime = cursor
                     overlay.endTime = cursor + duration
-                    // Builder's renderer has no word_reveal; degrade to fade.
                     let animation = clip.overlayAnimation ?? "fade"
-                    overlay.transIn = animation == "word_reveal" ? "fade" : animation
-                    overlay.transOut = "fade"
+                    if animation == WordRevealSchedule.animation {
+                        // The Builder renders the extraction's progressive
+                        // words and holds the full text to the cut's end;
+                        // older readers see a fade in.
+                        overlay.animation = animation
+                        overlay.transIn = "fade"
+                        overlay.transOut = "cut"
+                    } else {
+                        overlay.transIn = animation
+                        overlay.transOut = "fade"
+                    }
                     document.textOverlays.append(overlay)
                 }
             }
@@ -3803,7 +3849,13 @@ actor WizardEngine {
             prepared.videoTrack.append(normalized)
             sourceIndex += 1
         }
-        prepared.videoTrack += document.videoTrack.filter(\.isCutaway)
+        // Cutaways render in this pass with the whole frame, as before content
+        // windows were recorded on the editable document.
+        prepared.videoTrack += document.videoTrack.filter(\.isCutaway).map { clip in
+            var clip = clip
+            clip.contentWindow = nil
+            return clip
+        }
         return prepared
     }
 
@@ -3815,6 +3867,50 @@ actor WizardEngine {
         var document: TimelineDocument
     }
 
+    /// The Wizard's retained title/outro cards (and its brand layers) live
+    /// under this folder; the Builder renderer keeps brand layers off them.
+    nonisolated static var wizardCardsRoot: URL {
+        SettingsStore.cacheDirectory.appendingPathComponent("wizard-cards", isDirectory: true)
+    }
+
+    nonisolated static func isWizardCard(_ path: String) -> Bool {
+        path.hasPrefix(wizardCardsRoot.path + "/")
+    }
+
+    /// Tests only: receives the document `prepareAssembly` built inside
+    /// `assemble`, before any encode; throwing stops the render there.
+    @TaskLocal static var preparedDocumentProbe: (@Sendable (TimelineDocument) async throws -> Void)?
+
+    /// Everything `assemble` decides before it encodes: the editable
+    /// document (what the Builder opens and `timeline_json` stores), the
+    /// per-cut extraction documents, and the burn-ins the extraction adds.
+    private nonisolated struct PreparedAssembly {
+        var plan: WizardPlan
+        var recordedPlanJSON: String?
+        /// The profile with the run's caption style applied.
+        var profile: BrandProfile
+        var captionStyle: CaptionStyle
+        var people: [PersonRecord]
+        var tagText: [String: String]
+        var document: TimelineDocument
+        var cutDocuments: [Int: TimelineDocument]
+        var podcastCuts: [Int: TimelineDocument]
+        var brandOverlays: [URL]
+        var batchWatermark: [RenderEngine.ClipOverlay]
+        var clipWatermark: [RenderEngine.ClipOverlay]
+        var jobs: [(index: Int, clip: WizardPlanClip, scene: SceneRecord)]
+        var contentBoxes: [Int: RenderEngine.ContentBox]
+        var captionOrdinals: [String: Int]
+        var cards: URL
+        var introCard: URL?
+        var outroCard: URL?
+        var pendingCards: [(png: URL, output: URL, duration: Double)]
+        var retainedCards: [(source: URL, destination: URL)]
+        var bumperLog: [String]
+        var cutaways: [TimelineClip]
+        var finalOverlayBlocks: [OverlayBlockItem]
+    }
+
     private func assemble(plan: WizardPlan,
                           music: [(name: String, url: URL)],
                           options: WizardOptions,
@@ -3824,7 +3920,6 @@ actor WizardEngine {
                           brollCache: inout WizardPodcastBRoll.Cache,
                           batchID: String? = nil, selectionTakeID: Int64? = nil,
                           emit: @escaping @Sendable (String) -> Void) async throws -> AssemblyResult {
-        let plan = WizardNameTags.renderPlan(plan, options: options)
         let renderStarted = ContinuousClock.now
         emit("Wizard render start")
         defer {
@@ -3834,32 +3929,62 @@ actor WizardEngine {
 
         let scratch = try await render.makeScratchDirectory()
         defer { try? FileManager.default.removeItem(at: scratch) }
+        let prepared = try await prepareAssembly(plan: plan, options: options, profile: profile, database: database,
+                                                 sceneMap: sceneMap, brollCache: &brollCache, batchID: batchID,
+                                                 scratch: scratch, reviewsDub: true, emit: emit)
+        if let probe = Self.preparedDocumentProbe { try await probe(prepared.document) }
+        return try await renderPrepared(prepared, music: music, options: options, database: database,
+                                        sceneMap: sceneMap, batchID: batchID, selectionTakeID: selectionTakeID,
+                                        scratch: scratch, emit: emit)
+    }
 
-        var clipURLs: [URL] = []
-        var clipTransitions: [String] = []
+    /// The first half of `assemble`: brand layers, per-cut documents, the
+    /// editable document with name tags, captions, cards, bumpers, B-roll,
+    /// overlay blocks and dub, and the analysis the extraction needs
+    /// (caption speaker order, content boxes). Nothing here encodes video
+    /// except B-roll planning and dub preparation, which the document needs.
+    /// `reviewsDub` false (Open in Editor) keeps the prepared dub unreviewed.
+    private func prepareAssembly(plan: WizardPlan,
+                                 options: WizardOptions,
+                                 profile: BrandProfile,
+                                 database: Database,
+                                 sceneMap: [Int64: SceneRecord],
+                                 brollCache: inout WizardPodcastBRoll.Cache,
+                                 batchID: String?, scratch: URL, reviewsDub: Bool,
+                                 emit: @escaping @Sendable (String) -> Void) async throws -> PreparedAssembly {
+        // Highlight history re-renders this plan (renderPlan reapplies there).
+        let recordedPlanJSON = (try? JSONEncoder().encode(plan)).map { String(decoding: $0, as: UTF8.self) }
+        let plan = WizardNameTags.renderPlan(plan, options: options)
+
         var introCard: URL?
         var outroCard: URL?
         var pendingCards: [(png: URL, output: URL, duration: Double)] = []
         var retainedCards: [(source: URL, destination: URL)] = []
+        // Brand cards and brand layers must outlive scratch cleanup so Builder can reopen them.
+        let cards = Self.wizardCardsRoot.appendingPathComponent(UUID().uuidString, isDirectory: true)
+        try FileManager.default.createDirectory(at: cards, withIntermediateDirectories: true)
 
         // Brand-kit layers burned onto EVERY clip: the corner watermark and
         // the full-video result headline. Rendered once, reused per clip.
         let accent = profile.accentColor.isEmpty ? BrandRenderer.defaultAccent : profile.accentColor
         var brandOverlays: [URL] = []
+        var brandLayers: [BrandLayerItem] = []
         // A chosen overlay watermark that no longer exists falls back to the logo
         // (the Express picker shows "Brand logo" in that case).
         let watermarkOverlayAvailable = options.watermarkOverlayTemplate
             .flatMap { OverlayTemplateStore.composition(named: $0) }.map { !$0.isEmpty } ?? false
         if options.includeWatermark, !watermarkOverlayAvailable,
            let logoURL = profile.logoURL,
-           let png = BrandRenderer.watermark(logoURL: logoURL, to: scratch,
+           let png = BrandRenderer.watermark(logoURL: logoURL, to: cards,
                                              opacity: options.watermarkOpacity ?? BrandRenderer.logoWatermarkOpacity) {
             brandOverlays.append(png)
+            brandLayers.append(BrandLayerItem(path: png.path, kind: BrandLayerItem.watermark))
         }
         if options.includeHeadline, let headline = plan.headline,
            let png = BrandRenderer.headline(headline, brandName: profile.brandName,
-                                            accent: accent, to: scratch) {
+                                            accent: accent, to: cards) {
             brandOverlays.append(png)
+            brandLayers.append(BrandLayerItem(path: png.path, kind: BrandLayerItem.headline))
             emit("Headline: \(headline)")
         }
 
@@ -3946,9 +4071,6 @@ actor WizardEngine {
             plan.clips.enumerated().compactMap { index, clip in
                 sceneMap[clip.sceneID].map { (index, clip, $0) }
             }
-        let clipCount = plan.clips.count
-        let captionFallbacks = WizardCaptionFallbackLog()
-        let brandOverlayFiles = brandOverlays
         var editPlan = plan
         if !options.enableTextOverlays {
             for index in editPlan.clips.indices {
@@ -3960,6 +4082,21 @@ actor WizardEngine {
             renderSettings: options.renderSettings, pacing: options.pacing, framing: options.requestedFraming,
             podcastCuts: cutDocuments, videoTypes: sourceTypes)
             .keepingOverlaysClearOfPlatformChrome()
+        // Screen recordings and reposts bake black bars into the pixels: each
+        // cut's extraction crops to the detected content box. Detect it once
+        // here so the editable document carries the same window per clip.
+        let contentBoxes = try await WizardTiming.measure("content boxes", emit: emit, minimumSeconds: 0.05) {
+            try await Self.detectContentBoxes(jobs: jobs, render: render)
+        }
+        Self.applyContentWindows(contentBoxes, plan: editPlan, sceneMap: sceneMap, to: &document)
+        // Neither the profile nor the run chose: spoken recipes and
+        // podcast/interview sources get Speech Polish, fight reels never do.
+        // The saved document carries the choice so a Builder re-render matches.
+        if document.renderSettings.speechPolish == nil {
+            let types = plan.clips.map { clip in sceneMap[clip.sceneID].flatMap { sourceTypes[$0.videoID] } }
+            document.renderSettings.speechPolish = SpeechPolish.wizardDefault(recipeID: options.formatPreset,
+                                                                             sourceTypes: types)
+        }
         if let look = Self.lookEffect(for: options) {
             // The clips are graded at extraction; the editable document keeps
             // the look on its tracks so Builder shows it and re-renders it.
@@ -3989,10 +4126,6 @@ actor WizardEngine {
             document.videoTrack[index].captions = options.addCaptions && !document.videoTrack[index].isCutaway && document.videoTrack[index].track == 0
                 ? (options.captionPositionOverride ?? captionStyle.position) : "none"
         }
-        // Brand cards must outlive scratch cleanup so Builder can reopen them.
-        let cards = SettingsStore.cacheDirectory.appendingPathComponent("wizard-cards/" + UUID().uuidString,
-                                                                       isDirectory: true)
-        try FileManager.default.createDirectory(at: cards, withIntermediateDirectories: true)
         func retainCard(_ url: URL, duration: Double, at time: Double, transition: String?) throws {
             let retained = cards.appendingPathComponent(url.lastPathComponent)
             retainedCards.append((url, retained))
@@ -4083,7 +4216,7 @@ actor WizardEngine {
         finalOverlayBlocks.removeAll { $0.uid == foldedWatermarkID }
         if !batchWatermark.isEmpty { emit("Watermark folded into clip segment") }
         if let language = options.dubLanguage, !language.isEmpty {
-            guard let reviewDub else {
+            if reviewsDub, reviewDub == nil {
                 throw ScriptError.invalid("Review the dubbed lines in Clip Builder before rendering.")
             }
             var speechDocument = document
@@ -4100,29 +4233,19 @@ actor WizardEngine {
             let prepared = try await DubPreparation.prepare(document: speechDocument, scenes: Array(sceneMap.values),
                 settings: settings, database: database, ai: ai, speech: .forEngine(settings.engine),
                 onDevice: captionOnDevice, log: emit)
-            emit("Review dubbed lines before rendering")
-            let reviewed = try await reviewDub(prepared, options.projectID, profile.profileName)
-            try Task.checkCancellation()
-            document.dub = reviewed.settings
-            document.dubLines = reviewed.lines
+            if reviewsDub, let reviewDub {
+                emit("Review dubbed lines before rendering")
+                let reviewed = try await reviewDub(prepared, options.projectID, profile.profileName)
+                try Task.checkCancellation()
+                document.dub = reviewed.settings
+                document.dubLines = reviewed.lines
+            } else {
+                // Open in Editor: the Builder reviews the dub before its render.
+                document.dub = prepared.settings
+                document.dubLines = prepared.lines
+            }
         }
 
-        // Even generated title/outro videos wait for the approved dub review.
-        for card in pendingCards {
-            try Task.checkCancellation()
-            try await BrandRenderer.cardClip(png: card.png, duration: card.duration, output: card.output)
-        }
-        for card in retainedCards {
-            try FileManager.default.copyItem(at: card.source, to: card.destination)
-        }
-        // Dubbed clips caption the spoken lines, timed to the synthesized speech.
-        let dubClips = Dictionary(uniqueKeysWithValues: document.videoTrack.map { ($0.uid, $0) })
-        let dubLinesByJob: [Int: [DubLine]] = Dictionary(uniqueKeysWithValues: jobs.map { job in
-            (job.index, (document.dubLines ?? []).filter { line in
-                guard let owner = dubClips[line.clipUID] else { return false }
-                return owner.videoFile == job.scene.videoPath && !owner.muted
-            })
-        })
         var captionEvidence = CaptionSpeakerEvidence()
         if options.addCaptions, options.speakerCaptionPositions?.isEmpty == false {
             let sourceScenes = try await database.fetchScenes(projectID: options.projectID,
@@ -4135,19 +4258,163 @@ actor WizardEngine {
         }
         let captionOrdinals = CaptionSpeakerOrder.ordinals(turns: captionEvidence.turns,
             rows: captionEvidence.rows, roster: captionEvidence.rosterKeys)
-        let extracted = try await WizardTiming.measure("extract clips", emit: emit) {
-            try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job in
-                guard let cutDocument = cutDocuments[job.index] else {
-                    throw AIError.unusableResponse("The planned clip has no render document.")
+
+        // What the extraction burns in outside the document, recorded on it
+        // so the Builder re-renders the same reel (nil = Builder defaults).
+        Self.recordWizardRenderChoices(options: options, plan: plan, captionOrdinals: captionOrdinals,
+                                       brandLayers: brandLayers, to: &document)
+
+        return PreparedAssembly(plan: plan, recordedPlanJSON: recordedPlanJSON, profile: profile,
+                                captionStyle: captionStyle, people: people, tagText: tagText,
+                                document: document, cutDocuments: cutDocuments, podcastCuts: podcastCuts,
+                                brandOverlays: brandOverlays, batchWatermark: batchWatermark,
+                                clipWatermark: clipWatermark, jobs: jobs, contentBoxes: contentBoxes,
+                                captionOrdinals: captionOrdinals, cards: cards,
+                                introCard: introCard, outroCard: outroCard,
+                                pendingCards: pendingCards, retainedCards: retainedCards,
+                                bumperLog: bumperLog, cutaways: cutaways, finalOverlayBlocks: finalOverlayBlocks)
+    }
+
+    /// Encode the title/outro cards and copy them where the document points.
+    private func materializeCards(_ prepared: PreparedAssembly) async throws {
+        for card in prepared.pendingCards {
+            try Task.checkCancellation()
+            try await BrandRenderer.cardClip(png: card.png, duration: card.duration, output: card.output)
+        }
+        for card in prepared.retainedCards {
+            try FileManager.default.copyItem(at: card.source, to: card.destination)
+        }
+    }
+
+    /// One content box per planned cut (nil entries: no bars found).
+    private nonisolated static func detectContentBoxes(jobs: [(index: Int, clip: WizardPlanClip, scene: SceneRecord)],
+                                                       render: RenderEngine) async throws -> [Int: RenderEngine.ContentBox] {
+        let boxes = try await BoundedConcurrency.map(jobs.map { ($0.index, $0.clip, $0.scene) }, limit: FFmpeg.jobLimit) { _, job in
+            try Task.checkCancellation()
+            let box = await render.detectContentBox(source: job.2.videoURL, start: job.1.start,
+                                                    duration: job.1.end - job.1.start)
+            return (job.0, box)
+        }
+        return boxes.reduce(into: [:]) { result, entry in
+            if let box = entry.1 { result[entry.0] = box }
+        }
+    }
+
+    /// Give every clip of a cut the cut's content window, exactly as the
+    /// extraction keys it: by the cut's source file, bumpers excluded.
+    /// Runs on the document straight from `timelineDocument`, whose cuts
+    /// sit back to back from 0 on the plan's clock.
+    nonisolated static func applyContentWindows(_ boxes: [Int: RenderEngine.ContentBox], plan: WizardPlan,
+                                                sceneMap: [Int64: SceneRecord], to document: inout TimelineDocument) {
+        guard !boxes.isEmpty else { return }
+        var cursor = 0.0
+        for (index, clip) in plan.clips.enumerated() {
+            guard let scene = sceneMap[clip.sceneID] else { continue }
+            let duration = (clip.end - clip.start) / clip.speed
+            guard duration > 0 else { continue }
+            defer { cursor += duration }
+            guard let box = boxes[index] else { continue }
+            let window = FreeCropRect(xFrac: box.x, yFrac: box.y, wFrac: box.w, hFrac: box.h)
+            let source = scene.videoURL.path
+            for item in document.videoTrack.indices {
+                let piece = document.videoTrack[item]
+                guard !piece.bumper, piece.startTime >= cursor - 0.000001, piece.startTime < cursor + duration - 0.000001 else { continue }
+                let path = piece.sceneID.flatMap { sceneMap[$0]?.videoPath } ?? piece.videoFile
+                guard let path, URL(fileURLWithPath: path).path == source else { continue }
+                document.videoTrack[item].contentWindow = window
+            }
+        }
+    }
+
+    /// The caption style, language, placement and speaker positions the
+    /// extraction burns in, the brand layers, the Center Stage default and
+    /// the music mix, written onto the editable document.
+    nonisolated static func recordWizardRenderChoices(options: WizardOptions, plan: WizardPlan,
+                                                      captionOrdinals: [String: Int], brandLayers: [BrandLayerItem],
+                                                      to document: inout TimelineDocument) {
+        document.captionStyleID = options.captionStyleID
+        document.captionLanguage = options.effectiveCaptionLanguage ?? ""
+        document.captionPosition = options.captionPositionOverride ?? "auto"
+        document.captionSafeAreaOnly = options.safeAreaOnly == true
+        document.captionSafeAreaPlatforms = options.safeAreaOnly == true ? options.resolvedSafeAreaPlatforms : nil
+        var speakerPositions: [String: String] = [:]
+        if options.addCaptions, let slots = options.speakerCaptionPositions, !slots.isEmpty {
+            for person in captionOrdinals.keys {
+                let position = CaptionSpeakerOrder.position(forPerson: person, ordinals: captionOrdinals,
+                                                            positions: slots, runPosition: "")
+                if !position.isEmpty { speakerPositions[person] = position }
+            }
+        }
+        document.speakerCaptionPositions = speakerPositions.isEmpty ? nil : speakerPositions
+        document.brandLayers = brandLayers.isEmpty ? nil : brandLayers
+        // Express burns brand over its extraction, which holds the manual
+        // cutaways; the full Wizard's cutaways cover the branded cut later.
+        document.brandLayerStage = brandLayers.isEmpty || options.manualBRoll == true
+            ? nil : TimelineDocument.brandUnderCutaways
+        // Each cut's extraction falls back to "balanced" (its first clip's
+        // framing camera when that names one; clips that name one use it).
+        document.framingCamera = "balanced"
+        document.musicMix = document.soundTrack.isEmpty ? nil : TimelineDocument.wizardMusicMix
+    }
+
+    /// The second half of `assemble`: cards, per-cut extraction with the
+    /// burn-ins, join or compositor pass, music, Speech Polish, the quality
+    /// gate, and the Library record carrying the prepared document.
+    private func renderPrepared(_ prepared: PreparedAssembly,
+                                music: [(name: String, url: URL)],
+                                options: WizardOptions,
+                                database: Database,
+                                sceneMap: [Int64: SceneRecord],
+                                batchID: String?, selectionTakeID: Int64?, scratch: URL,
+                                emit: @escaping @Sendable (String) -> Void) async throws -> AssemblyResult {
+        let plan = prepared.plan
+        let profile = prepared.profile
+        let document = prepared.document
+        let cutDocuments = prepared.cutDocuments
+        let podcastCuts = prepared.podcastCuts
+        let jobs = prepared.jobs
+        let cutaways = prepared.cutaways
+        let finalOverlayBlocks = prepared.finalOverlayBlocks
+        let people = prepared.people
+        let tagText = prepared.tagText
+        let captionStyle = prepared.captionStyle
+        let captionOrdinals = prepared.captionOrdinals
+        let contentBoxes = prepared.contentBoxes
+        let clipWatermark = prepared.clipWatermark
+        let brandOverlayFiles = prepared.brandOverlays
+        let clipCount = plan.clips.count
+        let captionFallbacks = WizardCaptionFallbackLog()
+        var clipURLs: [URL] = []
+        var clipTransitions: [String] = []
+
+        // Even generated title/outro videos wait for the approved dub review.
+        try await materializeCards(prepared)
+        // Dubbed clips caption the spoken lines, timed to the synthesized speech.
+        let dubClips = Dictionary(uniqueKeysWithValues: document.videoTrack.map { ($0.uid, $0) })
+        let dubLinesByJob: [Int: [DubLine]] = Dictionary(uniqueKeysWithValues: jobs.map { job in
+            (job.index, (document.dubLines ?? []).filter { line in
+                guard let owner = dubClips[line.clipUID] else { return false }
+                return owner.videoFile == job.scene.videoPath && !owner.muted
+            })
+        })
+        // Review flags: every framing fallback the extraction and compositor renders hit.
+        let framingFallbacks = RenderFramingFallbackCollector()
+        let extracted = try await RenderFramingFallbackCollector.$current.withValue(framingFallbacks) {
+            try await WizardTiming.measure("extract clips", emit: emit) {
+                try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job in
+                    guard let cutDocument = cutDocuments[job.index] else {
+                        throw AIError.unusableResponse("The planned clip has no render document.")
+                    }
+                    return try await self.renderPlannedClip(job.clip, index: job.index, of: clipCount,
+                                                      scene: job.scene, sceneMap: sceneMap, options: options, cutDocument: cutDocument,
+                                                      contentBox: contentBoxes[job.index],
+                                                      dubLines: dubLinesByJob[job.index] ?? [],
+                                                      captionStyle: captionStyle, captionFallbacks: captionFallbacks, captionOrdinals: captionOrdinals,
+                                                      brandOverlays: brandOverlayFiles, topOverlays: clipWatermark,
+                                                      plannedNameTags: podcastCuts[job.index]?.textOverlays.filter { $0.design == "nameTag" }, nameTagPeople: people, tagText: tagText, profile: profile,
+                                                      database: database, scratch: scratch,
+                                                      emit: emit)
                 }
-                return try await self.renderPlannedClip(job.clip, index: job.index, of: clipCount,
-                                                  scene: job.scene, sceneMap: sceneMap, options: options, cutDocument: cutDocument,
-                                                  dubLines: dubLinesByJob[job.index] ?? [],
-                                                  captionStyle: captionStyle, captionFallbacks: captionFallbacks, captionOrdinals: captionOrdinals,
-                                                  brandOverlays: brandOverlayFiles, topOverlays: clipWatermark,
-                                                  plannedNameTags: podcastCuts[job.index]?.textOverlays.filter { $0.design == "nameTag" }, nameTagPeople: people, tagText: tagText, profile: profile,
-                                                  database: database, scratch: scratch,
-                                                  emit: emit)
             }
         }
 
@@ -4164,32 +4431,36 @@ actor WizardEngine {
             throw AIError.notConfigured("No clips could be extracted for this plan")
         }
 
-        if let introCard {
+        if let introCard = prepared.introCard {
             clipURLs.insert(introCard, at: 0)
             clipTransitions.insert("fade", at: 0)
         }
-        if let outroCard {
+        if let outroCard = prepared.outroCard {
             clipTransitions.append("fadeblack")
             clipURLs.append(outroCard)
         }
         emit("Assembling \(clipURLs.count) segments...")
         let assembled = scratch.appendingPathComponent("assembled.mp4")
-        if !bumperLog.isEmpty || !cutaways.isEmpty || !finalOverlayBlocks.isEmpty || document.dub?.enabled == true {
+        if !prepared.bumperLog.isEmpty || !cutaways.isEmpty || !finalOverlayBlocks.isEmpty || document.dub?.enabled == true {
             // Ordinary clips already contain their captions/branding/layouts.
             // Bumpers, cutaways and the whole-video overlays are added here, using the
             // same exclusive compositor as Builder. The editable document retains originals.
-            var prepared = Self.preparedDocument(from: document, clipURLs: clipURLs, transitions: clipTransitions)
-            if options.manualBRoll == true { prepared.videoTrack.removeAll(where: \.isCutaway) }
+            var compositorDocument = Self.preparedDocument(from: document, clipURLs: clipURLs, transitions: clipTransitions)
+            // Speech Polish runs once on the final file, after music.
+            compositorDocument.renderSettings.speechPolish = nil
+            if options.manualBRoll == true { compositorDocument.videoTrack.removeAll(where: \.isCutaway) }
             // These blocks carry exactPlacement, so the compositor keeps them
             // where the Overlays editor shows them, in this pass and in Builder.
-            if !finalOverlayBlocks.isEmpty { prepared.overlayBlocks = finalOverlayBlocks }
+            if !finalOverlayBlocks.isEmpty { compositorDocument.overlayBlocks = finalOverlayBlocks }
             let brollScenes = cutaways.isEmpty ? [] : try await database.fetchScenes(projectID: options.projectID, scope: options.selectedRunIDs.isEmpty && !options.sourceSceneSelection ? .active : .history, includeExcluded: false)
             try await WizardTiming.measure("compositor", emit: emit) {
                 // The normalized clips are already output-format files: the
                 // compositor copies them as segments instead of encoding again.
-                let result = try await MultitrackRenderer(render: render).render(document: prepared, scenes: brollScenes,
-                    profile: profile, database: database, preview: true,
-                    prerenderedSources: Set(clipURLs.map(\.path)), emit: emit)
+                let result = try await RenderFramingFallbackCollector.$current.withValue(framingFallbacks) {
+                    try await MultitrackRenderer(render: render).render(document: compositorDocument, scenes: brollScenes,
+                        profile: profile, database: database, preview: true,
+                        prerenderedSources: Set(clipURLs.map(\.path)), emit: emit)
+                }
                 defer { try? FileManager.default.removeItem(at: result.url) }
                 try FileManager.default.copyItemReplacing(at: result.url, to: assembled)
             }
@@ -4211,6 +4482,12 @@ actor WizardEngine {
         } else {
             try FileManager.default.copyItemReplacing(at: assembled, to: outputURL)
         }
+        if let polish = document.renderSettings.speechPolish, polish.enabled {
+            emit("Speech polish (\(polish.strength.label.lowercased()))…")
+            try await WizardTiming.measure("speech polish", emit: emit) {
+                try await SpeechPolish.applyInPlace(outputURL, settings: polish)
+            }
+        }
 
         let (finalDuration, quality) = await WizardTiming.measure("quality gate", emit: emit) {
             let finalDuration = await FFmpeg.duration(of: outputURL)
@@ -4220,6 +4497,9 @@ actor WizardEngine {
         emit("Quality gate: \(quality.summary)")
         for warning in quality.warnings { emit("Quality warning: \(warning)") }
         for failure in quality.failures { emit("Quality failure: \(failure)") }
+        let reviewFlags = await Self.reviewFlags(document: document, sceneMap: sceneMap, quality: quality,
+            fallbacks: framingFallbacks.all, database: database)
+        if !reviewFlags.isEmpty { emit("Review flags: \(reviewFlags.count) moment(s) to check in the Builder") }
 
         // Persist the Builder-editable document for this render — clips with
         // their source ranges and transitions, overlay items with timing,
@@ -4260,7 +4540,9 @@ actor WizardEngine {
                                                                    sourceVideoPaths: Array(Set(plan.clips.compactMap { sceneMap[$0.sceneID]?.videoPath })).sorted(),
                                                                    sourceSceneIDs: plan.clips.map(\.sceneID), modelPrompts: AIRunCapture.current?.prompts ?? [:]),
                                                                roles: (plan.provenance.map { [AIRole(role: "Plan", provenance: $0)] } ?? [])
-                                                                   + (AIRunCapture.current?.roles.filter { $0.provenance.task == "broll" || $0.provenance.task == "translate" } ?? []))
+                                                                   + (AIRunCapture.current?.roles.filter { $0.provenance.task == "broll" || $0.provenance.task == "translate" } ?? []),
+                                                               reviewFlagsJSON: ReviewFlagBuilder.encode(reviewFlags),
+                                                               planJSON: prepared.recordedPlanJSON)
         try await database.saveGeneratedTraits(videoID: recordID,
                                                traits: .derive(document: document,
                                                                scenes: Array(sceneMap.values),
@@ -4270,6 +4552,22 @@ actor WizardEngine {
         // they are not needed until the critique, and Express overlaps them
         // with the next render.
         return AssemblyResult(url: outputURL, duration: finalDuration, recordID: recordID, document: document)
+    }
+
+    /// The moments of a finished reel worth a second look: speaker turns
+    /// under its clips, framing fallbacks, and the quality gate's notes.
+    private static func reviewFlags(document: TimelineDocument, sceneMap: [Int64: SceneRecord],
+                                    quality: ReelQualityReport, fallbacks: [RenderFramingFallback],
+                                    database: Database) async -> [ReviewFlag] {
+        let paths = Set(document.videoTrack.compactMap(\.videoFile))
+        let videoIDs = Set(sceneMap.values.filter { paths.contains($0.videoPath) }.map(\.videoID))
+            .union(document.videoTrack.compactMap { $0.sceneID.flatMap { sceneMap[$0]?.videoID } })
+        var turns: [SpeakerTurn] = []
+        for videoID in videoIDs.sorted() {
+            turns += (try? await database.fetchSpeakerTurns(videoID: videoID)) ?? []
+        }
+        return ReviewFlagBuilder.flags(document: document, scenes: sceneMap, turns: turns, quality: quality,
+                                       renderFallbacks: ReviewFlagBuilder.anchored(fallbacks, in: document))
     }
 
     /// The look the options ask for, when the local ffmpeg can render it.
@@ -4283,7 +4581,8 @@ actor WizardEngine {
     /// Burn-ins use output time; the document retains the original source clock.
     private func renderPlannedClip(_ clip: WizardPlanClip, index: Int, of total: Int,
                                     scene: SceneRecord, sceneMap: [Int64: SceneRecord] = [:],
-                                    options: WizardOptions, cutDocument: TimelineDocument, dubLines: [DubLine] = [],
+                                    options: WizardOptions, cutDocument: TimelineDocument,
+                                    contentBox: RenderEngine.ContentBox?, dubLines: [DubLine] = [],
                                     captionStyle: CaptionStyle, captionFallbacks: WizardCaptionFallbackLog,
                                     captionOrdinals: [String: Int] = [:],
                                     brandOverlays: [URL] = [], topOverlays: [RenderEngine.ClipOverlay] = [],
@@ -4303,8 +4602,7 @@ actor WizardEngine {
         // otherwise a landscape fight inside a portrait recording letterboxes
         // no matter what the user asks for. Document rendering retains the
         // original source clock and intersects its windows with this box.
-        let contentBox = await render.detectContentBox(source: scene.videoURL,
-                                                       start: clip.start, duration: sourceDuration)
+        // `prepareAssembly` detected it (the editable document records it).
         let mode = contentBox == nil ? "" : "bars removed"
         emit("Extracting clip \(index + 1)/\(total) " +
              String(format: "[%.1fs +%.1fs]", clip.start, duration) +
@@ -4429,18 +4727,15 @@ actor WizardEngine {
             } else if let item = composition.texts.first {
                 let animation = clip.overlayAnimation ?? "fade"
                 let wordCount = TextOverlayRenderer.wordCount(item.text)
-                if animation == "word_reveal", wordCount > 1 {
+                if animation == WordRevealSchedule.animation, wordCount > 1 {
                     // One progressive PNG per word, hard-cut on staggered
                     // windows; the full-text PNG holds from the last reveal
                     // to the end.
-                    let step = min(0.3, max(0.1, duration / 3 / Double(wordCount)))
-                    for wordIndex in 1...wordCount {
+                    for step in WordRevealSchedule.steps(duration: duration, wordCount: wordCount) {
                         guard let png = try? renderer.render(item, to: scratch,
-                                                             visibleWords: wordIndex) else { continue }
-                        overlays.append(RenderEngine.ClipOverlay(
-                            png: png, x: 0, y: 0,
-                            start: Double(wordIndex - 1) * step,
-                            end: wordIndex == wordCount ? duration : Double(wordIndex) * step))
+                                                             visibleWords: step.visibleWords) else { continue }
+                        overlays.append(RenderEngine.ClipOverlay(png: png, x: 0, y: 0,
+                                                                 start: step.start, end: step.end))
                     }
                 } else if let png = try? renderer.render(item, to: scratch) {
                     overlays.append(RenderEngine.ClipOverlay(
@@ -4484,4 +4779,11 @@ actor WizardEngine {
         }
         return url
     }
+}
+
+nonisolated private final class WizardEditorDocumentBox: @unchecked Sendable {
+    private let lock = NSLock()
+    private var stored: TimelineDocument?
+    var value: TimelineDocument? { lock.withLock { stored } }
+    func set(_ document: TimelineDocument) { lock.withLock { stored = document } }
 }

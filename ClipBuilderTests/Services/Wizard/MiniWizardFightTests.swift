@@ -97,12 +97,12 @@ struct MiniWizardFightTests {
         let database = temp.database
         let videoID = try await temp.seedVideo(sceneCount: 2)
         let projectID = try await database.createProject(profileName: "Test", name: "Fight", videoIDs: [videoID])
-        let late = try await database.addFightPick(videoID: videoID, start: 8.5, end: 9.5, eventIDs: [4])
-        let early = try await database.addFightPick(videoID: videoID, start: 1.5, end: 5.5, eventIDs: [1, 2, 3])
+        let late = try await database.addFightPick(projectID: projectID, videoID: videoID, start: 8.5, end: 9.5, eventIDs: [4])
+        let early = try await database.addFightPick(projectID: projectID, videoID: videoID, start: 1.5, end: 5.5, eventIDs: [1, 2, 3])
         #expect([late, early].map(\.position) == [0, 1] && early.eventIDs == [1, 2, 3] && early.sceneID == nil)
-        try await database.setFightPickRange(id: late.id, start: 8, end: 10)
-        try await database.reorderFightPicks(videoID: videoID, ids: [early.id])
-        var picks = try await database.fetchFightPicks(videoID: videoID)
+        try await database.setFightPickRange(projectID: projectID, id: late.id, start: 8, end: 10)
+        try await database.reorderFightPicks(projectID: projectID, videoID: videoID, ids: [early.id])
+        var picks = try await database.fetchFightPicks(projectID: projectID, videoID: videoID)
         #expect(picks.map(\.id) == [early.id, late.id] && picks[1].range == 8...10 && picks[1].originalRange == 8.5...9.5)
 
         let actions = MiniWizardFightRules.actions(events: [
@@ -118,20 +118,20 @@ struct MiniWizardFightTests {
         let sceneIDs = candidates.map { $0.take.plan.clips[0].sceneID }
         let scenes = try await database.fetchScenes(ids: Set(sceneIDs))
         #expect(scenes.count == 2 && scenes.allSatisfy { $0.tags.contains(Database.fightPickTag) && $0.runID != nil })
-        picks = try await database.fetchFightPicks(videoID: videoID)
+        picks = try await database.fetchFightPicks(projectID: projectID, videoID: videoID)
         #expect(picks.map(\.sceneID) == sceneIDs)
         // Saving again replaces the batch; deleting removes a pick.
         _ = try await database.replaceMiniFightSelections(projectID: projectID, videoID: videoID,
             miniBatch: "batch", picks: picks, actions: actions, names: [:], options: options)
         #expect(try await database.fetchWizardSelections(projectID: projectID, miniBatch: "batch").count == 2)
-        try await database.deleteFightPick(id: late.id)
-        #expect(try await database.fetchFightPicks(videoID: videoID).map(\.id) == [early.id])
+        try await database.deleteFightPick(projectID: projectID, id: late.id)
+        #expect(try await database.fetchFightPicks(projectID: projectID, videoID: videoID).map(\.id) == [early.id])
         // Remove All clears this video's picks only.
         let other = try await temp.seedVideo(sceneCount: 0)
-        _ = try await database.addFightPick(videoID: other, start: 1, end: 2, eventIDs: [])
-        try await database.deleteFightPicks(videoID: videoID)
-        #expect(try await database.fetchFightPicks(videoID: videoID).isEmpty)
-        #expect(try await database.fetchFightPicks(videoID: other).count == 1)
+        _ = try await database.addFightPick(projectID: projectID, videoID: other, start: 1, end: 2, eventIDs: [])
+        try await database.deleteFightPicks(projectID: projectID, videoID: videoID)
+        #expect(try await database.fetchFightPicks(projectID: projectID, videoID: videoID).isEmpty)
+        #expect(try await database.fetchFightPicks(projectID: projectID, videoID: other).count == 1)
     }
 }
 

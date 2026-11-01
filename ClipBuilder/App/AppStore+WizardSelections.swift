@@ -313,6 +313,8 @@ extension AppStore {
                 if !fresh.isEmpty {
                     wizardResults = WizardRunResults(videos: fresh)
                     await recordWizardTimelines(fresh, projectID: projectID, formatName: options.formatPreset)
+                    await recordHighlights(forGenerated: fresh, projectID: projectID,
+                        capture: WizardHighlightCapture(flow: .fullSelection, settings: highlightSettings(options: options)))
                 }
             }
         }

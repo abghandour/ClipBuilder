@@ -217,6 +217,12 @@ extension SyncTable {
         case "fight_outcomes": "Fight outcomes"
         case "fight_research": "Fight research"
         case "wizard_research": "Wizard research"
+        case "projects": "Projects"
+        case "project_videos": "Project sources"
+        case "wizard_highlights": "Highlight history"
+        case "transcript_picks": "Transcript picks"
+        case "fight_picks": "Fight picks"
+        case "qa_picks": "Q&A picks"
         default: name
         }
     }

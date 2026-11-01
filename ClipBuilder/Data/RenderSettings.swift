@@ -11,20 +11,25 @@ nonisolated struct RenderSettings: Codable, Sendable, Equatable, Hashable {
     /// Keep burned-in overlays and captions out of the chosen platforms'
     /// buttons, header and description area.
     var platformSafeArea = PlatformSafeAreaSettings()
+    /// Audio finishing pass (high-pass, noise reduction, loudness to -16
+    /// LUFS) run on the final mix. Nil = not chosen, which renders without it.
+    var speechPolish: SpeechPolishSettings?
 
     init(preset: RenderPreset = .portrait1080, customWidth: Int = 1080, customHeight: Int = 1920,
          quality: EncodeQuality = .balanced, customCRF: Int = 20,
-         platformSafeArea: PlatformSafeAreaSettings = PlatformSafeAreaSettings()) {
+         platformSafeArea: PlatformSafeAreaSettings = PlatformSafeAreaSettings(),
+         speechPolish: SpeechPolishSettings? = nil) {
         self.preset = preset
         self.customWidth = customWidth
         self.customHeight = customHeight
         self.quality = quality
         self.customCRF = customCRF
         self.platformSafeArea = platformSafeArea
+        self.speechPolish = speechPolish
     }
 
     private enum CodingKeys: String, CodingKey {
-        case preset, customWidth, customHeight, quality, customCRF, platformSafeArea
+        case preset, customWidth, customHeight, quality, customCRF, platformSafeArea, speechPolish
     }
 
     init(from decoder: any Decoder) throws {
@@ -36,6 +41,7 @@ nonisolated struct RenderSettings: Codable, Sendable, Equatable, Hashable {
         customCRF = try container.decodeIfPresent(Int.self, forKey: .customCRF) ?? 20
         platformSafeArea = try container.decodeIfPresent(PlatformSafeAreaSettings.self, forKey: .platformSafeArea)
             ?? PlatformSafeAreaSettings()
+        speechPolish = try? container.decodeIfPresent(SpeechPolishSettings.self, forKey: .speechPolish)
     }
 
     var width: Int { preset.width ?? Self.even(customWidth) }

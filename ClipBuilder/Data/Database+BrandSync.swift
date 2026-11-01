@@ -198,6 +198,15 @@ extension Database {
     /// pulled IDs (including authoritative older random IDs) are left alone.
     /// Dependency order makes offline natural keys deterministic across Macs.
     func canonicalizeSyncIdentities(scope: SyncScope, tables: [SyncTable] = SyncTable.all) async throws {
+        // Children push Home's sync_id as their project_id, so Home must carry
+        // the shared identity before any of them leaves this Mac.
+        if tables.contains(where: { $0.name == "projects" || $0.references.values.contains("projects") }) {
+            try connection.transaction {
+                try connection.execute("UPDATE sync_control SET suspended = 1 WHERE id = 1")
+                try canonicalizeHomeIdentity(scope: scope)
+                try connection.execute("UPDATE sync_control SET suspended = 0 WHERE id = 1")
+            }
+        }
         for table in tables where !table.naturalKey.isEmpty {
             var after: Int64 = 0
             while true {
@@ -222,7 +231,9 @@ extension Database {
                                 try connection.execute("UPDATE library_asset_metadata SET asset_id = ? WHERE rowid = ?",
                                                        [.text(asset), row["local_rowid"] ?? .null])
                             }
-                            if isPortableSyncRow(row, table: table), let portable = try portableSyncRow(row, table: table),
+                            // Home has its own shared identity (canonicalizeHomeIdentity).
+                            let isHome = table.name == "projects" && row["is_home"]?.intValue == 1
+                            if !isHome, isPortableSyncRow(row, table: table), let portable = try portableSyncRow(row, table: table),
                                let old = row["sync_id"]?.stringValue {
                                 var key = table.naturalKey.map { column -> String in
                                     let value = portable[column]?.stringValue ?? "<null>"
@@ -249,6 +260,29 @@ extension Database {
                 // resumes using the already persisted canonical identities.
                 await Task.yield()
             }
+        }
+    }
+
+    /// Home is one shared project per profile: every Mac's Home carries the
+    /// same deterministic sync_id regardless of its name or created_at, so a
+    /// pulled Home merges into the local one and children pushed under Home on
+    /// one Mac resolve to Home on another.
+    nonisolated static func homeSyncID(scope: SyncScope) -> String {
+        SyncMapping.stableID([scope.teamID.uuidString, scope.profileID.uuidString, "projects", "home"])
+    }
+
+    /// Caller holds a transaction with sync_control suspended.
+    private func canonicalizeHomeIdentity(scope: SyncScope, queue: Bool = true) throws {
+        let canonical = Self.homeSyncID(scope: scope)
+        guard let old = try connection.query("SELECT sync_id FROM projects WHERE is_home = 1 ORDER BY id LIMIT 1").first?["sync_id"]?.stringValue,
+              old != canonical,
+              try connection.query("SELECT 1 FROM projects WHERE sync_id = ?", [.text(canonical)]).isEmpty else { return }
+        try rekeySyncRow(table: try SyncTable.named("projects"), old: old, new: canonical)
+        // A Home seeded or pushed under its old identity must go out again
+        // under the shared one.
+        if queue, try !connection.query("SELECT 1 FROM sync_binding").isEmpty,
+           try connection.query("SELECT 1 FROM sync_outbox WHERE \"table\" = 'projects' AND sync_id = ?", [.text(canonical)]).isEmpty {
+            try connection.execute("INSERT INTO sync_outbox(\"table\", sync_id, op) VALUES ('projects', ?, 'upsert')", [.text(canonical)])
         }
     }
 
@@ -291,6 +325,14 @@ extension Database {
                 throw SyncError.invalidRow("\(table.name).\(column) reference")
             }
             row[column] = .text(id)
+        }
+        if table.name == "fight_picks" {
+            // Local fight_events ids mean nothing on another Mac; send sync_ids.
+            let ids = (row["event_ids"]?.stringValue).flatMap { try? JSONDecoder().decode([Int64].self, from: Data($0.utf8)) } ?? []
+            let syncIDs = try ids.compactMap { id in
+                try connection.query("SELECT sync_id FROM fight_events WHERE id = ?", [.integer(id)]).first?["sync_id"]?.stringValue
+            }
+            row["event_ids"] = .text(String(decoding: try JSONEncoder().encode(syncIDs), as: UTF8.self))
         }
         if table.name == "reel_outcomes", let json = row["outcome_json"]?.stringValue {
             var object = try JSONDecoder().decode(SyncMapping.WireRow.self, from: Data(json.utf8))
@@ -406,6 +448,15 @@ extension Database {
         return try connection.transaction {
             var changed = false
             var fightVideos = Set<Int64>()
+            /// Waits for a parent row that has not arrived; retrySyncParents applies it later.
+            func parkForParent(_ wire: SyncMapping.WireRow, id: String) throws {
+                let json = String(decoding: try JSONEncoder().encode(wire), as: UTF8.self)
+                try connection.execute("""
+                    INSERT INTO sync_pending_parents("table", sync_id, wire_json, server_wins_through)
+                    VALUES (?, ?, ?, ?) ON CONFLICT("table", sync_id) DO UPDATE SET
+                    wire_json = excluded.wire_json, server_wins_through = excluded.server_wins_through
+                    """, [.text(table.name), .text(id), .text(json), serverWinsThrough.map(SQLValue.integer) ?? .null])
+            }
             try connection.execute("UPDATE sync_control SET suspended = 1 WHERE id = 1")
             rowLoop: for wire in rows {
                 let id = try SyncMapping.identity(wire, scope: scope)
@@ -420,26 +471,48 @@ extension Database {
                     if let existing = try connection.query("SELECT * FROM reel_traits WHERE sync_id = ?", [.text(id)]).first,
                        !isPortableSyncRow(existing, table: table) { continue }
                 }
+                let pulledHome = table.name == "projects" && !SyncMapping.isDeleted(wire) && local["is_home"]?.intValue == 1
+                if pulledHome {
+                    // Every Mac's Home shares homeSyncID; the local Home adopts it
+                    // and this row updates it. A Home without that identity is
+                    // never inserted as a second (deletable) project.
+                    guard id == Self.homeSyncID(scope: scope) else {
+                        NSLog("Team Sync: ignoring a Home project without the shared identity")
+                        continue
+                    }
+                    try canonicalizeHomeIdentity(scope: scope, queue: false)
+                }
                 if !SyncMapping.isDeleted(wire) {
                     for (column, target) in references(for: table, row: local) {
                         if local[column]?.stringValue == nil { continue }
                         guard let ref = local[column]?.stringValue,
                               let value = try connection.query("SELECT id FROM \(target) WHERE sync_id = ?", [.text(ref)]).first?["id"] else {
                             if !table.references.isEmpty || table.name == "reel_traits" {
-                                let json = String(decoding: try JSONEncoder().encode(wire), as: UTF8.self)
-                                try connection.execute("""
-                                    INSERT INTO sync_pending_parents("table", sync_id, wire_json, server_wins_through)
-                                    VALUES (?, ?, ?, ?) ON CONFLICT("table", sync_id) DO UPDATE SET
-                                    wire_json = excluded.wire_json, server_wins_through = excluded.server_wins_through
-                                    """, [.text(table.name), .text(id), .text(json), serverWinsThrough.map(SQLValue.integer) ?? .null])
+                                try parkForParent(wire, id: id)
                                 continue rowLoop
                             }
                             throw SyncError.invalidRow("\(table.name).\(column) missing parent")
                         }
                         local[column] = (column == "video_id" && ["reel_traits", "reel_outcomes"].contains(table.name)) ? .text(value.stringValue ?? "") : value
                     }
-                    if !table.naturalKey.isEmpty && !table.preservesDuplicateKeys {
-                        let predicate = table.naturalKey.map { "\"\($0)\" IS ?" }.joined(separator: " AND ")
+                    if table.name == "fight_picks" {
+                        // event_ids carries fight_events sync_ids. Translate only when
+                        // every event has arrived; otherwise wait like an FK parent.
+                        let refs = (local["event_ids"]?.stringValue).flatMap { try? JSONDecoder().decode([String].self, from: Data($0.utf8)) } ?? []
+                        var localIDs: [Int64] = []
+                        for ref in refs {
+                            guard let value = try connection.query("SELECT id FROM fight_events WHERE sync_id = ?", [.text(ref)]).first?["id"]?.intValue else {
+                                try parkForParent(wire, id: id)
+                                continue rowLoop
+                            }
+                            localIDs.append(value)
+                        }
+                        local["event_ids"] = .text(String(decoding: try JSONEncoder().encode(localIDs), as: UTF8.self))
+                    }
+                    if !table.naturalKey.isEmpty && !table.preservesDuplicateKeys && !pulledHome {
+                        // An ordinary project never takes over Home's identity.
+                        let homeGuard = table.name == "projects" ? " AND is_home = 0" : ""
+                        let predicate = table.naturalKey.map { "\"\($0)\" IS ?" }.joined(separator: " AND ") + homeGuard
                         if let old = try connection.query("SELECT sync_id FROM \(table.name) WHERE \(predicate)",
                                                            table.naturalKey.map { local[$0] ?? .null }).first?["sync_id"]?.stringValue, old != id {
                             try rekeySyncRow(table: table, old: old, new: id)
@@ -480,6 +553,12 @@ extension Database {
                     }
                 }
                 if SyncMapping.isDeleted(wire) {
+                    // A teammate deleting their copy of this Mac's Home must not
+                    // delete Home (and, by cascade, its local timelines) here.
+                    if table.name == "projects",
+                       try connection.query("SELECT is_home FROM projects WHERE sync_id = ?", [.text(id)]).first?["is_home"]?.intValue == 1 {
+                        continue
+                    }
                     if try !connection.query("SELECT 1 FROM \(table.name) WHERE sync_id = ?", [.text(id)]).isEmpty { changed = true }
                     try connection.execute("DELETE FROM \(table.name) WHERE sync_id = ?", [.text(id)])
                 } else {
@@ -504,6 +583,28 @@ extension Database {
                         }
                     }
                     var columns = table.columns
+                    if table.name == "projects" {
+                        // is_home is per Mac and a pull never changes it; Home rows
+                        // share homeSyncID, so a pulled Home lands on the local Home.
+                        if let existing {
+                            local["is_home"] = existing["is_home"] ?? .integer(0)
+                        } else if local["is_home"]?.intValue == 1,
+                                  try !connection.query("SELECT 1 FROM projects WHERE is_home = 1").isEmpty {
+                            // Unreachable unless the local Home could not adopt the
+                            // shared identity; never add a second Home or a copy of it.
+                            NSLog("Team Sync: local Home could not adopt the shared identity")
+                            continue
+                        }
+                        // profile_name is local-only and NOT NULL. INSERT ... ON CONFLICT
+                        // checks NOT NULL before the conflict, so every upsert carries
+                        // it: the row's own value, else this profile's projects' name.
+                        let profile = try existing?["profile_name"]?.stringValue
+                            ?? connection.query("SELECT profile_name FROM projects ORDER BY is_home DESC, id LIMIT 1").first?["profile_name"]?.stringValue
+                            ?? path.deletingPathExtension().lastPathComponent
+                        local["profile_name"] = .text(profile)
+                        columns.append("profile_name")
+                        if local["archived"]?.intValue == nil { local["archived"] = .integer(0) }
+                    }
                     if table.name == "library_asset_metadata" {
                         // Metadata can arrive before Drive brings the file. Keep an
                         // opaque placeholder until a matching local asset is indexed.

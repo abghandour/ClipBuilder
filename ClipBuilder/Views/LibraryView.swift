@@ -23,6 +23,7 @@ struct LibraryView: View {
     @State private var publishTarget: GeneratedVideoRecord?
     @State private var coverTarget: GeneratedVideoRecord?
     @State private var formatExportTarget: GeneratedVideoRecord?
+    @State private var hookTarget: GeneratedVideoRecord?
 
     private var sorted: [GeneratedVideoRecord] {
         let membership = OutputFolders.membership(for: selectedFolder, in: folders)
@@ -106,6 +107,9 @@ struct LibraryView: View {
         }
         .sheet(item: $formatExportTarget) { video in
             SocialFormatExportSheet(video: video)
+        }
+        .sheet(item: $hookTarget) { video in
+            HookVariantReadout(groupID: video.variantGroupID ?? "")
         }
         // Hook for scripts/capture_help_screenshots.sh: accessibility-tree
         // clicking is too flaky to reach the review sheet, so screenshot
@@ -211,6 +215,45 @@ struct LibraryView: View {
         }
     }
 
+    /// "N to review": opens the video in the Builder, whose inspector lists
+    /// the flagged moments with Jump buttons.
+    private func reviewBadge(_ video: GeneratedVideoRecord, count: Int) -> some View {
+        Button {
+            openInBuilder(video)
+        } label: {
+            Label("\(count) to review", systemImage: "flag.fill")
+                .font(.caption)
+                .lineLimit(1)
+                .fixedSize()
+        }
+        .buttonStyle(.plain)
+        .foregroundStyle(.orange)
+        .help("Open in the Builder to check the \(count) flagged moment\(count == 1 ? "" : "s")")
+    }
+
+    /// "Compare hooks": this render is one opening of a hook comparison.
+    private func hookBadge(_ video: GeneratedVideoRecord) -> some View {
+        HStack(spacing: Theme.spaceXS) {
+            if let label = video.hookLabel {
+                Text("Hook: \(label)")
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Button {
+                hookTarget = video
+            } label: {
+                Label("Compare hooks", systemImage: "rectangle.split.3x1")
+                    .font(.caption)
+                    .lineLimit(1)
+                    .fixedSize()
+            }
+            .buttonStyle(.plain)
+            .foregroundStyle(Color.accentColor)
+            .help("Compare this reel's openings: Instagram numbers side by side and your pick")
+        }
+    }
+
     @ViewBuilder
     private func card(for video: GeneratedVideoRecord) -> some View {
         VStack(alignment: .leading, spacing: 8) {
@@ -258,17 +301,27 @@ struct LibraryView: View {
             if let takeID = video.selectionTakeID {
                 WizardSelectionOutputLink(takeID: takeID)
             }
+            let reviewCount = video.reviewFlags.count
             if let quality = video.qualityReport {
-                Label(quality.summary, systemImage: quality.verdict == .publishable
-                      ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
-                    .font(.caption)
-                    .foregroundStyle(quality.verdict == .publishable ? .green : .orange)
-                    .lineLimit(1)
+                HStack(spacing: Theme.spaceXS) {
+                    Label(quality.summary, systemImage: quality.verdict == .publishable
+                          ? "checkmark.seal.fill" : "exclamationmark.triangle.fill")
+                        .font(.caption)
+                        .foregroundStyle(quality.verdict == .publishable ? .green : .orange)
+                        .lineLimit(1)
+                    if reviewCount > 0 { reviewBadge(video, count: reviewCount) }
+                }
+            } else if reviewCount > 0 {
+                reviewBadge(video, count: reviewCount)
             } else if let stats = video.instagramStats {
                 Text(ReelPerformance.label(stats, duration: video.duration))
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .lineLimit(1)
+            }
+
+            if video.variantGroupID != nil {
+                hookBadge(video)
             }
 
             if !video.caption.isEmpty {

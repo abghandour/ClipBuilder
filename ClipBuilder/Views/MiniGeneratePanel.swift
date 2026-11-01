@@ -13,17 +13,43 @@ struct MiniGeneratePanel: View {
         VStack(alignment: .leading, spacing: 0) {
             ScrollView { summaryCard.padding(Theme.spaceM) }
             Divider()
-            Button {
-                store.generateMiniVideosRecordingPicks(settings: settings, flow: flow, batchID: run.batchID)
-            } label: {
-                Text(flow.generateButtonTitle(keptCount: run.keptCount)).lineLimit(1).fixedSize()
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Theme.spaceS) {
+                    generateButton
+                    openInEditorButton
+                }
+                HStack(spacing: Theme.spaceS) {
+                    generateButton
+                    openInEditorButton
+                }
             }
-            .buttonStyle(.borderedProminent)
-            .disabled(run.keptCount == 0)
             .padding(Theme.spaceM)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .disabled(store.isWizardRunning)
+    }
+
+    private var generateButton: some View {
+        Button {
+            store.generateMiniVideosRecordingPicks(settings: settings, flow: flow, batchID: run.batchID)
+        } label: {
+            Text(flow.generateButtonTitle(keptCount: run.keptCount)).lineLimit(1).fixedSize()
+        }
+        .buttonStyle(.borderedProminent)
+        .disabled(run.keptCount == 0 || store.isOpeningWizardInEditor(projectID: run.projectID))
+    }
+
+    /// The same reel as an editable Builder timeline, every setting applied.
+    private var openInEditorButton: some View {
+        Button {
+            store.generateMiniVideosRecordingPicks(settings: settings, flow: flow, batchID: run.batchID,
+                                                   mode: .openInEditor)
+        } label: {
+            Label("Open in Editor", systemImage: "hammer")
+        }
+        .labelStyle(.iconOnly)
+        .disabled(run.keptCount == 0 || store.isOpeningWizardInEditor(projectID: run.projectID))
+        .help("Open in Editor: build this reel as a Builder timeline with every setting applied, without rendering it")
     }
 
     private var effectiveSettings: MiniWizardSettings {

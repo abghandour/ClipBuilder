@@ -11,6 +11,9 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
     case criticBrief, evaluateCritic, fightScore
     case postText, transcriptTranslation, dub
     case generateImage, trackImage, report, builderAssistant
+    case hookVariants
+    case fightStory
+    case openInEditor
 
     var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief || self == .generateImage }
     /// Routine cycles finish quietly; the outcome goes to the activity log only.
@@ -52,6 +55,9 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .trackImage: "Track Face"
         case .report: "AI Report"
         case .builderAssistant: "Builder Wizard"
+        case .hookVariants: "Hook Variants"
+        case .fightStory: "Fight Story"
+        case .openInEditor: "Open in Editor"
         }
     }
 
@@ -60,10 +66,10 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .aiFavorites: "curate"
         case .gapReport, .generateRequest: "wizard"
         case .instagramPublish, .report: "instagram"
-        case .socialExport, .dub, .generateImage, .trackImage, .builderAssistant: "builder"
+        case .socialExport, .dub, .generateImage, .trackImage, .builderAssistant, .hookVariants, .fightStory: "builder"
         case .profileStarter, .overlayTemplate, .imageSearch, .resourceExport, .resourceImport,
              .evaluateReelModel, .publishLessons, .teamSync: "app"
-        case .criticBrief, .evaluateCritic, .postText: "wizard"
+        case .criticBrief, .evaluateCritic, .postText, .openInEditor: "wizard"
         default: "analysis"
         }
     }
@@ -114,6 +120,10 @@ nonisolated enum AppJobResult: Equatable, Sendable {
     case generateRequest(WizardPromptHandoff)
     case personResearch(outcomes: [PersonResearchOutcome])
     case textLooks(TextLookImport)
+    /// Rendered hook variants of one timeline, grouped by `variantGroupID`.
+    case hookVariants(groupID: String, alternatives: [HookAlternative], provenance: AIProvenance?)
+    /// An evidence-linked fight story timeline, created but not opened.
+    case fightStory(FightStoryReview)
 
     var committedOnCancellation: Bool {
         switch self {

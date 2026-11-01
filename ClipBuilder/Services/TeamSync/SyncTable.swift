@@ -103,7 +103,7 @@ nonisolated struct SyncTable: Sendable, Equatable {
             columns: ["video_id", "account_id", "traits_version", "outcome_json"],
             integers: ["account_id", "traits_version"], reals: [],
             naturalKey: ["video_id"], references: ["account_id": "ig_accounts", "video_id": "ig_report_media"])
-    ] + footage
+    ] + footage + history
     /// Independent runs retain a random run_key even when their timestamps match.
     static let footage: [SyncTable] = [
         SyncTable(name: "videos",
@@ -180,6 +180,39 @@ nonisolated struct SyncTable: Sendable, Equatable {
             columns: ["topic", "result_json", "researched_at", "provider", "model"],
             integers: [], reals: [],
             naturalKey: [], references: [:])
+    ]
+    /// Projects and highlight history (docs/Highlight-History-Plan.md, Phase 3).
+    /// Local-only columns stay off the wire: projects.profile_name,
+    /// thumbnail_video_id, ui_state_json; wizard_highlights.selection_id,
+    /// take_id, generated_video_id. Picks and highlights have no natural key:
+    /// each row keeps its random sync_id. fight_picks.event_ids carries
+    /// fight_events sync_ids on the wire (translated in Database+BrandSync).
+    static let history: [SyncTable] = [
+        SyncTable(name: "projects",
+            columns: ["name", "created_at", "last_opened_at", "archived", "is_home"],
+            integers: ["archived", "is_home"], reals: [],
+            naturalKey: ["name", "created_at"], references: [:]),
+        SyncTable(name: "project_videos",
+            columns: ["project_id", "video_id"],
+            integers: ["project_id", "video_id"], reals: [],
+            naturalKey: ["project_id", "video_id"], references: ["project_id": "projects", "video_id": "videos"]),
+        SyncTable(name: "wizard_highlights",
+            columns: ["project_id", "flow", "batch_id", "parent_id", "video_hashes_json", "footage_json", "settings_json",
+                      "plan_json", "provenance_json", "note", "author", "created_at"],
+            integers: ["project_id", "parent_id"], reals: [],
+            naturalKey: [], references: ["project_id": "projects", "parent_id": "wizard_highlights"]),
+        SyncTable(name: "transcript_picks",
+            columns: ["video_id", "project_id", "position", "start_time", "end_time", "original_start", "original_end", "scene_id"],
+            integers: ["video_id", "project_id", "position", "scene_id"], reals: ["start_time", "end_time", "original_start", "original_end"],
+            naturalKey: [], references: ["video_id": "videos", "project_id": "projects", "scene_id": "scenes"]),
+        SyncTable(name: "fight_picks",
+            columns: ["video_id", "project_id", "position", "start_time", "end_time", "original_start", "original_end", "scene_id", "event_ids"],
+            integers: ["video_id", "project_id", "position", "scene_id"], reals: ["start_time", "end_time", "original_start", "original_end"],
+            naturalKey: [], references: ["video_id": "videos", "project_id": "projects", "scene_id": "scenes"]),
+        SyncTable(name: "qa_picks",
+            columns: ["project_id", "video_id", "scene_id", "position"],
+            integers: ["project_id", "video_id", "scene_id", "position"], reals: [],
+            naturalKey: ["project_id", "video_id", "scene_id"], references: ["project_id": "projects", "video_id": "videos", "scene_id": "scenes"])
     ]
     var preservesDuplicateKeys: Bool {
         ["transcripts", "speaker_turns", "transcript_features", "topic_ranges", "fight_events", "fight_outcomes"].contains(name)

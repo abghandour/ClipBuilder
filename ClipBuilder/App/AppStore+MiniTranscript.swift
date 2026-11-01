@@ -1,6 +1,6 @@
 import Foundation
 
-/// Express Transcript mode: picks are stored per video as the user adds them;
+/// Express Transcript mode: picks are stored per video and project as the user adds them;
 /// moving to Settings turns them into selections in list order.
 extension AppStore {
     /// Load the transcript, speaker labels and the video's saved picks.
@@ -26,7 +26,7 @@ extension AppStore {
                 _ = try? await transcriptPickSaveTask?.value
                 try Task.checkCancellation()
                 let rows = try await miniTranscriptRows(videoID: video.id)
-                let picks = try await database.fetchTranscriptPicks(videoID: video.id)
+                let picks = try await database.fetchTranscriptPicks(projectID: projectID, videoID: video.id)
                 guard generation == profileGeneration, activeProjectID == projectID else { return }
                 let speakers = await speakerTurns(videoID: video.id)
                 try Task.checkCancellation()
@@ -89,6 +89,7 @@ extension AppStore {
     func addMiniTranscriptPick(range: ClosedRange<Double>) {
         guard let run = currentTranscriptRun() else { return }
         let videoID = run.video.id
+        let projectID = run.projectID
         let batchID = run.batchID
         let previous = transcriptPickSaveTask
         let generation = profileGeneration
@@ -97,7 +98,8 @@ extension AppStore {
             _ = try? await previous?.value
             let pick: TranscriptPick
             do {
-                pick = try await database.addTranscriptPick(videoID: videoID, start: range.lowerBound, end: range.upperBound)
+                pick = try await database.addTranscriptPick(projectID: projectID, videoID: videoID,
+                                                            start: range.lowerBound, end: range.upperBound)
             } catch {
                 if generation == profileGeneration { presentError("Could not add the pick", error) }
                 throw error
@@ -117,6 +119,7 @@ extension AppStore {
         guard time - pick.start >= minimum, pick.end - time >= minimum else { return }
         setMiniTranscriptPickRange(id, start: pick.start, end: time)
         let videoID = run.video.id
+        let projectID = run.projectID
         let batchID = run.batchID
         let end = pick.end
         var order = picks.map(\.id)
@@ -127,9 +130,9 @@ extension AppStore {
             _ = try? await previous?.value
             let added: TranscriptPick
             do {
-                added = try await database.addTranscriptPick(videoID: videoID, start: time, end: end)
+                added = try await database.addTranscriptPick(projectID: projectID, videoID: videoID, start: time, end: end)
                 order.insert(added.id, at: min(order.count, index + 1))
-                try await database.reorderTranscriptPicks(videoID: videoID, ids: order)
+                try await database.reorderTranscriptPicks(projectID: projectID, videoID: videoID, ids: order)
             } catch {
                 if generation == profileGeneration { presentError("Could not split the pick", error) }
                 throw error
@@ -151,8 +154,9 @@ extension AppStore {
               let index = run.transcript?.picks.firstIndex(where: { $0.id == id }) else { return }
         miniRuns[.transcript]?.transcript?.picks[index].start = start
         miniRuns[.transcript]?.transcript?.picks[index].end = end
+        let projectID = run.projectID
         enqueueTranscriptPickWrite("Could not save the pick", batchID: run.batchID) { database in
-            try await database.setTranscriptPickRange(id: id, start: start, end: end)
+            try await database.setTranscriptPickRange(projectID: projectID, id: id, start: start, end: end)
         }
     }
 
@@ -168,17 +172,19 @@ extension AppStore {
             return pick
         }
         let videoID = run.video.id
+        let projectID = run.projectID
         let order = ordered.map(\.id)
         enqueueTranscriptPickWrite("Could not reorder the picks", batchID: run.batchID) { database in
-            try await database.reorderTranscriptPicks(videoID: videoID, ids: order)
+            try await database.reorderTranscriptPicks(projectID: projectID, videoID: videoID, ids: order)
         }
     }
 
     func deleteMiniTranscriptPick(_ id: Int64) {
         guard let run = currentTranscriptRun(), run.transcript?.picks.contains(where: { $0.id == id }) == true else { return }
         miniRuns[.transcript]?.transcript?.picks.removeAll { $0.id == id }
+        let projectID = run.projectID
         enqueueTranscriptPickWrite("Could not delete the pick", batchID: run.batchID) { database in
-            try await database.deleteTranscriptPick(id: id)
+            try await database.deleteTranscriptPick(projectID: projectID, id: id)
         }
     }
 
@@ -186,8 +192,9 @@ extension AppStore {
         guard let run = currentTranscriptRun(), run.transcript?.picks.isEmpty == false else { return }
         miniRuns[.transcript]?.transcript?.picks = []
         let videoID = run.video.id
+        let projectID = run.projectID
         enqueueTranscriptPickWrite("Could not remove the picks", batchID: run.batchID) { database in
-            try await database.deleteTranscriptPicks(videoID: videoID)
+            try await database.deleteTranscriptPicks(projectID: projectID, videoID: videoID)
         }
     }
 
@@ -217,7 +224,7 @@ extension AppStore {
                 let candidates = try await database.replaceMiniTranscriptSelections(projectID: run.projectID,
                     videoID: run.video.id, miniBatch: run.batchID, picks: picks, rows: transcript.rows,
                     options: run.options.step1, reviewedCutsByPick: reviewedByPick)
-                let updatedPicks = try await database.fetchTranscriptPicks(videoID: run.video.id)
+                let updatedPicks = try await database.fetchTranscriptPicks(projectID: run.projectID, videoID: run.video.id)
                 guard generation == profileGeneration, activeProjectID == run.projectID,
                       miniRun?.batchID == run.batchID else { return }
                 miniRun?.transcript?.picks = updatedPicks

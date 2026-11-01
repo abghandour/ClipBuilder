@@ -30,6 +30,7 @@ struct AnalyzeView: View {
     @State private var showNameWizard = false
     @State private var pendingDispatch: PendingDispatch?
     @State private var fightResearchTarget: VideoRecord?
+    @State private var fightStoryTarget: VideoRecord?
     @State private var soundbiteVideo: VideoRecord?
     @State private var showDuplicateScan = false
     @State private var showAnalyzeWizard = false
@@ -130,6 +131,7 @@ struct AnalyzeView: View {
                                          typeFocusRequest: typeFocusVideoID == video.id ? typeFocusRequest : nil,
                                          fightStatsFocusRequest: fightStatsFocusVideoID == video.id ? fightStatsFocusRequest : nil,
                                          onResearch: { fightResearchTarget = video },
+                                         onStory: { fightStoryTarget = video },
                                          onNameWizard: { showNameWizard = true },
                                          onCompareBatches: { batchComparison = ScenesView.CompareRequest(runs: $0, video: video) },
                                          onSelectVideo: { selection = [$0.id] },
@@ -297,6 +299,9 @@ struct AnalyzeView: View {
         }
         .sheet(item: $fightResearchTarget) { video in
             FightResearchSheet(video: video)
+        }
+        .sheet(item: $fightStoryTarget) { video in
+            FightStorySheet(fightVideo: video)
         }
         .sheet(isPresented: $showGenerateSheet) {
             GenerateVideoSheet(source: .videos(selectedVideos))
@@ -1147,6 +1152,8 @@ private struct VideoPreviewPane: View {
     /// Opens the fight-research sheet — presented by the parent view, not
     /// here: a .sheet inside this split-view child crashes AppKit layout.
     let onResearch: () -> Void
+    /// Opens the fight story sheet — same parent-presented sheet rule.
+    var onStory: (() -> Void)? = nil
     /// Opens the File Name Wizard for this video — same parent-presented
     /// sheet rule.
     let onNameWizard: () -> Void
@@ -1493,6 +1500,16 @@ private struct VideoPreviewPane: View {
                         Text("Fight Research")
                             .font(.caption.weight(.medium))
                         Spacer()
+                        if let onStory {
+                            Button {
+                                onStory()
+                            } label: {
+                                Text("Fight Story…").lineLimit(1).fixedSize()
+                            }
+                            .controlSize(.small)
+                            .disabled(store.isBuildingFightStory(fightVideoID: video.id))
+                            .help("Build one timeline from an interview claim, this fight's picked sequences and a result card")
+                        }
                         if store.fightResearchInFlight.contains(video.id) {
                             ProgressView()
                                 .controlSize(.small)

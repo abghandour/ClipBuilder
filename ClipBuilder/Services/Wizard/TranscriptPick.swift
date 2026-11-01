@@ -11,6 +11,8 @@ nonisolated struct TranscriptPick: Identifiable, Sendable, Equatable {
     var originalStart: Double
     var originalEnd: Double
     var sceneID: Int64?
+    /// Owning project; nil for a legacy pick no project has adopted yet.
+    var projectID: Int64? = nil
 
     var range: ClosedRange<Double> { start...max(start, end) }
     var originalRange: ClosedRange<Double> { originalStart...max(originalStart, originalEnd) }

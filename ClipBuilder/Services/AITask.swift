@@ -88,8 +88,18 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     /// Writes the Instagram caption for a rendered reel. Prompt:
     /// `WizardEngine.captionPrompt`; also caption fixes in `AppStore`.
     case captions
+    /// Proposes alternative openings (a different first clip or opening
+    /// text) for a Builder timeline's hook comparison. Prompt:
+    /// `HookVariantBuilder.prompt(document:scenes:)`; parsed by
+    /// `HookVariantBuilder.parseAlternatives`.
+    case hooks
     /// Missing person descriptions in one batch. Prompt: `TagTextWriter.prompt`.
     case tagText = "tag_text"
+    /// Writes the outcome card (kicker, headline, subline) that closes an
+    /// evidence-linked fight story. Prompt:
+    /// `FightStoryBuilder.prompt(claimText:fightLabel:outcome:research:)`;
+    /// parsed by `FightStoryBuilder.parseCard`.
+    case storyCard = "story_card"
     /// Turns crawled fan chatter into the reel's story. Prompt:
     /// `FightResearchService`.
     case fightResearch = "fight_research"
@@ -123,7 +133,7 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     /// Order is the Settings order.
     static let configurable: [AITask] = [
         .analysis, .people, .exchanges, .highlights, .framing, .broll, .wizard, .critique, .research, .fightResearch, .personResearch,
-        .parse, .captions, .tagText, .distill, .overlay, .naming, .curate, .search, .soundbites, .cover, .dedupe, .trim,
+        .parse, .captions, .hooks, .tagText, .storyCard, .distill, .overlay, .naming, .curate, .search, .soundbites, .cover, .dedupe, .trim,
         .gap, .report, .onboard, .route,
     ]
     // `.imageGeneration` is not routable: it only runs through the Gemini CLI's

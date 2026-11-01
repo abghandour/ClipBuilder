@@ -320,6 +320,14 @@ final class AppStore {
     /// names looked auto-generated — presented after the people review.
     var pendingRenameReview: RenameReviewRequest?
     var comparisonQueue: [ComparisonBatch] = []
+    /// AI Lessons teaching queue: the reels and pairs where the models, the
+    /// critic and human judgments disagree most (AppStore+TeachingQueue).
+    var teachingQueue: [TeachingQueue.Item] = []
+    /// The reels named by `teachingQueue`, for the Judge sheets.
+    var teachingQueueVideos: [Int64: GeneratedVideoRecord] = [:]
+    /// Models with a teaching-queue answer they have not been re-evaluated on.
+    var teachingPending: Set<ReelModelItem> = []
+    var isRefreshingTeachingQueue = false
 
     /// FIFO of pending alerts; the main window presents the first entry and
     /// dequeues on dismiss, so one failure can't silently replace another.
@@ -391,6 +399,25 @@ final class AppStore {
     var pendingWizardSelectionReview: WizardSelectionReviewRequest?
     var wizardSelections: [WizardSelectionSummary] = []
     var miniRuns: [MiniWizardFlow.FootageKind: MiniWizardRun] = [:]
+    /// Highlight history (docs/Highlight-History-Plan.md, Phase 2), newest
+    /// first, per bar: Express keeps one list per source video, the full
+    /// wizard one per project. Both pages stay alive, so each bar has its own
+    /// list and selection.
+    var highlightHistories: [HighlightHistoryScope: [WizardHighlightRecord]] = [:]
+    var selectedHighlightIDs: [HighlightHistoryScope: Int64] = [:]
+    /// Entries naming a source video this library does not have.
+    var unavailableHighlightIDs: Set<Int64> = []
+    /// Why an entry could not be opened, shown under its bar.
+    var highlightOpenWarnings: [Int64: String] = [:]
+    /// The Express run an opened entry became (entry id → mini batch), so
+    /// Re-render reuses it.
+    var openedHighlightBatches: [Int64: String] = [:]
+    /// The full wizard entry Open resolved last: its plan on this library,
+    /// for "Show clips" and "Open in Builder".
+    var openedWizardHighlight: OpenedWizardHighlight?
+    /// Bumped by every history Open; an Open whose token is no longer
+    /// current after its awaits (a newer Open started) does nothing.
+    @ObservationIgnored var highlightOpenToken = 0
     var miniFootageKind: MiniWizardFlow.FootageKind = .highlights
     var miniRun: MiniWizardRun? {
         get { miniRuns[miniFootageKind] }
@@ -409,6 +436,8 @@ final class AppStore {
     var transcriptPickSaveTask: Task<Void, Error>?
     /// Serial fight-pick writes; Mini waits for the latest before recording takes.
     var fightPickSaveTask: Task<Void, Error>?
+    /// Serial Q&A kept-exchange writes; Mini waits for the latest before recording takes.
+    var qaPickSaveTask: Task<Void, Error>?
     var activeWizardSelectionID: Int64?
     var wizardLookRevision = 0
     var wizardSelectionSaveTask: Task<Void, Error>?
@@ -1069,6 +1098,10 @@ final class AppStore {
         igBenchmarks = nil
         pendingComparison = nil
         comparisonQueue = []
+        teachingQueue = []
+        teachingQueueVideos = [:]
+        teachingPending = []
+        isRefreshingTeachingQueue = false
         autoTranslateQueue = []
         transcriptTranslationEdits = [:]
         autoTranslateInFlight = nil
@@ -1093,6 +1126,7 @@ final class AppStore {
         sceneEditSaveTask = nil
         transcriptPickSaveTask = nil
         fightPickSaveTask = nil
+        qaPickSaveTask = nil
         activeWizardSelectionID = nil
         pendingPodcastHighlights = nil
         podcastResultsAfterDismissal = nil
@@ -1108,6 +1142,7 @@ final class AppStore {
         pipelineTargets = []
         igFetchTask?.cancel()
         lastWizardOptions = nil
+        resetHighlightHistory()
         wizardFailureMessage = nil
         timelineViewStates = [:]
         if opensProfiles {

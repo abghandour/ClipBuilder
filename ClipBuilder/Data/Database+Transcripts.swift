@@ -452,7 +452,7 @@ extension Database {
             let decided = try connection.query("""
                 SELECT kind, start_time, end_time, decision FROM edit_proposals
                 WHERE video_id = ? AND transcription_key IS ? AND decision != 'pending'
-                  AND kind IN ('silence', 'filler', 'falseStart', 'noise')
+                  AND kind IN ('silence', 'filler', 'falseStart', 'noise', 'repeatWord', 'retake')
                 """, [.integer(videoID), transcriptionKey.map(SQLValue.text) ?? .null]).compactMap { row -> (kind: String, start: Double, end: Double, decision: String)? in
                 guard let kind = row["kind"]?.stringValue, let start = row["start_time"]?.doubleValue,
                       let end = row["end_time"]?.doubleValue, let decision = row["decision"]?.stringValue
@@ -460,7 +460,7 @@ extension Database {
                 return (kind, start, end, decision)
             }
             try connection.execute("DELETE FROM transcript_features WHERE video_id = ? AND transcription_key IS ?", [.integer(videoID), transcriptionKey.map(SQLValue.text) ?? .null])
-            try connection.execute("DELETE FROM edit_proposals WHERE video_id = ? AND transcription_key IS ? AND kind IN ('silence', 'filler', 'falseStart', 'noise')",
+            try connection.execute("DELETE FROM edit_proposals WHERE video_id = ? AND transcription_key IS ? AND kind IN ('silence', 'filler', 'falseStart', 'noise', 'repeatWord', 'retake')",
                                    [.integer(videoID), transcriptionKey.map(SQLValue.text) ?? .null])
             for feature in features {
                 try connection.execute("""

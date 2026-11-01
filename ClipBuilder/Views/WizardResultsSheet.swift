@@ -53,6 +53,13 @@ struct WizardResultsSheet: View {
                     Spacer()
                     PlatformChromePicker().fixedSize()
                 }
+                if results.source != .express {
+                    // Earlier highlights of this project: Open, then Generate again with their settings.
+                    HStack {
+                        Spacer(minLength: 0)
+                        WizardHighlightHistoryBar(onGenerate: { dismiss() })
+                    }
+                }
                 Text(visibleVideos.count > 1 && !bestCritiquedIDs.isEmpty
                      ? "The critic’s highest-rated output in each batch is marked. Watch and rate; every rating trains the wizard."
                      : results.source == .express

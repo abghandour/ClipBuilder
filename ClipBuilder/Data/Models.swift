@@ -754,9 +754,22 @@ nonisolated struct GeneratedVideoRecord: Identifiable, Sendable, Hashable {
     var modelsJSON: String? = nil
 
     var selectionTakeID: Int64? = nil
+    /// Moments the pipeline was unsure about ([ReviewFlag] JSON); nil for
+    /// videos rendered before review flags or with nothing to review.
+    var reviewFlagsJSON: String? = nil
+    /// Shared by the renders of one hook comparison (the original and its
+    /// alternative openings); nil for every other video.
+    var variantGroupID: String? = nil
+    /// The opening this render tried ("Original", or the AI's label).
+    var hookLabel: String? = nil
+    /// The full WizardPlan JSON this render used; nil for renders before
+    /// highlight history and for Builder renders.
+    var planJSON: String? = nil
 
     var url: URL { URL(fileURLWithPath: path) }
     var filename: String { url.lastPathComponent }
+
+    var reviewFlags: [ReviewFlag] { ReviewFlagBuilder.decode(reviewFlagsJSON) }
 
     var planProvenance: AIProvenance? {
         AIProvenance(provider: wizardProvider, model: wizardModel, task: "wizard",
@@ -897,6 +910,9 @@ nonisolated struct PreferenceRecord: Identifiable, Sendable, Hashable {
     var chosenRationale: String
     var rejectedRationale: String
     var createdAt: String?
+    /// Hook labels when the pick was between hook variants of one timeline.
+    var chosenLabel: String? = nil
+    var rejectedLabel: String? = nil
 }
 
 /// A distilled style rule the wizard applies to every future generation.

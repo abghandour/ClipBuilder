@@ -15,7 +15,7 @@ struct SyncMigrationTests {
         #expect(try raw.columnNames(of: "video_people").isSuperset(of: ["vip", "vip_source"]))
         let table = try #require(SyncTable.footage.first { $0.name == "video_people" })
         #expect(table.columns.contains("vip_source"))
-        #expect(SyncEngine.understoodSchemaVersion == 7)
+        #expect(SyncEngine.understoodSchemaVersion == 8)
         let scope = SyncScope(teamID: UUID(), profileID: UUID())
         let wire: SyncMapping.WireRow = ["sync_id": .string(UUID().uuidString),
                                        "team_id": .string(scope.teamID.uuidString),
@@ -274,7 +274,7 @@ extension SyncMigrationTests {
         try raw.executeScript(Database.schema)
         try Database.migrate(raw)
         try Database.migrateTeamSync(raw)
-        try Database.migrateBrandSync(raw, tables: SyncTable.all.filter { !SyncTable.footage.contains($0) })
+        try Database.migrateBrandSync(raw, tables: SyncTable.all.filter { !SyncTable.footage.contains($0) && !SyncTable.history.contains($0) })
         try raw.executeScript("""
             INSERT INTO videos(id, hash, filename, path, duration, drive_file_id)
                 VALUES (42, 'existing-hash', 'Existing.mov', '/private/tmp/existing.mov', 12, 'drive-id');

@@ -35,9 +35,9 @@ extension Database {
 
     /// Upgrading an attached Phase 1 profile must seed its existing footage too.
     /// Reopen the join pass for the new tables, preserving Phase 1 cursors/edits.
-    nonisolated static func seedFootageSync(_ db: SQLiteConnection) throws {
+    nonisolated static func seedFootageSync(_ db: SQLiteConnection, tables: [SyncTable] = SyncTable.footage) throws {
         guard try !db.query("SELECT 1 FROM sync_binding").isEmpty else { return }
-        for table in SyncTable.footage {
+        for table in tables {
             try db.execute("INSERT OR IGNORE INTO sync_seed_progress(\"table\", after_rowid) VALUES (?, 0)", [.text(table.name)])
         }
         try db.execute("UPDATE sync_bootstrap SET complete = 0 WHERE id = 1")

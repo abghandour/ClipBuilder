@@ -10,6 +10,7 @@ extension AppStore {
                         document: TimelineDocument? = nil,
                         projectID requestedProjectID: Int64? = nil,
                         isWizardPlan: Bool = false, fixWithWizard: Bool = false, open: Bool = true,
+                        reviewFlags: [ReviewFlag] = [],
                         onCreated: ((Int64) -> Void)? = nil) -> Task<Void, Never>? {
         guard let database, let projectID = requestedProjectID ?? activeProjectID else { return nil }
         let document = document ?? {
@@ -35,6 +36,7 @@ extension AppStore {
                 timelines = updatedTimelines
                 if open, let timeline = timelines.first(where: { $0.id == id }) {
                     openTimelineRecord(timeline)
+                    if openTimelineID == id { builder.reviewFlags = reviewFlags }
                     builderPlanResult = isWizardPlan ? BuilderPlanResult(store: self, openRequested: fixWithWizard) : nil
                 }
             } catch { presentError("Could not create the timeline", error) }
@@ -558,7 +560,8 @@ extension AppStore {
     /// so the window stays inside the timeline) to a temporary file. Nothing
     /// is added to the Library; the sheet deletes the file when done.
     func renderBuilderExactPreview(from playhead: Double, seconds: Double = AppStore.exactPreviewWindow,
-                                   priority: MediaWorkScheduler.Priority = .interactive) async -> URL? {
+                                   priority: MediaWorkScheduler.Priority = .interactive,
+                                   withoutSpeechPolish: Bool = false) async -> URL? {
         guard let database, !isBuilderRendering, !isBuilderPreviewRendering else { return nil }
         guard !builder.document.videoTrack.isEmpty else {
             presentError("Add clips to the timeline first.")
@@ -568,7 +571,9 @@ extension AppStore {
         isBuilderPreviewRendering = true
         defer { isBuilderPreviewRendering = false }
         let window = Self.exactPreviewRange(from: playhead, seconds: seconds, totalDuration: builder.totalDuration)
-        let document = MultitrackRenderer.windowed(builder.document, from: window.lowerBound, to: window.upperBound)
+        var document = MultitrackRenderer.windowed(builder.document, from: window.lowerBound, to: window.upperBound)
+        // The Speech Polish audition renders the unpolished mix and polishes it itself.
+        if withoutSpeechPolish { document.renderSettings.speechPolish = nil }
         appendLog(\.builderLog, ["— Exact preview: rendering \(window.lowerBound.timecode)–\(window.upperBound.timecode) (\(document.videoTrack.count) clip(s)) —"], channel: "builder-preview")
 
         let scenes = builder.scenes

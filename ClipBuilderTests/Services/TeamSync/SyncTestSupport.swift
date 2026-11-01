@@ -125,6 +125,12 @@ nonisolated enum BrandSyncFixtures {
             }
             if table.name == "videos" { columns.append("path"); values["path"] = .text("/private/tmp/source.mov") }
             if table.name == "scenes" { values["parent_scene_id"] = .null }
+            if table.name == "projects" {
+                columns.append("profile_name")
+                values["profile_name"] = .text("Fixture")
+            }
+            if table.name == "wizard_highlights" { values["parent_id"] = .null }
+            if table.name == "fight_picks" { values["event_ids"] = .text("[1]") }
             if table.name == "library_asset_metadata" {
                 columns.append("path")
                 values["path"] = .text("/private/tmp/team-sync-asset.png")

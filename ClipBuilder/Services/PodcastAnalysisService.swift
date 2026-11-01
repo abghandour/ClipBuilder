@@ -123,14 +123,20 @@ actor PodcastAnalysisService {
             },
             deadAirThreshold: podcastSettings.deadAirSeconds,
             fillerRunThreshold: podcastSettings.fillerRunSeconds)
+        // Word-level cleanup over the rows as re-cut by speaker above.
+        let cleanupRows = ((try? await database.fetchTranscripts(videoID: video.id, transcriptionKey: transcriptionKey)) ?? [])
+            .filter { !$0.isTranslation }
+        let cleanup = TranscriptCleanupProposer.editProposals(rows: cleanupRows, videoID: video.id,
+                                                              alongside: enrichment.proposals)
+        let allProposals = enrichment.proposals + cleanup
         try await database.replaceTranscriptFeatures(videoID: video.id, transcriptionKey: transcriptionKey,
                                                      features: enrichment.features,
-                                                     proposals: podcastSettings.cleanupCutPolicy.applied(to: enrichment.proposals))
+                                                     proposals: podcastSettings.cleanupCutPolicy.applied(to: allProposals))
         let topics = TopicSegmenter.segment(enrichment.features, videoID: video.id)
         try await database.replaceTopicRanges(videoID: video.id, transcriptionKey: transcriptionKey, topics: topics)
-        let accepted = enrichment.proposals.count { podcastSettings.cleanupCutPolicy.decision(for: $0.kind) == .accepted }
+        let accepted = allProposals.count { podcastSettings.cleanupCutPolicy.decision(for: $0.kind) == .accepted }
         if accepted > 0 {
-            log("Cleanup cuts: \(accepted) of \(enrichment.proposals.count) accepted by the \(podcastSettings.cleanupCutPolicy.label.lowercased()) policy")
+            log("Cleanup cuts: \(accepted) of \(allProposals.count) accepted by the \(podcastSettings.cleanupCutPolicy.label.lowercased()) policy")
         }
 
         progress(0.70, "grouping complete exchanges")

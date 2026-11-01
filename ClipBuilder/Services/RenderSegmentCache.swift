@@ -153,4 +153,7 @@ nonisolated struct RenderSegmentKey: Encodable, Sendable {
     var muteSource: Bool?
     var compositeEffect: EffectSpec?
     var lookAssets: [String: String]?
+    /// Wizard brand layers drawn in their own stage, and whether below cutaways.
+    var brandLayers: [MultitrackRenderer.CaptionOverlay]? = nil
+    var brandUnderCutaways: Bool? = nil
 }

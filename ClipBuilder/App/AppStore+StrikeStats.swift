@@ -49,7 +49,15 @@ extension AppStore {
     }
 
     private func strikeStatsSnapshot(_ original: StrikeStatPayload) async throws -> StrikeStatPayload {
-        guard let database, let videoID = original.sourceVideoID,
+        guard let database else { throw AIError.notConfigured("The source video is unavailable.") }
+        return try await Self.strikeStatsSnapshot(original, database: database)
+    }
+
+    /// Frozen counts for a stat card: loads the source video's events,
+    /// scenes, outcomes, roster, passes and research, then summarizes off
+    /// the main actor. Shared by the Builder's stat cards and fight stories.
+    static func strikeStatsSnapshot(_ original: StrikeStatPayload, database: Database) async throws -> StrikeStatPayload {
+        guard let videoID = original.sourceVideoID,
               let video = try await database.video(id: videoID) else {
             throw AIError.notConfigured("The source video is unavailable.")
         }

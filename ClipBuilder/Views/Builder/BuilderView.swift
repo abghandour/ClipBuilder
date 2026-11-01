@@ -236,6 +236,21 @@ struct BuilderView: View {
                     .help("Replace the speech on this timeline with a synthetic voice in another language")
                 }
                 ToolbarItem {
+                    Button {
+                        if let id = store.openTimelineID { store.startHookVariants(timelineID: id) }
+                    } label: {
+                        ToolbarBubbleLabel(text: "Hook variants…", systemImage: "rectangle.split.3x1")
+                            .lineLimit(1)
+                            .fixedSize()
+                    }
+                    .disabled(model.document.videoTrack.isEmpty || store.openTimelineID == nil
+                              || store.openTimelineID.map(store.isMakingHookVariants) == true
+                              || FootageAvailability.missingSource(document: model.document, scenes: model.scenes) != nil)
+                    .help(store.openTimelineID.map(store.isMakingHookVariants) == true
+                          ? "Hook variants are being made for this timeline — see the status bar"
+                          : "Render this timeline with alternative openings and pick the best hook side by side")
+                }
+                ToolbarItem {
                     Button(role: .destructive) {
                         confirmClear = true
                     } label: {

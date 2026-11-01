@@ -398,6 +398,16 @@ final class TeamSyncState {
                     store.scheduleProjectStateSave()
                 }
             }
+            if changed.contains(where: { name in SyncTable.history.contains { $0.name == name } }) {
+                store.refreshProjectCatalog()
+                for scope in Array(store.highlightHistories.keys) {
+                    await store.loadHighlightHistory(scope)
+                }
+                let picks: Set<String> = ["transcript_picks", "fight_picks", "qa_picks"]
+                if !picks.isDisjoint(with: changed) {
+                    await store.refreshMiniPicksAfterSync(changedTables: Set(changed))
+                }
+            }
             if changed.contains(where: { $0.hasPrefix("ig_") || $0 == "reel_traits" || $0 == "reel_outcomes" }) {
                 await store.refreshSyncedInstagram(database: db)
             }

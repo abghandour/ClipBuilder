@@ -6,6 +6,7 @@ struct MiniFootageCard: View {
     let run: MiniWizardRun
     let pageHeight: CGFloat
     @State private var showTranscript = false
+    @State private var showFightStory = false
     /// The review area's height once the user has dragged its bottom edge;
     /// 0 means fit the page. Shared by Q&A, Transcript, Fight and Highlights.
     @AppStorage("mini.footageHeight") private var storedHeight = 0.0
@@ -25,10 +26,27 @@ struct MiniFootageCard: View {
         } else if run.footageKind == .transcript {
             resizable(MiniTranscriptPickView(run: run))
         } else if run.footageKind == .fightMetrics {
+            fightStoryRow
             resizable(MiniFightPickView(run: run))
         } else {
             resizable(MiniHighlightReviewView(run: run))
         }
+    }
+
+    /// Fight story: this fight's picks between an interview claim and a
+    /// result card, built into one Builder timeline.
+    private var fightStoryRow: some View {
+        HStack(spacing: Theme.spaceS) {
+            Spacer()
+            Button {
+                showFightStory = true
+            } label: {
+                Label("Fight Story…", systemImage: "text.book.closed").lineLimit(1).fixedSize()
+            }
+            .disabled(store.isWizardRunning || store.isBuildingFightStory(fightVideoID: run.video.id))
+            .help("Build one timeline from an interview claim, these fight picks and a result card")
+        }
+        .sheet(isPresented: $showFightStory) { FightStorySheet(fightVideo: run.video) }
     }
 
     /// The review at the remembered height with a grab bar under it; dragging
@@ -84,11 +102,7 @@ struct MiniFootageCard: View {
                 speakerSpans: qa.speakerSpans,
                 kept: Binding(
                     get: { store.miniRun?.batchID == run.batchID ? store.miniRun?.qa?.kept ?? [] : [] },
-                    set: { kept in
-                        guard store.miniRun?.batchID == run.batchID else { return }
-                        store.miniRun?.qa?.kept = kept
-                        MiniWizardMemory.saveQAKept(kept, profileName: store.activeProfile.profileName, videoID: run.video.id)
-                    }), preferredTranslationLanguage: store.activeProfile.captionLanguages.first) { scene, start, end in
+                    set: { kept in store.setMiniQAKept(kept, batchID: run.batchID) }), preferredTranslationLanguage: store.activeProfile.captionLanguages.first) { scene, start, end in
                         store.setSceneEditRange(scene, start: start, end: end)
                     }
             resizable(review)

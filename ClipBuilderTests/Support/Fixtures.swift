@@ -90,6 +90,19 @@ enum Fixtures {
         )
     }
 
+    static func speakerTurn(
+        videoID: Int64 = 1,
+        start: Double = 3,
+        end: Double = 5,
+        cluster: Int = 0,
+        confidence: Double = 0.9,
+        pictureConfidence: Double = 0,
+        personKey: String? = "aljo"
+    ) -> SpeakerTurn {
+        SpeakerTurn(videoID: videoID, start: start, end: end, cluster: cluster,
+                    confidence: confidence, pictureConfidence: pictureConfidence, personKey: personKey)
+    }
+
     static func video(id: Int64 = 1) -> VideoRecord {
         VideoRecord(
             id: id, hash: "fixture", filename: "fixture.mp4", path: "/tmp/fixture.mp4",

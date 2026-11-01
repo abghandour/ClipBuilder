@@ -27,6 +27,43 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
     var trackCount: Int = 1                       // 1...maxTracks visible video tracks
     var trackSequential: [Bool] = Array(repeating: true, count: TimelineDocument.maxTracks)
 
+    // Wizard settings the Wizard used to burn in outside the document. All
+    // nil in Builder-made documents, which render exactly as before; the
+    // Wizard writes them so its saved timeline re-renders the same reel
+    // (docs/Open-In-Editor-Plan.md).
+    /// The run's named caption style (`BrandProfile.captionStyles` id).
+    var captionStyleID: String?
+    /// The caption language; "" means the original language explicitly,
+    /// nil falls back to the profile's first caption language.
+    var captionLanguage: String?
+    /// The run's caption placement: "auto" or a position override. Set by
+    /// the Wizard, it switches the Builder to the Wizard's caption placement.
+    var captionPosition: String?
+    /// Captions kept inside the safe area (the Wizard's Safe area only).
+    var captionSafeAreaOnly: Bool?
+    /// The platforms that safe area clears, when it differs from the render settings'.
+    var captionSafeAreaPlatforms: [SocialPlatform]?
+    /// Caption position per person key, resolved from the run's speaker slots.
+    var speakerCaptionPositions: [String: String]?
+    /// Full-frame brand PNGs (logo watermark, headline) over every footage clip.
+    var brandLayers: [BrandLayerItem]?
+    /// Where brand layers composite in each segment: `brandUnderCutaways`
+    /// (the full Wizard brands each cut, then lays B-roll over it) or nil,
+    /// over all footage including manual cutaways (Express burns them into
+    /// the extraction, which already holds its cutaways). Always below
+    /// captions, name tags and overlays.
+    var brandLayerStage: String?
+    /// The Center Stage camera for clips whose framing names none.
+    var framingCamera: String?
+    /// "wizard": music mixed like the Wizard (fixed gain, 2 s fade, no
+    /// ducking, no bumper cut); nil uses the Builder's music track.
+    var musicMix: String?
+
+    /// The Wizard's music mix value for `musicMix`.
+    static let wizardMusicMix = "wizard"
+    /// The full Wizard's `brandLayerStage`: brand above main footage, below cutaways.
+    static let brandUnderCutaways = "under_cutaways"
+
     /// Video tracks the timeline can show — enough for a screen-crop
     /// layout with one clip per area (the Python app only knows three).
     static let maxTracks = 6
@@ -73,6 +110,16 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         case trackSettings = "track_settings"
         case trackCount = "track_count"
         case trackSequential = "track_sequential"
+        case captionStyleID = "caption_style_id"
+        case captionLanguage = "caption_language"
+        case captionPosition = "caption_position"
+        case captionSafeAreaOnly = "caption_safe_area_only"
+        case captionSafeAreaPlatforms = "caption_safe_area_platforms"
+        case speakerCaptionPositions = "speaker_caption_positions"
+        case brandLayers = "brand_layers"
+        case brandLayerStage = "brand_layer_stage"
+        case framingCamera = "framing_camera"
+        case musicMix = "music_mix"
     }
 
     init() {}
@@ -105,6 +152,16 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
             ?? Array(repeating: true, count: Self.maxTracks)
         while sequential.count < Self.maxTracks { sequential.append(true) }
         trackSequential = Array(sequential.prefix(Self.maxTracks))
+        captionStyleID = try container.decodeIfPresent(String.self, forKey: .captionStyleID)
+        captionLanguage = try container.decodeIfPresent(String.self, forKey: .captionLanguage)
+        captionPosition = try container.decodeIfPresent(String.self, forKey: .captionPosition)
+        captionSafeAreaOnly = try container.decodeIfPresent(Bool.self, forKey: .captionSafeAreaOnly)
+        captionSafeAreaPlatforms = try container.decodeIfPresent([SocialPlatform].self, forKey: .captionSafeAreaPlatforms)
+        speakerCaptionPositions = try container.decodeIfPresent([String: String].self, forKey: .speakerCaptionPositions)
+        brandLayers = try container.decodeIfPresent([BrandLayerItem].self, forKey: .brandLayers)
+        brandLayerStage = try container.decodeIfPresent(String.self, forKey: .brandLayerStage)
+        framingCamera = try container.decodeIfPresent(String.self, forKey: .framingCamera)
+        musicMix = try container.decodeIfPresent(String.self, forKey: .musicMix)
     }
 
     /// Flatten overlay blocks into concrete text/image items (for rendering
@@ -232,6 +289,185 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
             }
         }
         return pieces.filter { $0.upperBound - $0.lowerBound >= minimum }
+    }
+
+    /// Where a clip's footage comes from, in that video's own seconds. The
+    /// document cannot say on its own: a scene clip names its video only
+    /// through the scene record (and an untrimmed one takes its start from
+    /// the scene), a file clip only through its path.
+    struct CutSource: Sendable, Equatable {
+        var videoID: Int64
+        var sourceStart: Double
+    }
+
+    /// The document with every source range in `ranges` (seconds of video
+    /// `videoID`) cut out of the main clips that play that video. A clip
+    /// becomes the pieces `subtracting` leaves, laid end to end from the
+    /// clip's start; later main clips on the same track move up by what was
+    /// removed. Pieces shorter than `minimumPiece` seconds on screen are
+    /// dropped. `resolve` maps a clip to its video and resolved source start
+    /// (nil = not a clip this can cut).
+    ///
+    /// The cut track is the lowest track whose main clips lose time (track 0
+    /// for ordinary timelines). Its removed stretches, in timeline seconds,
+    /// define the ripple `TimelineCutMap` applies to everything else timed in
+    /// the document: bumpers, B-roll, clips on other tracks, text and image
+    /// overlays, overlay blocks, crop blocks, music and dub lines. An item
+    /// that overlaps a removed stretch is trimmed by the overlap; one left
+    /// shorter than `minimumPiece` is dropped.
+    func applyingCuts(_ ranges: [ClosedRange<Double>], videoID: Int64, minimumPiece: Double = 0.1,
+                      resolve: (TimelineClip) -> CutSource?) -> TimelineDocument {
+        let spans = ranges.filter { $0.lowerBound.isFinite && $0.upperBound.isFinite && $0.upperBound > $0.lowerBound }
+            .map { $0.lowerBound..<$0.upperBound }
+        guard !spans.isEmpty else { return self }
+        // Each main clip's replacement on the cut track (its pieces, in
+        // place), and the timeline stretches the cut removed.
+        var replacements: [UUID: [TimelineClip]] = [:]
+        var removed: [Range<Double>] = []
+        var cutTrack: Int?
+        for track in 0..<Self.maxTracks {
+            var trackReplacements: [UUID: [TimelineClip]] = [:]
+            var trackRemoved: [Range<Double>] = []
+            for clip in videoTrack.filter({ !$0.bumper && $0.role == .main && $0.track == track }) {
+                let speed = clip.effectiveSpeed
+                guard let source = resolve(clip), source.videoID == videoID,
+                      source.sourceStart.isFinite, speed.isFinite, speed > 0, clip.duration > 0 else { continue }
+                let whole = source.sourceStart..<(source.sourceStart + clip.sourceSpan)
+                let pieces = Self.subtracting(spans, from: whole, minimum: minimumPiece * speed)
+                if pieces.count == 1, let only = pieces.first,
+                   abs(only.lowerBound - whole.lowerBound) < 1e-6, abs(only.upperBound - whole.upperBound) < 1e-6 {
+                    continue
+                }
+                // The kept pieces at their original timeline positions; the
+                // rest of the clip's stretch is removed.
+                let kept = pieces.map { piece in
+                    (clip.startTime + (piece.lowerBound - whole.lowerBound) / speed)
+                        ..< (clip.startTime + (piece.upperBound - whole.lowerBound) / speed)
+                }
+                trackRemoved += Self.subtracting(kept, from: clip.startTime..<(clip.startTime + clip.duration),
+                                                 minimum: 1e-9)
+                var parts: [TimelineClip] = []
+                for (index, piece) in pieces.enumerated() {
+                    var part = clip
+                    if index > 0 { part.uid = UUID() }
+                    part.sourceStart = piece.lowerBound
+                    part.sourceEnd = piece.upperBound
+                    part.duration = (piece.upperBound - piece.lowerBound) / speed
+                    // Original position; the cut map lays the pieces end to end.
+                    part.startTime = kept[index].lowerBound
+                    if index > 0 { part.transIn = nil; part.fadeIn = 0 }
+                    if index < pieces.count - 1 { part.transOut = nil; part.fadeOut = 0 }
+                    // A camera path counts from the clip's source start.
+                    if let path = clip.cameraPath, path.count >= 2 {
+                        let sliced = CenterStageService.slice(path, from: piece.lowerBound - source.sourceStart,
+                                                              duration: piece.upperBound - piece.lowerBound)
+                        part.cameraPath = sliced.count >= 2 ? sliced : nil
+                    }
+                    parts.append(part)
+                }
+                trackReplacements[clip.uid] = parts
+            }
+            if !trackRemoved.isEmpty {
+                replacements = trackReplacements
+                removed = trackRemoved
+                cutTrack = track
+                break
+            }
+        }
+        guard let cutTrack else { return self }
+        let map = TimelineCutMap(removed: removed)
+        var document = self
+        document.videoTrack = videoTrack.flatMap { clip -> [TimelineClip] in
+            if let parts = replacements[clip.uid] {
+                return parts.map { part in
+                    var moved = part
+                    moved.startTime = map.time(part.startTime)
+                    return moved
+                }
+            }
+            if clip.track == cutTrack, !clip.bumper, clip.role == .main {
+                var moved = clip
+                moved.startTime = map.time(clip.startTime)
+                return [moved]
+            }
+            return map.clip(clip, minimumPiece: minimumPiece, baseSource: { resolve($0)?.sourceStart }).map { [$0] } ?? []
+        }
+        document.soundTrack = soundTrack.compactMap { item in
+            let start = map.time(item.startTime), end = map.time(item.startTime + item.duration)
+            guard end - start >= minimumPiece else { return nil }
+            var moved = item
+            // Trimmed from the front: the song continues where it was.
+            moved.sourceOffset += map.headTrim(from: item.startTime, to: item.startTime + item.duration)
+            moved.startTime = start
+            moved.duration = end - start
+            return moved
+        }
+        document.textOverlays = textOverlays.compactMap { item in
+            let start = map.time(item.startTime), end = map.time(item.endTime)
+            guard end - start >= minimumPiece else { return nil }
+            var moved = item
+            moved.startTime = start
+            moved.endTime = end
+            return moved
+        }
+        document.imageOverlays = imageOverlays.compactMap { item in
+            let start = map.time(item.startTime), end = map.time(item.endTime)
+            guard end - start >= minimumPiece else { return nil }
+            var moved = item
+            moved.startTime = start
+            moved.endTime = end
+            return moved
+        }
+        document.overlayBlocks = overlayBlocks.compactMap { item in
+            let start = map.time(item.startTime), end = map.time(item.endTime)
+            guard end - start >= minimumPiece else { return nil }
+            var moved = item
+            moved.startTime = start
+            moved.duration = end - start
+            return moved
+        }
+        document.cropBlocks = cropBlocks.compactMap { item in
+            let start = map.time(item.startTime), end = map.time(item.endTime)
+            guard end - start >= minimumPiece else { return nil }
+            var moved = item
+            moved.startTime = start
+            moved.duration = end - start
+            return moved
+        }
+        if let lines = dubLines {
+            // A line moves with its footage and stays owned by the piece it
+            // now starts in; a line whose speech was cut goes with it.
+            let surviving = Dictionary(document.videoTrack.map { ($0.uid, $0) }, uniquingKeysWith: { first, _ in first })
+            document.dubLines = lines.compactMap { line in
+                let start = map.time(line.start)
+                if map.isRemoved(line.start), map.time(line.start + line.duration) - start < minimumPiece { return nil }
+                var moved = line
+                moved.start = start
+                if let parts = replacements[line.clipUID] {
+                    guard let owner = parts.last(where: { map.time($0.startTime) <= start + 1e-9 }) ?? parts.first
+                    else { return nil }
+                    moved.clipUID = owner.uid
+                } else if surviving[line.clipUID] == nil, videoTrack.contains(where: { $0.uid == line.clipUID }) {
+                    return nil
+                }
+                return moved
+            }
+        }
+        return document
+    }
+
+    /// How many of `ranges` overlap the source of some main clip of video
+    /// `videoID` (cuts `applyingCuts` would act on).
+    func cutCount(_ ranges: [ClosedRange<Double>], videoID: Int64,
+                  resolve: (TimelineClip) -> CutSource?) -> Int {
+        let windows: [Range<Double>] = videoTrack.compactMap { clip in
+            guard !clip.bumper, clip.role == .main, let source = resolve(clip), source.videoID == videoID,
+                  clip.sourceSpan > 0 else { return nil }
+            return source.sourceStart..<(source.sourceStart + clip.sourceSpan)
+        }
+        return ranges.count { range in
+            windows.contains { $0.lowerBound < range.upperBound && range.lowerBound < $0.upperBound }
+        }
     }
 
     /// Whether some part of the clip falls where its track has no area —
@@ -740,6 +976,13 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     /// clips carry a plan and no request until the inspector sets one.
     var framingRequest: Clip_Builder.Framing?   // the request struct, not `TimelineClip.Framing`
     var framingProgramAudio: FramingProgramAudio?
+    /// Where an evidence-linked story clip came from (a transcript pick, a
+    /// fight sequence). Nil for every other clip.
+    var provenance: StoryProvenance?
+    /// The footage's content box in the source (normalized), with burned-in
+    /// bars cropped away. Set by the Wizard, which detects it per cut; nil
+    /// renders the whole frame as before.
+    var contentWindow: FreeCropRect?
 
     /// How a wide main clip in Full Screen is framed.
     enum Framing: String, CaseIterable, Sendable {
@@ -878,6 +1121,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case framingRequest = "framing_request"
         case framingProgramAudio = "framing_program_audio"
         case speed
+        case provenance
+        case contentWindow = "content_window"
     }
 
     init() {}
@@ -927,6 +1172,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             cameraPathSource = try container.decodeIfPresent(String.self, forKey: .cameraPathSource)
         }
         speed = try container.decodeIfPresent(Double.self, forKey: .speed)
+        provenance = try container.decodeIfPresent(StoryProvenance.self, forKey: .provenance)
+        contentWindow = try container.decodeIfPresent(FreeCropRect.self, forKey: .contentWindow)
         captions = Self.decodeCaptions(container, key: .captions, fallback: "inherit",
                                        valid: Self.captionChoices)
         // The web serializer never writes duration for scene clips; hydration
@@ -1001,6 +1248,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             try container.encodeIfPresent(cameraPathSource, forKey: .cameraPathSource)
         }
         try encodeOrNull(speed, in: &container, forKey: .speed)
+        try container.encodeIfPresent(provenance, forKey: .provenance)
+        try container.encodeIfPresent(contentWindow, forKey: .contentWindow)
         if let sceneID, !isTrimmedScene {
             try container.encode(sceneID, forKey: .sceneID)
         } else if let videoFile, let sourceStart {
@@ -1034,6 +1283,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             && lhs.framingRequest == rhs.framingRequest
             && lhs.framingProgramAudio == rhs.framingProgramAudio
             && lhs.cutawaySourceWindow == rhs.cutawaySourceWindow
+            && lhs.provenance == rhs.provenance
     }
 
     var id: UUID { uid }
@@ -1299,6 +1549,13 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
     /// The box was sized by hand (Express resize): text that overflows wraps
     /// at the box width instead of widening the box. nil = false.
     var lockedWidth: Bool?
+    /// Where an evidence-linked story card's copy came from (outcome and
+    /// research records). Nil for every other overlay.
+    var provenance: StoryProvenance?
+    /// A Wizard animation the transitions cannot express: "word_reveal"
+    /// (`WordRevealSchedule`). Set only on Wizard documents; nil renders by
+    /// `transIn`/`transOut` as before.
+    var animation: String?
 
     var duration: Double { max(0, endTime - startTime) }
     var resolvedLockedWidth: Bool { lockedWidth ?? false }
@@ -1334,6 +1591,8 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         case keepsPlacement = "keeps_placement"
         case boxRadius = "box_radius"
         case lockedWidth = "locked_width"
+        case provenance
+        case animation
     }
 
     init(text: String = "", startTime: Double = 0, endTime: Double = 3) {
@@ -1383,10 +1642,13 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         alignment = try container.decodeIfPresent(String.self, forKey: .alignment) ?? "center"
         keepsPlacement = try container.decodeIfPresent(Bool.self, forKey: .keepsPlacement) ?? false
         lockedWidth = try container.decodeIfPresent(Bool.self, forKey: .lockedWidth)
+        provenance = try container.decodeIfPresent(StoryProvenance.self, forKey: .provenance)
+        animation = try container.decodeIfPresent(String.self, forKey: .animation)
     }
 
     func encode(to encoder: Encoder) throws {
         var container = encoder.container(keyedBy: CodingKeys.self)
+        try container.encodeIfPresent(animation, forKey: .animation)
         try container.encodeIfPresent(fontOverride, forKey: .fontOverride)
         try container.encodeIfPresent(decor, forKey: .decor)
         try container.encodeIfPresent(sharedStyleID, forKey: .sharedStyleID)
@@ -1432,6 +1694,7 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
         if alignment != "center" { try container.encode(alignment, forKey: .alignment) }
         if keepsPlacement { try container.encode(true, forKey: .keepsPlacement) }
         if resolvedLockedWidth { try container.encode(true, forKey: .lockedWidth) }
+        try container.encodeIfPresent(provenance, forKey: .provenance)
     }
 
     static func == (lhs: TextOverlayItem, rhs: TextOverlayItem) -> Bool {
@@ -1454,9 +1717,55 @@ nonisolated struct TextOverlayItem: Codable, Sendable, Equatable, Identifiable {
             && lhs.resolvedLockedWidth == rhs.resolvedLockedWidth
             // Resolved so nil and the default compare equal, as they render.
             && lhs.resolvedWordsPerLine == rhs.resolvedWordsPerLine
+            && lhs.provenance == rhs.provenance
     }
 
     var id: UUID { uid }
+}
+
+/// Where a clip or card of an evidence-linked fight story came from, so the
+/// Builder can trace every claim back to its transcript range, fight
+/// events, or research record (docs/Fight-Story-Plan.md).
+nonisolated struct StoryProvenance: Codable, Sendable, Equatable, Hashable {
+    enum Kind: String, Codable, Sendable, Hashable {
+        case transcript, fightAction, outcome, research
+    }
+
+    var kind: Kind
+    var videoID: Int64?
+    var sourceStart: Double?
+    var sourceEnd: Double?
+    var transcriptPickID: Int64?
+    var fightPickID: Int64?
+    var eventIDs: [Int64]?
+    var researchVideoID: Int64?
+    var label: String?
+
+    enum CodingKeys: String, CodingKey {
+        case kind
+        case videoID = "video_id"
+        case sourceStart = "source_start"
+        case sourceEnd = "source_end"
+        case transcriptPickID = "transcript_pick_id"
+        case fightPickID = "fight_pick_id"
+        case eventIDs = "event_ids"
+        case researchVideoID = "research_video_id"
+        case label
+    }
+
+    init(kind: Kind, videoID: Int64? = nil, sourceStart: Double? = nil, sourceEnd: Double? = nil,
+         transcriptPickID: Int64? = nil, fightPickID: Int64? = nil, eventIDs: [Int64]? = nil,
+         researchVideoID: Int64? = nil, label: String? = nil) {
+        self.kind = kind
+        self.videoID = videoID
+        self.sourceStart = sourceStart
+        self.sourceEnd = sourceEnd
+        self.transcriptPickID = transcriptPickID
+        self.fightPickID = fightPickID
+        self.eventIDs = eventIDs
+        self.researchVideoID = researchVideoID
+        self.label = label
+    }
 }
 
 /// Free-mode crop: one source rectangle mapped to one destination rectangle
@@ -1485,4 +1794,16 @@ nonisolated struct FreeCropRect: Codable, Sendable, Hashable {
         case wFrac = "w_frac"
         case hFrac = "h_frac"
     }
+}
+
+/// A full-frame brand PNG (the logo watermark or the result headline) the
+/// Wizard draws over every footage clip, never over bumpers or its own
+/// title/outro cards. The file lives with the Wizard's retained cards.
+nonisolated struct BrandLayerItem: Codable, Sendable, Equatable {
+    var path: String
+    /// "watermark" or "headline".
+    var kind: String
+
+    static let watermark = "watermark"
+    static let headline = "headline"
 }

@@ -308,9 +308,13 @@ actor TranscriptionService {
             deadAirThreshold: settings.deadAirSeconds,
             fillerRunThreshold: settings.fillerRunSeconds)
         try Task.checkCancellation()
+        // Word-level cleanup reads the stored rows (their ids and timed words).
+        let rows = try await database.fetchTranscripts(videoID: video.id, transcriptionKey: transcriptionKey)
+            .filter { !$0.isTranslation }
+        let cleanup = TranscriptCleanupProposer.editProposals(rows: rows, videoID: video.id, alongside: analysis.proposals)
         try await database.replaceTranscriptFeatures(videoID: video.id, transcriptionKey: transcriptionKey,
                                                      features: analysis.features,
-                                                     proposals: settings.cleanupCutPolicy.applied(to: analysis.proposals))
+                                                     proposals: settings.cleanupCutPolicy.applied(to: analysis.proposals + cleanup))
         // Topics are cheap and the Wizard plans with them: keep them current.
         try await database.replaceTopicRanges(videoID: video.id, transcriptionKey: transcriptionKey,
                                               topics: TopicSegmenter.segment(analysis.features, videoID: video.id))

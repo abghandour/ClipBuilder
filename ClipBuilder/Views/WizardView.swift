@@ -932,14 +932,23 @@ struct WizardView: View {
             Text(generationSummary)
                 .font(.caption).foregroundStyle(.secondary)
                 .frame(maxWidth: .infinity, alignment: .leading)
+            // Earlier highlights: Open one, then Generate again with its settings.
+            HStack {
+                Spacer(minLength: 0)
+                WizardHighlightHistoryBar()
+            }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: Theme.spaceM) {
                     generationAction
+                    openInEditorAction
                     Spacer(minLength: Theme.spaceS)
                     manualBuildAction
                 }
                 VStack(alignment: .leading, spacing: Theme.spaceS) {
-                    generationAction
+                    HStack(spacing: Theme.spaceM) {
+                        generationAction
+                        openInEditorAction
+                    }
                     manualBuildAction
                 }
             }
@@ -962,6 +971,25 @@ struct WizardView: View {
         return runSummary
     }
 
+    /// Open in Editor, next to Generate: the kept takes as Builder timelines
+    /// with every Settings choice applied. Only when Generate renders saved
+    /// takes; the AI planning modes have nothing to open yet.
+    @ViewBuilder var openInEditorAction: some View {
+        if !isFindingFootage, !store.isWizardRunning, let flow = Optional(cardFlow), flow.settingsRenders {
+            Button {
+                store.generateWizardSelections(options: presentationOptions(), oneReel: outputMode == .oneReel,
+                                               selectionIDs: Set(visibleSelections.map(\.id)), mode: .openInEditor)
+            } label: {
+                Label("Open in Editor", systemImage: "hammer")
+            }
+            .labelStyle(.iconOnly).controlSize(.large)
+            .disabled(flow.isBusy || store.isOpeningWizardInEditor(projectID: store.activeProjectID))
+            .help(flow.outputCount(oneReel: outputMode == .oneReel) == 1
+                  ? "Open in Editor: build the kept take as a Builder timeline with these settings, without rendering"
+                  : "Open in Editor: build \(flow.outputCount(oneReel: false)) Builder timelines, one per kept selection, without rendering")
+        }
+    }
+
     @ViewBuilder var generationAction: some View {
         if isFindingFootage {
             Button("Stop finding footage", role: .destructive) { store.cancelGenerateRequest() }
@@ -982,7 +1010,7 @@ struct WizardView: View {
             .controlSize(.large).lineLimit(1).fixedSize()
             .buttonStyle(.borderedProminent)
             .keyboardShortcut(.return, modifiers: .command)
-            .disabled(flow.isBusy)
+            .disabled(flow.isBusy || store.isOpeningWizardInEditor(projectID: store.activeProjectID))
             .help(flow.outputCount(oneReel: outputMode == .oneReel) == 1 ? "Render one video from the kept take"
                   : "Render \(flow.outputCount(oneReel: false)) videos, one per kept selection")
         } else if reviewWorkflow == .automatic || needsFootageProposal || capabilities.sources == .podcastRecording {

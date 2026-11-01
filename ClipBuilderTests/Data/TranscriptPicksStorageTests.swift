@@ -8,24 +8,25 @@ struct TranscriptPicksStorageTests {
         let temp = try await TempDatabase()
         let database = temp.database
         let videoID = try await temp.seedVideo(sceneCount: 2)
-        let first = try await database.addTranscriptPick(videoID: videoID, start: 1, end: 4)
-        let second = try await database.addTranscriptPick(videoID: videoID, start: 6, end: 9)
-        let third = try await database.addTranscriptPick(videoID: videoID, start: 12, end: 15)
+        let projectID = try await database.createProject(profileName: "Test", name: "Picks", videoIDs: [videoID])
+        let first = try await database.addTranscriptPick(projectID: projectID, videoID: videoID, start: 1, end: 4)
+        let second = try await database.addTranscriptPick(projectID: projectID, videoID: videoID, start: 6, end: 9)
+        let third = try await database.addTranscriptPick(projectID: projectID, videoID: videoID, start: 12, end: 15)
         #expect([first, second, third].map(\.position) == [0, 1, 2])
         #expect(first.sceneID == nil)
         #expect(first.originalRange == 1...4)
 
-        try await database.setTranscriptPickRange(id: second.id, start: 5, end: 10)
-        try await database.reorderTranscriptPicks(videoID: videoID, ids: [third.id, second.id])
-        let picks = try await database.fetchTranscriptPicks(videoID: videoID)
+        try await database.setTranscriptPickRange(projectID: projectID, id: second.id, start: 5, end: 10)
+        try await database.reorderTranscriptPicks(projectID: projectID, videoID: videoID, ids: [third.id, second.id])
+        let picks = try await database.fetchTranscriptPicks(projectID: projectID, videoID: videoID)
         #expect(picks.map(\.id) == [third.id, second.id, first.id], "listed ids first, the rest after them")
         #expect(picks.map(\.position) == [0, 1, 2])
         #expect(picks[1].range == 5...10 && picks[1].originalRange == 6...9)
-        try await database.deleteTranscriptPick(id: first.id)
-        #expect(try await database.fetchTranscriptPicks(videoID: videoID).map(\.id) == [third.id, second.id])
+        try await database.deleteTranscriptPick(projectID: projectID, id: first.id)
+        #expect(try await database.fetchTranscriptPicks(projectID: projectID, videoID: videoID).map(\.id) == [third.id, second.id])
         // Picks belong to their video.
         let other = try await temp.seedVideo(sceneCount: 0)
-        #expect(try await database.fetchTranscriptPicks(videoID: other).isEmpty)
+        #expect(try await database.fetchTranscriptPicks(projectID: projectID, videoID: other).isEmpty)
     }
 
     @Test func savingPicksMakesScenesAndSelectionsInListOrder() async throws {
@@ -38,10 +39,10 @@ struct TranscriptPicksStorageTests {
                        TranscriptSegment(start: 3, end: 6, text: "Four five six", words: nil)],
             provider: "test", model: "test")
         let rows = try await database.fetchTranscripts(videoID: videoID)
-        let late = try await database.addTranscriptPick(videoID: videoID, start: 3, end: 6)
-        let early = try await database.addTranscriptPick(videoID: videoID, start: 0, end: 3)
-        try await database.reorderTranscriptPicks(videoID: videoID, ids: [early.id, late.id])
-        let picks = try await database.fetchTranscriptPicks(videoID: videoID)
+        let late = try await database.addTranscriptPick(projectID: projectID, videoID: videoID, start: 3, end: 6)
+        let early = try await database.addTranscriptPick(projectID: projectID, videoID: videoID, start: 0, end: 3)
+        try await database.reorderTranscriptPicks(projectID: projectID, videoID: videoID, ids: [early.id, late.id])
+        let picks = try await database.fetchTranscriptPicks(projectID: projectID, videoID: videoID)
         var options = WizardStep1Options()
         options.formatPreset = "custom"
 
@@ -57,7 +58,7 @@ struct TranscriptPicksStorageTests {
         #expect(scenes.allSatisfy { $0.tags.contains(Database.transcriptPickTag) && $0.videoID == videoID })
         #expect(scenes.allSatisfy { !$0.tags.contains("podcast") }, "an untyped video without speaker turns is not podcast footage")
         #expect(scenes.allSatisfy { $0.runID != nil }, "attached to the video's active run")
-        #expect(try await database.fetchTranscriptPicks(videoID: videoID).map(\.sceneID) == sceneIDs)
+        #expect(try await database.fetchTranscriptPicks(projectID: projectID, videoID: videoID).map(\.sceneID) == sceneIDs)
         // A take's footage snapshot resolves against the stored scenes.
         for candidate in candidates {
             #expect(WizardSelectionRules.resolvedPlan(candidate.take.plan, scenes: scenes) != nil)
@@ -80,8 +81,8 @@ struct TranscriptPicksStorageTests {
             segments: [TranscriptSegment(start: 0, end: 3, text: "One two three", words: nil)],
             provider: "test", model: "test")
         let rows = try await database.fetchTranscripts(videoID: videoID)
-        _ = try await database.addTranscriptPick(videoID: videoID, start: 0, end: 3)
-        let picks = try await database.fetchTranscriptPicks(videoID: videoID)
+        _ = try await database.addTranscriptPick(projectID: projectID, videoID: videoID, start: 0, end: 3)
+        let picks = try await database.fetchTranscriptPicks(projectID: projectID, videoID: videoID)
         var options = WizardStep1Options()
         options.formatPreset = "podcast"
         func tags() async throws -> [String] {

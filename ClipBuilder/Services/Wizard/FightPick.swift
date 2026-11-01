@@ -14,6 +14,8 @@ nonisolated struct FightPick: Identifiable, Sendable, Equatable {
     /// The scored fight events the pick was built from, in time order.
     var eventIDs: [Int64]
     var sceneID: Int64?
+    /// Owning project; nil for a legacy pick no project has adopted yet.
+    var projectID: Int64? = nil
 
     var range: ClosedRange<Double> { start...max(start, end) }
     var originalRange: ClosedRange<Double> { originalStart...max(originalStart, originalEnd) }

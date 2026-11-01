@@ -10,12 +10,17 @@ struct ComparisonSheet: View {
 
     @State private var players: [Int64: AVPlayer] = [:]
 
+    /// A hook comparison: the renders differ only in the opening.
+    private var isHookComparison: Bool { batch.videos.contains { $0.hookLabel != nil } }
+
     var body: some View {
         VStack(spacing: 0) {
             VStack(spacing: 4) {
-                Text("Which variation is best?")
+                Text(isHookComparison ? "Which opening is best?" : "Which variation is best?")
                     .font(.headline)
-                Text("Your pick teaches the wizard which creative approach wins — the others stay in the Library.")
+                Text(isHookComparison
+                     ? "Only the first seconds differ. Your pick teaches the wizard which hook wins — the others stay in the Library."
+                     : "Your pick teaches the wizard which creative approach wins — the others stay in the Library.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
             }
@@ -28,9 +33,11 @@ struct ComparisonSheet: View {
                             .frame(width: 210, height: 373)
                             .background(.black, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
 
-                        Text("Variation \(index + 1) · \(video.duration.timecode)")
+                        Text("\(video.hookLabel ?? "Variation \(index + 1)") · \(video.duration.timecode)")
                             .font(.caption.monospacedDigit())
                             .foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .frame(maxWidth: 210)
 
                         if let rationale = video.rationale, !rationale.isEmpty {
                             Text(rationale)

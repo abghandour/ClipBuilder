@@ -22,6 +22,8 @@ struct TranscriptToolsSheet: View {
     @State private var batchFallback = false
     /// Cuts ticked for a batch decision.
     @State private var selectedProposalIDs: Set<Int64> = []
+    /// One player for every cut's audition.
+    @State private var audition = CutAuditionPlayback()
 
     var body: some View {
         NavigationStack {
@@ -77,6 +79,25 @@ struct TranscriptToolsSheet: View {
                                     cornerRadius: 6
                                 )
                                 .frame(width: 120, height: 68)
+                                VStack(alignment: .leading, spacing: 6) {
+                                    Text(proposal.kind.label)
+                                        .font(.caption.weight(.semibold))
+                                        .lineLimit(1)
+                                        .fixedSize()
+                                        .padding(.horizontal, 6)
+                                        .padding(.vertical, 2)
+                                        .background(.tint.opacity(0.15), in: Capsule())
+                                    let auditioning = audition.cutID == proposal.id
+                                    Button(auditioning ? "Stop" : "Audition",
+                                           systemImage: auditioning ? "stop.fill" : "play.fill") {
+                                        audition.audition(url: video.url, cut: proposal.startTime...max(proposal.startTime, proposal.endTime),
+                                                          id: proposal.id)
+                                    }
+                                    .controlSize(.small)
+                                    .lineLimit(1)
+                                    .fixedSize()
+                                    .help("Hear the second before the cut, then the second after it, as if the cut were made")
+                                }
                             }
                             Text(proposal.reason)
                             HStack {
@@ -157,6 +178,7 @@ struct TranscriptToolsSheet: View {
         .frame(width: 720, height: 650)
         .modalCloseButton { dismiss() }
         .task { await load() }
+        .onDisappear { audition.tearDown() }
         .appJobSetupPresentation()
         .onChange(of: analysisJob?.status) { _, state in
             if state == .done { Task { await load() } }

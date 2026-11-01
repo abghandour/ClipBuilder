@@ -75,7 +75,10 @@ extension AppStore {
                     speakerHints: TranscriptFeatureAnalyzer.speakerHints(scenes: scenes, personKeys: people.map(\.key)),
                     deadAirThreshold: settings.deadAirSeconds, fillerRunThreshold: settings.fillerRunSeconds)
                 try Task.checkCancellation()
-                return (result.features, settings.cleanupCutPolicy.applied(to: result.proposals),
+                // Word-level filler, stutters, false starts and retakes from the timed words.
+                let cleanup = TranscriptCleanupProposer.editProposals(rows: original, videoID: video.id,
+                                                                      alongside: result.proposals)
+                return (result.features, settings.cleanupCutPolicy.applied(to: result.proposals + cleanup),
                         TopicSegmenter.segment(result.features, videoID: video.id))
             }
             try Task.checkCancellation()

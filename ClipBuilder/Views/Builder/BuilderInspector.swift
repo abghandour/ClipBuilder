@@ -10,6 +10,10 @@ struct BuilderInspector: View {
         ScrollView {
             VStack(alignment: .leading, spacing: 0) {
                 DubInspector()
+                SpeechPolishInspector()
+                if !model.reviewFlags.isEmpty {
+                    ReviewFlagsInspector()
+                }
                 inspectorContent(model: model)
             }
                 // With "Show scroll bars: Always" the scroller takes width;
@@ -219,6 +223,11 @@ struct ClipInspector: View {
             // Trim against the raw video, right under the clip identity.
             InspectorSection("Trim") {
                 ClipTrimEditor(clip: clip)
+            }
+
+            // Accepted transcript cleanup cuts for the timeline's footage.
+            if !clip.bumper, !clip.isCutaway {
+                CleanupCutsInspectorSection()
             }
 
             // Framing — the decision that changes the picture most.

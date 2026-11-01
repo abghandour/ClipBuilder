@@ -21,6 +21,12 @@ actor MultitrackRenderer {
     struct RenderResult: Sendable {
         var url: URL
         var duration: Double
+        /// Clips whose tracking failed or fell back to a static crop; nil
+        /// when every clip framed as planned. Also recorded into
+        /// `RenderFramingFallbackCollector.current` when one is set.
+        var framingFallbacks: [RenderFramingFallback]? = nil
+        /// The Library row the render was filed as; nil for previews.
+        var recordID: Int64? = nil
     }
 
     /// One clip with every per-clip/track setting resolved to its effective
@@ -243,8 +249,9 @@ actor MultitrackRenderer {
         return try await FFmpeg.$renderLog.withValue(emit) {
             try await RenderContext.$transitions.withValue(editing.transitions) {
                 try await RenderContext.$settings.withValue(document.renderSettings) {
+                    // A Wizard document names the Center Stage default its extraction used.
                     try await renderConfigured(document: document, scenes: scenes, profile: profile,
-                                               database: database, centerStageCamera: centerStageCamera,
+                                               database: database, centerStageCamera: document.framingCamera ?? centerStageCamera,
                                                projectID: projectID, outputName: outputName, batchID: batchID, wizardOptions: wizardOptions, roles: roles,
                                                renderFingerprint: renderFingerprint, preview: preview,
                                                contentWindows: contentWindows, prerenderedSources: prerenderedSources, burnIns: burnIns, muteSource: muteSource, compositeEffect: compositeEffect, emit: emit)
@@ -312,7 +319,10 @@ actor MultitrackRenderer {
         var bumperSpans = document.videoTrack.filter(\.bumper).map { $0.startTime..<($0.startTime + $0.duration) }
         var clips = Self.resolveClips(document: document, scenes: scenes, centerStageCamera: centerStageCamera)
         for index in clips.indices {
-            guard let window = contentWindows[clips[index].sourcePath], !clips[index].bumper else { continue }
+            // The Wizard records each cut's content box on its clips.
+            guard let window = contentWindows[clips[index].sourcePath]
+                    ?? document.videoTrack[safe: clips[index].documentIndex]?.contentWindow,
+                  !clips[index].bumper else { continue }
             Self.applyContentWindow(window, to: &clips[index])
         }
         var fighterRosters: [String: [VideoPersonRecord]] = [:]
@@ -352,6 +362,8 @@ actor MultitrackRenderer {
         try FileManager.default.createDirectory(at: framingScratch, withIntermediateDirectories: true)
         defer { try? FileManager.default.removeItem(at: framingScratch) }
         var framingArtifacts: [RenderSegmentCache.Entry] = []
+        // Review flags: clips whose framing fell back to a static crop.
+        var framingFallbacks: [RenderFramingFallback] = []
         #if PERFORMANCE_BASELINE
         let framingStarted = ContinuousClock.now
         #endif
@@ -393,6 +405,7 @@ actor MultitrackRenderer {
             let jobs = groups.sorted { $0.key < $1.key }.map {
                 (key: $0.key, indices: $0.value, clip: clips[$0.value[0]], area: areas[$0.key])
             }
+            let fallbackReasons = FramingFallbackReasons()
             let results = try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job -> PrepassArtifact? in
                 try Task.checkCancellation()
                 let clip = job.clip
@@ -401,6 +414,10 @@ actor MultitrackRenderer {
                     if self.framingCacheEnabled, clip.cacheable, !ExpressRenderTesting.exportAreaPaths,
                        let cached = await self.segmentCache.readJSON(FeedCameraPath.self, key: job.key) {
                         emit("Framing cache hit; keyframes=\(cached.keyframes.count); intermediates=0")
+                        // A cached fallback path still earns its review flag.
+                        if cached.usedFallback {
+                            fallbackReasons.set(job.key, "tracking found too little to follow")
+                        }
                         return PrepassArtifact(path: cached, cacheable: true, wasCached: true)
                     }
                     let path: FeedCameraPath
@@ -450,6 +467,9 @@ actor MultitrackRenderer {
                         await self.segmentCache.storeJSON(path, key: job.key)
                     }
                     emit("Framing prepass: keyframes=\(path.keyframes.count); intermediates=0; uses=\(job.indices.count)")
+                    if path.usedFallback {
+                        fallbackReasons.set(job.key, "tracking found too little to follow")
+                    }
                     return PrepassArtifact(path: path, cacheable: path.reusable != false)
                 }
                 let owned = framingScratch.appendingPathComponent(UUID().uuidString + ".mp4")
@@ -494,6 +514,9 @@ actor MultitrackRenderer {
                     defer { try? FileManager.default.removeItem(at: framed) }
                     try Task.checkCancellation()
                     try FileManager.default.moveItem(at: framed, to: owned)
+                    if fellBack.withLock({ $0 }) {
+                        fallbackReasons.set(job.key, "tracking lost the subject")
+                    }
                     let intermediates = job.area == nil || fellBack.withLock({ $0 }) ? 1 : 2
                     emit("Framing prepass: intermediates=\(intermediates); uses=\(job.indices.count)")
                     try Task.checkCancellation()
@@ -501,7 +524,19 @@ actor MultitrackRenderer {
                 } catch {
                     try Task.checkCancellation()
                     emit("Framing failed (\(error)) — using the static crop")
+                    fallbackReasons.set(job.key, "tracking failed (\(error.localizedDescription))")
                     return nil
+                }
+            }
+            // Read before the results below swap in framed sources.
+            for job in jobs {
+                guard let reason = fallbackReasons.reason(job.key) else { continue }
+                for index in job.indices {
+                    let clip = clips[index]
+                    framingFallbacks.append(RenderFramingFallback(clipOriginKey: clip.originKey.isEmpty ? nil : clip.originKey,
+                        startTime: clip.originalStart, reason: reason,
+                        sourcePath: clip.originalSourcePath ?? clip.sourcePath,
+                        sourceStart: clip.transcriptSourceStart ?? clip.sourceStart))
                 }
             }
             for (job, result) in zip(jobs, results) {
@@ -554,6 +589,14 @@ actor MultitrackRenderer {
         #if PERFORMANCE_BASELINE
         emit("FRAMING_PREPARATION seconds=\(framingStarted.duration(to: .now).seconds)")
         #endif
+        // Split pieces of one clip report one fallback: its earliest piece.
+        var seenFallbacks: Set<String> = []
+        framingFallbacks = framingFallbacks.sorted { $0.startTime < $1.startTime }.filter {
+            let identity = $0.clipOriginKey ?? "\($0.sourcePath ?? "")|\($0.sourceStart ?? 0)"
+            return seenFallbacks.insert(identity + "|" + $0.reason).inserted
+        }
+        RenderFramingFallbackCollector.current?.record(framingFallbacks)
+        let renderedFallbacks = framingFallbacks.isEmpty ? nil : framingFallbacks
         guard !clips.isEmpty else {
             throw CocoaError(.fileNoSuchFile, userInfo: [
                 NSLocalizedDescriptionKey: "No valid clips in the video track"])
@@ -592,14 +635,43 @@ actor MultitrackRenderer {
         // Python generator (pad/truncate at the end for exact parity).
         var clipPaths: [URL] = []
 
+        // A Wizard document carries its run's caption style, language, safe
+        // area and placement; a Builder document has none and uses the profile.
+        let captionProfile = document.captionStyleID.map { profile.withCaptionStyle(id: $0) } ?? profile
+        let captionLanguage: String? = if let language = document.captionLanguage {
+            language.isEmpty ? nil : language
+        } else {
+            profile.captionLanguages.first
+        }
+        let captionSafeArea = document.captionSafeAreaOnly == true
+            ? PlatformSafeArea.resolve(platforms: document.captionSafeAreaPlatforms ?? document.renderSettings.platformSafeArea.platforms,
+                                       aspectRatio: document.renderSettings.aspectRatio)
+            : PlatformSafeArea.resolve(document.renderSettings)
         let captionRenderer = CaptionRenderer(videoWidth: Self.width, videoHeight: Self.height,
-                                              style: profile.captions.applyingSharedStyle(profile.textStyles ?? []))
+                                              style: captionProfile.captions.applyingSharedStyle(profile.textStyles ?? []),
+                                              safeArea: captionSafeArea, safeAreaOnly: document.captionSafeAreaOnly == true)
         let captionRenderers = CaptionRendererSet(base: captionRenderer,
-            speakerStyles: profile.speakerCaptionStyles(runStyleID: nil))
+            speakerStyles: captionProfile.speakerCaptionStyles(runStyleID: document.captionStyleID))
+        let wizardCaptions = document.captionPosition.map { run in
+            WizardCaptionPlacement(runPosition: run,
+                                   defaultClipPosition: run == "auto" ? captionProfile.captions.position : run,
+                                   speakerPositions: document.speakerCaptionPositions ?? [:])
+        }
         let captionCache = CaptionPNGCache(renderers: captionRenderers, directory: scratch)
         let captionEvidence = CaptionSpeakerEvidenceMemo(database: database)
         let segmentDedupe = SegmentDedupe()
         let segmentCount = fullSegments.count
+        // A Wizard document plans captions once per original cut, as the
+        // Wizard's extraction does, so B-roll or layout boundaries never
+        // change paging or the input-limit fallback; segments take their
+        // slice. Builder documents keep planning per segment.
+        let cutCaptions: [CutCaptionPlan]? = if let wizardCaptions {
+            try await planCutCaptions(Self.captionCuts(clips), document: document, database: database,
+                captionLanguage: captionLanguage, captionRenderers: captionRenderers,
+                wizardCaptions: wizardCaptions,
+                captionStyle: captionProfile.captions.applyingSharedStyle(profile.textStyles ?? []),
+                captionEvidence: captionEvidence, emit: emit)
+        } else { nil }
 
         // Text and image overlays — pre-rendered to full-frame PNGs and
         // composited in one pass (images first so text stays on top).
@@ -615,6 +687,21 @@ actor MultitrackRenderer {
         if let safeArea {
             emit("Overlays kept clear of \(safeArea.platforms.map(\.label).joined(separator: ", ")) buttons")
         }
+        // Wizard brand layers (logo watermark, headline): full-frame PNGs with
+        // their own stage in each segment, on the footage before captions,
+        // name tags and overlays, like the Wizard's extraction; never over
+        // bumpers or Wizard cards.
+        var brandPNGs: [URL] = []
+        for layer in document.brandLayers ?? [] {
+            let url = URL(fileURLWithPath: layer.path)
+            guard FileManager.default.fileExists(atPath: url.path) else {
+                emit("Brand \(layer.kind) skipped: \(url.lastPathComponent) is missing")
+                continue
+            }
+            brandPNGs.append(url)
+        }
+        let brandSpans = brandPNGs.isEmpty ? [] : Self.brandLayerSpans(document: document, totalDuration: totalDuration)
+        let brandUnderCutaways = document.brandLayerStage == TimelineDocument.brandUnderCutaways
         for item in document.imageOverlays.map({ $0.keptClear(of: safeArea, frameAspectRatio: RenderContext.settings.aspectRatio) }) {
             let (start, end) = clampWindow(start: item.startTime, end: item.endTime)
             guard end > start, let png = try? imageRenderer.render(item, to: scratch) else { continue }
@@ -629,7 +716,20 @@ actor MultitrackRenderer {
         for item in boundText.map({ $0.keptClear(of: safeArea) })
         where item.stat != nil || !item.text.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty {
             let (start, end) = clampWindow(start: item.startTime, end: item.endTime)
-            guard end > start, let png = try? textRenderer.render(item, to: scratch) else { continue }
+            guard end > start else { continue }
+            // A Wizard word reveal: the extraction's progressive PNGs, hard cut.
+            let reveal = item.animation == WordRevealSchedule.animation
+                ? WordRevealSchedule.steps(duration: end - start, wordCount: TextOverlayRenderer.wordCount(item.text)) : []
+            if !reveal.isEmpty {
+                let identity = try RenderSegmentCache.key(item)
+                for step in reveal {
+                    guard let png = try? textRenderer.render(item, to: scratch, visibleWords: step.visibleWords) else { continue }
+                    overlays.append(TimedOverlayPNG(png: png, startTime: start + step.start, endTime: start + step.end,
+                        transIn: "cut", transOut: "cut", identity: identity + "|words:\(step.visibleWords)"))
+                }
+                continue
+            }
+            guard let png = try? textRenderer.render(item, to: scratch) else { continue }
             overlays.append(TimedOverlayPNG(png: png, startTime: start, endTime: end,
                 transIn: item.transIn, transOut: item.transOut, identity: try RenderSegmentCache.key(item)))
         }
@@ -691,13 +791,20 @@ actor MultitrackRenderer {
                                                         limit: segmentJobs) { index, segment in
             try await self.renderSegment(segment, index: index, of: segmentCount,
                                          scratch: scratch, database: database,
-                                         captionLanguage: profile.captionLanguages.first,
-                                         captionRenderers: captionRenderers,
+                                         captionLanguage: captionLanguage,
+                                         captionRenderers: captionRenderers, wizardCaptions: wizardCaptions,
+                                         cutCaptions: cutCaptions,
                                          captionCache: captionCache, captionEvidence: captionEvidence,
                                          dedupe: segmentDedupe,
-                                         captionStyle: profile.captions.applyingSharedStyle(profile.textStyles ?? []),
+                                         captionStyle: captionProfile.captions.applyingSharedStyle(profile.textStyles ?? []),
                                          fontFingerprints: fontFingerprints,
                                          overlays: overlayPlan.bySegment[index] ?? [],
+                                         brandLayers: Self.brandLayerWindows(spans: brandSpans, segmentStart: segment.start,
+                                                                             segmentEnd: segment.end).flatMap { window in
+                                             brandPNGs.map { CaptionOverlay(png: $0, x: 0, y: 0, start: window.lowerBound,
+                                                                            end: window.upperBound) }
+                                         },
+                                         brandUnderCutaways: brandUnderCutaways,
                                          prerendered: prerenderedSources,
                                          burnIns: RenderBurnIns.intersecting(deferExtract ? [] : burnIns, start: segment.start,
                                              duration: segment.duration, totalDuration: totalDuration),
@@ -730,7 +837,7 @@ actor MultitrackRenderer {
         if let segmentDigests {
             finishingKey = try? await RenderFinishingKey.make(
                 segmentDigests: segmentDigests, transitions: transitions, transitionDuration: transitionDuration,
-                overlays: overlayPlan.remaining, settings: RenderContext.settings,
+                overlays: overlayPlan.remaining, settings: Self.finishingSettings(RenderContext.settings),
                 encoder: FFmpeg.encodeArgs + FFmpeg.intermediateCacheIdentity,
                 dub: document.dub, dubLines: document.dub == nil ? nil : document.dubLines)
         }
@@ -819,9 +926,29 @@ actor MultitrackRenderer {
                 assembled = withDub
             }
 
-            // Music track (blocks with silence-filled gaps + original-audio ducking).
-            if !document.soundTrack.isEmpty {
-                let musicLookup = Dictionary(uniqueKeysWithValues:
+            // A Wizard document mixes its music like the Wizard: one track from
+            // the start under the whole reel, fixed gain, 2 s fade, no ducking.
+            if document.musicMix == TimelineDocument.wizardMusicMix,
+               let item = document.soundTrack.min(by: { $0.startTime < $1.startTime }) {
+                let musicLookup = Self.musicLibraryOverride ?? Dictionary(uniqueKeysWithValues:
+                    WizardEngine.availableMusic().map { ($0.name, $0.url) })
+                if let url = musicLookup[item.name] {
+                    emit("Adding music (\(item.name))...")
+                    let withMusic = scratch.appendingPathComponent("with_music.mp4")
+                    do {
+                        try await render.overlayMusic(video: assembled, music: url, output: withMusic, volume: item.volume)
+                        assembled = withMusic
+                    } catch {
+                        try Task.checkCancellation()
+                        complete = false
+                        emit("Music overlay failed, continuing without music (\(error))")
+                    }
+                } else {
+                    emit("Music '\(item.name)' is not in the music library; continuing without music")
+                }
+            } else if !document.soundTrack.isEmpty {
+                // Music track (blocks with silence-filled gaps + original-audio ducking).
+                let musicLookup = Self.musicLibraryOverride ?? Dictionary(uniqueKeysWithValues:
                     WizardEngine.availableMusic().map { ($0.name, $0.url) })
                 var blocks: [(start: Double, duration: Double, music: URL?, volume: Int, offset: Double)] = []
                 for item in document.soundTrack.sorted(by: { $0.startTime < $1.startTime }) {
@@ -909,6 +1036,18 @@ actor MultitrackRenderer {
             }
         }
 
+        // Speech Polish runs on the final mix (after dub, music and overlays)
+        // so the loudness target applies to what the viewer hears. `assembled`
+        // stays unpolished: it is the finishing cache's entry, keyed without
+        // the polish choice, so toggling polish reuses it.
+        var finalSource = assembled
+        if let polish = document.renderSettings.speechPolish, polish.enabled {
+            emit("Speech polish (\(polish.strength.label.lowercased()))…")
+            let polished = scratch.appendingPathComponent("speech_polished.mp4")
+            try await SpeechPolish.apply(input: assembled, output: polished, settings: polish)
+            finalSource = polished
+        }
+
         if deferExtract {
             emit("Express finishing: decode/encode whole-frame look after document overlays, then burn-ins")
             // Burn-ins were timed on the timeline; the assembled video may be shorter.
@@ -918,10 +1057,10 @@ actor MultitrackRenderer {
                 overlay.end = overlay.end.map { clock.map($0, end: true) }
                 return overlay
             }
-            try await render.extractClip(source: assembled, start: 0, duration: clock.map(totalDuration, end: true),
+            try await render.extractClip(source: finalSource, start: 0, duration: clock.map(totalDuration, end: true),
                 overlays: mappedBurnIns, effect: compositeEffect, mute: muteSource, intermediateSource: true, output: outputURL)
         } else {
-            try FileManager.default.copyItemReplacing(at: assembled, to: outputURL)
+            try FileManager.default.copyItemReplacing(at: finalSource, to: outputURL)
         }
         let finalDuration = await FFmpeg.duration(of: outputURL)
 
@@ -936,7 +1075,7 @@ actor MultitrackRenderer {
             try Task.checkCancellation()
             previewSucceeded = true
             emit("Exact preview ready (\(finalDuration.timecode))")
-            return RenderResult(url: outputURL, duration: finalDuration)
+            return RenderResult(url: outputURL, duration: finalDuration, framingFallbacks: renderedFallbacks)
         }
 
         // Persist the COMPLETE editable document so "Open in Builder" (in
@@ -960,7 +1099,8 @@ actor MultitrackRenderer {
         try Task.checkCancellation()
         if complete && finalDuration > 0 { await publishSegments(artifacts, clips: clips, finishing: finishingArtifacts) }
         emit("Saved \(outputURL.lastPathComponent)")
-        return RenderResult(url: outputURL, duration: finalDuration)
+        return RenderResult(url: outputURL, duration: finalDuration, framingFallbacks: renderedFallbacks,
+                            recordID: recordID)
     }
 
     /// The clock plain crossfades produce, from the segment files' lengths
@@ -1779,6 +1919,182 @@ actor MultitrackRenderer {
             framingPlan: clip.framingPlan, contentWindow: clip.contentWindow, tuning: tuning, settings: settings, encoder: encoder), version: version)
     }
 
+    /// Tests only: the music catalog by name, instead of the music library.
+    @TaskLocal static var musicLibraryOverride: [String: URL]?
+
+    /// The Wizard's caption placement, from a Wizard-made document: the
+    /// run's position ("auto" or an override), the clip position the Wizard
+    /// wrote for it, and positions per person key.
+    nonisolated struct WizardCaptionPlacement: Sendable {
+        var runPosition: String
+        var defaultClipPosition: String
+        var speakerPositions: [String: String]
+    }
+
+    /// Where brand layers show: the main-track footage, merged where clips
+    /// touch, without bumpers, cutaways or the Wizard's title/outro cards.
+    nonisolated static func brandLayerSpans(document: TimelineDocument, totalDuration: Double) -> [Range<Double>] {
+        let footage = document.videoTrack.filter { clip in
+            clip.track == 0 && !clip.bumper && !clip.isCutaway && clip.duration > 0
+                && !(clip.videoFile.map(WizardEngine.isWizardCard) ?? false)
+        }.sorted { $0.startTime < $1.startTime }
+        var spans: [Range<Double>] = []
+        for clip in footage {
+            let start = max(0, clip.startTime)
+            let end = min(totalDuration, clip.startTime + clip.duration)
+            guard end > start else { continue }
+            if let last = spans.last, start <= last.upperBound + 0.01 {
+                spans[spans.count - 1] = last.lowerBound..<max(last.upperBound, end)
+            } else {
+                spans.append(start..<end)
+            }
+        }
+        return spans
+    }
+
+    /// The brand spans inside one segment, on the segment's own clock.
+    nonisolated static func brandLayerWindows(spans: [Range<Double>], segmentStart: Double,
+                                              segmentEnd: Double) -> [Range<Double>] {
+        spans.compactMap { span in
+            let start = max(span.lowerBound, segmentStart) - segmentStart
+            let end = min(span.upperBound, segmentEnd) - segmentStart
+            return end - start > 0.001 ? start..<end : nil
+        }
+    }
+
+    /// Where the brand stage joins a segment's overlay chain (bottom first),
+    /// given which footage steps are cutaways. Under cutaways (the full
+    /// Wizard) it follows the last main-footage step, so every cutaway drawn
+    /// after it covers the brand; otherwise it follows every footage step.
+    nonisolated static func brandInsertionIndex(stepIsCutaway: [Bool], underCutaways: Bool) -> Int {
+        guard underCutaways else { return stepIsCutaway.count }
+        guard let lastMain = stepIsCutaway.lastIndex(of: false) else { return 0 }
+        return lastMain + 1
+    }
+
+    /// One original Wizard cut's captioned footage on one track: contiguous
+    /// main clips sharing an origin (or, without one, a video) whose source
+    /// clock runs on, so crop splits and B-roll boundaries stay one cut.
+    nonisolated struct CaptionCut: Equatable, Sendable {
+        var start: Double
+        var end: Double
+        /// Transcript clock at `start`, and its rate per timeline second.
+        var sourceStart: Double
+        var speed: Double
+        var videoID: Int64
+        var track: Int
+        var captionsPosition: String
+        var originKey: String
+        /// The first clip's index in `document.videoTrack` (its video file owns dub lines).
+        var documentIndex: Int
+
+        var sourceEnd: Double { sourceStart + (end - start) * speed }
+    }
+
+    nonisolated static func captionCuts(_ clips: [ResolvedClip]) -> [CaptionCut] {
+        let captioned = clips.filter {
+            $0.captionsPosition != nil && $0.videoID != nil && $0.role == .main && !$0.bumper && $0.duration > 0
+        }.sorted { ($0.track, $0.startTime) < ($1.track, $1.startTime) }
+        var cuts: [CaptionCut] = []
+        for clip in captioned {
+            guard let position = clip.captionsPosition, let videoID = clip.videoID else { continue }
+            let sourceStart = clip.transcriptStart(at: clip.startTime)
+            if let last = cuts.last, last.track == clip.track, last.captionsPosition == position,
+               abs(last.speed - clip.speed) < 1e-6, abs(last.end - clip.startTime) < 0.01,
+               abs(last.sourceEnd - sourceStart) < 0.05,
+               last.originKey.isEmpty ? (clip.originKey.isEmpty && last.videoID == videoID) : last.originKey == clip.originKey {
+                cuts[cuts.count - 1].end = max(last.end, clip.startTime + clip.duration)
+                continue
+            }
+            cuts.append(CaptionCut(start: clip.startTime, end: clip.startTime + clip.duration, sourceStart: sourceStart,
+                                   speed: clip.speed, videoID: videoID, track: clip.track, captionsPosition: position,
+                                   originKey: clip.originKey, documentIndex: clip.documentIndex))
+        }
+        return cuts
+    }
+
+    /// A cut's caption overlays (timeline seconds) inside one segment, on the segment's clock.
+    nonisolated static func captionOverlays(_ overlays: [CaptionOverlayPlan.Overlay], segmentStart: Double,
+                                            segmentEnd: Double) -> [CaptionOverlayPlan.Overlay] {
+        overlays.compactMap { overlay in
+            let start = max(overlay.start, segmentStart)
+            let end = min(overlay.end, segmentEnd)
+            guard end - start > 0.0005 else { return nil }
+            var local = overlay
+            local.start = start - segmentStart
+            local.end = end - segmentStart
+            return local
+        }
+    }
+
+    /// One cut's planned captions in timeline seconds; `complete` is false
+    /// when its transcript could not be read.
+    nonisolated struct CutCaptionPlan: Sendable {
+        var cut: CaptionCut
+        var overlays: [CaptionOverlayPlan.Overlay]
+        var complete: Bool
+    }
+
+    /// Captions for each Wizard cut over its whole extent, from the
+    /// reviewed dub lines when the document is dubbed (the Wizard's
+    /// `DubPlanning.captionSegments`), else from the transcript.
+    private func planCutCaptions(_ cuts: [CaptionCut], document: TimelineDocument, database: Database, captionLanguage: String?,
+                                 captionRenderers: CaptionRendererSet, wizardCaptions: WizardCaptionPlacement,
+                                 captionStyle: CaptionStyle, captionEvidence: CaptionSpeakerEvidenceMemo,
+                                 emit: @escaping @Sendable (String) -> Void) async throws -> [CutCaptionPlan] {
+        let owners = Dictionary(document.videoTrack.map { ($0.uid, $0) }, uniquingKeysWith: { first, _ in first })
+        let dubLines = document.dub == nil ? [] : (document.dubLines ?? [])
+        var plans: [CutCaptionPlan] = []
+        for cut in cuts {
+            try Task.checkCancellation()
+            let videoFile = document.videoTrack[safe: cut.documentIndex]?.videoFile
+            let lines = dubLines.filter { line in
+                guard let owner = owners[line.clipUID] else { return false }
+                return owner.videoFile == videoFile && !owner.muted
+            }
+            let dubbed = DubPlanning.captionSegments(lines: lines, sourceStart: cut.sourceStart,
+                                                     sourceEnd: cut.sourceEnd, speed: cut.speed)
+            let rows: [TranscriptSegment]
+            if !dubbed.isEmpty {
+                rows = dubbed
+            } else {
+                do {
+                    rows = try await database.transcriptSegments(videoID: cut.videoID, start: cut.sourceStart,
+                                                                 end: cut.sourceEnd, language: captionLanguage)
+                } catch {
+                    try Task.checkCancellation()
+                    plans.append(CutCaptionPlan(cut: cut, overlays: [], complete: false))
+                    continue
+                }
+            }
+            let position = cut.captionsPosition == wizardCaptions.defaultClipPosition
+                ? wizardCaptions.runPosition : cut.captionsPosition
+            let map = wizardCaptions.speakerPositions
+            let speakerPositions: ((String?) -> String)? = map.isEmpty ? nil : { person in person.flatMap { map[$0] } ?? position }
+            let needsSpeakers = captionStyle.resolvedSpeakerColors || captionRenderers.usesSpeakers
+                || speakerPositions != nil
+            let evidence = needsSpeakers
+                ? await captionEvidence.evidence(videoID: cut.videoID)
+                : CaptionSpeakerEvidence()
+            try Task.checkCancellation()
+            let pages = CaptionOverlayPlan.pages(segments: rows, renderers: captionRenderers,
+                sourceStart: cut.sourceStart, speed: cut.speed, duration: cut.end - cut.start,
+                position: position, language: captionLanguage ?? "",
+                speakerTurns: evidence.turns, speakerRows: evidence.rows, streamID: cut.originKey,
+                speakerPositions: speakerPositions)
+            let plan = try CaptionOverlayPlan.plan(pages: pages, style: captionStyle, styles: captionRenderers.styles)
+            if plan.usedRevealFallback { emit("Captions: input limit reached; simplified word reveal or motion for this clip") }
+            if plan.usedPageFallback { emit("Captions: over 400 inputs; using static page overlays for this clip") }
+            plans.append(CutCaptionPlan(cut: cut, overlays: plan.overlays.map { overlay in
+                var shifted = overlay
+                shifted.start += cut.start
+                shifted.end += cut.start
+                return shifted
+            }, complete: true))
+        }
+        return plans
+    }
+
     // MARK: - Segment rendering
 
     /// A caption PNG composited over a segment inside its enable window.
@@ -1797,11 +2113,14 @@ actor MultitrackRenderer {
                                scratch: URL, database: Database,
                                captionLanguage: String?,
                                captionRenderers: CaptionRendererSet,
+                               wizardCaptions: WizardCaptionPlacement? = nil,
+                               cutCaptions: [CutCaptionPlan]? = nil,
                                captionCache: CaptionPNGCache,
                                captionEvidence: CaptionSpeakerEvidenceMemo,
                                dedupe: SegmentDedupe,
                                captionStyle: CaptionStyle, fontFingerprints: [String]?,
                                overlays: [TimedOverlayPNG],
+                               brandLayers: [CaptionOverlay] = [], brandUnderCutaways: Bool = false,
                                prerendered: Set<String> = [],
                                burnIns: [RenderEngine.ClipOverlay] = [], burnInDuration: Double = 0,
                                muteSource: Bool = false, compositeEffect: EffectSpec? = nil,
@@ -1848,7 +2167,15 @@ actor MultitrackRenderer {
         var captions: [CaptionOverlay] = []
         var segmentComplete = true
         var captionPages: [CaptionOverlayPlan.Page] = []
-        for clip in segment.clips {
+        var cutOverlays: [CaptionOverlayPlan.Overlay] = []
+        if let cutCaptions {
+            for cut in cutCaptions where cut.cut.start < segment.end && cut.cut.end > segment.start
+                && segment.clips.contains(where: { $0.captionsPosition != nil && $0.role == .main && $0.track == cut.cut.track }) {
+                if !cut.complete { segmentComplete = false }
+                cutOverlays += Self.captionOverlays(cut.overlays, segmentStart: segment.start, segmentEnd: segment.end)
+            }
+        }
+        for clip in segment.clips where cutCaptions == nil {
             guard let captionPosition = clip.captionsPosition, let videoID = clip.videoID else { continue }
             let sourceStart = clip.transcriptStart(at: segment.start)
             let sourceEnd = sourceStart + segment.duration * clip.speed
@@ -1861,28 +2188,49 @@ actor MultitrackRenderer {
                 segmentComplete = false
                 continue
             }
+            // A Wizard document places captions like its extraction: the run's
+            // position unless this clip was moved in the Builder, per speaker
+            // where the run set one.
+            var position = captionPosition
+            var speakerPositions: ((String?) -> String)?
+            if let wizardCaptions {
+                if captionPosition == wizardCaptions.defaultClipPosition { position = wizardCaptions.runPosition }
+                let map = wizardCaptions.speakerPositions
+                let run = position
+                if !map.isEmpty { speakerPositions = { person in person.flatMap { map[$0] } ?? run } }
+            }
             // Missing speaker evidence falls back to the run style.
             let needsSpeakers = captionStyle.resolvedSpeakerColors || captionRenderers.usesSpeakers
+                || speakerPositions != nil
             let evidence = needsSpeakers
                 ? await captionEvidence.evidence(videoID: videoID)
                 : CaptionSpeakerEvidence()
             try Task.checkCancellation()
             captionPages += CaptionOverlayPlan.pages(segments: rows, renderers: captionRenderers,
                 sourceStart: sourceStart, speed: clip.speed, duration: segment.duration,
-                position: captionPosition, language: captionLanguage ?? "",
-                speakerTurns: evidence.turns, speakerRows: evidence.rows, streamID: clip.originKey)
+                position: position, language: captionLanguage ?? "",
+                speakerTurns: evidence.turns, speakerRows: evidence.rows, streamID: clip.originKey,
+                speakerPositions: speakerPositions)
         }
-        let captionPlan = try CaptionOverlayPlan.plan(pages: captionPages, style: captionStyle, styles: captionRenderers.styles)
-        if captionPlan.usedRevealFallback { emit("Captions: input limit reached; simplified word reveal or motion for this segment") }
-        if captionPlan.usedPageFallback { emit("Captions: over 400 inputs; using static page overlays for this segment") }
-        for overlay in captionPlan.overlays {
+        let plannedCaptions: [CaptionOverlayPlan.Overlay]
+        if cutCaptions != nil {
+            plannedCaptions = cutOverlays
+        } else {
+            let captionPlan = try CaptionOverlayPlan.plan(pages: captionPages, style: captionStyle, styles: captionRenderers.styles)
+            if captionPlan.usedRevealFallback { emit("Captions: input limit reached; simplified word reveal or motion for this segment") }
+            if captionPlan.usedPageFallback { emit("Captions: over 400 inputs; using static page overlays for this segment") }
+            plannedCaptions = captionPlan.overlays
+        }
+        for overlay in plannedCaptions {
             guard let rendered = try? await captionCache.rendered(overlay.raster) else {
                 try Task.checkCancellation()
                 segmentComplete = false
                 continue
             }
-            let (x, y) = captionCache.renderer(styleID: overlay.raster.styleID)
-                .position(for: rendered, clipPosition: overlay.position)
+            let renderer = captionCache.renderer(styleID: overlay.raster.styleID)
+            let (x, y) = wizardCaptions == nil
+                ? renderer.position(for: rendered, clipPosition: overlay.position)
+                : renderer.position(for: rendered, positionOverride: overlay.position)
             captions.append(CaptionOverlay(png: rendered.pngURL, x: x, y: y,
                 start: overlay.start, end: overlay.end, text: overlay.raster.text))
         }
@@ -1913,6 +2261,13 @@ actor MultitrackRenderer {
         let maskKeys = try masks.reduce(into: [String: String]()) { result, entry in
             result[String(entry.key)] = try RenderSegmentCache.key(Data(contentsOf: entry.value))
         }
+        var keyBrand = brandLayers
+        for index in keyBrand.indices {
+            let digest = try RenderSegmentCache.key(Data(contentsOf: brandLayers[index].png))
+            keyBrand[index].png = URL(fileURLWithPath: "/" + digest)
+            keyBrand[index].start = keyBrand[index].start.rounded(toPlaces: 6)
+            keyBrand[index].end = keyBrand[index].end.rounded(toPlaces: 6)
+        }
         var keyBurnIns = burnIns
         for index in keyBurnIns.indices {
             keyBurnIns[index].png = URL(fileURLWithPath: "/" + (try RenderSegmentCache.key(Data(contentsOf: burnIns[index].png))))
@@ -1924,7 +2279,7 @@ actor MultitrackRenderer {
             }
         }
         let localBumper = segment.clips.count == 1 && segment.clips[0].bumper
-            && captions.isEmpty && overlays.isEmpty
+            && captions.isEmpty && overlays.isEmpty && brandLayers.isEmpty
             && burnIns.isEmpty
         // A segment's pixels depend on its clips relative to the segment, not
         // on where it sits in the timeline (captions and fused overlays are
@@ -1959,7 +2314,9 @@ actor MultitrackRenderer {
             settings: RenderContext.settings, encoder: FFmpeg.encodeArgs + FFmpeg.intermediateCacheIdentity,
             burnIns: keyBurnIns.isEmpty ? nil : keyBurnIns,
             burnInDuration: keyBurnIns.contains { $0.animation != nil } ? burnInDuration : nil,
-            muteSource: muteSource ? true : nil, compositeEffect: compositeEffect, lookAssets: lookAssets.isEmpty ? nil : lookAssets)
+            muteSource: muteSource ? true : nil, compositeEffect: compositeEffect, lookAssets: lookAssets.isEmpty ? nil : lookAssets,
+            brandLayers: keyBrand.isEmpty ? nil : keyBrand,
+            brandUnderCutaways: keyBrand.isEmpty || !brandUnderCutaways ? nil : true)
         var key: String? = segmentComplete && fontFingerprints != nil && segment.clips.allSatisfy(\.cacheable)
             ? try RenderSegmentCache.key(input) : nil
         if let key, await segmentCache.restore(key: key, to: segmentPath) {
@@ -1968,7 +2325,7 @@ actor MultitrackRenderer {
         }
         // A clip this app already rendered to the output format, shown whole
         // and untouched, is the segment: copy it instead of encoding it again.
-        if burnIns.isEmpty, !muteSource, compositeEffect == nil, captions.isEmpty, overlays.isEmpty, masks.isEmpty, placements.count == 1, segment.clips.count == 1,
+        if burnIns.isEmpty, !muteSource, compositeEffect == nil, captions.isEmpty, overlays.isEmpty, brandLayers.isEmpty, masks.isEmpty, placements.count == 1, segment.clips.count == 1,
            await Self.isPrerenderedPassthrough(placements[0], clip: segment.clips[0], prerendered: prerendered) {
             emit("Segment \(index + 1): prerendered clip; copied, encodes=0")
             try FileManager.default.copyItemReplacing(at: URL(fileURLWithPath: placements[0].sourcePath), to: segmentPath)
@@ -1992,7 +2349,8 @@ actor MultitrackRenderer {
             do {
                 emit("Segment \(index + 1): encode pass")
                 try await compositeLayeredSegment(placements: placements, duration: segment.duration,
-                    captions: captions, overlays: overlays, maskFiles: masks, burnIns: burnIns,
+                    captions: captions, overlays: overlays, brandLayers: brandLayers, brandUnderCutaways: brandUnderCutaways,
+                    maskFiles: masks, burnIns: burnIns,
                     burnInDuration: burnInDuration, timelineOffset: segment.start, muteSource: muteSource, compositeEffect: compositeEffect,
                     intermediateSources: prerendered.union(segment.clips.filter {
                         $0.originalSourcePath != nil && $0.originalSourcePath != $0.sourcePath
@@ -2002,7 +2360,8 @@ actor MultitrackRenderer {
                 key = nil // A degraded result must never satisfy the full key.
                 emit("Segment \(index + 1): caption burn failed, retrying without captions; encode pass")
                 try await compositeLayeredSegment(placements: placements, duration: segment.duration,
-                    captions: [], overlays: overlays, maskFiles: masks, burnIns: burnIns,
+                    captions: [], overlays: overlays, brandLayers: brandLayers, brandUnderCutaways: brandUnderCutaways,
+                    maskFiles: masks, burnIns: burnIns,
                     burnInDuration: burnInDuration, timelineOffset: segment.start, muteSource: muteSource, compositeEffect: compositeEffect,
                     intermediateSources: prerendered.union(segment.clips.filter {
                         $0.originalSourcePath != nil && $0.originalSourcePath != $0.sourcePath
@@ -2085,6 +2444,14 @@ actor MultitrackRenderer {
 
     // MARK: - FFmpeg stages
 
+    /// The finishing cache stores the mix before Speech Polish, so its key
+    /// must not depend on the polish choice.
+    nonisolated static func finishingSettings(_ settings: RenderSettings) -> RenderSettings {
+        var settings = settings
+        settings.speechPolish = nil
+        return settings
+    }
+
     /// Solid black 1080x1920 clip with silent audio (video.py generate_placeholder).
     private func generatePlaceholder(duration: Double, output: URL) async throws {
         try await FFmpeg.run(["-y",
@@ -2120,6 +2487,7 @@ actor MultitrackRenderer {
     private func compositeLayeredSegment(placements: [Placement], duration: Double,
                                          captions: [CaptionOverlay] = [],
                                          overlays: [TimedOverlayPNG] = [],
+                                         brandLayers: [CaptionOverlay] = [], brandUnderCutaways: Bool = false,
                                          maskFiles: [Int: URL] = [:],
                                          burnIns: [RenderEngine.ClipOverlay] = [], burnInDuration: Double = 0,
                                          timelineOffset: Double = 0, muteSource: Bool = false, compositeEffect: EffectSpec? = nil,
@@ -2293,9 +2661,11 @@ actor MultitrackRenderer {
 
         // Overlay chain — bottom layer first.
         var overlaySteps: [(label: String, x: Int, y: Int)] = []
+        var stepIsCutaway: [Bool] = []
         for (index, placement) in ordered.enumerated() {
             if let outs = freeCropOutputs[index] {
                 overlaySteps.append(contentsOf: outs)
+                stepIsCutaway += Array(repeating: placement.role == .cutaway, count: outs.count)
                 continue
             }
             let wideCropped = placement.isWide && placement.cropXFrac != nil
@@ -2308,12 +2678,28 @@ actor MultitrackRenderer {
                                         masked: maskInputs[index] != nil)
             filters.append(contentsOf: fade.filters)
             overlaySteps.append((fade.label, 0, y))
+            stepIsCutaway.append(placement.role == .cutaway)
+        }
+        // Brand layers: their own stage on the footage, below captions, name
+        // tags and overlays; below cutaways for the full Wizard. Their PNG
+        // inputs follow every other image input (see the burn-ins below).
+        let brandFirstInput = 2 + ordered.count + captions.count + maskInputs.count + fitInputs.count
+            + overlays.count + burnIns.count
+        var chainSteps: [(label: String, x: Int, y: Int, enable: String?)] = overlaySteps.map { ($0.label, $0.x, $0.y, nil) }
+        if !brandLayers.isEmpty {
+            let brandSteps: [(label: String, x: Int, y: Int, enable: String?)] = brandLayers.enumerated().map { offset, layer in
+                ("\(brandFirstInput + offset):v", layer.x, layer.y,
+                 String(format: "enable='gte(t,%.3f)*lt(t,%.3f)'", layer.start, layer.end))
+            }
+            let at = Self.brandInsertionIndex(stepIsCutaway: stepIsCutaway, underCutaways: brandUnderCutaways)
+            chainSteps.insert(contentsOf: brandSteps, at: at)
         }
         var previous = "[0:v]"
-        for (stepIndex, step) in overlaySteps.enumerated() {
-            let isLast = stepIndex == overlaySteps.count - 1 && captions.isEmpty && overlays.isEmpty
+        for (stepIndex, step) in chainSteps.enumerated() {
+            let isLast = stepIndex == chainSteps.count - 1 && captions.isEmpty && overlays.isEmpty
             let outLabel = isLast ? "[vout]" : "[ov\(stepIndex)]"
-            filters.append("\(previous)[\(step.label)]overlay=x=\(step.x):y=\(step.y):shortest=0\(outLabel)")
+            let options = step.enable.map { ":" + $0 } ?? ""
+            filters.append("\(previous)[\(step.label)]overlay=x=\(step.x):y=\(step.y):shortest=0\(options)\(outLabel)")
             previous = outLabel
         }
 
@@ -2334,7 +2720,7 @@ actor MultitrackRenderer {
             filters.append("\(previous)null[vout]")
         }
 
-        if overlaySteps.isEmpty && captions.isEmpty && overlays.isEmpty {
+        if chainSteps.isEmpty && captions.isEmpty && overlays.isEmpty {
             filters.append("[0:v]null[vout]")
         }
         // extractClip graded the already composited document (including its
@@ -2357,6 +2743,7 @@ actor MultitrackRenderer {
             RenderBurnIns.append(burnIns, duration: burnInDuration, offset: timelineOffset,
                 firstInput: firstInput, previous: "[beforeburn]", output: "[vout]", filters: &filters)
         }
+        for layer in brandLayers { arguments += ["-threads", "1", "-i", layer.png.path] }
 
         // Audio: mix unmuted clips that actually carry audio. With muteSource,
         // the empty mix maps input 1's duration-bounded 44.1 kHz stereo silence,
@@ -2948,4 +3335,16 @@ actor MultitrackRenderer {
             counter += 1
         }
     }
+}
+
+/// Per-pass framing fallback reasons keyed by prepass job, written from the
+/// concurrent prepass jobs.
+private nonisolated final class FramingFallbackReasons: Sendable {
+    private let reasons = Mutex<[String: String]>([:])
+
+    func set(_ key: String, _ reason: String) {
+        reasons.withLock { $0[key] = reason }
+    }
+
+    func reason(_ key: String) -> String? { reasons.withLock { $0[key] } }
 }

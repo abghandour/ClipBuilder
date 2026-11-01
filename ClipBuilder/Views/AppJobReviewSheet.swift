@@ -35,6 +35,10 @@ struct AppJobReviewSheet: View {
                 PersonResearchReviewSheet(jobID: job.id, generation: job.profileGeneration, outcomes: outcomes)
             case .textLooks(let imported):
                 TextLookNamesSheet(jobID: job.id, generation: job.profileGeneration, imported: imported)
+            case let .hookVariants(groupID, alternatives, provenance):
+                HookVariantReadout(groupID: groupID, jobID: job.id, alternatives: alternatives, provenance: provenance)
+            case .fightStory(let review):
+                FightStoryReviewSheet(jobID: job.id, review: review)
             default:
                 simple
             }

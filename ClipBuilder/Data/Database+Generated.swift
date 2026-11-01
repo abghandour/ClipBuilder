@@ -9,7 +9,10 @@ extension Database {
                               projectID: Int64? = nil, selectionTakeID: Int64? = nil,
                               rationale: String? = nil, batchID: String? = nil,
                               qualityJSON: String? = nil,
-                              planClipsJSON: String? = nil, settings: WizardRunSettings? = nil, roles: [AIRole] = []) throws -> Int64 {
+                              planClipsJSON: String? = nil, settings: WizardRunSettings? = nil, roles: [AIRole] = [],
+                              reviewFlagsJSON: String? = nil,
+                              variantGroupID: String? = nil, hookLabel: String? = nil,
+                              planJSON: String? = nil) throws -> Int64 {
         // The project may have been deleted while this render ran; the file
         // exists, so record it without an owner (Home shows it) rather than
         // fail the foreign key and lose it.
@@ -26,8 +29,9 @@ extension Database {
         }
         try connection.execute("""
             INSERT INTO generated_videos (path, duration, timeline_json, wizard_provider, wizard_model,
-                                          project_id, rationale, batch_id, quality_json, plan_clips_json, settings_json, models_json, selection_take_id)
-            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                                          project_id, rationale, batch_id, quality_json, plan_clips_json, settings_json, models_json, selection_take_id,
+                                          review_flags_json, variant_group_id, hook_label, plan_json)
+            VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
             """, [.text(path), .real(duration), .text(timelineJSON),
                   wizardProvider.map(SQLValue.text) ?? .null,
                   wizardModel.map(SQLValue.text) ?? .null,
@@ -38,7 +42,11 @@ extension Database {
                   planClipsJSON.map(SQLValue.text) ?? .null,
                   settings.flatMap(AISettingsJSON.encode).map(SQLValue.text) ?? .null,
                   AISettingsJSON.encode((AIRunCapture.current?.roles ?? []) + roles).map(SQLValue.text) ?? .null,
-                  selectionTakeID.map(SQLValue.integer) ?? .null])
+                  selectionTakeID.map(SQLValue.integer) ?? .null,
+                  reviewFlagsJSON.map(SQLValue.text) ?? .null,
+                  variantGroupID.map(SQLValue.text) ?? .null,
+                  hookLabel.map(SQLValue.text) ?? .null,
+                  planJSON.map(SQLValue.text) ?? .null])
         let recordID = connection.lastInsertRowID
         if wizardProvider != nil, let projectID {
             try ensureWizardTimeline(
@@ -156,7 +164,11 @@ extension Database {
                              driveOffloaded: row["drive_offloaded"]?.boolValue ?? false,
                              driveShared: row["drive_shared"]?.boolValue ?? false,
                              settingsJSON: row["settings_json"]?.stringValue, modelsJSON: row["models_json"]?.stringValue,
-                             selectionTakeID: row["selection_take_id"]?.intValue)
+                             selectionTakeID: row["selection_take_id"]?.intValue,
+                             reviewFlagsJSON: row["review_flags_json"]?.stringValue,
+                             variantGroupID: row["variant_group_id"]?.stringValue,
+                             hookLabel: row["hook_label"]?.stringValue,
+                             planJSON: row["plan_json"]?.stringValue)
     }
 
     func setGeneratedVideoFavorite(_ id: Int64, favorite: Bool) throws {
@@ -177,7 +189,19 @@ extension Database {
                   .integer(id)])
     }
 
+    /// Replace a generated video's review flags; nil clears them.
+    func updateGeneratedReviewFlags(id: Int64, json: String?) throws {
+        try connection.execute("UPDATE generated_videos SET review_flags_json = ? WHERE id = ?",
+                               [json.map(SQLValue.text) ?? .null, .integer(id)])
+    }
+
     /// Attach the AI critic's post-render review to a generated video.
+    /// Files a render into a hook comparison after the renderer inserted it.
+    func updateGeneratedHookVariant(id: Int64, variantGroupID: String, hookLabel: String) throws {
+        try connection.execute("UPDATE generated_videos SET variant_group_id = ?, hook_label = ? WHERE id = ?",
+                               [.text(variantGroupID), .text(hookLabel), .integer(id)])
+    }
+
     func updateGeneratedCritique(id: Int64, critiqueJSON: String) throws {
         let value = AISettingsJSON.decode([String: JSONSetting].self, critiqueJSON)
         try recordOutputRole(id: id, role: "Critique", provenance: AIProvenance(provider: value?["provider"]?.string, model: value?["model"]?.string))
@@ -387,12 +411,29 @@ extension Database {
     }
 
     func addPreference(chosenID: Int64, rejectedID: Int64,
-                       chosenRationale: String, rejectedRationale: String) throws {
+                       chosenRationale: String, rejectedRationale: String,
+                       chosenLabel: String? = nil, rejectedLabel: String? = nil) throws {
         try connection.execute("""
-            INSERT INTO wizard_preferences (chosen_video_id, rejected_video_id, chosen_rationale, rejected_rationale)
-            VALUES (?, ?, ?, ?)
+            INSERT INTO wizard_preferences (chosen_video_id, rejected_video_id, chosen_rationale, rejected_rationale,
+                                            chosen_label, rejected_label)
+            VALUES (?, ?, ?, ?, ?, ?)
             """, [.integer(chosenID), .integer(rejectedID),
-                  .text(chosenRationale), .text(rejectedRationale)])
+                  .text(chosenRationale), .text(rejectedRationale),
+                  chosenLabel.map(SQLValue.text) ?? .null, rejectedLabel.map(SQLValue.text) ?? .null])
+    }
+
+    /// The A/B picks made between videos of one hook comparison.
+    func fetchHookPreferences(videoIDs: [Int64]) throws -> [(chosenID: Int64, rejectedID: Int64)] {
+        guard !videoIDs.isEmpty else { return [] }
+        let marks = Array(repeating: "?", count: videoIDs.count).joined(separator: ", ")
+        return try connection.query("""
+            SELECT chosen_video_id, rejected_video_id FROM wizard_preferences
+            WHERE chosen_video_id IN (\(marks)) AND rejected_video_id IN (\(marks)) ORDER BY id
+            """, videoIDs.map(SQLValue.integer) + videoIDs.map(SQLValue.integer)).compactMap { row in
+            guard let chosen = row["chosen_video_id"]?.intValue,
+                  let rejected = row["rejected_video_id"]?.intValue else { return nil }
+            return (chosen, rejected)
+        }
     }
 
     func fetchPreferences(limit: Int) throws -> [PreferenceRecord] {
@@ -402,7 +443,9 @@ extension Database {
             PreferenceRecord(id: $0["id"]?.intValue ?? 0,
                              chosenRationale: $0["chosen_rationale"]?.stringValue ?? "",
                              rejectedRationale: $0["rejected_rationale"]?.stringValue ?? "",
-                             createdAt: $0["created_at"]?.stringValue)
+                             createdAt: $0["created_at"]?.stringValue,
+                             chosenLabel: $0["chosen_label"]?.stringValue,
+                             rejectedLabel: $0["rejected_label"]?.stringValue)
         }
     }
 

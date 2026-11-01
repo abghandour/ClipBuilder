@@ -260,13 +260,21 @@ extension WizardView {
     var generatePanel: some View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
             RunSummaryCard(summary: wizardRunSummary, accessibilityText: generationSummary)
+            HStack {
+                Spacer(minLength: 0)
+                WizardHighlightHistoryBar()
+            }
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: Theme.spaceM) {
                     generationAction
+                    openInEditorAction
                     manualBuildAction
                 }
                 VStack(alignment: .leading, spacing: Theme.spaceS) {
-                    generationAction
+                    HStack(spacing: Theme.spaceM) {
+                        generationAction
+                        openInEditorAction
+                    }
                     manualBuildAction
                 }
             }
