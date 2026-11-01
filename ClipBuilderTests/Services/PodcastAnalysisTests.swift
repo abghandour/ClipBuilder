@@ -657,6 +657,35 @@ struct PodcastAnalysisTests {
         #expect(try await service.cachedPodcast(video: video, force: false) == nil)
     }
 
+    @Test("an empty cached transcript is not a cache hit on either route")
+    func emptyCachedTranscriptIsIgnored() async throws {
+        let temp = try await TempDatabase()
+        let id = try await temp.seedVideo(sceneCount: 0)
+        var video = try #require(try await temp.database.fetchVideos().first)
+        video.videoType = "podcast"
+        // Not media: bypassing the empty cache must reach the audio probe and
+        // fail there instead of "saving" a transcript with no rows.
+        try Data("empty cache fixture".utf8).write(to: video.url)
+        let directory = try TempDirectory()
+        let service = TranscriptionService(cacheDirectory: directory.url)
+        let hash = String(try ContentHash.fingerprint(of: video.url).prefix(32))
+        let empty = TranscriptionService.CachedTranscript(
+            provider: "apple", model: "SpeechTranscriber", language: "en", detectedLanguage: "en-US",
+            translate: false, segments: [])
+        try JSONEncoder().encode(empty).write(to: directory.url.appendingPathComponent("\(hash).apple.SpeechTranscriber.en.json"))
+        #expect(try await service.cachedPodcast(video: video, force: false) == nil)
+        // Reaching the audio probe proves the empty cache was skipped.
+        func isNoAudioTrack(_ error: any Error) -> Bool {
+            if case .noAudioTrack = error as? TranscriptionError { return true }
+            return false
+        }
+        await #expect { try await service.transcribeForVideo(video: video, database: temp.database, log: { _ in }) }
+            throws: { isNoAudioTrack($0) }
+        await #expect { try await service.transcribe(video: video, database: temp.database, languageCode: "en-US", log: { _ in }) }
+            throws: { isNoAudioTrack($0) }
+        #expect(try await temp.database.fetchTranscripts(videoID: id).isEmpty)
+    }
+
     @Test("ambiguous picture cannot override confident audio but clear or stronger picture can")
     func pictureConfidenceThreshold() {
         let cases: [(Double, Double, PodcastSpeakerSide)] = [

@@ -8,6 +8,11 @@ struct MiniGeneratePanel: View {
     @Binding var settings: MiniWizardSettings
     let flow: MiniWizardFlow
     let run: MiniWizardRun
+    /// True when the page holds anything a fresh Express start would lose.
+    let hasChanges: Bool
+    /// Forget the source, footage and every setting and return to 1 Source.
+    let startOver: () -> Void
+    @State private var confirmStartOver = false
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -17,16 +22,36 @@ struct MiniGeneratePanel: View {
                 HStack(spacing: Theme.spaceS) {
                     generateButton
                     openInEditorButton
+                    Spacer(minLength: 0)
+                    resetButton
                 }
                 HStack(spacing: Theme.spaceS) {
                     generateButton
                     openInEditorButton
+                    resetButton
                 }
             }
             .padding(Theme.spaceM)
             .frame(maxWidth: .infinity, alignment: .leading)
         }
         .disabled(store.isWizardRunning)
+        .confirmationDialog("Start over from Source?", isPresented: $confirmStartOver, titleVisibility: .visible) {
+            Button("Start Over", role: .destructive) { startOver() }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("The source, kept footage and every setting on this page go back to their defaults. Rendered videos and the highlight history are kept.")
+        }
+    }
+
+    /// Back to an empty Express page; asks first when there is anything to lose.
+    private var resetButton: some View {
+        Button {
+            if hasChanges { confirmStartOver = true } else { startOver() }
+        } label: {
+            Label("Reset", systemImage: "arrow.counterclockwise")
+        }
+        .labelStyle(.iconOnly)
+        .help("Reset: clear the source, footage and every setting and start over from 1 Source")
     }
 
     private var generateButton: some View {

@@ -5,10 +5,13 @@ import Speech
 nonisolated enum TranscriptionError: Error, CustomStringConvertible {
     case noAudioTrack(String)
     case unsupportedLocale(String)
+    case noSpeech(String, locale: String)
 
     var description: String {
         switch self {
         case .noAudioTrack(let name): return "\(name) has no audio track to transcribe"
+        case .noSpeech(let name, let locale):
+            return "No speech was recognized in \(name) (\(locale)). Check the footage language in Settings and that the file has spoken audio, then transcribe again."
         case .unsupportedLocale(let locale): return "Transcription is not available for locale '\(locale)'"
         }
     }
@@ -58,7 +61,7 @@ actor TranscriptionService {
             guard let data = try? Data(contentsOf: url),
                   let cached = try? JSONDecoder().decode(CachedTranscript.self, from: data),
                   cached.provider == Self.providerName, cached.model == Self.modelName,
-                  !cached.translate else { continue }
+                  !cached.translate, !cached.segments.isEmpty else { continue }
             return cached
         }
         return nil
@@ -238,8 +241,11 @@ actor TranscriptionService {
         let cacheURL = cacheDirectory.appendingPathComponent(
             "\(hash).\(Self.providerName).\(Self.modelName).\(languageTag).json")
 
+        // An empty cached set (older builds cached silent runs) is not a
+        // transcript: ignore it and recognize again.
         if !force, let data = try? Data(contentsOf: cacheURL),
-           let cached = try? JSONDecoder().decode(CachedTranscript.self, from: data) {
+           let cached = try? JSONDecoder().decode(CachedTranscript.self, from: data),
+           !cached.segments.isEmpty {
             return try await restore(cached, video: video, database: database, log: log)
         }
 
@@ -256,6 +262,13 @@ actor TranscriptionService {
         let segments = try await Self.runSpeechTranscriber(audioURL: audioURL, locale: supportedLocale).segments
         let seconds = (ContinuousClock.now - started).seconds
         log("Transcribed \(segments.count) segments in \(AIProvenance.durationLabel(seconds))")
+        // Nothing recognized is a failure, not an empty transcript: storing
+        // it would log "saved" while the file stays flagged as untranscribed,
+        // and caching it would replay the empty result on every retry.
+        guard !segments.isEmpty else {
+            try? FileManager.default.removeItem(at: cacheURL)
+            throw TranscriptionError.noSpeech(video.filename, locale: supportedLocale.identifier)
+        }
 
         let cached = CachedTranscript(provider: Self.providerName, model: Self.modelName,
                                       language: languageTag, detectedLanguage: languageTag,

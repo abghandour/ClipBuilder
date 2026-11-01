@@ -233,7 +233,34 @@ struct MiniWizardView: View {
     /// collapsible cards, so a collapsed Settings card never hides the button.
     private var generateFooter: AnyView? {
         guard let run = currentRun, flow.canExpand(.settings), settingsProfile == profileName else { return nil }
-        return AnyView(MiniGeneratePanel(settings: $miniSettings, flow: flow, run: run))
+        return AnyView(MiniGeneratePanel(settings: $miniSettings, flow: flow, run: run,
+                                         hasChanges: hasChangesToReset, startOver: startOver))
+    }
+
+    /// Anything a fresh page would not have: a source, a run, a loaded
+    /// preset, or a setting that differs from the profile's defaults.
+    private var hasChangesToReset: Bool {
+        selectedVideo != nil || currentRun != nil || loadedPreset != nil
+            || footageKind != .highlights || length != .automatic
+            || miniSettings != MiniWizardSettings.defaults(profile: store.activeProfile)
+    }
+
+    /// Forget the source, the footage runs and every answer, and reopen
+    /// 1 Source. The AI instructions stay: they belong to the profile.
+    private func startOver() {
+        instructionsFocused = false
+        saveInstructions()
+        store.resetMiniFootage()
+        miniSettings = MiniWizardSettings.defaults(profile: store.activeProfile)
+        MiniWizardPresetStore.rememberLoaded(nil, profileName: profileName)
+        loadedPreset = nil
+        footageKind = .highlights
+        length = .automatic
+        settingsTab = .picture
+        videoPath = ""
+        collapsedCard = nil
+        pendingCard = .source
+        store.appendLog(\.wizardLog, ["Express: reset to Source"])
     }
 
     private var brollCount: Int {
