@@ -251,6 +251,11 @@ final class AppStore {
     private(set) var analysisRunsVersion = 0
     var transcriptCounts: [Int64: Int] = [:] { didSet { transcriptCountsVersion &+= 1 } }
     private(set) var transcriptCountsVersion = 0
+    var speakerNamingSummaries: [Int64: SpeakerClusterNaming.Summary] = [:] {
+        didSet { speakerNamingVersion &+= 1 }
+    }
+    private(set) var speakerNamingVersion = 0
+    var speakerMappingVideoIDs: Set<Int64> = []
     /// Distinct people the people pass found per video; the Sources table
     /// shows them as soon as a detection finishes.
     var videoPeopleCounts: [Int64: Int] = [:] { didSet { videoPeopleVersion &+= 1 } }
@@ -424,6 +429,8 @@ final class AppStore {
         var stopped: Bool
     }
     var analysisCompletion: AnalysisCompletion?
+    /// The Sources "N files · Analyze N steps" run in progress; nil when idle.
+    var analysisStepBatch: AnalysisStepBatch?
     /// Presents the Training Guide sheet from the main window (Help menu).
     var showTrainingGuide = false
     /// File ▸ Export Resources… / Import Resources… sheets.
@@ -1041,6 +1048,8 @@ final class AppStore {
         pendingAnalysisDuplicate = nil
         analysisRuns = []
         transcriptCounts = [:]
+        speakerNamingSummaries = [:]
+        speakerMappingVideoIDs = []
         people = []
         generatedVideos = []
         feedback = []
@@ -1308,6 +1317,9 @@ final class AppStore {
         }
         blurbSpeakers[video.id] = nil
         transcriptEdited(videoID: video.id)
+        let summaries = try await database.speakerNamingSummaries()
+        guard generation == profileGeneration, self.database === database else { throw CancellationError() }
+        speakerNamingSummaries = summaries
         return true
     }
 
@@ -1316,10 +1328,14 @@ final class AppStore {
     func undoSpeakerMap(video: VideoRecord) async -> Bool {
         guard let database, let before = previousSpeakerMaps[video.id],
               let transcriptionKey = previousSpeakerMapKeys[video.id] else { return false }
+        let generation = profileGeneration
         do {
             try await database.replaceSpeakerTurns(videoID: video.id, transcriptionKey: transcriptionKey, turns: before)
             await PodcastAnalysisService.recutTranscriptBySpeaker(video: video, database: database, transcriptionKey: transcriptionKey, turns: before,
                                                                   log: logSink(\.analysisLog))
+            let summaries = try await database.speakerNamingSummaries()
+            guard generation == profileGeneration, self.database === database else { return false }
+            speakerNamingSummaries = summaries
             appendLog(\.analysisLog, ["\(video.filename): previous speaker map restored (\(before.count) turns)"])
             previousSpeakerMaps[video.id] = nil
             blurbSpeakers[video.id] = nil
@@ -1434,6 +1450,7 @@ final class AppStore {
         analysisPasses = snapshot.analysisPasses
         if analysisRuns != snapshot.analysisRuns { analysisRuns = snapshot.analysisRuns }
         if transcriptCounts != snapshot.transcriptCounts { transcriptCounts = snapshot.transcriptCounts }
+        if speakerNamingSummaries != snapshot.speakerNamingSummaries { speakerNamingSummaries = snapshot.speakerNamingSummaries }
         if videoPeopleCounts != snapshot.videoPeopleCounts { videoPeopleCounts = snapshot.videoPeopleCounts }
         if analysisCheckpoints != snapshot.analysisCheckpoints { analysisCheckpoints = snapshot.analysisCheckpoints }
         if people != snapshot.people { people = snapshot.people }

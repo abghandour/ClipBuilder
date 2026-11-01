@@ -5,6 +5,46 @@ import Testing
 
 @Suite("Podcast analysis")
 struct PodcastAnalysisTests {
+    @Test("Single-camera naming assigns the dominant voice once and uses remaining visibility overlap")
+    func interviewClusterNames() {
+        let turns = Fixtures.aljoInterviewTurns
+        var roster = Fixtures.aljoInterviewRoster
+        func resolve(_ people: [VideoPersonRecord], _ audio: [SpeakerTurn]? = nil) -> [SpeakerTurn] {
+            PodcastSpeakerTimelineResolver.resolve(audioTurns: audio ?? turns, picture: [], layout: .singleCamera,
+                                                     roster: people, minimumHold: 1.5)
+        }
+        let onePerson = resolve([roster[0]])
+        #expect(onePerson.filter { $0.cluster == 0 }.allSatisfy { $0.personKey == "aljo" })
+        #expect(onePerson.filter { $0.cluster == 1 }.allSatisfy { $0.personKey == nil })
+        let twoPeople = resolve(roster)
+        #expect(twoPeople.filter { $0.cluster == 0 }.allSatisfy { $0.personKey == "aljo" })
+        #expect(twoPeople.filter { $0.cluster == 1 }.allSatisfy { $0.personKey == "ariel" })
+        roster[1].ranges = [226...230]
+        let noOverlap = resolve(roster)
+        #expect(noOverlap.filter { $0.cluster == 1 }.allSatisfy { $0.personKey == nil })
+        let displayed = TranscriptSpeakers.named(noOverlap, roster: roster)
+        #expect(displayed.filter { $0.cluster == 1 }.allSatisfy {
+            $0.personKey == nil && TranscriptSpeakers.turnLabel($0, roster: roster) == "Speaker 2"
+        })
+        #expect(resolve([roster[0]], turns.filter { $0.cluster == 0 }).allSatisfy { $0.personKey == "aljo" })
+        // Naming does not change the picture's side resolution.
+        #expect(twoPeople.map(\.resolvedSide) == turns.map(\.resolvedSide))
+    }
+
+    @Test("Split layout gives the left portrait only to the heavier left voice")
+    func competingLeftClusters() {
+        let turns = Fixtures.aljoInterviewTurns.map { turn in
+            var turn = turn
+            turn.resolvedSide = .left
+            return turn
+        }
+        let resolved = PodcastSpeakerTimelineResolver.resolve(
+            audioTurns: turns, picture: [], layout: .splitHorizontal,
+            roster: [Fixtures.aljoInterviewRoster[1]], minimumHold: 1.5)
+        #expect(resolved.filter { $0.cluster == 0 }.allSatisfy { $0.personKey == "ariel" })
+        #expect(resolved.filter { $0.cluster == 1 }.allSatisfy { $0.personKey == nil })
+    }
+
     @Test("Podcast and interview runs persist the podcast pipeline stamp",
           arguments: [VideoType.podcast, .interview])
     func pipelineStamp(type: VideoType) async throws {

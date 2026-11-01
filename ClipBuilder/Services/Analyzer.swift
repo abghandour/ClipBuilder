@@ -986,10 +986,13 @@ actor Analyzer {
     func detectPeopleOnly(video: VideoRecord, profile: BrandProfile, database: Database,
                           provider: String? = nil, model: String? = nil,
                           sampleTimes: [Double]? = nil, speakerTurns: [SpeakerTurn]? = nil,
+                          speakerHoldSeconds: Double = 1.5,
+                          remapSpeakers: (@MainActor @Sendable () async throws -> Void)? = nil,
                           log: @escaping @Sendable (String) -> Void) async throws
         -> (roster: [VideoPersonRecord], suggestedFilename: String?) {
         try video.requirePresent()
         guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
+        let rosterBefore = Set(try await database.fetchVideoPeople(videoID: video.id).map(\.key))
         let duration = video.duration > 0 ? video.duration : await FFmpeg.duration(of: video.url)
         let frames: [AIFrame]
         if let sampleTimes {
@@ -1192,9 +1195,24 @@ actor Analyzer {
             }
         }, provenance: response.provenance)
         log("People: \(entries.count) found in \(video.filename)")
+        let roster = try await database.fetchVideoPeople(videoID: video.id)
+        if video.isPresent, let summary = try await database.speakerNamingSummaries()[video.id],
+           SpeakerClusterNaming.needsRemap(namedKeys: summary.namedKeys, rosterBefore: rosterBefore,
+                                            rosterAfter: Set(roster.map(\.key)), verdict: summary.verdict) {
+            try Task.checkCancellation()
+            log("\(video.filename): naming speakers after the People pass — "
+                + (summary.verdict.isSuspicious ? summary.verdict.reason : "the roster changed."))
+            if let remapSpeakers {
+                try await remapSpeakers()
+            } else {
+                // Service-only callers have no store; use the same engine.
+                try await PodcastAnalysisService.mapSpeakers(video: video, database: database,
+                                                              holdSeconds: speakerHoldSeconds, log: log)
+            }
+        }
         let suggestedFilename = (object["suggested_filename"] as? String)
             .flatMap { Self.sanitizedFilenameSuggestion($0, currentFilename: video.filename) }
-        return ((try? await database.fetchVideoPeople(videoID: video.id)) ?? [], suggestedFilename)
+        return (roster, suggestedFilename)
     }
 
     // MARK: - Trim suggestion

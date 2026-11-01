@@ -50,7 +50,14 @@ nonisolated enum TranscriptSpeakers {
     /// per transcript so each row's label is a lookup (`automaticLabel` still
     /// names a stray unnamed turn on its own).
     static func named(_ turns: [SpeakerTurn], roster: [VideoPersonRecord]) -> [SpeakerTurn] {
-        DubPlanning.namingTurns(turns, roster: roster)
+        // A non-grid map the resolver named can deliberately leave an
+        // unsupported cluster unnamed; roster-order guesses would undo that.
+        // Legacy maps with no names at all keep the fallback until the
+        // "Name speakers" step re-maps them.
+        if turns.allSatisfy({ $0.tile == nil }), turns.contains(where: { $0.personKey != nil }) {
+            return turns
+        }
+        return DubPlanning.namingTurns(turns, roster: roster)
     }
 
     static func label(for row: TranscriptRow, turns: [SpeakerTurn], roster: [VideoPersonRecord],
@@ -98,7 +105,7 @@ nonisolated enum TranscriptSpeakers {
             // only a voice cluster and a feed. Name them from the roster the
             // way dubbing does: the longest-talking cluster is the VIP, the
             // rest take the remaining people in talking order.
-            let named = DubPlanning.namingTurns(turns, roster: roster)
+            let named = Self.named(turns, roster: roster)
             if let match = named.first(where: { $0.cluster == turn.cluster && $0.start == turn.start && $0.end == turn.end }) {
                 turn = match
             }

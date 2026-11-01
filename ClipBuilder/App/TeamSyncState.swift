@@ -222,7 +222,10 @@ final class TeamSyncState {
         let capturedGeneration = store.profileGeneration
         attaching = true
         store.jobs.start(.teamSync, title: "Attach profile to team", project: nil, profileGeneration: capturedGeneration,
-                         subjectID: store.activeProfile.profileName, cleanup: { [weak self] in self?.attaching = false }) { [weak self] log in
+                         subjectID: store.activeProfile.profileName, cleanup: { [weak self] in
+                             self?.attaching = false
+                             if self?.syncRequested == true { self?.syncRequested = false; self?.syncNow() }
+                         }) { [weak self] log in
             guard let self else { throw CancellationError() }
             log("Preparing brand knowledge…")
             let client = try await self.session().client()
@@ -296,6 +299,15 @@ final class TeamSyncState {
         profileReplacements -= 1
     }
 
+    /// Sync Now that waits its turn: a cycle already running finishes first,
+    /// then one more runs so results saved meanwhile are pushed too.
+    func requestSync() {
+        guard attached, !paused, !replacingProfile else { return }
+        if attaching || automaticCycle != nil { syncRequested = true; return }
+        syncNow()
+    }
+    private var syncRequested = false
+
     func syncNow() {
         guard attached, !paused, !attaching, !replacingProfile, automaticCycle == nil else { return }
         let token = UUID()
@@ -311,7 +323,10 @@ final class TeamSyncState {
             store.jobs.start(.teamSync, title: backlog ? "Upload and merge team footage" : "Team sync",
                              project: nil, profileGeneration: store.profileGeneration,
                              subjectID: store.activeProfile.profileName,
-                             cleanup: { [weak self] in self?.attaching = false }) { [weak self] log in
+                             cleanup: { [weak self] in
+                                 self?.attaching = false
+                                 if self?.syncRequested == true { self?.syncRequested = false; self?.syncNow() }
+                             }) { [weak self] log in
                 guard let self, self.generation == captured else { throw CancellationError() }
                 do { try await self.performCycle(log: log) }
                 catch {

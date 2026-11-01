@@ -844,6 +844,7 @@ extension AppStore {
                 transcribingVideoIDs.remove(video.id)
                 transcriptionTasks[video.id] = nil
                 refreshAll()
+                continueAnalysisStepBatch()
             }
             do {
                 _ = try await transcription.transcribeForVideo(video: video, database: database,

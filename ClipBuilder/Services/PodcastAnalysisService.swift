@@ -29,6 +29,7 @@ actor PodcastAnalysisService {
                  log: @escaping @Sendable (String) -> Void,
                  progress: @escaping @Sendable (Double, String) -> Void, useLocal: Bool = false,
                  capturedSettings: PodcastSettings? = nil,
+                 remapSpeakers: (@MainActor @Sendable () async throws -> Void)? = nil,
                  checkpointing: PodcastCheckpointing? = nil) async throws -> Result {
         try video.requirePresent()
         // An interrupted run's finished pieces: the people pass and the
@@ -67,7 +68,8 @@ actor PodcastAnalysisService {
             let peopleResult = try await analyzer.detectPeopleOnly(
                 video: video, profile: profile, database: database,
                 provider: provider, model: model,
-                sampleTimes: Self.identitySampleTimes(turns: turns, duration: video.duration), speakerTurns: turns, log: log)
+                sampleTimes: Self.identitySampleTimes(turns: turns, duration: video.duration), speakerTurns: turns,
+                speakerHoldSeconds: holdSeconds, remapSpeakers: remapSpeakers, log: log)
             roster = peopleResult.roster
             newPeople = roster.filter { !peopleBefore.contains($0.key) }.map {
                 DetectedNewPerson(key: $0.key, descriptor: $0.descriptor,
@@ -104,7 +106,8 @@ actor PodcastAnalysisService {
                                                   priors: VoiceProfiles.priors(tiles: visual.tiles, voices: voices), log: log)
         let learned = await Self.learnVoices(video: video, database: database, transcriptionKey: transcriptionKey, visual: visual,
                                              turns: tracked.turns, enrollment: tracked.enrollment, voices: voices, log: log)
-        let resolved = Self.cleaned(learned, words: segments.flatMap { $0.words ?? [] },
+        let resolved = Self.cleaned(SpeakerClusterNaming.filling(learned, roster: roster, layout: visual.layout),
+                                    words: segments.flatMap { $0.words ?? [] },
                                     audioTrust: tracked.audioTrust, log: log)
         try await database.replaceSpeakerTurns(videoID: video.id, transcriptionKey: transcriptionKey, turns: resolved)
         await Self.recutTranscriptBySpeaker(video: video, database: database, transcriptionKey: transcriptionKey, turns: resolved, log: log)
@@ -325,7 +328,10 @@ actor PodcastAnalysisService {
                                              outcomeSink: outcomeSink, log: log)
         let learned = await learnVoices(video: video, database: database, transcriptionKey: transcriptionKey, visual: visual,
                                         turns: tracked.turns, enrollment: tracked.enrollment, voices: voices, log: log)
-        let resolved = cleaned(learned, words: segments.flatMap { $0.words ?? [] },
+        // Tiles no portrait matched leave the tracker's turns unnamed; the
+        // cluster rules name them from speech time and visibility.
+        let resolved = cleaned(SpeakerClusterNaming.filling(learned, roster: roster, layout: visual.layout),
+                               words: segments.flatMap { $0.words ?? [] },
                                audioTrust: tracked.audioTrust, log: log)
         try await database.replaceSpeakerTurns(videoID: video.id, transcriptionKey: transcriptionKey, turns: resolved)
         await recutTranscriptBySpeaker(video: video, database: database, transcriptionKey: transcriptionKey, turns: resolved, log: log)
@@ -723,12 +729,7 @@ nonisolated enum PodcastSpeakerTimelineResolver {
             let right = overlapping.filter { $0.side == .right }.reduce(0) { $0 + $1.confidence }
             clusterSides[cluster] = left == right ? .unknown : (left > right ? .left : .right)
         }
-        var personBySide: [PodcastSpeakerSide: String] = [:]
-        for person in roster {
-            guard let box = person.portraitBox else { continue }
-            let side: PodcastSpeakerSide = box.x + box.w / 2 < 0.5 ? .left : .right
-            if personBySide[side] == nil { personBySide[side] = person.key }
-        }
+        let personBySide = SpeakerClusterNaming.personBySide(roster: roster)
         var result: [SpeakerTurn] = []
         // Hold time belongs to the camera, never to the speaker identity.
         // A brief interjection must still be attributed to its actual speaker.
@@ -744,11 +745,15 @@ nonisolated enum PodcastSpeakerTimelineResolver {
             turn.pictureSide = strongest?.side ?? .unknown
             turn.pictureConfidence = strongest?.confidence ?? 0
             turn.resolvedSide = side
-            turn.personKey = personBySide[side]
-                ?? (layout == .singleCamera && roster.count == 1 ? roster.first?.key : nil)
             result.append(turn)
         }
-        return result
+        let names = SpeakerClusterNaming.assign(turns: result, roster: roster, layout: layout,
+                                                 clusterSides: clusterSides, personBySide: personBySide)
+        return result.map { turn in
+            var turn = turn
+            turn.personKey = names[turn.cluster]
+            return turn
+        }
     }
 
     /// Grid layouts: a turn belongs to the tile whose mouth moved during it;

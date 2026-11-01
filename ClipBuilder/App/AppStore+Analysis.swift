@@ -48,6 +48,7 @@ extension AppStore {
             defer {
                 isAnalyzing = false
                 refreshAll()
+                continueAnalysisStepBatch()
             }
             var requests = capturedRequests ?? [:]
             do {
@@ -246,6 +247,10 @@ extension AppStore {
                             holdSeconds: podcastEditingSettings.speakerHoldSeconds,
                             log: logSink(\.analysisLog), progress: progress, useLocal: localPodcast,
                             capturedSettings: podcastEditingSettings,
+                            remapSpeakers: { [self] in
+                                guard generation == profileGeneration, self.database === database else { throw CancellationError() }
+                                _ = try await mapSpeakersAgain(video: video)
+                            },
                             checkpointing: PodcastCheckpointing(resume: checkpoint.podcast) { state in
                                 await self.updateAnalysisCheckpoint(videoID: videoID) { $0.podcast = state }
                             })
@@ -271,7 +276,12 @@ extension AppStore {
                                 let peopleBefore = Set(currentPeople.map(\.key))
                                 let people = try await analyzer.detectPeopleOnly(
                                     video: video, profile: profile, database: database,
-                                    provider: provider, model: model, log: logSink(\.analysisLog))
+                                    provider: provider, model: model,
+                                    speakerHoldSeconds: editingDefaults.podcast.speakerHoldSeconds,
+                                    remapSpeakers: { [self] in
+                                        guard generation == profileGeneration, self.database === database else { throw CancellationError() }
+                                        _ = try await mapSpeakersAgain(video: video)
+                                    }, log: logSink(\.analysisLog))
                                 let found = people.roster.filter { !peopleBefore.contains($0.key) }.map {
                                     DetectedNewPerson(key: $0.key, descriptor: $0.descriptor,
                                                       suggestedName: $0.name.isEmpty ? nil : $0.name,
@@ -805,6 +815,10 @@ extension AppStore {
     func runMissingAnalysisSteps(_ steps: [AnalysisSteps.Step], video: VideoRecord) {
         guard !steps.isEmpty else { return }
         guard video.isPresent else { presentError(VideoRecord.notPresentReason); return }
+        if steps.contains(.speakerNames), steps.contains(where: \.needsBatch) {
+            runMissingAnalysisSteps([video.id: steps], videos: [video], syncWhenDone: false)
+            return
+        }
         if steps.contains(where: \.needsBatch) {
             guard !isAnalyzing else { return }
             var plan = AnalysisRequest.capturePlan(defaults: .standard, singleVideo: true, provider: nil, model: nil,
@@ -830,6 +844,113 @@ extension AppStore {
         if steps.contains(.people) { detectPeople(in: [video]) }
         if steps.contains(.transcript) { transcribe(video: video) }
         if steps.contains(.fightScore) { scoreFightAction(video: video) }
+        if steps.contains(.speakerNames) { nameSpeakers(video: video) }
+    }
+
+    /// An in-place analysis step with the same visible Stop row as a manual map.
+    func nameSpeakers(video: VideoRecord) {
+        guard video.isPresent, !speakerMappingVideoIDs.contains(video.id) else { return }
+        speakerMappingVideoIDs.insert(video.id)
+        let generation = profileGeneration
+        jobs.start(.mapSpeakers, title: "Name speakers — \(video.filename)", project: activeProject,
+                   profileGeneration: generation, subjectID: String(video.id), cleanup: { [weak self] in
+            guard let self, generation == self.profileGeneration else { return }
+            self.speakerMappingVideoIDs.remove(video.id)
+            self.continueAnalysisStepBatch()
+        }) { [self] log in
+            // A requested People/transcript step must save its inputs first.
+            while isDetectingPeople || transcribingVideoIDs.contains(video.id) {
+                try await Task.sleep(for: .milliseconds(100))
+                guard generation == profileGeneration else { throw CancellationError() }
+            }
+            try Task.checkCancellation()
+            if let verdict = speakerNamingSummaries[video.id]?.verdict, verdict.isSuspicious {
+                log(verdict.reason)
+            }
+            _ = try await mapSpeakersAgain(video: video, status: log)
+            _ = await transcriptRows(videoID: video.id)
+            guard generation == profileGeneration else { throw CancellationError() }
+            log("Speakers mapped again. The transcript is ready.")
+            return nil
+        }
+    }
+
+    /// Run every missing step of several files: in-place steps first, then one
+    /// analyze batch for the files that need scenes or exchanges, then a team
+    /// sync. Progress continues from `continueAnalysisStepBatch`, called when
+    /// each kind of work finishes.
+    func runMissingAnalysisSteps(_ missing: [Int64: [AnalysisSteps.Step]], videos: [VideoRecord], syncWhenDone: Bool) {
+        guard analysisStepBatch == nil, !isAnalyzing else { return }
+        let present = videos.filter(\.isPresent)
+        let byID = Dictionary(uniqueKeysWithValues: present.map { ($0.id, $0) })
+        let (inPlace, batch) = AnalysisStepBatch.partition(missing.filter { byID[$0.key] != nil })
+        guard !inPlace.isEmpty || !batch.isEmpty else { return }
+        let summary = AnalysisSteps.summary(missing)
+        appendLog(\.analysisLog, ["Analyze \(summary.steps) missing step(s) in \(summary.files) file(s)"
+            + (syncWhenDone && teamSync.attached ? "; syncing with the team when done" : "")])
+        analysisStepBatch = AnalysisStepBatch(batch: batch, syncWhenDone: syncWhenDone, generation: profileGeneration)
+        let peopleVideos = inPlace.filter { $0.value.contains(.people) }.keys.compactMap { byID[$0] }
+        if !peopleVideos.isEmpty { detectPeople(in: peopleVideos) }
+        for (id, steps) in inPlace {
+            guard let video = byID[id] else { continue }
+            if steps.contains(.transcript) { transcribe(video: video) }
+            if steps.contains(.fightScore) { scoreFightAction(video: video) }
+            if steps.contains(.speakerNames) { nameSpeakers(video: video) }
+        }
+        continueAnalysisStepBatch()
+    }
+
+    /// Called whenever people detection, a transcription, fight scoring or an
+    /// analyze batch finishes. Starts the batch phase once in-place work is idle
+    /// and syncs with the team once everything is.
+    func continueAnalysisStepBatch() {
+        guard let step = analysisStepBatch else { return }
+        guard step.generation == profileGeneration else { analysisStepBatch = nil; return }
+        let inPlaceBusy = isDetectingPeople || !transcribingVideoIDs.isEmpty || !fightScoringInFlight.isEmpty
+            || !speakerMappingVideoIDs.isEmpty
+        switch step.next(inPlaceBusy: inPlaceBusy, analyzing: isAnalyzing) {
+        case .wait:
+            return
+        case .startBatch(let batch):
+            let targets = videos.filter { batch[$0.id] != nil && $0.isPresent }
+            guard !targets.isEmpty else { analysisStepBatch?.batch = [:]; continueAnalysisStepBatch(); return }
+            analysisStepBatch?.starting = true
+            let generation = profileGeneration
+            Task {
+                defer { if generation == profileGeneration { analysisStepBatch?.starting = false } }
+                do {
+                    var requests: [Int64: AnalysisRequest] = [:]
+                    for video in targets {
+                        let steps = batch[video.id] ?? []
+                        var plan = AnalysisRequest.capturePlan(defaults: .standard, singleVideo: false, provider: nil, model: nil,
+                                                               includeFightScoring: steps.contains(.fightScore))
+                        plan.detectPeople = steps.contains(.people)
+                        plan.includeTranscript = steps.contains(.transcript)
+                        requests[video.id] = try await captureAnalysisRequest(
+                            video: video, plan: plan, profile: activeProfile, config: effectiveAIConfig,
+                            podcast: podcastEditingSettings, language: editingDefaults.footage.language, resolveType: true)
+                    }
+                    guard generation == profileGeneration else { analysisStepBatch = nil; return }
+                    for (id, request) in requests { analysisRequestPreviews[id] = request }
+                    analyze(videos: targets, includeFightScoring: targets.contains { batch[$0.id]?.contains(.fightScore) == true },
+                            capturedRequests: requests)
+                    // Another analysis may have taken the slot while the
+                    // requests were captured: the batch stays queued and the
+                    // completion hook of that run retries it.
+                    if isAnalyzing { analysisStepBatch?.batch = [:] }
+                } catch {
+                    analysisStepBatch = nil
+                    presentError("Could not capture analysis settings", error)
+                }
+            }
+        case .finish(let sync):
+            analysisStepBatch = nil
+            appendLog(\.analysisLog, ["Missing analysis steps finished"])
+            if sync, teamSync.attached, !teamSync.paused {
+                appendLog(\.analysisLog, ["Team: syncing analysis results"])
+                teamSync.requestSync()
+            }
+        }
     }
 
     /// Run one stage of a video's analysis again with the given model. The
@@ -860,6 +981,7 @@ extension AppStore {
             let editingDefaults = editingDefaults
             let podcastEditingSettings = podcastEditingSettings
             let localPodcast = OnDevicePolicy.isEnabled(item: "podcast-exchanges", config: settings.ai)
+            let generation = profileGeneration
             appendLog(\.analysisLog, ["\(video.filename): running \(stage.title) again"
                 + (model.map { " with \($0)" } ?? "")])
             analysisTask = Task {
@@ -868,6 +990,7 @@ extension AppStore {
                         isAnalyzing = false
                         analyzingVideoIDs = []
                         refreshAll()
+                        continueAnalysisStepBatch()
                     }
                     do {
                         let existingBatches = ((try? await database.fetchAnalysisRuns()) ?? []).count { $0.videoID == video.id }
@@ -887,7 +1010,11 @@ extension AppStore {
                                 highlightThreshold: editingDefaults.podcast.highlightThreshold,
                                 holdSeconds: editingDefaults.podcast.speakerHoldSeconds,
                                 log: logSink(\.analysisLog), progress: progress, useLocal: localPodcast,
-                                capturedSettings: podcastEditingSettings)
+                                capturedSettings: podcastEditingSettings,
+                                remapSpeakers: { [self] in
+                                    guard generation == profileGeneration, self.database === database else { throw CancellationError() }
+                                    _ = try await mapSpeakersAgain(video: video)
+                                })
                             runID = result.runID
                         } else {
                             let knownPeople = (try? await database.fetchPeople()) ?? []
@@ -927,7 +1054,7 @@ extension AppStore {
         isDetectingPeople = true
         let generation = profileGeneration
         Task {
-            defer { isDetectingPeople = false; peopleDetectionStage = nil }
+            defer { isDetectingPeople = false; peopleDetectionStage = nil; continueAnalysisStepBatch() }
             for (index, video) in videos.enumerated() {
                 // The videos belong to the profile that started the batch.
                 guard generation == profileGeneration else { return }
@@ -944,7 +1071,7 @@ extension AppStore {
                              refreshLibrary: Bool = true) async -> [VideoPersonRecord] {
         guard !isDetectingPeople else { return [] }
         isDetectingPeople = true
-        defer { isDetectingPeople = false }
+        defer { isDetectingPeople = false; continueAnalysisStepBatch() }
         return await runPeopleDetection(video, provider: provider, model: model, refreshLibrary: refreshLibrary)
     }
 
@@ -959,7 +1086,12 @@ extension AppStore {
             guard generation == profileGeneration, self.database === database else { return [] }
             let (roster, suggestedFilename) = try await analyzer.detectPeopleOnly(
                 video: video, profile: activeProfile, database: database,
-                provider: provider, model: model, log: logSink(\.analysisLog))
+                provider: provider, model: model,
+                speakerHoldSeconds: editingDefaults.podcast.speakerHoldSeconds,
+                remapSpeakers: { [self] in
+                    guard generation == profileGeneration, self.database === database else { throw CancellationError() }
+                    _ = try await mapSpeakersAgain(video: video)
+                }, log: logSink(\.analysisLog))
             guard generation == profileGeneration, self.database === database else { return [] }
             await refreshPersonRecords(roster: roster, existingPeople: existingPeople)
             guard generation == profileGeneration else { return [] }
@@ -976,7 +1108,10 @@ extension AppStore {
             videoPeopleCounts[video.id] = Set(roster.map(\.key)).count
             if refreshLibrary { refreshAll() }
             return roster
+        } catch is CancellationError {
+            return []
         } catch {
+            guard generation == profileGeneration, self.database === database else { return [] }
             presentError("People detection failed", error)
             return (try? await database.fetchVideoPeople(videoID: video.id)) ?? []
         }

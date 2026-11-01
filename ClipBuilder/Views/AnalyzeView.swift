@@ -111,8 +111,15 @@ struct AnalyzeView: View {
     var body: some View {
         VStack(spacing: 0) {
             HSplitView {
-                table
-                    .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
+                VStack(spacing: 0) {
+                    table
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
+                    if store.analysisStepBatch != nil || !allMissingSteps.isEmpty {
+                        Divider()
+                        missingStepsFooter
+                    }
+                }
+                .frame(minWidth: 460, maxWidth: .infinity, maxHeight: .infinity)
                 VStack(spacing: 0) {
                     if let video = previewVideo {
                         // Research opens through this view's top-level sheet — a
@@ -395,11 +402,87 @@ struct AnalyzeView: View {
         var scenesVersion: Int
         var transcriptCountsVersion: Int
         var peopleVersion: Int
+        var speakerNamingVersion: Int
         var passes: [AnalysisPassRecord]
         var hasCheckpoint: Bool
         var previewed: Bool
     }
     @State private var stepsMemo = MemoBox<StepsKey, [AnalysisSteps.Step]>()
+
+    private struct AllStepsKey: Equatable {
+        var videos: [String]
+        var runsVersion: Int
+        var scenesVersion: Int
+        var transcriptCountsVersion: Int
+        var peopleVersion: Int
+        var speakerNamingVersion: Int
+        var passes: [AnalysisPassRecord]
+        var checkpoints: Set<Int64>
+        var previews: Set<Int64>
+    }
+    @State private var allStepsMemo = MemoBox<AllStepsKey, [Int64: [AnalysisSteps.Step]]>()
+
+    /// Missing or outdated steps of every file on this Mac, behind the table
+    /// footer's "N files · Analyze N steps" button.
+    private var allMissingSteps: [Int64: [AnalysisSteps.Step]] {
+        let present = store.videos.filter(\.isPresent)
+        let key = AllStepsKey(videos: present.map { "\($0.id)|\($0.videoType ?? "")|\($0.peopleDetectedAt ?? "")|\($0.activeRunKey ?? "")" },
+                              runsVersion: store.analysisRunsVersion, scenesVersion: store.scenesVersion,
+                              transcriptCountsVersion: store.transcriptCountsVersion, peopleVersion: store.videoPeopleVersion,
+                              speakerNamingVersion: store.speakerNamingVersion,
+                              passes: store.analysisPasses, checkpoints: Set(store.analysisCheckpoints.keys),
+                              previews: Set(store.analysisRequestPreviews.keys))
+        return allStepsMemo(key) {
+            var result: [Int64: [AnalysisSteps.Step]] = [:]
+            for video in present {
+                let report = AnalysisCoverage.report(
+                    video: video, activeRun: store.activeLayer(videoID: video.id).run,
+                    scenes: store.scenes.filter { $0.videoID == video.id },
+                    transcriptCount: store.transcriptCounts[video.id] ?? 0,
+                    passes: store.analysisPasses, hasCheckpoint: store.analysisCheckpoints[video.id] != nil,
+                    duplicateOf: store.duplicateAnalysis(for: video))
+                let steps = AnalysisSteps.missing(video: video, report: report,
+                                                  peopleCount: store.videoPeopleCounts[video.id] ?? 0,
+                                                  passes: store.analysisPasses,
+                                                  speakerNaming: store.speakerNamingSummaries[video.id]?.verdict)
+                if !steps.isEmpty { result[video.id] = steps }
+            }
+            return result
+        }
+    }
+
+    /// Pinned under the table: one button for every missing step of every
+    /// file, then a team sync so teammates get the results.
+    private var missingStepsFooter: some View {
+        let missing = allMissingSteps
+        let summary = AnalysisSteps.summary(missing)
+        let running = store.analysisStepBatch != nil
+        let busy = running || store.isAnalyzing || store.isDetectingPeople
+            || !store.transcribingVideoIDs.isEmpty || !store.fightScoringInFlight.isEmpty
+            || !store.speakerMappingVideoIDs.isEmpty
+        return HStack(spacing: Theme.spaceS) {
+            if running {
+                ProgressView().controlSize(.small)
+                Text("Analyzing missing steps…").font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).fixedSize()
+            } else if store.teamSync.attached {
+                Text("Results sync with the team when done").font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1)
+            }
+            Spacer(minLength: 0)
+            if summary.files > 0 {
+                Button(AnalysisSteps.batchButtonTitle(files: summary.files, steps: summary.steps)) {
+                    store.runMissingAnalysisSteps(missing, videos: store.videos, syncWhenDone: true)
+                }
+                .buttonStyle(.borderedProminent)
+                .lineLimit(1).fixedSize()
+                .disabled(busy)
+                .help("Runs every missing or outdated analysis step of every file on this Mac, then syncs the results with the team")
+            }
+        }
+        .padding(.horizontal, Theme.spaceS)
+        .padding(.vertical, Theme.spaceXS)
+    }
 
     /// Steps the previewed recording is still missing; empty hides the button.
     private var missingSteps: [AnalysisSteps.Step] {
@@ -407,6 +490,7 @@ struct AnalyzeView: View {
         let key = StepsKey(videoID: video.id, type: video.videoType, peopleDetectedAt: video.peopleDetectedAt,
                            runsVersion: store.analysisRunsVersion, scenesVersion: store.scenesVersion,
                            transcriptCountsVersion: store.transcriptCountsVersion, peopleVersion: store.videoPeopleVersion,
+                           speakerNamingVersion: store.speakerNamingVersion,
                            passes: store.analysisPasses,
                            hasCheckpoint: store.analysisCheckpoints[video.id] != nil,
                            previewed: store.analysisRequestPreviews[video.id] != nil)
@@ -419,13 +503,15 @@ struct AnalyzeView: View {
                 duplicateOf: store.duplicateAnalysis(for: video))
             return AnalysisSteps.missing(video: video, report: report,
                                          peopleCount: store.videoPeopleCounts[video.id] ?? 0,
-                                         passes: store.analysisPasses)
+                                         passes: store.analysisPasses,
+                                         speakerNaming: store.speakerNamingSummaries[video.id]?.verdict)
         }
     }
 
     private func stepsInFlight(_ video: VideoRecord) -> Bool {
         store.analyzingVideoIDs.contains(video.id) || store.transcribingVideoIDs.contains(video.id)
             || store.isDetectingPeople || store.fightScoringInFlight.contains(video.id)
+            || store.speakerMappingVideoIDs.contains(video.id)
     }
 
     /// Selection actions pinned under the detail column: the missing-steps
@@ -839,6 +925,12 @@ struct AnalyzeView: View {
                         .frame(width: 54, alignment: .leading)
                         coverageControl(video: video, report: summary.coverage[video.id])
                             .frame(width: 136, alignment: .leading)
+                        if let verdict = store.speakerNamingSummaries[video.id]?.verdict, verdict.isSuspicious {
+                            Image(systemName: "person.crop.circle.badge.questionmark")
+                                .foregroundStyle(.orange)
+                                .help(verdict.reason)
+                                .accessibilityLabel("Name speakers: \(verdict.reason)")
+                        }
                     }
                     .lineLimit(1)
                     .fixedSize()

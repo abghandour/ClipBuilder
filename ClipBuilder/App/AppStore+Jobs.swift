@@ -16,15 +16,7 @@ extension AppStore {
     }
 
     func startSpeakerMapping(video: VideoRecord) {
-        let generation = profileGeneration
-        jobs.start(.mapSpeakers, title: "Map Speakers — \(video.filename)", project: activeProject,
-                   profileGeneration: profileGeneration, subjectID: String(video.id)) { [self] log in
-            _ = try await mapSpeakersAgain(video: video, status: log)
-            _ = await transcriptRows(videoID: video.id)
-            guard generation == profileGeneration else { throw CancellationError() }
-            log("Speakers mapped again. The transcript is ready.")
-            return nil
-        }
+        nameSpeakers(video: video)
     }
 
     func startTrimSuggestion(video: VideoRecord) {

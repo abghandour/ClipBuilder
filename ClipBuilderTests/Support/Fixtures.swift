@@ -2,6 +2,48 @@ import Foundation
 @testable import Clip_Builder
 
 enum Fixtures {
+    /// Stored video 2 turn timings, Peace Grappler, October 31, 2026.
+    /// Both voices were incorrectly named Aljo before cluster-level naming.
+    static var aljoInterviewTurns: [SpeakerTurn] {
+        let spans: [(Double, Double, Int, PodcastSpeakerSide)] = [
+            (0.18, 23.82, 0, .left), (23.82, 25.14, 1, .right),
+            (25.14, 32.04, 0, .left), (32.04, 33.18, 1, .right),
+            (33.18, 49.2, 0, .left), (49.8, 61.62, 1, .left),
+            (62.82, 101.16, 0, .right), (101.94, 122.76, 0, .left),
+            (122.76, 123.06, 1, .right), (123.48, 124.38, 0, .left),
+            (125.88, 143.1, 0, .left), (144.3, 205.38, 0, .left),
+            (205.38, 205.86, 1, .right), (206.16, 210.36, 0, .left),
+            (210.78, 220.14, 1, .left), (221.28, 222.36, 1, .left),
+            (222.36, 223.08, 0, .left), (223.32, 223.74, 1, .right),
+            (223.86, 225, 0, .left),
+        ]
+        let evidence: [(Double, PodcastSpeakerSide, Double)] = [
+            (0.529549944798014, .right, 0.500061979916723), (0.528516181550053, .right, 1),
+            (0.51430886672736, .unknown, 0), (0.457255552034269, .right, 1),
+            (0.520007262264065, .left, 1), (0.592708919828924, .left, 0.745263556995877),
+            (0.544290301643915, .right, 1), (0.51852837805968, .left, 0.534602166799042),
+            (0.512287921008387, .right, 1), (0.511111284674503, .left, 0.51074625280976),
+            (0.554892150425693, .left, 0.534512372325638), (0.527476490366204, .right, 0.507994239842946),
+            (0.559529099056049, .right, 1), (0.485541094690518, .unknown, 0),
+            (0.620372525614747, .left, 0.702697710040577), (0.582318937765394, .left, 1),
+            (0.508226602551985, .left, 1), (0.562192151568604, .unknown, 0),
+            (0.466511292347649, .left, 1),
+        ]
+        return spans.enumerated().map { index, span in
+            let signal = evidence[index]
+            return SpeakerTurn(videoID: 2, start: span.0, end: span.1, cluster: span.2,
+                               confidence: signal.0, pictureSide: signal.1, pictureConfidence: signal.2,
+                               resolvedSide: span.3, personKey: "aljo")
+        }
+    }
+
+    static var aljoInterviewRoster: [VideoPersonRecord] {
+        [VideoPersonRecord(videoID: 2, personID: 1, key: "aljo", name: "Aljo", descriptor: "",
+                           portraitAt: 0, portraitBox: .init(x: 0.28, y: 0, w: 0.44, h: 1), ranges: [0...225.06]),
+         VideoPersonRecord(videoID: 2, personID: 2, key: "ariel", name: "Ariel", descriptor: "",
+                           portraitAt: 213, portraitBox: .init(x: 0.13, y: 0, w: 0.36, h: 1), ranges: [213...225.06])]
+    }
+
     static func timelineClip(
         sceneID: Int64? = 1,
         sourceStart: Double = 2,

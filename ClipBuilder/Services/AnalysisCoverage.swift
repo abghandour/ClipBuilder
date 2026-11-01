@@ -11,6 +11,9 @@ nonisolated enum AnalysisCoverage {
             let label = pass == .fightScore ? "scored" : "pose"
             if let completed = matching.last(where: { $0.status == .completed }) {
                 parts.append("\(label) v\(completed.version)" + (pass == .fightScore && completed.version < 2 ? " (no attempts)" : ""))
+                if pass == .fightScore, AnalysisSteps.fightScoreOutdated(videoID: videoID, passes: passes) {
+                    parts.append("scenes changed since")
+                }
             } else if pass == .fightScore && !legacyEvents.isEmpty {
                 parts.append("scored v1 (no attempts)")
             }

@@ -94,6 +94,7 @@ extension AppStore {
         jobs.start(.fightScore, title: "Score v2 — \(video.filename)", project: activeProject,
                    profileGeneration: generation, subjectID: String(video.id), cleanup: { [weak self] in
             self?.fightScoringInFlight.remove(video.id)
+            self?.continueAnalysisStepBatch()
         }) { [self] jobLog in
             // The job row keeps lines in memory only; the analysis log persists them to app.log.
             let fileLog = logSink(\.analysisLog)

@@ -175,6 +175,9 @@ extension Database {
             let box = row["portrait_json"]?.stringValue
                 .flatMap { $0.data(using: .utf8) }
                 .flatMap { try? JSONDecoder().decode(VideoPersonRecord.PortraitBox.self, from: $0) }
+            let ranges = try row["ranges_json"]?.stringValue.map {
+                try JSONDecoder().decode([ScriptTimeRange].self, from: Data($0.utf8))
+            } ?? []
             return VideoPersonRecord(videoID: videoID,
                                      personID: row["person_id"]?.intValue ?? 0,
                                      key: row["person_key"]?.stringValue ?? "",
@@ -182,6 +185,7 @@ extension Database {
                                      descriptor: row["person_descriptor"]?.stringValue ?? "",
                                      portraitAt: row["portrait_at"]?.doubleValue ?? 0,
                                      portraitBox: box,
+                                     ranges: ranges.compactMap { $0.end >= $0.start ? $0.start...$0.end : nil },
                                      vip: row["vip"]?.intValue.map { $0 != 0 },
                                      vipSource: row["vip_source"]?.stringValue,
                                      vipReason: row["portrait_json"]?.stringValue.flatMap {
@@ -571,5 +575,36 @@ extension Database {
                             personKey: row["person_key"]?.stringValue,
                             tile: row["tile"]?.intValue.map { Int($0) })
             }
+    }
+
+    /// One grouped read for the library; only the active transcript's turns
+    /// contribute, including legacy NULL keys when that is the active set.
+    func speakerNamingSummaries() throws -> [Int64: SpeakerClusterNaming.Summary] {
+        let rows = try connection.query("""
+            SELECT video.id AS video_id, video.podcast_layout,
+                   COUNT(DISTINCT st.cluster) AS clusters,
+                   COUNT(DISTINCT CASE WHEN st.person_key IS NOT NULL THEN st.cluster END) AS named_clusters,
+                   json_group_array(DISTINCT st.person_key) AS named_keys,
+                   json_group_array(DISTINCT p.key) AS roster_keys
+            FROM videos video
+            JOIN speaker_turns st ON st.video_id = video.id
+                AND st.transcription_key IS (\(Self.resolvedTranscriptionKeySQL(videoID: "video.id")))
+            LEFT JOIN video_people vp ON vp.video_id = video.id
+            LEFT JOIN people p ON p.id = vp.person_id
+            GROUP BY video.id
+            """)
+        func keys(_ json: String?) throws -> Set<String> {
+            guard let json else { return [] }
+            return Set(try JSONDecoder().decode([String?].self, from: Data(json.utf8)).compactMap { $0 })
+        }
+        return try Dictionary(uniqueKeysWithValues: rows.compactMap { row in
+            guard let id = row["video_id"]?.intValue else { return nil }
+            return (id, SpeakerClusterNaming.Summary(
+                clusters: Int(row["clusters"]?.intValue ?? 0),
+                namedClusters: Int(row["named_clusters"]?.intValue ?? 0),
+                namedKeys: try keys(row["named_keys"]?.stringValue),
+                rosterKeys: try keys(row["roster_keys"]?.stringValue),
+                layout: row["podcast_layout"]?.stringValue.flatMap(PodcastLayout.init(rawValue:))))
+        })
     }
 }

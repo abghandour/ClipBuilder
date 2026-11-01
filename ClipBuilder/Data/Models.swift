@@ -437,6 +437,7 @@ nonisolated struct VideoPersonRecord: Identifiable, Sendable, Hashable {
     var descriptor: String
     var portraitAt: Double
     var portraitBox: PortraitBox?
+    var ranges: [ClosedRange<Double>] = []
 
     var vip: Bool?
     var vipSource: String?
@@ -1012,6 +1013,7 @@ nonisolated struct LibrarySnapshot: Sendable {
     var videoPeopleCounts: [Int64: Int] = [:]
     /// Rows in each video's active transcript, including transcribe-only videos.
     var transcriptCounts: [Int64: Int] = [:]
+    var speakerNamingSummaries: [Int64: SpeakerClusterNaming.Summary] = [:]
     /// Analyses that started and did not finish, by video.
     var analysisCheckpoints: [Int64: AnalysisCheckpoint] = [:]
 }
