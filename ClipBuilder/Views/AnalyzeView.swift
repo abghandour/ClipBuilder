@@ -166,6 +166,7 @@ struct AnalyzeView: View {
 
     var body: some View {
         VStack(spacing: 0) {
+            LanguageReadinessBanner()
             HSplitView {
                 VStack(spacing: 0) {
                     table
@@ -696,7 +697,7 @@ struct AnalyzeView: View {
                         let plan = AnalysisRequest.capturePlan(defaults: .standard, singleVideo: true,
                             provider: nil, model: nil, includeFightScoring: true)
                         let request = try await store.captureAnalysisRequest(video: video, plan: plan, profile: store.activeProfile,
-                            config: store.effectiveAIConfig, podcast: store.podcastEditingSettings, language: store.editingDefaults.footage.language)
+                            config: store.effectiveAIConfig, podcast: store.podcastEditingSettings, language: store.transcriptionLanguage())
                         guard generation == store.profileGeneration else { return }
                         store.analysisRequestPreviews[video.id] = request
                         if store.duplicateAnalysis(for: video) != nil {

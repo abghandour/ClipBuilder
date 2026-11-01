@@ -469,7 +469,7 @@ final class WizardSheetModel {
     private func executeJavaScript(source: String, header: ScriptHeader, params: Data,
                                    session: BuilderScriptSession, confirmed: [BuilderCommand], token: Int) async {
         let library = session.library
-        let language = store.editingDefaults.footage.language
+        let language = store.transcriptionLanguage()
         let profileGeneration = store.profileGeneration
         let run = ScriptRunModel(session: session, header: header, params: params, confirmed: confirmed,
             origin: runOrigin == .routed ? "routed" : "script",
@@ -838,7 +838,7 @@ final class WizardSheetModel {
         let token = generation
         let started = Date.now
         let library = session.library
-        let language = store.editingDefaults.footage.language
+        let language = store.transcriptionLanguage()
         let profileGeneration = store.profileGeneration
         var result = await session.run(steps, prerequisites: prerequisites, confirmed: true,
             refreshLibrary: { [database] in
@@ -1072,7 +1072,7 @@ final class WizardSheetModel {
     private func executeAgent(session: BuilderScriptSession, confirmed: [BuilderCommand], token: Int, mode: BuilderTools.Mode = .edit) async {
         let budget = BuilderRunBudget(runLimits)
         let library = session.library
-        let language = store.editingDefaults.footage.language
+        let language = store.transcriptionLanguage()
         let profileGeneration = store.profileGeneration
         let tools = BuilderTools(session: session, budget: budget, mode: mode, confirmedPrerequisites: confirmed,
             ensure: { [self] steps in

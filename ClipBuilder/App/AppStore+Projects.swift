@@ -118,6 +118,7 @@ extension AppStore {
         } catch {
             presentError("Could not open the project", error)
         }
+        Task { await refreshLanguageReadiness() }
         projectStateVersion &+= 1
     }
 
@@ -426,13 +427,21 @@ extension AppStore {
         selectedSection = section.projectDestination
     }
 
-    func refreshProjectCatalog() {
-        guard let database else { return }
-        Task {
-            projects = (try? await database.fetchProjects()) ?? projects
+    @discardableResult
+    func refreshProjectCatalog() -> Task<Void, Never>? {
+        guard let database else { return nil }
+        let generation = profileGeneration
+        return Task {
+            let updated = try? await database.fetchProjects()
+            guard generation == profileGeneration, self.database === database else { return }
+            projects = updated ?? projects
             if let activeProjectID {
-                timelines = (try? await database.fetchTimelines(projectID: activeProjectID)) ?? timelines
+                let loaded = try? await database.fetchTimelines(projectID: activeProjectID)
+                guard generation == profileGeneration, self.database === database, self.activeProjectID == activeProjectID else { return }
+                timelines = loaded ?? timelines
             }
+            analysisComparisonKeys = [:]
+            await refreshLanguageReadiness()
         }
     }
 

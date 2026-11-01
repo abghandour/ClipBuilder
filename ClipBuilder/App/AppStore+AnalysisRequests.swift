@@ -6,6 +6,7 @@ extension AppStore {
     func captureAnalysisRequest(video: VideoRecord, plan: AnalysisCheckpoint.Plan,
                                 profile: BrandProfile, config: AIConfig, podcast: PodcastSettings,
                                 language: String, freshSource: Bool = true, resolveType: Bool = false) async throws -> AnalysisRequest {
+        let spokenLocales = projectLanguages.spoken
         var video = video
         guard let database else { throw ScriptError.invalid("No library is open.") }
         let people = try await database.fetchPeople()
@@ -64,7 +65,8 @@ extension AppStore {
             request.transcriptHash = await Task.detached(priority: .utility) {
                 AnalysisRequest.transcriptFingerprint(transcripts)
             }.value
-            request.language = video.type?.usesPodcastPass == true ? "" : language
+            request.language = language
+            request.spokenLocales = spokenLocales
             request.podcastJSON = AnalysisRequest.json(podcast)
             let routing = AIService(config: config)
             for task in ["analysis", "people", "exchanges"] {
@@ -114,7 +116,7 @@ extension AppStore {
                 // Previews trust the size/date-validated identity cache; Analyze
                 // itself re-reads the source before it runs.
                 let request = try await captureAnalysisRequest(video: video, plan: plan, profile: activeProfile,
-                    config: effectiveAIConfig, podcast: podcastEditingSettings, language: editingDefaults.footage.language,
+                    config: effectiveAIConfig, podcast: podcastEditingSettings, language: transcriptionLanguage(),
                     freshSource: false)
                 previews[video.id] = request
                 keys[video.id] = key

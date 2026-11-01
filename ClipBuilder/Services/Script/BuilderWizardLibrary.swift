@@ -18,7 +18,7 @@ enum BuilderWizardLibrary {
         for (index, bumper) in store.bumpers.enumerated() { library.bumpers["bumper:\(index)"] = bumper }
         for (index, sound) in AssetStore.allFiles(of: .music).enumerated() { library.sounds["sound:\(index)"] = sound.name }
         for (index, image) in AssetStore.allFiles(of: .images).enumerated() { library.images["image:\(index)"] = image.url.path }
-        let language = store.editingDefaults.footage.language
+        let language = store.transcriptionLanguage()
         if let database = store.database {
             let ids = Set(store.builder.document.videoTrack.compactMap(\.sceneID))
             library.referencedScenes = try await database.fetchScenes(ids: ids)

@@ -70,7 +70,35 @@ extension AppStore {
         if options.proposeNames { totalUnits += 1 }
         let total = Double(max(1, totalUnits))
 
+        // Languages belong to the project the pipeline started in, not the
+        // one on screen when it resumes.
+        let languages = resolvedLanguages(for: projects.first { $0.id == pipelineProjectID } ?? activeProject)
+        let language = ProjectLanguageResolver.transcriptionLanguage(languages: languages)
+        let generation = profileGeneration
+        let transcription = transcription
         pipelineTask = Task {
+            // Only a video that will actually be recognized needs the model:
+            // existing transcripts and finished units are reused as before.
+            var needsRecognizer = false
+            for video in targets where options.transcribe || options.analyze {
+                if pipelineDone.contains("transcribe:\(video.id)") { continue }
+                let podcast = video.type?.usesPodcastPass == true || (video.type == nil && video.duration >= 300)
+                guard options.transcribe || podcast else { continue }
+                let existing = (try? await database.fetchTranscripts(videoID: video.id)) ?? []
+                if existing.isEmpty { needsRecognizer = true; break }
+            }
+            if needsRecognizer {
+                do {
+                    try await requireProjectRecognizers(languages: languages)
+                    guard generation == profileGeneration, self.database === database else { throw CancellationError() }
+                } catch {
+                    isPipelineRunning = false
+                    pipelineStage = "stopped"
+                    appendLog(\.pipelineLog, [error.userMessage])
+                    if !(error is CancellationError) { presentError("Languages are not ready", error) }
+                    return
+                }
+            }
             // Settings saves enqueue an actor update; Start and Resume must
             // apply the latest routing before any phase can dispatch AI.
             await ai.updateConfig(effectiveAIConfig)
@@ -117,8 +145,6 @@ extension AppStore {
 
             // 2. Transcription (skips videos that already have one).
             if options.transcribe {
-                let transcription = transcription
-                let language = editingDefaults.footage.language
                 for video in targets where !completed("transcribe:\(video.id)") {
                     if Task.isCancelled { break }
                     pipelineStage = "transcribing — \(video.filename)"
@@ -153,7 +179,7 @@ extension AppStore {
                     pipelineStage = "analyzing \(pending.count) video(s)"
                     log("Analyzing \(pending.count) video(s) — full details in the Raw Videos activity log")
                     analyze(videos: pending, includeFightScoring: options.fightScoring,
-                            originatingProjectName: pipelineProjectName)
+                            originatingProjectName: pipelineProjectName, languages: languages)
                     await analysisTask?.value
                     await refreshAllNow()
                     swallowPrompts()

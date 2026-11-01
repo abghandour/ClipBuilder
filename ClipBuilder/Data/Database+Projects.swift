@@ -88,7 +88,8 @@ extension Database {
                 sourceCount: Int(row["source_count"]?.intValue ?? 0),
                 timelineCount: Int(row["timeline_count"]?.intValue ?? 0),
                 outputCount: Int(row["output_count"]?.intValue ?? 0),
-                thumbnailPaths: paths
+                thumbnailPaths: paths,
+                languages: AISettingsJSON.decode(ProjectLanguages.self, row["languages_json"]?.stringValue)
             )
         }
     }
@@ -109,6 +110,13 @@ extension Database {
             }
             return id
         }
+    }
+
+    /// The projects update trigger enqueues the change in sync_outbox when attached.
+    func setProjectLanguages(id: Int64, languages: ProjectLanguages?) throws {
+        let json = try languages.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
+        try connection.execute("UPDATE projects SET languages_json = ? WHERE id = ?",
+                               [json.map(SQLValue.text) ?? .null, .integer(id)])
     }
 
     func renameProject(id: Int64, name: String) throws {
@@ -146,6 +154,8 @@ extension Database {
                 [.text(profileName), .text(name)]
             )
             let copyID = connection.lastInsertRowID
+            try connection.execute("UPDATE projects SET languages_json = (SELECT languages_json FROM projects WHERE id = ?) WHERE id = ?",
+                                   [.integer(id), .integer(copyID)])
             try connection.execute("""
                 INSERT INTO project_videos (project_id, video_id)
                 SELECT ?, video_id FROM project_videos WHERE project_id = ?

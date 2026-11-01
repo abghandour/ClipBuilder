@@ -95,12 +95,24 @@ nonisolated struct SourcesAssistant: PageAssistant {
     }
 
     @MainActor
-    func context(store: AppStore) -> AssistantContext { Self.context(snapshot(store: store)) }
+    func context(store: AppStore) -> AssistantContext {
+        var context = Self.context(snapshot(store: store))
+        if let summary = LanguageReadiness.summary(store.languageAssets) {
+            context.facts.append(AssistantFact("languages.missing", "Languages on this Mac", summary))
+        }
+        context.fingerprint = AssistantContext.fingerprint(page: context.page, subpage: context.subpage,
+            facts: context.facts, settings: context.settings, selection: context.selection)
+        return context
+    }
 
     // MARK: - Suggestions
 
     func suggestions(for context: AssistantContext) -> [AssistantSuggestion] {
         var rows: [AssistantSuggestion] = []
+        if let summary = context.value("languages.missing") {
+            rows.append(.init(id: "languages.missing", kind: .insight, title: "Project languages need setup",
+                              reason: summary, actionID: "languages.install"))
+        }
         let sources = context.int("sources") ?? 0
         if sources == 0 {
             rows.append(.init(id: "sources.add.none", kind: .action, title: "Add source videos",
@@ -152,6 +164,12 @@ nonisolated struct SourcesAssistant: PageAssistant {
         let selected: @MainActor @Sendable (AppStore) -> Bool = { $0.assistant.state(page).count("selected") > 0 }
         let fight: @MainActor @Sendable (AppStore) -> Bool = { $0.assistant.state(page).flag("selected.fight") }
         return [
+            AssistantAction(id: "languages.install", title: "Install Project Languages", systemImage: "arrow.down.circle",
+                            isAvailable: { $0.activeProject != nil }) { store in
+                store.selectSection(.sources)
+                store.installLanguageAssets()
+                return .started(jobTitle: "Language Assets")
+            },
             .command("sources.add", "Add Videos", "plus", message: "Choose videos to add."),
             .command("sources.analyze.missing", "Analyze missing steps", "sparkles",
                      message: "Analyzing every missing step.", available: idle),
@@ -180,6 +198,7 @@ nonisolated struct SourcesAssistant: PageAssistant {
     static func route(_ text: String) -> String? {
         let t = AssistantText.normalized(text)
         if t.isEmpty { return nil }
+        if AssistantText.mentions(t, ["language", "recognizer", "translation pack"]) { return "languages.install" }
         if AssistantText.mentions(t, ["duplicate", "copies", "same video"]) { return "sources.duplicates.scan" }
         if AssistantText.mentions(t, ["file name", "filename", "rename", "better name"]) { return "sources.names.suggest" }
         if AssistantText.mentions(t, ["speaker", "who is talking", "who's talking"]) { return "sources.speakers.name" }

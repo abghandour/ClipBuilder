@@ -1,6 +1,7 @@
 import SwiftUI
 
 struct ProjectCardView: View {
+    @Environment(AppStore.self) private var store
     let project: ProjectRecord
     let onOpen: () -> Void
     let onRename: () -> Void
@@ -10,60 +11,74 @@ struct ProjectCardView: View {
     let onDrop: ([URL]) -> Void
 
     var body: some View {
-        Button(action: onOpen) {
-            VStack(alignment: .leading, spacing: Theme.spaceM) {
-                HStack(spacing: Theme.spaceS) {
-                    ForEach(0..<3, id: \.self) { index in
-                        Group {
-                            if project.thumbnailPaths.indices.contains(index) {
-                                VideoThumbnail(url: URL(fileURLWithPath: project.thumbnailPaths[index]), time: 0.5)
-                            } else {
-                                Rectangle().fill(.quaternary)
+        VStack(alignment: .leading, spacing: 0) {
+            Button(action: onOpen) {
+                VStack(alignment: .leading, spacing: Theme.spaceM) {
+                    HStack(spacing: Theme.spaceS) {
+                        ForEach(0..<3, id: \.self) { index in
+                            Group {
+                                if project.thumbnailPaths.indices.contains(index) {
+                                    VideoThumbnail(url: URL(fileURLWithPath: project.thumbnailPaths[index]), time: 0.5)
+                                } else {
+                                    Rectangle().fill(.quaternary)
+                                }
                             }
+                            .aspectRatio(4 / 3, contentMode: .fill)
+                            .clipShape(.rect(cornerRadius: Theme.mediaRadius))
                         }
-                        .aspectRatio(4 / 3, contentMode: .fill)
-                        .clipShape(.rect(cornerRadius: Theme.mediaRadius))
+                    }
+
+                    Label(project.name, systemImage: project.isHome ? "house.fill" : "folder")
+                        .font(.headline)
+                        .foregroundStyle(project.isHome ? Theme.projectTint : .primary)
+                        .lineLimit(2)
+
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: Theme.spaceM) {
+                            ProjectCountLabel(count: project.sourceCount, noun: "source")
+                            ProjectCountLabel(count: project.timelineCount, noun: "timeline")
+                            ProjectCountLabel(count: project.outputCount, noun: "output")
+                        }
+                        VStack(alignment: .leading, spacing: Theme.spaceXS) {
+                            ProjectCountLabel(count: project.sourceCount, noun: "source")
+                            ProjectCountLabel(count: project.timelineCount, noun: "timeline")
+                            ProjectCountLabel(count: project.outputCount, noun: "output")
+                        }
+                    }
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+
+                    HStack {
+                        Text(languageSummary).lineLimit(1)
+                        if let message = LanguageReadiness.summary(store.projectLanguageAssets[project.id] ?? []) {
+                            Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
+                                .help(message).accessibilityLabel(message)
+                        }
+                    }
+                    .font(.caption).foregroundStyle(.secondary)
+
+                    if let lastOpenedDate = project.lastOpenedDate {
+                        Text("Opened \(lastOpenedDate.formatted(.relative(presentation: .named)))")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                    } else {
+                        Text("Not opened yet")
+                            .font(.caption)
+                            .foregroundStyle(.tertiary)
                     }
                 }
-
-                Label(project.name, systemImage: project.isHome ? "house.fill" : "folder")
-                    .font(.headline)
-                    .foregroundStyle(project.isHome ? Theme.projectTint : .primary)
-                    .lineLimit(2)
-
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: Theme.spaceM) {
-                        ProjectCountLabel(count: project.sourceCount, noun: "source")
-                        ProjectCountLabel(count: project.timelineCount, noun: "timeline")
-                        ProjectCountLabel(count: project.outputCount, noun: "output")
-                    }
-                    VStack(alignment: .leading, spacing: Theme.spaceXS) {
-                        ProjectCountLabel(count: project.sourceCount, noun: "source")
-                        ProjectCountLabel(count: project.timelineCount, noun: "timeline")
-                        ProjectCountLabel(count: project.outputCount, noun: "output")
-                    }
-                }
-                .font(.caption)
-                .foregroundStyle(.secondary)
-
-                if let lastOpenedDate = project.lastOpenedDate {
-                    Text("Opened \(lastOpenedDate.formatted(.relative(presentation: .named)))")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                } else {
-                    Text("Not opened yet")
-                        .font(.caption)
-                        .foregroundStyle(.tertiary)
-                }
+                .padding(Theme.cardPadding)
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: Theme.cardRadius))
+                .contentShape(.rect(cornerRadius: Theme.cardRadius))
             }
-            .padding(Theme.cardPadding)
-            .frame(maxWidth: .infinity, alignment: .leading)
-            .background(.quaternary.opacity(0.5), in: .rect(cornerRadius: Theme.cardRadius))
-            .contentShape(.rect(cornerRadius: Theme.cardRadius))
+            .buttonStyle(.plain)
+            Button("Languages…", systemImage: "globe") { store.languageEditorProject = project }
+                .font(.caption).lineLimit(1).fixedSize().padding(Theme.cardPadding)
         }
-        .buttonStyle(.plain)
         .contextMenu {
+            Button("Languages…", systemImage: "globe") { store.languageEditorProject = project }
             if project.isHome {
                 Button("Open Home", systemImage: "house.fill", action: onOpen)
             } else {
@@ -84,6 +99,11 @@ struct ProjectCardView: View {
         .accessibilityLabel(
             "\(project.name), \(project.sourceCount) sources, \(project.timelineCount) timelines, \(project.outputCount) outputs"
         )
+    }
+    private var languageSummary: String {
+        let languages = store.resolvedLanguages(for: project)
+        let spoken = languages.spoken.isEmpty ? "Auto-detect" : languages.spoken.map(DubLanguageChoices.name).joined(separator: ", ")
+        return spoken
     }
 }
 

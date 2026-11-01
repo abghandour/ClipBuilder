@@ -301,7 +301,8 @@ actor Database {
         archived INTEGER DEFAULT 0,
         is_home INTEGER NOT NULL DEFAULT 0,
         thumbnail_video_id INTEGER REFERENCES videos(id) ON DELETE SET NULL,
-        ui_state_json TEXT
+        ui_state_json TEXT,
+        languages_json TEXT
     );
     CREATE TABLE IF NOT EXISTS project_videos (
         project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -891,6 +892,9 @@ actor Database {
                 try Self.migrateTranscriptionSets(connection)
                 try Self.migrateTranscriptPreservation(connection)
                 if stamped < 35 { try Self.migrateTranscriptEditedWords(connection) }
+                if stamped < 43, try !connection.columnNames(of: "projects").contains("languages_json") {
+                    try connection.execute("ALTER TABLE projects ADD COLUMN languages_json TEXT")
+                }
                 try Self.migrateBrandSync(connection)
                 if stamped < 28 { try Self.seedFootageSync(connection) }
                 // Schema 41: projects and highlight history join team sync.
@@ -916,7 +920,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 42
+    static let schemaVersion: Int64 = 43
 
     nonisolated static func migrateTranscriptEditedWords(_ db: SQLiteConnection) throws {
         if try !db.columnNames(of: "transcripts").contains("original_words") {

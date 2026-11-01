@@ -32,7 +32,8 @@ extension AppStore {
     /// any earlier ones — delete unwanted batches from the Scenes screen.
     func analyze(videos targets: [VideoRecord], provider: String? = nil, model: String? = nil,
                  includeFightScoring: Bool = true, originatingProjectName: String? = nil,
-                 capturedRequests: [Int64: AnalysisRequest]? = nil, duplicatePolicy: AnalysisDuplicatePolicy = .ask) {
+                 capturedRequests: [Int64: AnalysisRequest]? = nil, duplicatePolicy: AnalysisDuplicatePolicy = .ask,
+                 languages: ProjectLanguages? = nil) {
         guard let database, !isAnalyzing else { return }
         guard targets.allSatisfy(\.isPresent) else { presentError(VideoRecord.notPresentReason); return }
         isAnalyzing = true
@@ -51,7 +52,8 @@ extension AppStore {
         let podcastAnalysis = podcastAnalysis
         let editingDefaults = editingDefaults
         let podcastEditingSettings = podcastEditingSettings
-        let language = editingDefaults.footage.language
+        let languages = languages ?? projectLanguages
+        let language = ProjectLanguageResolver.transcriptionLanguage(languages: languages)
         let generation = profileGeneration
         analysisTask = Task {
             await AIRunCapture.context.withValue(AIRunCapture()) {
@@ -86,6 +88,7 @@ extension AppStore {
             }
             guard generation == profileGeneration, !Task.isCancelled else { analyzingVideoIDs = []; return }
             for (id, request) in requests { analysisRequestPreviews[id] = request }
+            var readinessReported = false
             // Every request is now immutable, including the one-shot values.
             // This precedes even reading an interrupted checkpoint below.
             AnalysisRequest.consumeOneShotDefaults(.standard)
@@ -136,6 +139,25 @@ extension AppStore {
                 } else {
                     checkpoint = AnalysisCheckpoint(videoID: video.id, startedAt: .now, updatedAt: .now,
                                                     runName: "", plan: request.plan, request: request)
+                }
+                // The recognizer check uses the request that will run (a
+                // resumed checkpoint keeps its own languages) and is skipped
+                // when a pinned or existing transcript is reused.
+                if request.requestedPasses.contains("transcript"), request.transcriptKey == nil,
+                   !((try? await database.fetchTranscripts(videoID: video.id)) ?? []).contains(where: { !$0.isTranslation }) {
+                    do {
+                        try await requireProjectRecognizers(languages: ProjectLanguages(spoken: request.spokenLocales ?? [request.language]))
+                    } catch is CancellationError {
+                        break
+                    } catch {
+                        failed += 1
+                        appendLog(\.analysisLog, ["\(video.filename): \(error.userMessage)"])
+                        if !readinessReported {
+                            readinessReported = true
+                            presentError("Languages are not ready", error)
+                        }
+                        continue
+                    }
                 }
                 if stopped == nil {
                     let runs = (try? await database.fetchAnalysisRuns()) ?? analysisRuns
@@ -248,10 +270,8 @@ extension AppStore {
                         let result = try await podcastAnalysis.analyze(
                             video: video, profile: profile, database: database,
                             runName: runName, provider: provider, model: model,
-                            // Podcasts always perform the plan's EN/pt-BR-first
-                            // detection; the generic transcription override is
-                            // intentionally limited to non-podcast footage.
-                            languageCode: "", analyzer: analyzer,
+                            // The captured project language also applies to podcasts.
+                            languageCode: language, analyzer: analyzer,
                             transcription: transcription,
                             highlightThreshold: podcastEditingSettings.highlightThreshold,
                             holdSeconds: podcastEditingSettings.speakerHoldSeconds,
@@ -840,7 +860,7 @@ extension AppStore {
                 do {
                     let request = try await captureAnalysisRequest(
                         video: video, plan: plan, profile: activeProfile, config: effectiveAIConfig,
-                        podcast: podcastEditingSettings, language: editingDefaults.footage.language, resolveType: true)
+                        podcast: podcastEditingSettings, language: transcriptionLanguage(), resolveType: true)
                     guard generation == profileGeneration else { return }
                     analysisRequestPreviews[video.id] = request
                     analyze(videos: [video], includeFightScoring: steps.contains(.fightScore),
@@ -889,7 +909,21 @@ extension AppStore {
     /// analyze batch for the files that need scenes or exchanges, then a team
     /// sync. Progress continues from `continueAnalysisStepBatch`, called when
     /// each kind of work finishes.
-    func runMissingAnalysisSteps(_ missing: [Int64: [AnalysisSteps.Step]], videos: [VideoRecord], syncWhenDone: Bool) {
+    func runMissingAnalysisSteps(_ missing: [Int64: [AnalysisSteps.Step]], videos: [VideoRecord], syncWhenDone: Bool, readinessChecked: Bool = false) {
+        if !readinessChecked, missing.values.contains(where: { $0.contains(.transcript) }) {
+            let generation = profileGeneration
+            let projectID = activeProjectID
+            Task {
+                do {
+                    try await requireProjectRecognizers()
+                    guard generation == profileGeneration, activeProjectID == projectID else { return }
+                    runMissingAnalysisSteps(missing, videos: videos, syncWhenDone: syncWhenDone, readinessChecked: true)
+                } catch is CancellationError {
+                    return
+                } catch { presentError("Languages are not ready", error) }
+            }
+            return
+        }
         guard analysisStepBatch == nil, !isAnalyzing else { return }
         let present = videos.filter(\.isPresent)
         let byID = Dictionary(uniqueKeysWithValues: present.map { ($0.id, $0) })
@@ -938,7 +972,7 @@ extension AppStore {
                         plan.includeTranscript = steps.contains(.transcript)
                         requests[video.id] = try await captureAnalysisRequest(
                             video: video, plan: plan, profile: activeProfile, config: effectiveAIConfig,
-                            podcast: podcastEditingSettings, language: editingDefaults.footage.language, resolveType: true)
+                            podcast: podcastEditingSettings, language: transcriptionLanguage(), resolveType: true)
                     }
                     guard generation == profileGeneration else { analysisStepBatch = nil; return }
                     for (id, request) in requests { analysisRequestPreviews[id] = request }
@@ -992,6 +1026,8 @@ extension AppStore {
             let podcastEditingSettings = podcastEditingSettings
             let localPodcast = OnDevicePolicy.isEnabled(item: "podcast-exchanges", config: settings.ai)
             let generation = profileGeneration
+            let language = transcriptionLanguage(for: video)
+            let languages = projectLanguages
             appendLog(\.analysisLog, ["\(video.filename): running \(stage.title) again"
                 + (model.map { " with \($0)" } ?? "")])
             analysisTask = Task {
@@ -1003,6 +1039,7 @@ extension AppStore {
                         continueAnalysisStepBatch()
                     }
                     do {
+                        if podcast { try await requireProjectRecognizers(languages: languages) }
                         let existingBatches = ((try? await database.fetchAnalysisRuns()) ?? []).count { $0.videoID == video.id }
                         let runName = Self.analysisRunName(for: video, existingBatchCount: existingBatches)
                         let progress: @Sendable (Double, String) -> Void = { fraction, stage in
@@ -1016,7 +1053,7 @@ extension AppStore {
                             let result = try await podcastAnalysis.analyze(
                                 video: video, profile: profile, database: database,
                                 runName: runName, provider: provider, model: model,
-                                languageCode: "", analyzer: analyzer, transcription: transcription,
+                                languageCode: language, analyzer: analyzer, transcription: transcription,
                                 highlightThreshold: editingDefaults.podcast.highlightThreshold,
                                 holdSeconds: editingDefaults.podcast.speakerHoldSeconds,
                                 log: logSink(\.analysisLog), progress: progress, useLocal: localPodcast,

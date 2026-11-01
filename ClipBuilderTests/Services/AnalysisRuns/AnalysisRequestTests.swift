@@ -50,7 +50,7 @@ struct AnalysisRequestTests {
         var spoken = untyped
         spoken.language = "en"
         let podcast = spoken.resolvingVideoType(.podcast)
-        #expect(podcast.language == "")
+        #expect(podcast.language == "en")
         #expect(podcast.pipeline == AnalysisPipeline.podcastPass)
         #expect(Set(podcast.requestedPasses) == ["scenes", "people", "transcript", "exchanges"])
     }
@@ -81,6 +81,7 @@ struct AnalysisRequestTests {
             ("transcript dependency changed", { $0.transcriptKey = "set" }),
             ("transcript dependency changed", { $0.transcriptHash = "corrected" }),
             ("transcript dependency changed", { $0.language = "pt" }),
+            ("transcript dependency changed", { $0.spokenLocales = ["pt-BR", "en-US"] }),
             ("podcast settings changed", { $0.podcastJSON = "{\"highlight_threshold\":9}" }),
             ("requested passes changed", { $0.requestedPasses.append("transcript") }),
             ("requested passes changed", { $0.plan.detectPeople = false }),

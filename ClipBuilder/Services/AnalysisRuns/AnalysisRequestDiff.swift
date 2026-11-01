@@ -25,7 +25,7 @@ nonisolated enum AnalysisRequestDiff {
         if old.tasteRubric != new.tasteRubric || old.taste != new.taste || old.exemplarHashes != new.exemplarHashes { result.append("taste inputs changed") }
         if old.routing != new.routing { result.append("model routing changed") }
         if old.onDevice != new.onDevice { result.append("on-device policy changed") }
-        if old.transcriptKey != new.transcriptKey || old.transcriptHash != new.transcriptHash || old.language != new.language {
+        if old.transcriptKey != new.transcriptKey || old.transcriptHash != new.transcriptHash || old.language != new.language || old.spokenLocales != new.spokenLocales {
             result.append("transcript dependency changed")
         }
         if old.podcastJSON != new.podcastJSON { result.append("podcast settings changed") }

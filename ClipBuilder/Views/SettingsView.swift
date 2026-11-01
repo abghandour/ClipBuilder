@@ -2,6 +2,7 @@ import SwiftUI
 import UniformTypeIdentifiers
 
 struct SettingsView: View {
+    @State private var languageProject: ProjectRecord?
     @AppStorage("settings.selectedTab") private var selectedTab = "profile"
     @Environment(AppStore.self) private var store
 
@@ -29,6 +30,18 @@ struct SettingsView: View {
                 .tabItem { Label("Instagram", systemImage: "play.rectangle.on.rectangle") }
                 .tag("instagram")
         }
+        .safeAreaInset(edge: .top) {
+            if let project = store.activeProject {
+                HStack {
+                    Text("Project: \(project.name)").lineLimit(1).fixedSize(horizontal: false, vertical: true)
+                    Spacer()
+                    Button("Languages…", systemImage: "globe") { languageProject = project }
+                        .lineLimit(1).fixedSize()
+                }
+                .padding(12)
+            }
+        }
+        .sheet(item: $languageProject) { project in ProjectLanguagesSheet(project: project) }
         .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 640)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             Label((selectedTab == "googleDrive" || selectedTab == "team") ? "Your connection is saved securely on this Mac" : "Changes save automatically", systemImage: "checkmark")
@@ -627,6 +640,7 @@ private struct GeneralSettingsTab: View {
             Section {
                 TextField("Language code", text: store.editingBinding(\.footage.language),
                           prompt: Text("Auto (current locale)"))
+                Text("Profile default for projects that inherit their spoken language.").font(.caption).foregroundStyle(.secondary)
                 TextField("Vocabulary hint", text: store.editingBinding(\.footage.vocabularyHint),
                           prompt: Text("Domain-specific names, code-switching notes…"))
                 LabeledContent("Dead air") {

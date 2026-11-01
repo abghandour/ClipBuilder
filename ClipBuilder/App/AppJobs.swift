@@ -6,7 +6,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
     case coverFrames, overlayTemplate, sceneSearch, imageSearch, fightResearch
     case generateRequest, instagramPublish, socialExport, resourceExport, resourceImport
     case mapSpeakers, suggestTrim, cameraPath, evaluateReelModel, publishLessons, transcriptAnalysis
-    case teamSync
+    case teamSync, languageAssets
     case personResearch
     case criticBrief, evaluateCritic, fightScore
     case postText, transcriptTranslation, dub
@@ -45,6 +45,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .publishLessons: "Publish AI Lessons"
         case .transcriptAnalysis: "Transcript Analysis"
         case .teamSync: "Team Sync"
+        case .languageAssets: "Language Assets"
         case .personResearch: "Person Research"
         case .criticBrief: "Critic Brief"
         case .evaluateCritic: "Evaluate Critic"

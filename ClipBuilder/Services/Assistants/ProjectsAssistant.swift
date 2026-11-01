@@ -59,10 +59,22 @@ nonisolated struct ProjectsAssistant: PageAssistant {
     }
 
     @MainActor
-    func context(store: AppStore) -> AssistantContext { Self.context(snapshot(store: store)) }
+    func context(store: AppStore) -> AssistantContext {
+        var context = Self.context(snapshot(store: store))
+        if let summary = LanguageReadiness.summary(store.languageAssets) {
+            context.facts.append(AssistantFact("languages.missing", "Languages on this Mac", summary))
+        }
+        context.fingerprint = AssistantContext.fingerprint(page: context.page, subpage: context.subpage,
+            facts: context.facts, settings: context.settings, selection: context.selection)
+        return context
+    }
 
     func suggestions(for context: AssistantContext) -> [AssistantSuggestion] {
         var rows: [AssistantSuggestion] = []
+        if let summary = context.value("languages.missing") {
+            rows.append(.init(id: "languages.missing", kind: .insight, title: "Project languages need setup",
+                              reason: summary, actionID: "languages.install"))
+        }
         let active = context.int("active") ?? 0
         if active == 0 {
             let home = context.int("homeSources") ?? 0
@@ -88,6 +100,12 @@ nonisolated struct ProjectsAssistant: PageAssistant {
     @MainActor
     func actions(store: AppStore) -> [AssistantAction] {
         [
+            AssistantAction(id: "languages.install", title: "Install Project Languages", systemImage: "arrow.down.circle",
+                            isAvailable: { $0.activeProject != nil }) { store in
+                store.selectSection(.sources)
+                store.installLanguageAssets()
+                return .started(jobTitle: "Language Assets")
+            },
             .command("projects.new", "New Project", "plus", message: "Name the new project."),
             AssistantAction(id: "projects.open.recent", title: "Open last project", systemImage: SidebarSection.projects.systemImage,
                             isAvailable: { Self.mostRecent($0.projects) != nil }) { store in
@@ -108,6 +126,7 @@ nonisolated struct ProjectsAssistant: PageAssistant {
     static func route(_ text: String) -> String? {
         let t = AssistantText.normalized(text)
         if t.isEmpty { return nil }
+        if AssistantText.mentions(t, ["language", "recognizer", "translation pack"]) { return "languages.install" }
         if AssistantText.mentions(t, ["post next", "gap", "what should i", "blocking"]) { return "projects.gaps" }
         if AssistantText.mentions(t, ["starting style", "starter", "taste", "house style"]) { return "projects.starter" }
         if AssistantText.mentions(t, ["new", "create", "start a project"]) { return "projects.new" }

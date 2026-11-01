@@ -14,6 +14,7 @@ nonisolated struct ProjectRecord: Identifiable, Sendable, Hashable {
     var timelineCount: Int
     var outputCount: Int
     var thumbnailPaths: [String]
+    var languages: ProjectLanguages? = nil
 
     var lastOpenedDate: Date? { Database.parseSQLiteDate(lastOpenedAt) }
 }

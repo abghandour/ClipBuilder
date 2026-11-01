@@ -306,3 +306,16 @@ extension SyncMappingTests {
         #expect(TeamProfileDocument.mergeNamedList(remote: nil, current: .array([]), baseline: nil) == .array([]))
     }
 }
+
+
+extension SyncMappingTests {
+    @Test func projectLanguagesTravelOnTheWire() throws {
+        let table = try #require(SyncTable.history.first { $0.name == "projects" })
+        #expect(table.columns.contains("languages_json"))
+        let json = AnalysisRequest.json(ProjectLanguages(spoken: ["pt-BR"], captions: ["en"]))
+        let local: SQLRow = ["languages_json": .text(json)]
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let wire = try SyncMapping.wire(local: local, syncID: UUID().uuidString, scope: scope, table: table)
+        #expect(wire["languages_json"] == .string(json))
+    }
+}

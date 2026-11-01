@@ -189,7 +189,7 @@ nonisolated struct SyncTable: Sendable, Equatable {
     /// fight_events sync_ids on the wire (translated in Database+BrandSync).
     static let history: [SyncTable] = [
         SyncTable(name: "projects",
-            columns: ["name", "created_at", "last_opened_at", "archived", "is_home"],
+            columns: ["name", "created_at", "last_opened_at", "archived", "is_home", "languages_json"],
             integers: ["archived", "is_home"], reals: [],
             naturalKey: ["name", "created_at"], references: [:]),
         SyncTable(name: "project_videos",

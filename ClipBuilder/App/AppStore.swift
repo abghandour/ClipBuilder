@@ -64,10 +64,21 @@ final class AppStore {
     var podcastEditingSettings: PodcastSettings {
         editingDefaults.podcast.settings(reviewCutsByDefault: settings.podcast.reviewCutsByDefault)
     }
+    var languageAssets: [LanguageAsset] = []
+    var projectLanguageAssets: [Int64: [LanguageAsset]] = [:]
+    var languageReadinessRevision = 0
+    var languageProbe = LanguageProbe.live
+    var languageEditorProject: ProjectRecord?
+    var languageTranslationInstall: LanguageTranslationInstall?
     var profiles: [BrandProfile] = []
     var activeProfile: BrandProfile {
         didSet {
             updateBugReportContext()
+            if oldValue.editing != activeProfile.editing || oldValue.captionLanguages != activeProfile.captionLanguages {
+                languageAssets = []
+                projectLanguageAssets = [:]
+                Task { await refreshLanguageReadiness() }
+            }
             if oldValue.aiRouting != activeProfile.aiRouting {
                 let config = effectiveAIConfig
                 Task { await ai.updateConfig(config) }
@@ -108,6 +119,8 @@ final class AppStore {
         didSet {
             updateBugReportContext()
             if oldValue != activeProjectID {
+                languageAssets = activeProjectID.flatMap { projectLanguageAssets[$0] } ?? []
+                languageTranslationInstall = nil
                 resetMiniFootage()
                 logEvent("app", "Project switched: \(activeProject?.name ?? "none")")
             }
@@ -747,7 +760,7 @@ final class AppStore {
 
     /// Each run captures this profile's cleanup policy before leaving the UI.
     var transcription: TranscriptionService {
-        TranscriptionService(podcastSettings: podcastEditingSettings)
+        TranscriptionService(podcastSettings: podcastEditingSettings, spokenLocales: projectLanguages.spoken)
     }
     let analyzer: Analyzer
     let podcastAnalysis: PodcastAnalysisService
@@ -1088,6 +1101,10 @@ final class AppStore {
         feedback = []
         lessons = []
         projects = []
+        languageAssets = []
+        projectLanguageAssets = [:]
+        languageTranslationInstall = nil
+        languageEditorProject = nil
         activeProjectID = nil
         timelines = []
         openTimelineID = nil

@@ -352,6 +352,12 @@ struct MainWindowView: View {
             handleRequestedSection(requested)
         }
         .modifier(AutoTranslationRunner())
+        .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
+            Task { await store.refreshLanguageReadiness() }
+        }
+        .sheet(item: $store.languageEditorProject) { project in
+            ProjectLanguagesSheet(project: project)
+        }
         .onChange(of: jobReviewBlocked, initial: true) { _, blocked in
             store.jobs.presentationBlocked = blocked
         }
@@ -481,7 +487,7 @@ struct MainWindowView: View {
     }
 
     private var jobReviewBlocked: Bool {
-        store.wizardResults != nil || store.pendingPodcastHighlights != nil
+        store.wizardResults != nil || store.pendingPodcastHighlights != nil || store.languageEditorProject != nil
             || store.pendingWizardSelectionReview != nil || store.pendingComparison != nil
             || store.pendingPeopleReview != nil || store.pendingRenameReview != nil || store.pendingAnalysisDuplicate != nil
             || store.showTrainingGuide || store.showResourceExport || store.resourceImportURL != nil

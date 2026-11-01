@@ -23,6 +23,7 @@ nonisolated struct AnalysisRequest: Codable, Sendable, Equatable {
     var transcriptKey: String?
     var transcriptHash: String?
     var language = ""
+    var spokenLocales: [String]?
     var podcastJSON = "{}"
     var requestedPasses: [String] = []
 
@@ -95,7 +96,6 @@ nonisolated struct AnalysisRequest: Codable, Sendable, Equatable {
         guard videoType == nil else { return self }
         var value = self
         value.videoType = type.rawValue
-        if type.usesPodcastPass { value.language = "" }
         value.refreshPasses()
         return value.normalized
     }

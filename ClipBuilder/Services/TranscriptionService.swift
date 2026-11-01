@@ -11,7 +11,7 @@ nonisolated enum TranscriptionError: Error, CustomStringConvertible {
         switch self {
         case .noAudioTrack(let name): return "\(name) has no audio track to transcribe"
         case .noSpeech(let name, let locale):
-            return "No speech was recognized in \(name) (\(locale)). Check the footage language in Settings and that the file has spoken audio, then transcribe again."
+            return "No speech was recognized in \(name) (\(locale)). Check the project’s spoken languages and that the file has spoken audio, then transcribe again."
         case .unsupportedLocale(let locale): return "Transcription is not available for locale '\(locale)'"
         }
     }
@@ -28,9 +28,11 @@ actor TranscriptionService {
     private let cacheDirectory: URL
     private let capturedPodcastSettings: PodcastSettings?
     private let strictEnrichment: Bool
+    private let spokenLocales: [String]
 
     init(cacheDirectory: URL = SettingsStore.cacheDirectory.appendingPathComponent("transcripts", isDirectory: true),
-         podcastSettings: PodcastSettings? = nil, strictEnrichment: Bool = false) {
+         podcastSettings: PodcastSettings? = nil, strictEnrichment: Bool = false, spokenLocales: [String] = []) {
+        self.spokenLocales = spokenLocales
         capturedPodcastSettings = podcastSettings
         self.strictEnrichment = strictEnrichment
         self.cacheDirectory = cacheDirectory
@@ -42,7 +44,10 @@ actor TranscriptionService {
     func transcribeForVideo(video: VideoRecord, database: Database,
                             languageCode: String = "", force: Bool = false,
                             log: @Sendable (String) -> Void) async throws -> (segments: [TranscriptSegment], transcriptionKey: String) {
-        if video.type?.usesPodcastPass == true {
+        // Several project languages and no explicit choice: sample them the
+        // way podcasts do instead of falling back to the Mac's locale.
+        let candidates = AnalysisRequestContext.current?.spokenLocales ?? spokenLocales
+        if video.type?.usesPodcastPass == true || (languageCode.isEmpty && ProjectLanguageResolver.unique(candidates).count > 1) {
             return try await transcribePodcast(video: video, database: database,
                                                languageCode: languageCode, force: force, log: log)
         }
@@ -172,10 +177,10 @@ actor TranscriptionService {
         var tried = Set<String>()
         // Keep serial: candidates can install shared Speech assets, and the
         // existing collector's failure/cancellation ordering is sequential.
-        for identifier in ["en-US", "pt-BR"] {
+        for identifier in ProjectLanguageResolver.podcastCandidates(AnalysisRequestContext.current?.spokenLocales ?? spokenLocales) {
             guard let locale = await SpeechTranscriber.supportedLocale(
                 equivalentTo: Locale(identifier: identifier)) else { continue }
-            tried.insert(locale.identifier)
+            guard tried.insert(locale.identifier).inserted else { continue }
             do {
                 let result = try await Self.runSpeechTranscriber(audioURL: sampleURL, locale: locale)
                 primary.append(PodcastLanguageCandidate(identifier: locale.identifier,

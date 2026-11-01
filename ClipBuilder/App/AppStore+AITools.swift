@@ -752,19 +752,27 @@ extension AppStore {
         let analyzer = Analyzer(ai: ai)
         let transcription = TranscriptionService(
             cacheDirectory: SettingsStore.cacheDirectory.appendingPathComponent("transcripts", isDirectory: true),
-            podcastSettings: podcastEditingSettings, strictEnrichment: true)
+            podcastSettings: podcastEditingSettings, strictEnrichment: true, spokenLocales: projectLanguages.spoken)
+        let language = transcriptionLanguage()
+        let languages = projectLanguages
+        let probe = languageProbe
         let podcast = PodcastAnalysisService(ai: ai)
         return BuilderPrerequisiteContext(database: database, profile: profile, projectID: project,
-            language: editingDefaults.footage.language, isCurrent: { [weak self] in
+            language: language, isCurrent: { [weak self] in
                 guard let self else { return false }
                 return self.database === database && self.profileGeneration == generation
                     && self.activeProjectID == project
             }, perform: { kind, video in
                 try Task.checkCancellation()
+                if kind == .transcript || (kind == .analysis && video.type?.usesPodcastPass == true),
+                   !((try? await database.fetchTranscripts(videoID: video.id)) ?? []).contains(where: { !$0.isTranslation }) {
+                    let assets = await LanguageReadiness.assets(for: ProjectLanguages(spoken: languages.spoken), dubEngine: nil, probe: probe)
+                    try LanguageReadiness.requireRecognizers(assets)
+                }
                 switch kind {
                 case .transcript:
                     _ = try await transcription.transcribeForVideo(video: video, database: database,
-                        languageCode: editingDefaults.footage.language, force: false, log: { _ in })
+                        languageCode: language, force: false, log: { _ in })
                 case .people:
                     _ = try await analyzer.detectPeopleOnly(video: video, profile: profile,
                         database: database, log: { _ in })
@@ -779,7 +787,7 @@ extension AppStore {
                     let name = "Builder prerequisite: " + video.filename
                     if video.type?.usesPodcastPass == true {
                         _ = try await podcast.analyze(video: video, profile: profile, database: database,
-                            runName: name, provider: nil, model: nil, languageCode: editingDefaults.footage.language,
+                            runName: name, provider: nil, model: nil, languageCode: language,
                             analyzer: analyzer, transcription: transcription,
                             highlightThreshold: editingDefaults.podcast.highlightThreshold,
                             holdSeconds: editingDefaults.podcast.speakerHoldSeconds, log: { _ in }, progress: { _, _ in },
@@ -838,24 +846,34 @@ extension AppStore {
         guard let database, !transcribingVideoIDs.contains(video.id) else { return }
         transcribingVideoIDs.insert(video.id)
         let transcription = transcription
-        let language = editingDefaults.footage.language
+        let language = transcriptionLanguage(for: video)
+        let languages = projectLanguages
+        let generation = profileGeneration
+        let projectID = activeProjectID
         transcriptionTasks[video.id] = Task {
             defer {
-                transcribingVideoIDs.remove(video.id)
-                transcriptionTasks[video.id] = nil
-                refreshAll()
-                continueAnalysisStepBatch()
+                if generation == profileGeneration, self.database === database {
+                    transcribingVideoIDs.remove(video.id)
+                    transcriptionTasks[video.id] = nil
+                    refreshAll()
+                    continueAnalysisStepBatch()
+                }
             }
             do {
+                try await requireProjectRecognizers(languages: languages)
+                guard generation == profileGeneration, activeProjectID == projectID, self.database === database else { throw CancellationError() }
                 _ = try await transcription.transcribeForVideo(video: video, database: database,
                                                        languageCode: language, force: force,
                                                        log: logSink(\.analysisLog))
                 if force { try await database.setActiveTranscriptionKey(videoID: video.id, key: nil) }
+                guard generation == profileGeneration, self.database === database else { return }
                 appendLog(\.analysisLog, ["\(video.filename): transcription saved"])
-                enqueueAutoTranslation(videoID: video.id)
+                if projectID == activeProjectID { enqueueAutoTranslation(videoID: video.id) }
             } catch is CancellationError {
+                guard generation == profileGeneration else { return }
                 appendLog(\.analysisLog, ["\(video.filename): transcription stopped"])
             } catch {
+                guard generation == profileGeneration else { return }
                 presentError("Transcription failed", error)
             }
         }

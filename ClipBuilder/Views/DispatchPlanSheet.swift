@@ -1,5 +1,4 @@
 import AVKit
-import Speech
 import SwiftUI
 
 /// Which user action a dispatch plan gates.
@@ -93,7 +92,6 @@ struct DispatchPlanSheet: View {
     @AppStorage("analysis.autoZoomUnframed") private var autoZoomUnframed = false
     // One engine today; persisted so future engines slot in without a rekey.
     @AppStorage("analysis.transcribeEngine") private var transcribeEngine = "apple"
-    @State private var transcriptionLocales: [Locale] = []
     @State private var savedPrompts: [SavedPrompt] = []
     @State private var showSavePrompt = false
     @State private var showManagePrompts = false
@@ -176,14 +174,14 @@ struct DispatchPlanSheet: View {
     private var copiedAnalysis: Binding<AnalysisRunSettings> {
         Binding(get: {
             AnalysisRunSettings(instructions: instructions, sampleInterval: sampleInterval,
-                includeTranscript: includeTranscript, language: store.editingDefaults.footage.language, detectPeople: detectPeople,
+                includeTranscript: includeTranscript, language: store.transcriptionLanguage(), detectPeople: detectPeople,
                 autoZoomUnframed: autoZoomUnframed, breakdownTags: breakdownTagsRaw.split(separator: ",").map(String.init),
                 smartSampling: smartSampling,
                 trimRange: [trimStart, trimEnd], notes: AISettingsJSON.decode([AnalysisRunNote].self, UserDefaults.standard.string(forKey: "analysis.pastedNotes")) ?? [], provider: analysisChoice.provider, model: analysisChoice.model,
                 videoPath: videos.count == 1 ? videos.first?.path : nil, sourcePeople: Array(selectedPeopleKeys), sourceProfile: store.activeProfile.profileName)
         }, set: { value in
             instructions = value.instructions; sampleInterval = value.sampleInterval
-            includeTranscript = value.includeTranscript; store.editingBinding(\.footage.language).wrappedValue = value.language
+            includeTranscript = value.includeTranscript
             detectPeople = value.detectPeople
             autoZoomUnframed = value.autoZoomUnframed
             breakdownTagsRaw = value.breakdownTags.joined(separator: ","); autoBreakdown = !value.breakdownTags.isEmpty
@@ -254,12 +252,7 @@ struct DispatchPlanSheet: View {
         .task {
             availableProviders = await ModelPicker.probeAvailability(ai: store.ai)
             seedChoices()
-            if operation == .analyze {
-                let locales = await SpeechTranscriber.supportedLocales
-                transcriptionLocales = locales.sorted {
-                    localeDisplayName($0).localizedCaseInsensitiveCompare(localeDisplayName($1)) == .orderedAscending
-                }
-            }
+
         }
         .onAppear {
             if let video = videos.first, videos.count == 1, let request = store.restoredAnalysisRequests[video.id] {
@@ -731,8 +724,7 @@ struct DispatchPlanSheet: View {
     }
 
     /// Optional per-run transcription: one engine today (Apple's on-device
-    /// SpeechAnalyzer), plus which language it should listen for. The
-    /// language is the same setting as Settings → Transcription.
+    /// SpeechAnalyzer), using the active project's resolved languages.
     @ViewBuilder
     private var transcriptionRows: some View {
         Toggle("Include transcript", isOn: $includeTranscript)
@@ -741,17 +733,9 @@ struct DispatchPlanSheet: View {
             Picker("Transcription model", selection: $transcribeEngine) {
                 Text("Apple SpeechAnalyzer — runs on this Mac").tag("apple")
             }
-            Picker("Language", selection: transcribeLanguageBinding) {
-                Text("Auto-detect").tag("")
-                ForEach(transcriptionLocales, id: \.identifier) { locale in
-                    Text(localeDisplayName(locale)).tag(locale.identifier)
-                }
-                // Keep a hand-typed Settings value selectable even if it
-                // doesn't match a listed locale identifier.
-                if !currentLanguageIsListed {
-                    Text(store.editingDefaults.footage.language).tag(store.editingDefaults.footage.language)
-                }
-            }
+            LabeledContent("Language", value: store.transcriptionLanguage().isEmpty ? "Auto-detect (project languages)" : DubLanguageChoices.name(store.transcriptionLanguage()))
+            Text("Change spoken languages using Languages on the project or Sources page.")
+                .font(.caption).foregroundStyle(.secondary)
             // The transcript tools' automatic parts, decided here as well
             // as in Settings (the same stored values).
             Picker("Detected cuts", selection: cleanupCutPolicyBinding) {
@@ -775,19 +759,6 @@ struct DispatchPlanSheet: View {
 
     private var autoTranslateBinding: Binding<String> {
         store.editingBinding(\.podcast.autoTranslateLanguage)
-    }
-
-    private var transcribeLanguageBinding: Binding<String> {
-        store.editingBinding(\.footage.language)
-    }
-
-    private var currentLanguageIsListed: Bool {
-        let current = store.editingDefaults.footage.language
-        return current.isEmpty || transcriptionLocales.contains { $0.identifier == current }
-    }
-
-    private func localeDisplayName(_ locale: Locale) -> String {
-        Locale.current.localizedString(forIdentifier: locale.identifier) ?? locale.identifier
     }
 
     /// Named people from the registry — quick-insert hard filters into
