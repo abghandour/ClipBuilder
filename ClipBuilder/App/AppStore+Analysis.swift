@@ -53,7 +53,6 @@ extension AppStore {
         let editingDefaults = editingDefaults
         let podcastEditingSettings = podcastEditingSettings
         let languages = languages ?? projectLanguages
-        let language = ProjectLanguageResolver.transcriptionLanguage(languages: languages)
         let generation = profileGeneration
         analysisTask = Task {
             await AIRunCapture.context.withValue(AIRunCapture()) {
@@ -79,7 +78,8 @@ extension AppStore {
                             plan.includeFightScoring = saved.plan.includeFightScoring
                             return plan
                         } ?? capturedPlan,
-                        profile: profile, config: capturedConfig, podcast: podcastEditingSettings, language: language, resolveType: true)
+                        profile: profile, config: capturedConfig, podcast: podcastEditingSettings,
+                        language: ProjectLanguageResolver.transcriptionLanguage(for: video, languages: languages), resolveType: true)
                 }
             } catch {
                 analyzingVideoIDs = []
@@ -144,7 +144,7 @@ extension AppStore {
                 // resumed checkpoint keeps its own languages) and is skipped
                 // when a pinned or existing transcript is reused.
                 if request.requestedPasses.contains("transcript"), request.transcriptKey == nil,
-                   !((try? await database.fetchTranscripts(videoID: video.id)) ?? []).contains(where: { !$0.isTranslation }) {
+                   !TranscriptionLanguageRules.transcriptUsable(rows: (try? await database.fetchTranscripts(videoID: video.id)) ?? [], video: video) {
                     do {
                         try await requireProjectRecognizers(languages: ProjectLanguages(spoken: request.spokenLocales ?? [request.language]))
                     } catch is CancellationError {
@@ -175,7 +175,8 @@ extension AppStore {
                         let coverageTranscript = (try? await database.fetchTranscripts(videoID: video.id, transcriptionKey: request.transcriptKey)) ?? []
                         let missing = AnalysisDuplicates.missingPasses(request: request, run: duplicate, passes: passes,
                             qaCount: coverageScenes.count { $0.runID == duplicate.id && $0.tags.contains("q&a") },
-                            peopleCount: coveragePeople.count, hasTranscript: coverageTranscript.contains { !$0.isTranslation })
+                            peopleCount: coveragePeople.count,
+                            hasTranscript: TranscriptionLanguageRules.transcriptUsable(rows: coverageTranscript, video: video))
                         if duplicatePolicy == .ask {
                             pendingAnalysisDuplicate = AnalysisDuplicatePrompt(video: video, request: request, run: duplicate, missingPasses: missing)
                             analyzingVideoIDs = []
@@ -374,7 +375,8 @@ extension AppStore {
                         let pipeline = savedSettings?.pipeline
                         try await database.saveAnalysisSettings(id: runID, settings: AnalysisRunSettings(
                             instructions: instructions, sampleInterval: sampleInterval ?? 0,
-                            includeTranscript: includeTranscript || video.type?.usesPodcastPass == true, language: video.type?.usesPodcastPass == true ? "" : language,
+                            includeTranscript: includeTranscript || video.type?.usesPodcastPass == true,
+                            language: video.type?.usesPodcastPass == true && video.languageSource != VideoLanguage.Source.user.rawValue ? "" : language,
                             detectPeople: detectPeople, autoZoomUnframed: autoZoomUnframed, breakdownTags: breakdownTags,
                             smartSampling: smartSampling,
                             trimRange: trimRange.map { [$0.start, $0.end] }, notes: notes.map { AnalysisRunNote(at: $0.atTime, note: $0.note) },
@@ -399,7 +401,7 @@ extension AppStore {
                         // — log it and keep going.
                         do {
                             let existing = (try? await database.fetchTranscripts(videoID: video.id)) ?? []
-                            if existing.isEmpty {
+                            if !TranscriptionLanguageRules.transcriptUsable(rows: existing, video: video) {
                                 analysisStage = "transcribing"
                                 _ = try await transcription.transcribe(
                                     video: video, database: database,
@@ -860,7 +862,7 @@ extension AppStore {
                 do {
                     let request = try await captureAnalysisRequest(
                         video: video, plan: plan, profile: activeProfile, config: effectiveAIConfig,
-                        podcast: podcastEditingSettings, language: transcriptionLanguage(), resolveType: true)
+                        podcast: podcastEditingSettings, language: transcriptionLanguage(for: video), resolveType: true)
                     guard generation == profileGeneration else { return }
                     analysisRequestPreviews[video.id] = request
                     analyze(videos: [video], includeFightScoring: steps.contains(.fightScore),
@@ -972,7 +974,7 @@ extension AppStore {
                         plan.includeTranscript = steps.contains(.transcript)
                         requests[video.id] = try await captureAnalysisRequest(
                             video: video, plan: plan, profile: activeProfile, config: effectiveAIConfig,
-                            podcast: podcastEditingSettings, language: transcriptionLanguage(), resolveType: true)
+                            podcast: podcastEditingSettings, language: transcriptionLanguage(for: video), resolveType: true)
                     }
                     guard generation == profileGeneration else { analysisStepBatch = nil; return }
                     for (id, request) in requests { analysisRequestPreviews[id] = request }

@@ -52,7 +52,7 @@ nonisolated enum AnalysisSteps {
             case .people:
                 peopleCount == 0 && video.peopleDetectedAt == nil
             case .transcript:
-                !report.hasTranscript
+                !report.hasTranscript || !report.transcriptUsable
             case .speakerNames:
                 speakerNaming?.isSuspicious == true
             case .scenes:

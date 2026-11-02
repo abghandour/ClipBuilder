@@ -9,6 +9,13 @@ extension AppStore {
 
     var projectLanguages: ProjectLanguages { resolvedLanguages(for: activeProject) }
 
+    /// False when the video's active transcript is in another language than
+    /// the one the user chose, or too thin to be its transcript.
+    func transcriptUsable(_ video: VideoRecord) -> Bool {
+        guard let fact = transcriptFacts[video.id] else { return true }
+        return TranscriptionLanguageRules.transcriptUsable(language: fact.language, spokenSeconds: fact.spokenSeconds, video: video)
+    }
+
     func transcriptionLanguage(for video: VideoRecord? = nil) -> String {
         ProjectLanguageResolver.transcriptionLanguage(for: video, languages: projectLanguages)
     }
@@ -59,6 +66,76 @@ extension AppStore {
         let assets = await LanguageReadiness.assets(for: ProjectLanguages(spoken: required.spoken), dubEngine: nil, probe: languageProbe)
         guard !Task.isCancelled, generation == profileGeneration, self.database === database else { throw CancellationError() }
         try LanguageReadiness.requireRecognizers(assets)
+    }
+
+    /// The user's choice for a video's language; nil means "none", which
+    /// also stops detection from filling it again.
+    func setVideoLanguage(_ video: VideoRecord, language: String?) {
+        guard let database else { return }
+        let generation = profileGeneration
+        Task {
+            do {
+                let stored = try await database.setVideoLanguage(id: video.id, language: language, source: .user)
+                guard generation == profileGeneration, self.database === database else { return }
+                if let index = videos.firstIndex(where: { $0.id == video.id }) {
+                    videos[index].language = stored.language
+                    videos[index].languageSource = stored.source
+                }
+            } catch {
+                guard generation == profileGeneration else { return }
+                presentError("Could not save the video language", error)
+            }
+        }
+    }
+
+    /// Listens to the first minute of every present video that has no
+    /// language yet, one file at a time in a background job. Transcribed
+    /// videos already carry theirs; a weak sample stores nothing.
+    func detectVideoLanguages() {
+        guard let database else { return }
+        let pending = videos.filter {
+            $0.language == nil && $0.languageSource == nil && $0.isPresent && !languageDetectionTried.contains($0.hash)
+        }
+        guard !pending.isEmpty else { return }
+        // Marked as each sample starts: videos queued while a job runs are
+        // dropped by the subject dedupe below and picked up on the next refresh.
+        let generation = profileGeneration
+        let transcription = transcription
+        jobs.start(.detectLanguage, title: "Detect Languages", project: activeProject,
+                   profileGeneration: generation, subjectID: "videos", reportsFailure: false,
+                   cleanup: { [weak self] in self?.refreshAll() }) { [self] log in
+            var found = 0
+            for (index, video) in pending.enumerated() {
+                try Task.checkCancellation()
+                guard generation == profileGeneration, self.database === database else { throw CancellationError() }
+                log("PROGRESS:\(Double(index) / Double(pending.count))")
+                log("Listening to \(video.filename)…")
+                languageDetectionTried.insert(video.hash)
+                do {
+                    if let candidate = try await transcription.detectLanguage(video: video, installedOnly: true, log: log),
+                       candidate.confidence >= VideoLanguage.minimumDetectionConfidence {
+                        // Fills a blank only: a transcript saved meanwhile wins.
+                        let stored = try await database.setVideoLanguage(id: video.id, language: candidate.identifier, source: .detected)
+                        guard generation == profileGeneration, self.database === database else { throw CancellationError() }
+                        if let i = videos.firstIndex(where: { $0.id == video.id }) {
+                            videos[i].language = stored.language
+                            videos[i].languageSource = stored.source
+                        }
+                        found += 1
+                        log("\(video.filename): \(VideoLanguage.name(stored.language ?? candidate.identifier))")
+                    } else {
+                        log("\(video.filename): no clear speech in the first minute")
+                    }
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    log("\(video.filename): \(error.localizedDescription)")
+                }
+            }
+            log("PROGRESS:1")
+            log("Detected the language of \(found) of \(pending.count) video(s).")
+            return nil
+        }
     }
 
     func installLanguageAssets() {

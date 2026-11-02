@@ -18,6 +18,18 @@ struct MiniWizardFlowTests {
         #expect(flow.footageKinds == (podcast ? [.qa, .highlights] : fight ? [.fightMetrics, .highlights] : [.highlights]))
     }
 
+    @Test("A transcribed source without scenes offers Transcript picks only", arguments: VideoType.allCases)
+    func transcriptOnlySource(type: VideoType) {
+        var video = Fixtures.video()
+        video.videoType = type.rawValue
+        let flow = MiniWizardFlow(video: video, hasTranscript: true, hasScenes: false, footageKind: .highlights)
+        #expect(flow.footageKinds == [.transcript])
+        #expect(flow.effectiveFootageKind == .transcript)
+        #expect(!flow.showsFootageKind && !flow.showsLength)
+        let nothing = MiniWizardFlow(video: video, hasTranscript: false, hasScenes: false)
+        #expect(nothing.footageKinds.isEmpty && nothing.effectiveFootageKind == .highlights)
+    }
+
     @Test("Podcast exchanges enable podcast questions regardless of declared type", arguments: VideoType.allCases)
     func podcastExchangeFallback(type: VideoType) {
         var video = Fixtures.video()

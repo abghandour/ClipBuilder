@@ -13,7 +13,11 @@ extension AppStore {
         let markers = try await database.personMarkers(videoID: video.id)
         let notes = try await database.videoNotes(videoID: video.id)
         let usesTranscript = plan.includeTranscript || video.type?.usesPodcastPass == true || (video.type == nil && video.duration >= 300)
-        let transcripts = usesTranscript ? try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation } : []
+        // A transcript in the wrong language for the video, or too thin to
+        // be its transcript, is not reused: the pass transcribes again.
+        let transcripts = usesTranscript
+            ? try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation } : []
+        let usableTranscripts = TranscriptionLanguageRules.transcriptUsable(rows: transcripts, video: video) ? transcripts : []
         let source = try await Task.detached(priority: .utility) {
             try SourceIdentityCache.shared.fingerprint(of: video.url, force: freshSource)
         }.value
@@ -61,9 +65,9 @@ extension AppStore {
             request.onDevice = Dictionary(uniqueKeysWithValues: ["long-recording", "podcast-exchanges"].map {
                 ($0, OnDevicePolicy.isEnabled(item: $0, config: config))
             })
-            request.transcriptKey = transcripts.first?.transcriptionKey
+            request.transcriptKey = usableTranscripts.first?.transcriptionKey
             request.transcriptHash = await Task.detached(priority: .utility) {
-                AnalysisRequest.transcriptFingerprint(transcripts)
+                AnalysisRequest.transcriptFingerprint(usableTranscripts)
             }.value
             request.language = language
             request.spokenLocales = spokenLocales
@@ -116,7 +120,7 @@ extension AppStore {
                 // Previews trust the size/date-validated identity cache; Analyze
                 // itself re-reads the source before it runs.
                 let request = try await captureAnalysisRequest(video: video, plan: plan, profile: activeProfile,
-                    config: effectiveAIConfig, podcast: podcastEditingSettings, language: transcriptionLanguage(),
+                    config: effectiveAIConfig, podcast: podcastEditingSettings, language: transcriptionLanguage(for: video),
                     freshSource: false)
                 previews[video.id] = request
                 keys[video.id] = key

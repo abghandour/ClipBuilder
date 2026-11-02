@@ -67,6 +67,7 @@ extension AppStore {
         analysisPasses = []
         analysisRuns = []
         transcriptCounts = [:]
+        transcriptFacts = [:]
         speakerNamingSummaries = [:]
         generatedVideos = []
         fightResearch = [:]

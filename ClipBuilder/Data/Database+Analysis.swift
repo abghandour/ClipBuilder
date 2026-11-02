@@ -34,6 +34,7 @@ extension Database {
                         fightEvents: ((try? fetchFightEvents()) ?? []).filter { videoIDs.contains($0.videoID) },
                         videoPeopleCounts: try fetchVideoPeopleCounts().filter { videoIDs.contains($0.key) },
                         transcriptCounts: try fetchTranscriptCounts().filter { videoIDs.contains($0.key) },
+                        transcriptFacts: try fetchTranscriptFacts().filter { videoIDs.contains($0.key) },
                         speakerNamingSummaries: try speakerNamingSummaries().filter { videoIDs.contains($0.key) },
                         analysisCheckpoints: try fetchAnalysisCheckpoints().filter { videoIDs.contains($0.key) })
     }

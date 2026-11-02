@@ -20,6 +20,13 @@ struct ProjectLanguagesTests {
         #expect(ProjectLanguageResolver.transcriptionLanguage(languages: ProjectLanguages()) == "")
         #expect(ProjectLanguageResolver.transcriptionLanguage(languages: ProjectLanguages(spoken: ["pt-BR"])) == "pt-BR")
         #expect(ProjectLanguageResolver.transcriptionLanguage(languages: ProjectLanguages(spoken: ["pt-BR", "en-US"])) == "")
+        var video = Fixtures.video()
+        video.language = "fr_FR"
+        // Detected and transcribed languages are hints; the project decides.
+        video.languageSource = VideoLanguage.Source.detected.rawValue
+        #expect(ProjectLanguageResolver.transcriptionLanguage(for: video, languages: ProjectLanguages(spoken: ["pt-BR"])) == "pt-BR")
+        video.languageSource = VideoLanguage.Source.user.rawValue
+        #expect(ProjectLanguageResolver.transcriptionLanguage(for: video, languages: ProjectLanguages(spoken: ["pt-BR"])) == "fr-FR")
         #expect(ProjectLanguageResolver.podcastCandidates(["fr-FR", "pt_BR"]) == ["fr-FR", "pt-BR", "en-US"])
     }
 

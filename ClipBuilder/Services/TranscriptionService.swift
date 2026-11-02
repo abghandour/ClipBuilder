@@ -55,6 +55,14 @@ actor TranscriptionService {
                                     languageCode: languageCode, force: force, log: log)
     }
 
+    /// The language stored rows must be in to be reused. A project or
+    /// detected language is a hint, so an existing transcript in another
+    /// language (say, the one a retry settled on) stays the transcript;
+    /// only a language the user chose for the video rejects it.
+    nonisolated static func requiredLanguage(_ languageCode: String, video: VideoRecord) -> String {
+        video.languageSource == VideoLanguage.Source.user.rawValue ? languageCode : ""
+    }
+
     func cachedPodcast(video: VideoRecord, force: Bool) throws -> CachedTranscript? {
         guard !force else { return nil }
         let hash = String(try SourceIdentityCache.shared.fingerprint(of: video.url).prefix(32))
@@ -80,6 +88,10 @@ actor TranscriptionService {
         -> (segments: [TranscriptSegment], transcriptionKey: String)? {
         let rows = try await database.fetchTranscripts(videoID: video.id).filter { !$0.isTranslation }
         guard let key = rows.first?.transcriptionKey else { return nil }
+        guard TranscriptionLanguageRules.transcriptUsable(rows: rows, video: video) else {
+            log("Stored transcript for \(video.filename) is in another language or too thin; transcribing again")
+            return nil
+        }
         if !languageCode.isEmpty, let stored = rows.first?.language, !stored.isEmpty,
            Locale(identifier: stored).language.languageCode != Locale(identifier: languageCode).language.languageCode {
             return nil
@@ -142,7 +154,7 @@ actor TranscriptionService {
     }
 
     /// Podcast transcription always auto-detects unless the user explicitly
-    /// selected a language. Detection examines only the first minute.
+    /// selected a language. Detection samples windows across the file.
     @discardableResult
     func transcribePodcast(video: VideoRecord, database: Database,
                            languageCode: String = "", force: Bool = false,
@@ -153,7 +165,8 @@ actor TranscriptionService {
             guard !rows.isEmpty else { throw ScriptError.invalid("The saved transcript set is not available on this Mac.") }
             return (rows.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: $0.words) }, key)
         }
-        if !force, let stored = try await storedTranscript(video: video, database: database, languageCode: languageCode, log: log) { return stored }
+        if !force, let stored = try await storedTranscript(video: video, database: database,
+                                                            languageCode: Self.requiredLanguage(languageCode, video: video), log: log) { return stored }
         if !languageCode.isEmpty {
             return try await transcribe(video: video, database: database,
                                         languageCode: languageCode, force: force, log: log)
@@ -164,14 +177,26 @@ actor TranscriptionService {
         guard await FFmpeg.hasAudioStream(video.url) else {
             throw TranscriptionError.noAudioTrack(video.filename)
         }
-        let sampleURL = FileManager.default.temporaryDirectory
-            .appendingPathComponent("cb_language_\(UUID().uuidString).wav")
+        let chosen = try await detectLanguage(video: video, log: log)
+            ?? PodcastLanguageCandidate(identifier: "en-US", confidence: 0)
+        log("Detected podcast language: \(chosen.identifier)")
+        return try await transcribe(video: video, database: database,
+                                    languageCode: chosen.identifier, force: force, log: log)
+    }
+
+    /// Which language the sampled windows are spoken in: the project's spoken
+    /// locales first, every installed recognizer when none of those is
+    /// credible. nil when the file has no audio or no recognizer answered.
+    /// The confidence lets callers ignore guesses made over crowd noise.
+    /// `installedOnly` skips recognizers that are not on this Mac: a
+    /// background pass must never sit in a silent asset download.
+    func detectLanguage(video: VideoRecord, installedOnly: Bool = false,
+                        log: @Sendable (String) -> Void) async throws -> PodcastLanguageCandidate? {
+        try video.requirePresent()
+        guard await FFmpeg.hasAudioStream(video.url) else { return nil }
+        let installedIdentifiers = Set(await SpeechTranscriber.installedLocales.map(\.identifier))
+        let sampleURL = try await languageSample(video: video)
         defer { try? FileManager.default.removeItem(at: sampleURL) }
-        // Warm runs sample the artifact; cold runs keep the fast direct minute.
-        let sampleSource = try await NormalizedAudioCache.shared.existing(source: video.url) ?? video.url
-        try await FFmpeg.run(["-y", "-i", sampleSource.path, "-t", "60", "-vn",
-                              "-ac", "1", "-ar", "16000", "-c:a", "pcm_s16le",
-                              sampleURL.path], timeout: 180, mediaResource: .decoding)
 
         var primary: [PodcastLanguageCandidate] = []
         var tried = Set<String>()
@@ -180,6 +205,10 @@ actor TranscriptionService {
         for identifier in ProjectLanguageResolver.podcastCandidates(AnalysisRequestContext.current?.spokenLocales ?? spokenLocales) {
             guard let locale = await SpeechTranscriber.supportedLocale(
                 equivalentTo: Locale(identifier: identifier)) else { continue }
+            if installedOnly, !installedIdentifiers.contains(locale.identifier) {
+                log("Language sample \(locale.identifier) skipped: recognizer not installed")
+                continue
+            }
             guard tried.insert(locale.identifier).inserted else { continue }
             do {
                 let result = try await Self.runSpeechTranscriber(audioURL: sampleURL, locale: locale)
@@ -204,11 +233,22 @@ actor TranscriptionService {
                 }
             }
         }
-        let chosen = Self.choosePodcastLanguage(primary: primary, installed: other)
-            ?? PodcastLanguageCandidate(identifier: "en-US", confidence: 0)
-        log("Detected podcast language: \(chosen.identifier)")
-        return try await transcribe(video: video, database: database,
-                                    languageCode: chosen.identifier, force: force, log: log)
+        return Self.choosePodcastLanguage(primary: primary, installed: other)
+    }
+
+    /// A short mono sample of the file for language checks: several windows
+    /// across the file, so an intro in another language does not decide for
+    /// the whole talk. Warm runs read the normalized artifact. The caller
+    /// removes the file.
+    private func languageSample(video: VideoRecord) async throws -> URL {
+        let sampleURL = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cb_language_\(UUID().uuidString).wav")
+        let sampleSource = try await NormalizedAudioCache.shared.existing(source: video.url) ?? video.url
+        let windows = TranscriptionLanguageRules.sampleWindows(duration: video.duration)
+        try await FFmpeg.run(TranscriptionLanguageRules.sampleArguments(
+            windows: windows, source: sampleSource.path, output: sampleURL.path),
+            timeout: 180, mediaResource: .decoding)
+        return sampleURL
     }
 
     nonisolated struct CachedTranscript: Codable {
@@ -234,16 +274,17 @@ actor TranscriptionService {
                     force: Bool = false,
                     log: @Sendable (String) -> Void) async throws -> (segments: [TranscriptSegment], transcriptionKey: String) {
         try video.requirePresent()
-        if !force, let stored = try await storedTranscript(video: video, database: database, languageCode: languageCode, log: log) { return stored }
+        if !force, let stored = try await storedTranscript(video: video, database: database,
+                                                            languageCode: Self.requiredLanguage(languageCode, video: video), log: log) { return stored }
         let locale = languageCode.isEmpty ? Locale.current : Locale(identifier: languageCode)
         guard let supportedLocale = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else {
             throw TranscriptionError.unsupportedLocale(locale.identifier)
         }
-        let languageTag = supportedLocale.language.languageCode?.identifier ?? supportedLocale.identifier
+        var languageTag = supportedLocale.language.languageCode?.identifier ?? supportedLocale.identifier
 
         // Cache key mirrors transcription.py: hash32.provider.model.language.json
         let hash = String(try SourceIdentityCache.shared.fingerprint(of: video.url).prefix(32))
-        let cacheURL = cacheDirectory.appendingPathComponent(
+        var cacheURL = cacheDirectory.appendingPathComponent(
             "\(hash).\(Self.providerName).\(Self.modelName).\(languageTag).json")
 
         // An empty cached set (older builds cached silent runs) is not a
@@ -264,7 +305,40 @@ actor TranscriptionService {
         let audioURL = try await NormalizedAudioCache.shared.audio(source: video.url)
 
         log("Transcribing \(video.filename) (\(supportedLocale.identifier))...")
-        let segments = try await Self.runSpeechTranscriber(audioURL: audioURL, locale: supportedLocale).segments
+        var chosenLocale = supportedLocale
+        var segments = try await Self.runSpeechTranscriber(audioURL: audioURL, locale: supportedLocale).segments
+        var coverage = TranscriptionLanguageRules.coverage(segments: segments, duration: video.duration)
+        // A recognizer in the wrong language follows a second or two and
+        // drops the rest. Unless the user chose this language for the video,
+        // the other project languages get a turn on a short sample, and the
+        // one that clearly follows more of it gets one full pass.
+        if video.languageSource != VideoLanguage.Source.user.rawValue,
+           TranscriptionLanguageRules.shouldRetryInOtherLanguages(coverage: coverage, duration: video.duration) {
+            log("\(supportedLocale.identifier) covered \(Int(coverage * 100))% of \(video.filename); sampling the other project languages")
+            if let locale = try await betterLanguage(video: video, than: supportedLocale, log: log) {
+                try Task.checkCancellation()
+                log("Transcribing \(video.filename) (\(locale.identifier))...")
+                do {
+                    let attempt = try await Self.runSpeechTranscriber(audioURL: audioURL, locale: locale).segments
+                    let attemptCoverage = TranscriptionLanguageRules.coverage(segments: attempt, duration: video.duration)
+                    log("\(locale.identifier) covered \(Int(attemptCoverage * 100))%")
+                    if attemptCoverage > coverage {
+                        // The thin result in the first language is not this
+                        // file's transcript: drop its cache so it never replays.
+                        try? FileManager.default.removeItem(at: cacheURL)
+                        segments = attempt
+                        coverage = attemptCoverage
+                        chosenLocale = locale
+                        languageTag = locale.language.languageCode?.identifier ?? locale.identifier
+                        cacheURL = cacheDirectory.appendingPathComponent(
+                            "\(hash).\(Self.providerName).\(Self.modelName).\(languageTag).json")
+                    }
+                } catch {
+                    try Task.checkCancellation()
+                    log("\(locale.identifier) unavailable: \(error)")
+                }
+            }
+        }
         let seconds = (ContinuousClock.now - started).seconds
         log("Transcribed \(segments.count) segments in \(AIProvenance.durationLabel(seconds))")
         // Nothing recognized is a failure, not an empty transcript: storing
@@ -272,7 +346,7 @@ actor TranscriptionService {
         // and caching it would replay the empty result on every retry.
         guard !segments.isEmpty else {
             try? FileManager.default.removeItem(at: cacheURL)
-            throw TranscriptionError.noSpeech(video.filename, locale: supportedLocale.identifier)
+            throw TranscriptionError.noSpeech(video.filename, locale: chosenLocale.identifier)
         }
 
         let cached = CachedTranscript(provider: Self.providerName, model: Self.modelName,
@@ -291,6 +365,41 @@ actor TranscriptionService {
             log("Transcript feature analysis failed: \(error)")
         }
         return (segments, transcriptionKey)
+    }
+
+    /// The installed project language that follows clearly more of a short
+    /// sample than `used` did, if any. One sample pass per language bounds
+    /// the cost; a failing recognizer is skipped, cancellation propagates.
+    private func betterLanguage(video: VideoRecord, than used: Locale,
+                                log: @Sendable (String) -> Void) async throws -> Locale? {
+        let sampleURL = try await languageSample(video: video)
+        defer { try? FileManager.default.removeItem(at: sampleURL) }
+        let sampleLength = TranscriptionLanguageRules.sampleLength(
+            TranscriptionLanguageRules.sampleWindows(duration: video.duration))
+        let installed = Set(await SpeechTranscriber.installedLocales.map(\.identifier))
+        func sampleCoverage(_ locale: Locale) async throws -> Double? {
+            do {
+                let segments = try await Self.runSpeechTranscriber(audioURL: sampleURL, locale: locale).segments
+                return TranscriptionLanguageRules.coverage(segments: segments, duration: sampleLength)
+            } catch {
+                try Task.checkCancellation()
+                log("Language sample \(locale.identifier) unavailable: \(error)")
+                return nil
+            }
+        }
+        let baseline = try await sampleCoverage(used) ?? 0
+        var tried: Set<String> = [used.identifier]
+        var candidates: [(identifier: String, coverage: Double)] = []
+        var locales: [String: Locale] = [:]
+        for identifier in ProjectLanguageResolver.podcastCandidates(AnalysisRequestContext.current?.spokenLocales ?? spokenLocales) {
+            guard let locale = await SpeechTranscriber.supportedLocale(equivalentTo: Locale(identifier: identifier)),
+                  installed.contains(locale.identifier), tried.insert(locale.identifier).inserted else { continue }
+            guard let coverage = try await sampleCoverage(locale) else { continue }
+            log("Language sample \(locale.identifier): \(Int(coverage * 100))% of the sample (\(used.identifier): \(Int(baseline * 100))%)")
+            candidates.append((locale.identifier, coverage))
+            locales[locale.identifier] = locale
+        }
+        return TranscriptionLanguageRules.betterLanguage(baseline: baseline, candidates: candidates).flatMap { locales[$0] }
     }
 
     /// A completed recognizer result always starts a new set. Cache hits that

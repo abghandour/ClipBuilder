@@ -18,6 +18,13 @@ nonisolated enum ProjectLanguageResolver {
     }
 
     static func transcriptionLanguage(for video: VideoRecord? = nil, languages: ProjectLanguages) -> String {
+        // Only a language the user chose for the video forces the recognizer.
+        // A transcribed or detected one is a guess from part of the file and
+        // stays a hint: sampling and the coverage check decide.
+        if let video, video.languageSource == VideoLanguage.Source.user.rawValue,
+           let own = video.language, !own.isEmpty {
+            return own.replacingOccurrences(of: "_", with: "-")
+        }
         let spoken = unique(languages.spoken)
         return spoken.count == 1 ? spoken[0] : ""
     }

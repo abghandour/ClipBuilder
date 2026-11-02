@@ -264,6 +264,9 @@ extension AppStore {
                 try Task.checkCancellation()
                 guard generation == profileGeneration, activeProjectID == projectID else { return }
                 let people = people
+                let fromOlderTranscript = AnalysisCoverage.exchangesFromOtherTranscript(
+                    run: activeLayer(videoID: video.id).run,
+                    transcriptKey: rows.first { !$0.isTranslation }?.transcriptionKey)
                 // Kept exchanges live in qa_picks per project; the old
                 // per-profile UserDefaults list is imported once.
                 let profileName = activeProfile.profileName
@@ -284,7 +287,8 @@ extension AppStore {
                     // Nothing is kept until selected; restore only exchanges still present.
                     return MiniWizardQA(sections: sections, rows: rows, labels: labels,
                         turns: speakers.turns, kept: remembered.intersection(Set(sections.map(\.id))),
-                        speakerSpans: TranscriptSpeakers.spans(turns: namedTurns, roster: speakers.roster))
+                        speakerSpans: TranscriptSpeakers.spans(turns: namedTurns, roster: speakers.roster),
+                        fromOlderTranscript: fromOlderTranscript)
                 }.value
                 try Task.checkCancellation()
                 guard miniFootageLoadID == loadID, generation == profileGeneration else { return }
@@ -311,6 +315,11 @@ extension AppStore {
         qa.sections = TranscriptQASections.sections(scenes: scenes.filter { $0.videoID == run.video.id },
                                                    rows: qa.rows, labels: qa.labels)
         qa.kept.formIntersection(Set(qa.sections.map(\.id)))
+        // Grouping the exchanges again lands a run made from the current
+        // transcript; the warning goes with it.
+        qa.fromOlderTranscript = AnalysisCoverage.exchangesFromOtherTranscript(
+            run: activeLayer(videoID: run.video.id).run,
+            transcriptKey: qa.rows.first { !$0.isTranslation }?.transcriptionKey)
         miniRuns[.qa]?.qa = qa
     }
 

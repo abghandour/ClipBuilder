@@ -38,6 +38,22 @@ extension Database {
         })
     }
 
+    /// Language and spoken seconds of each video's active original rows.
+    func fetchTranscriptFacts() throws -> [Int64: TranscriptFact] {
+        let rows = try connection.query("""
+            SELECT video_id, MIN(language) AS language, MIN(transcription_key) AS set_key,
+                   SUM(MAX(0, end_time - start_time)) AS spoken FROM transcripts
+            WHERE \(Self.activeTranscriptPredicate) AND is_translation = 0
+            GROUP BY video_id
+            """)
+        return Dictionary(uniqueKeysWithValues: rows.compactMap { row in
+            guard let videoID = row["video_id"]?.intValue else { return nil }
+            return (videoID, TranscriptFact(language: row["language"]?.stringValue ?? "",
+                                            spokenSeconds: row["spoken"]?.doubleValue ?? 0,
+                                            transcriptionKey: row["set_key"]?.stringValue ?? ""))
+        })
+    }
+
     func latestTranscription(videoID: Int64) throws -> (key: String?, createdAt: String?) {
         let row = try connection.query("""
             SELECT transcription_key, transcription_created_at FROM transcripts WHERE video_id = ?
@@ -141,6 +157,12 @@ extension Database {
                 if let seconds {
                     try connection.execute("UPDATE videos SET speech_seconds = ? WHERE id = ?",
                                            [.real(seconds), .integer(videoID)])
+                }
+                if !language.isEmpty {
+                    try connection.execute("""
+                        UPDATE videos SET language = ?, language_source = 'transcript'
+                        WHERE id = ? AND (language_source IS NULL OR language_source != 'user')
+                        """, [.text(language.replacingOccurrences(of: "_", with: "-")), .integer(videoID)])
                 }
                 // Only an overwrite of this set invalidates its re-cut backup.
                 try connection.execute("DELETE FROM transcript_backups WHERE video_id = ? AND transcription_key = ?", [.integer(videoID), .text(key)])

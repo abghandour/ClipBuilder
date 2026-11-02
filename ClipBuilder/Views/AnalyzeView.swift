@@ -17,7 +17,8 @@ struct AnalyzeView: View {
     @State private var pendingDriveUploads: [DriveMedia] = []
     @State private var skippedDriveUploads = 0
     @State private var sortOrder: [KeyPathComparator<SourceRow>] = []
-    @State private var projectNames: [Int64: String] = [:]
+    /// Projects each source belongs to, for the inspector's Projects row.
+    @State private var projectNames: [Int64: [String]] = [:]
     @State private var projectNamesVersion = 0
     @Environment(AppStore.self) private var store
     @Environment(\.workspacePageVisible) private var pageVisible
@@ -188,6 +189,7 @@ struct AnalyzeView: View {
                         // its min size mid-layout and trips AppKit's
                         // constraint-loop guard (crash).
                         VideoPreviewPane(video: video,
+                                         projectNames: projectNames[video.id] ?? [],
                                          typeFocusRequest: typeFocusVideoID == video.id ? typeFocusRequest : nil,
                                          fightStatsFocusRequest: fightStatsFocusVideoID == video.id ? fightStatsFocusRequest : nil,
                                          onResearch: { fightResearchTarget = video },
@@ -531,6 +533,8 @@ struct AnalyzeView: View {
                     video: video, activeRun: store.activeLayer(videoID: video.id).run,
                     scenes: store.scenes.filter { $0.videoID == video.id },
                     transcriptCount: store.transcriptCounts[video.id] ?? 0,
+                    transcriptUsable: store.transcriptUsable(video),
+                    transcriptKey: store.transcriptFacts[video.id]?.transcriptionKey,
                     passes: store.analysisPasses, hasCheckpoint: store.analysisCheckpoints[video.id] != nil,
                     duplicateOf: store.duplicateAnalysis(for: video))
                 let steps = AnalysisSteps.missing(video: video, report: report,
@@ -589,6 +593,8 @@ struct AnalyzeView: View {
                 video: video, activeRun: store.activeLayer(videoID: video.id).run,
                 scenes: store.scenes.filter { $0.videoID == video.id },
                 transcriptCount: store.transcriptCounts[video.id] ?? 0,
+                transcriptUsable: store.transcriptUsable(video),
+                transcriptKey: store.transcriptFacts[video.id]?.transcriptionKey,
                 passes: store.analysisPasses, hasCheckpoint: store.analysisCheckpoints[video.id] != nil,
                 duplicateOf: store.duplicateAnalysis(for: video))
             return AnalysisSteps.missing(video: video, report: report,
@@ -788,7 +794,6 @@ struct AnalyzeView: View {
     /// A table-only projection keeps the sortable label out of persisted video records.
     private nonisolated struct SourceRow: Identifiable {
         var video: VideoRecord
-        var projects: String
         var id: Int64 { video.id }
         var createdDate: Date { video.createdDate }
     }
@@ -808,7 +813,7 @@ struct AnalyzeView: View {
 
     private func loadProjectNames() async {
         let key = projectNamesKey
-        guard store.isHomeProject, let database = store.database else {
+        guard let database = store.database else {
             projectNames = [:]
             projectNamesVersion += 1
             return
@@ -816,7 +821,7 @@ struct AnalyzeView: View {
         do {
             let names = try await database.projectNames(forVideos: store.videos.map(\.id))
             guard !Task.isCancelled, key == projectNamesKey, store.database === database else { return }
-            projectNames = names.mapValues { $0.joined(separator: ", ") }
+            projectNames = names
             projectNamesVersion += 1
         } catch {
             guard !Task.isCancelled, key == projectNamesKey, store.database === database else { return }
@@ -884,7 +889,7 @@ struct AnalyzeView: View {
         for (video, roster) in store.videoPeopleCounts where roster > (peopleCounts[video] ?? 0) {
             peopleCounts[video] = roster
         }
-        let rows = store.videos.map { SourceRow(video: $0, projects: store.isHomeProject ? projectNames[$0.id] ?? "—" : "—") }
+        let rows = store.videos.map { SourceRow(video: $0) }
         return TableSummary(videos: rows.sorted(using: sortOrder), sceneCounts: sceneCounts,
                             batchCounts: batchCounts, transcriptCounts: transcriptCounts,
                             peopleCounts: peopleCounts, qaCounts: store.sceneIndex.qaCountsByVideo,
@@ -961,8 +966,10 @@ struct AnalyzeView: View {
                         DriveFetchIndicator(media: video.driveMedia)
                     }
                     AIInfoButton(video: video)
+                    LanguageBadge(video: video)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
+                .clipped()
                 // Table cells are hosted per row by AppKit. A recycled cell can
                 // still receive an observation update (Drive job status) after
                 // the host environment is gone, and its store-reading children
@@ -993,13 +1000,6 @@ struct AnalyzeView: View {
                                             : "Footage type; change it in the detail pane")
             }
             .width(min: 70, ideal: 90)
-
-            if store.isHomeProject {
-                TableColumn("Projects", value: \.projects) { row in
-                    Text(row.projects).lineLimit(1).help(row.projects)
-                }
-                .width(min: 100, ideal: 160)
-            }
 
             TableColumn("Status") { row in
                 let video = row.video
@@ -1275,6 +1275,8 @@ private struct VideoPreviewPane: View {
     @Environment(\.workspacePageVisible) private var pageVisible
     @Environment(AppStore.self) private var store
     let video: VideoRecord
+    /// Projects this source belongs to; replaces the grid's Projects column.
+    let projectNames: [String]
     let typeFocusRequest: UUID?
     /// A new value scrolls the info sections to Fight Action.
     let fightStatsFocusRequest: UUID?
@@ -1469,6 +1471,26 @@ private struct VideoPreviewPane: View {
                     .font(.caption.weight(.medium))
                 Spacer()
                 VideoTypePicker(video: video, focusRequest: typeFocusRequest)
+            }
+            HStack {
+                Text("Language")
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1).fixedSize()
+                Spacer()
+                VideoLanguagePicker(video: video)
+            }
+            HStack(alignment: .firstTextBaseline) {
+                Text("Projects")
+                    .font(.caption.weight(.medium))
+                    .lineLimit(1).fixedSize()
+                Spacer()
+                Text(projectNames.isEmpty ? "Not in any project" : projectNames.joined(separator: ", "))
+                    .font(.caption)
+                    .foregroundStyle(projectNames.isEmpty ? .secondary : .primary)
+                    .multilineTextAlignment(.trailing)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .help(projectNames.isEmpty ? "Add this source to a project from the Projects menu below"
+                          : "Projects that contain this source: " + projectNames.joined(separator: ", "))
             }
 
             // Transcription in flight: the grid only shows a spinner; the

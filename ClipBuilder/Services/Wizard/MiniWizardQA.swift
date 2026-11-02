@@ -8,4 +8,6 @@ nonisolated struct MiniWizardQA: Sendable {
     var turns: [SpeakerTurn]
     var kept: Set<Int64>
     var speakerSpans: [TranscriptQATrim.SpeakerSpan] = []
+    /// The exchanges came from a transcript that has since been replaced.
+    var fromOlderTranscript = false
 }

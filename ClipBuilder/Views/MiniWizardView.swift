@@ -26,6 +26,8 @@ struct MiniWizardView: View {
     @State private var settingsProfile: String?
     @State private var transcriptLanguage: String?
     @State private var hasTranscript = false
+    /// Videos with active scenes; the others in `videos` are transcript-only.
+    @State private var sceneVideoIDs: Set<Int64> = []
     @State private var transcriptVideoID: Int64?
     @State private var confirmRemoveBRoll = false
     @State private var collapsedCard: MiniWizardFlow.Card?
@@ -64,7 +66,8 @@ struct MiniWizardView: View {
         guard let video = selectedVideo else { return nil }
         let expected = MiniWizardFlow(video: video,
             hasPodcastExchangeScenes: podcastVideoIDs.contains(video.id),
-            hasTranscript: hasTranscript, footageKind: footageKind).effectiveFootageKind
+            hasTranscript: hasTranscript, hasScenes: sceneVideoIDs.contains(video.id),
+            footageKind: footageKind).effectiveFootageKind
         guard let run = store.miniRuns[expected], run.projectID == store.activeProjectID,
               run.video.id == video.id, (expected != .highlights || run.length == length) else { return nil }
         return run
@@ -74,6 +77,7 @@ struct MiniWizardView: View {
         MiniWizardFlow(video: selectedVideo,
                        hasPodcastExchangeScenes: selectedVideo.map { podcastVideoIDs.contains($0.id) } ?? false,
                        hasTranscript: hasTranscript,
+                       hasScenes: selectedVideo.map { sceneVideoIDs.contains($0.id) } ?? true,
                        footageKind: footageKind, length: length,
                        captionsEnabled: miniSettings.captions, transcriptLanguage: transcriptLanguage,
                        hasFootage: currentRun?.hasFootage == true,
@@ -121,7 +125,9 @@ struct MiniWizardView: View {
                     },
                     onPlaceFocusFrame: flow.visibleCard == .settings && flow.canExpand(.settings) && settingsProfile == profileName
                         && !store.isWizardRunning && flow.effectiveSettingsTab(settingsTab) == .picture
-                        ? { miniSettings.framing.focusFrame = $0 } : nil)
+                        ? { miniSettings.framing.focusFrame = $0 } : nil,
+                    emptyMessage: sceneVideoIDs.contains(video.id) ? "Choose a video to preview"
+                        : "No scenes to preview yet. Run Analyze on this source in Sources to see it here.")
                     .id("\(store.profileGeneration):\(store.activeProjectID ?? 0):\(video.id)")
                     .rememberedPaneWidth("pane.express.preview", min: 240, initial: 320, max: 900)
             }
@@ -518,7 +524,9 @@ struct MiniWizardView: View {
     /// source is chosen, whichever card is open, so saved picks count as kept
     /// footage after a relaunch without a visit to the Footage card.
     private var autoLoadKey: AutoLoadKey {
-        let kind = flow.effectiveFootageKind
+        // A source without scenes offers nothing until its transcript check
+        // lands; loading Highlights for it would only fail.
+        let kind = flow.footageKinds.isEmpty ? nil : flow.effectiveFootageKind
         return AutoLoadKey(videoID: selectedVideo?.id,
                            kind: kind,
                            hasRun: currentRun != nil, length: length, revision: store.miniFootageRevision)
@@ -543,7 +551,7 @@ struct MiniWizardView: View {
         } else if isLoading && projectVideos.isEmpty {
             ProgressView("Loading analyzed videos…")
         } else if projectVideos.isEmpty {
-            FormCaption("No analyzed videos in this project")
+            FormCaption("No analyzed or transcribed videos in this project")
             Button { store.requestedSection = .sources } label: {
                 Text("Open Sources").lineLimit(1).fixedSize()
             }
@@ -554,7 +562,7 @@ struct MiniWizardView: View {
                 }
             }
         } else {
-            FormCaption("Choose one analyzed video.")
+            FormCaption("Choose one analyzed or transcribed video.")
             LazyVGrid(columns: [GridItem(.adaptive(minimum: 180, maximum: 240), spacing: Theme.spaceM,
                                         alignment: .top)], spacing: Theme.spaceM) {
                 ForEach(projectVideos) { video in
@@ -586,9 +594,13 @@ struct MiniWizardView: View {
         do {
             let fetchedVideos = try await database.fetchVideos(projectID: projectID)
             let scenes = try await database.fetchScenes(projectID: projectID, scope: .active)
+            let transcribedIDs = try await database.videoIDsWithOriginalTranscripts()
             guard !Task.isCancelled, key == sourceKey, store.activeProfile.profileName == profileName else { return }
             let analyzedIDs = Set(scenes.map(\.videoID))
-            videos = fetchedVideos.filter { $0.analyzedAt != nil && analyzedIDs.contains($0.id) }
+            // Analyzed sources offer every footage kind; a source that was only
+            // transcribed still offers Transcript picks, so it is listed too.
+            sceneVideoIDs = analyzedIDs.filter { id in fetchedVideos.contains { $0.id == id && $0.analyzedAt != nil } }
+            videos = fetchedVideos.filter { sceneVideoIDs.contains($0.id) || transcribedIDs.contains($0.id) }
             projectHasVideos = !fetchedVideos.isEmpty
             let validated = MiniWizardMemory.validatedVideoPath(videoPath, videos: videos)
             if validated != videoPath {
@@ -603,6 +615,7 @@ struct MiniWizardView: View {
             guard !Task.isCancelled, key == sourceKey, store.activeProfile.profileName == profileName else { return }
             videos = []
             podcastVideoIDs = []
+            sceneVideoIDs = []
             loadError = "Could not load analyzed videos: \(error.localizedDescription)"
             isLoading = false
         }

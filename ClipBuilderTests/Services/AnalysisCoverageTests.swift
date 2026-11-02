@@ -20,6 +20,23 @@ struct AnalysisCoverageTests {
                     settingsJSON: AISettingsJSON.encode(AnalysisRunSettings(pipeline: pipeline)))
     }
 
+    @Test("Exchanges grouped from a replaced transcript are outdated")
+    func replacedTranscript() {
+        var run = run(pipeline: AnalysisPipeline.current(for: .interview))
+        var request = AnalysisRequest(sourceIdentity: "x", videoType: "interview", pipeline: 1, passVersions: [:],
+                                      plan: AnalysisRequest.capturePlan(defaults: .standard, singleVideo: true,
+                                                                        provider: nil, model: nil, includeFightScoring: false))
+        request.transcriptKey = "old-set"
+        run.requestJSON = AISettingsJSON.encode(request)
+        let same = AnalysisCoverage.report(video: video(.interview), activeRun: run, scenes: [qa()],
+                                           transcriptCount: 2, transcriptKey: "old-set")
+        #expect(same.state == .upToDate)
+        let replaced = AnalysisCoverage.report(video: video(.interview), activeRun: run, scenes: [qa()],
+                                               transcriptCount: 2, transcriptKey: "new-set")
+        #expect(replaced.state == .outdated(stage: "Podcast exchanges"))
+        #expect(AnalysisSteps.missing(video: video(.interview), report: replaced, peopleCount: 1, passes: []) == [.exchanges])
+    }
+
     private func qa(id: Int64 = 1, ignored: Bool = false, excluded: Bool = false) -> SceneRecord {
         var scene = Fixtures.scene(id: id)
         scene.tags = ["q&a"]

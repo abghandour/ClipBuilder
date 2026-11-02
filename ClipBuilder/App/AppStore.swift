@@ -269,6 +269,9 @@ final class AppStore {
     var analysisRuns: [AnalysisRun] = [] { didSet { analysisRunsVersion &+= 1 } }
     private(set) var analysisRunsVersion = 0
     var transcriptCounts: [Int64: Int] = [:] { didSet { transcriptCountsVersion &+= 1 } }
+    /// Language and spoken seconds per active transcript; a stale or thin
+    /// transcript counts as a missing step (`transcriptUsable`).
+    var transcriptFacts: [Int64: TranscriptFact] = [:] { didSet { transcriptCountsVersion &+= 1 } }
     private(set) var transcriptCountsVersion = 0
     var speakerNamingSummaries: [Int64: SpeakerClusterNaming.Summary] = [:] {
         didSet { speakerNamingVersion &+= 1 }
@@ -369,6 +372,9 @@ final class AppStore {
     // Transcription job
     var transcribingVideoIDs: Set<Int64> = []
     var transcriptionTasks: [Int64: Task<Void, Never>] = [:]
+    /// Video hashes the language detection job already listened to this
+    /// session, so files without clear speech are not sampled on every refresh.
+    var languageDetectionTried: Set<String> = []
 
     /// The selected Wizard tab belongs to the profile, independent of either form's settings.
     var wizardMode: WizardMode {
@@ -1508,7 +1514,9 @@ final class AppStore {
             self.builder.updateScenes(snapshot.scenes, referencedScenes: snapshot.referencedScenes)
         }
         analysisPasses = snapshot.analysisPasses
-        if analysisRuns != snapshot.analysisRuns { analysisRuns = snapshot.analysisRuns }
+        let runsChanged = analysisRuns != snapshot.analysisRuns
+        if runsChanged { analysisRuns = snapshot.analysisRuns }
+        if transcriptFacts != snapshot.transcriptFacts { transcriptFacts = snapshot.transcriptFacts }
         if transcriptCounts != snapshot.transcriptCounts { transcriptCounts = snapshot.transcriptCounts }
         if speakerNamingSummaries != snapshot.speakerNamingSummaries { speakerNamingSummaries = snapshot.speakerNamingSummaries }
         if videoPeopleCounts != snapshot.videoPeopleCounts { videoPeopleCounts = snapshot.videoPeopleCounts }
@@ -1517,6 +1525,8 @@ final class AppStore {
         if generatedVideos != snapshot.generatedVideos { generatedVideos = snapshot.generatedVideos }
         if feedback != snapshot.feedback { feedback = snapshot.feedback }
         if lessons != snapshot.lessons { lessons = snapshot.lessons }
+        if runsChanged { refreshMiniQASections() }
+        detectVideoLanguages()
     }
 
     /// Re-read one scene row and swap it into the in-memory list — the

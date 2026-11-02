@@ -36,6 +36,8 @@ struct WizardPreviewColumn: View {
     var onPlaceOverlay: ((OverlayComponent, CGRect) -> Void)? = nil
     /// Non-nil only while the Framing settings are visible. A saved frame's outline stays visible elsewhere.
     var onPlaceFocusFrame: ((FreeCropRect?) -> Void)? = nil
+    /// Shown instead of a frame when there is no scene to preview.
+    var emptyMessage = "Choose a video to preview"
     @State private var model: WizardPreviewModel
     @State private var reloadID = 0
     @State private var loadedContentKey: ContentKey?
@@ -52,7 +54,9 @@ struct WizardPreviewColumn: View {
          thumbnails: ThumbnailService, footer: AnyView? = nil, captionOrdinals: [String: Int]? = nil,
          onMove: ((PreviewElement, CustomPosition) -> Void)? = nil,
          onPlaceOverlay: ((OverlayComponent, CGRect) -> Void)? = nil,
-         onPlaceFocusFrame: ((FreeCropRect?) -> Void)? = nil) {
+         onPlaceFocusFrame: ((FreeCropRect?) -> Void)? = nil,
+         emptyMessage: String = "Choose a video to preview") {
+        self.emptyMessage = emptyMessage
         self.scenes = scenes
         self.clips = clips
         self.options = options
@@ -363,7 +367,7 @@ struct WizardPreviewColumn: View {
         Color.black
             .overlay {
                 if model.selectedScene == nil {
-                    Text("Choose a video to preview")
+                    Text(emptyMessage)
                         .font(.callout).foregroundStyle(.white)
                         .multilineTextAlignment(.center).padding(Theme.spaceM)
                 } else if let image = model.image {

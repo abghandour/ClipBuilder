@@ -27,6 +27,9 @@ nonisolated enum AnalysisCoverage {
     nonisolated struct Report: Equatable, Sendable {
         var qaCount: Int
         var hasTranscript: Bool
+        /// False when the transcript exists but is in the wrong language for
+        /// the video or too thin: the transcript step is still missing.
+        var transcriptUsable: Bool = true
         var hasRun: Bool
         var latestPipeline: Int?
         var unfinishedWork: Bool = false
@@ -62,7 +65,8 @@ nonisolated enum AnalysisCoverage {
     }
 
     static func report(video: VideoRecord, activeRun: AnalysisRun?, scenes: [SceneRecord],
-                       transcriptCount: Int, passes: [AnalysisPassRecord] = [],
+                       transcriptCount: Int, transcriptUsable: Bool = true, transcriptKey: String? = nil,
+                       passes: [AnalysisPassRecord] = [],
                        hasCheckpoint: Bool = false, duplicateOf: AnalysisRun? = nil) -> Report {
         let latest = activeRun
         let qaCount = scenes.count { $0.videoID == video.id && (activeRun == nil || $0.runID == activeRun?.id) && !$0.ignored && $0.tags.contains("q&a") }
@@ -74,15 +78,26 @@ nonisolated enum AnalysisCoverage {
             state = .untyped
         } else if video.type?.usesPodcastPass == true && qaCount == 0 {
             state = .missingExchanges
+        } else if video.type?.usesPodcastPass == true, exchangesFromOtherTranscript(run: latest, transcriptKey: transcriptKey) {
+            state = .outdated(stage: "Podcast exchanges")
         } else if (pipeline ?? 0) < AnalysisPipeline.current(for: video.type) {
             state = .outdated(stage: video.type?.usesPodcastPass == true ? "Podcast exchanges" : "Visual analysis")
         } else {
             state = .upToDate
         }
-        return Report(qaCount: qaCount, hasTranscript: transcriptCount > 0, hasRun: latest != nil,
+        return Report(qaCount: qaCount, hasTranscript: transcriptCount > 0, transcriptUsable: transcriptUsable, hasRun: latest != nil,
                       latestPipeline: pipeline,
                       unfinishedWork: hasCheckpoint || passes.contains { $0.videoID == video.id && $0.status != .completed },
                       sameAsActive: duplicateOf.map { $0.id == activeRun?.id }, state: state)
+    }
+
+    /// True when the run grouped its exchanges from a transcript set other
+    /// than the active one (transcribed again in another language, say):
+    /// its exchanges no longer line up with the lines on screen.
+    static func exchangesFromOtherTranscript(run: AnalysisRun?, transcriptKey: String?) -> Bool {
+        guard let transcriptKey, !transcriptKey.isEmpty,
+              let runKey = AISettingsJSON.decode(AnalysisRequest.self, run?.requestJSON)?.transcriptKey else { return false }
+        return runKey != transcriptKey
     }
 
     static func action(for state: State) -> Action? {

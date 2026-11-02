@@ -15,14 +15,16 @@ struct DriveSourceProgress: View {
                         .accessibilityLabel("Upload progress")
                 } else {
                     Text(job.status == .waiting ? "Waiting" : job.message)
-                        .lineLimit(1).help(job.message)
+                        .lineLimit(1).truncationMode(.tail).help(job.message)
                     if job.status == .failed || job.status == .stopped || job.status == .reconnect {
                         Button("Resume") { store.googleDrive.resume(job.id) }
+                            .lineLimit(1).fixedSize()
                         if job.status == .reconnect {
                             OpenGoogleDriveSettingsButton()
                         }
                     }
                     Button("Cancel") { store.googleDrive.cancel(job.id) }
+                        .lineLimit(1).fixedSize()
                         .help("Cancel this upload and forget its progress")
                 }
             }.font(.caption)

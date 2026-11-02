@@ -484,6 +484,8 @@ extension Database {
             namingProvider: row["naming_provider"]?.stringValue,
             namingModel: row["naming_model"]?.stringValue,
             videoType: row["video_type"]?.stringValue,
+            language: row["language"]?.stringValue,
+            languageSource: row["language_source"]?.stringValue,
             podcastLayout: row["podcast_layout"]?.stringValue,
             podcastSeamX: row["podcast_seam_x"]?.doubleValue,
             podcastLayoutConfidence: row["podcast_layout_confidence"]?.doubleValue,
@@ -496,6 +498,32 @@ extension Database {
             driveShared: row["drive_shared"]?.boolValue ?? false,
             sourceAvailable: FootageAvailability.refresh(path: row["path"]?.stringValue, driveFileID: row["drive_file_id"]?.stringValue),
             locallyDownloaded: FootageAvailability.isDownloaded(path: row["path"]?.stringValue))
+    }
+
+    /// The user's choice sticks; a transcript replaces anything but the
+    /// user's; a detection pass only fills a blank (a transcript that landed
+    /// while the sample ran outranks it). nil language with the user source
+    /// means "the user chose none". Returns the row's language afterwards.
+    @discardableResult
+    func setVideoLanguage(id: Int64, language: String?, source: VideoLanguage.Source) throws -> (language: String?, source: String?) {
+        let language = language?.replacingOccurrences(of: "_", with: "-")
+        switch source {
+        case .user:
+            try connection.execute("UPDATE videos SET language = ?, language_source = 'user' WHERE id = ?",
+                                   [language.map(SQLValue.text) ?? .null, .integer(id)])
+        case .transcript:
+            try connection.execute("""
+                UPDATE videos SET language = ?, language_source = 'transcript'
+                WHERE id = ? AND (language_source IS NULL OR language_source != 'user')
+                """, [language.map(SQLValue.text) ?? .null, .integer(id)])
+        case .detected:
+            try connection.execute("""
+                UPDATE videos SET language = ?, language_source = 'detected'
+                WHERE id = ? AND language IS NULL AND language_source IS NULL
+                """, [language.map(SQLValue.text) ?? .null, .integer(id)])
+        }
+        let row = try connection.query("SELECT language, language_source FROM videos WHERE id = ?", [.integer(id)]).first
+        return (row?["language"]?.stringValue, row?["language_source"]?.stringValue)
     }
 
     func setVideoType(id: Int64, type: String?) throws {

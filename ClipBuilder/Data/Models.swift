@@ -37,6 +37,10 @@ nonisolated struct VideoRecord: Identifiable, Sendable, Hashable {
     /// VideoType raw value; nil until the analyzer infers it or the user
     /// picks one in the Analyze table.
     var videoType: String?
+    /// BCP-47 locale id the footage is spoken in ("pt-BR"); nil = unknown.
+    var language: String? = nil
+    /// `VideoLanguage.Source` raw value: user, transcript or detected.
+    var languageSource: String? = nil
     /// Podcast layout metadata populated by the sparse Vision pass.
     var podcastLayout: String? = nil
     var podcastSeamX: Double? = nil
@@ -1010,6 +1014,13 @@ nonisolated struct TranscriptWord: Codable, Sendable, Equatable {
 }
 
 /// One-hop snapshot of the library tables the main window keeps in memory.
+nonisolated struct TranscriptFact: Equatable, Sendable {
+    var language: String
+    var spokenSeconds: Double
+    /// The active set's key: a run made from another set is outdated.
+    var transcriptionKey: String = ""
+}
+
 nonisolated struct LibrarySnapshot: Sendable {
     var videos: [VideoRecord]
     var scenes: [SceneRecord]
@@ -1029,6 +1040,8 @@ nonisolated struct LibrarySnapshot: Sendable {
     var videoPeopleCounts: [Int64: Int] = [:]
     /// Rows in each video's active transcript, including transcribe-only videos.
     var transcriptCounts: [Int64: Int] = [:]
+    /// Language and spoken seconds of each video's active original transcript.
+    var transcriptFacts: [Int64: TranscriptFact] = [:]
     var speakerNamingSummaries: [Int64: SpeakerClusterNaming.Summary] = [:]
     /// Analyses that started and did not finish, by video.
     var analysisCheckpoints: [Int64: AnalysisCheckpoint] = [:]

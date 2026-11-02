@@ -48,6 +48,10 @@ struct AnalysisStepsTests {
         #expect(AnalysisSteps.missing(video: video(.training), report: done, peopleCount: 0, passes: []) == [.people])
         let transcriptOnly = report(hasTranscript: true, state: .transcriptOnly)
         #expect(AnalysisSteps.missing(video: video(.training), report: transcriptOnly, peopleCount: 1, passes: []) == [.scenes])
+        // A transcript in the wrong language or too thin is still a missing step.
+        var stale = done
+        stale.transcriptUsable = false
+        #expect(AnalysisSteps.missing(video: video(.training), report: stale, peopleCount: 2, passes: []) == [.transcript])
     }
 
     @Test("Outdated or missing exchanges count as missing for talking footage")

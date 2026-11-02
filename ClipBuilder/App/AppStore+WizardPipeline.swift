@@ -73,7 +73,6 @@ extension AppStore {
         // Languages belong to the project the pipeline started in, not the
         // one on screen when it resumes.
         let languages = resolvedLanguages(for: projects.first { $0.id == pipelineProjectID } ?? activeProject)
-        let language = ProjectLanguageResolver.transcriptionLanguage(languages: languages)
         let generation = profileGeneration
         let transcription = transcription
         pipelineTask = Task {
@@ -153,7 +152,7 @@ extension AppStore {
                         log("Transcribing \(video.filename)…")
                         do {
                             _ = try await transcription.transcribeForVideo(video: video, database: database,
-                                                                   languageCode: language, log: relay)
+                                                                   languageCode: ProjectLanguageResolver.transcriptionLanguage(for: video, languages: languages), log: relay)
                         } catch {
                             // Not marked done: Resume transcribes it again.
                             if Task.isCancelled || error is CancellationError { break }

@@ -31,7 +31,7 @@ struct SyncHistoryTableTests {
         #expect(keys["qa_picks"] == ["project_id", "video_id", "scene_id"])
         #expect(keys["projects"] == ["name", "created_at"])
         #expect(keys["project_videos"] == ["project_id", "video_id"])
-        #expect(SyncEngine.understoodSchemaVersion == 9)
+        #expect(SyncEngine.understoodSchemaVersion == 10)
     }
 
     @Test("Applying the same pulled project row twice updates it (profile_name is supplied on every upsert)")

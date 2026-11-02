@@ -96,6 +96,18 @@ struct MiniFootageCard: View {
 
     @ViewBuilder
     private var qaReview: some View {
+        if run.qa?.fromOlderTranscript == true {
+            HStack(spacing: Theme.spaceS) {
+                FormCaption("These exchanges were grouped from an earlier transcript, so they no longer match the lines shown. Group them again to refresh them.", tone: .warning)
+                Button {
+                    store.runMissingAnalysisSteps([.exchanges], video: run.video)
+                } label: {
+                    Text("Run exchanges").lineLimit(1).fixedSize()
+                }
+                .disabled(store.isWizardRunning || store.isAnalyzing)
+                .help("Group the question-and-answer exchanges again from the current transcript")
+            }
+        }
         if let qa = run.qa, !qa.sections.isEmpty {
             // The view sizes its own columns to the card; no sideways scrolling.
             let review = TranscriptQAView(video: run.video, sections: qa.sections, rows: qa.rows, labels: qa.labels,

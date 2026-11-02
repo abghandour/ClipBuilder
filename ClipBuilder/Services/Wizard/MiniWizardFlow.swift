@@ -38,6 +38,9 @@ nonisolated struct MiniWizardFlow: Sendable {
     var hasPodcastExchangeScenes = false
     /// The video has an original transcript, so passages can be picked from it.
     var hasTranscript = false
+    /// The video has analyzed scenes. Without them only Transcript picks are
+    /// offered: Highlights, Q&A and Fight metrics all read scene rows.
+    var hasScenes = true
     var footageKind: FootageKind = .highlights
     var length: Length = .automatic
     var captionsEnabled = false
@@ -64,12 +67,18 @@ nonisolated struct MiniWizardFlow: Sendable {
 
     /// Order: Q&A, Transcript, Fight metrics, Highlights. The kinds that need no AI come first.
     var footageKinds: [FootageKind] {
-        (isPodcastOrInterview ? [.qa] : []) + (hasTranscript ? [.transcript] : [])
+        guard hasScenes else { return hasTranscript ? [.transcript] : [] }
+        return (isPodcastOrInterview ? [.qa] : []) + (hasTranscript ? [.transcript] : [])
             + (isFightOrTraining ? [.fightMetrics] : []) + [.highlights]
     }
     var showsFootageKind: Bool { footageKinds.count > 1 }
     /// A remembered Q&A or Transcript choice must never apply to footage that cannot offer it.
-    var effectiveFootageKind: FootageKind { footageKinds.contains(footageKind) ? footageKind : .highlights }
+    var effectiveFootageKind: FootageKind {
+        if footageKinds.contains(footageKind) { return footageKind }
+        // Highlights is the fallback whenever scenes exist; a source with
+        // only a transcript falls back to the one kind it can offer.
+        return footageKinds.contains(.highlights) ? .highlights : (footageKinds.first ?? .highlights)
+    }
     var showsLength: Bool { effectiveFootageKind == .highlights }
     var lengthOptions: [Length] { Length.allCases }
     var showsCameraFocus: Bool { isPodcastOrInterview }
