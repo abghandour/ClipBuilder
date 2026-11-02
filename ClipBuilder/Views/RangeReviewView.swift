@@ -148,7 +148,7 @@ struct RangeReviewView<Footer: View>: View {
                                   - 2 * TranscriptQAColumns.dividerWidth)
             HStack(spacing: 0) {
                 if transcriptLeading {
-                    itemList.frame(width: widths.list).clipped()
+                    itemList.frame(width: widths.list, alignment: .leading).clipped()
                     columnDivider(.list, width: widths.list, otherWidth: widths.transcript,
                                   available: geometry.size.width)
                     // The word panel is one view whether or not something is
@@ -169,14 +169,14 @@ struct RangeReviewView<Footer: View>: View {
                             if let leadingPanel { leadingPanel }
                             else { wordPanel(selected: context, video: context.video, inactive: selected == nil) }
                         }
-                        .frame(width: widths.transcript).clipped()
+                        .frame(width: widths.transcript, alignment: .leading).clipped()
                     } else {
                         ContentUnavailableView(emptyTitle, systemImage: "text.bubble",
                                                description: Text(emptyMessage))
                             .frame(maxWidth: .infinity, maxHeight: .infinity)
                     }
                 } else {
-                    itemList.frame(width: widths.list).clipped()
+                    itemList.frame(width: widths.list, alignment: .leading).clipped()
                     columnDivider(.list, width: widths.list, otherWidth: widths.transcript,
                                   available: geometry.size.width)
                     if let selected, let video {
@@ -184,7 +184,7 @@ struct RangeReviewView<Footer: View>: View {
                             .frame(width: playerWidth).frame(maxHeight: .infinity, alignment: .top).clipped()
                         columnDivider(.transcript, width: widths.transcript, otherWidth: widths.list,
                                       available: geometry.size.width)
-                        wordPanel(selected: selected, video: video).frame(width: widths.transcript).clipped()
+                        wordPanel(selected: selected, video: video).frame(width: widths.transcript, alignment: .leading).clipped()
                     } else {
                         ContentUnavailableView(emptyTitle, systemImage: "text.bubble",
                                                description: Text(emptyMessage))

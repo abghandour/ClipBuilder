@@ -7,6 +7,8 @@ nonisolated enum TranscriptQAColumns {
 
         var defaultWidth: CGFloat { self == .list ? 220 : 360 }
         var bounds: ClosedRange<CGFloat> { self == .list ? 160...420 : 260...820 }
+        /// Below this, display compression shares the squeeze with the player.
+        var usableWidth: CGFloat { self == .list ? 90 : 140 }
     }
 
     static let dividerWidth: CGFloat = 8
@@ -18,7 +20,16 @@ nonisolated enum TranscriptQAColumns {
         let transcript = bounded(transcript, column: .transcript)
         let space = max(0, available - 2 * dividerWidth - playerMinimum)
         let scale = min(1, space / (list + transcript))
-        return (list * scale, transcript * scale)
+        if list * scale >= Column.list.usableWidth, transcript * scale >= Column.transcript.usableWidth {
+            return (list * scale, transcript * scale)
+        }
+        // Too narrow for the text columns to stay usable next to a 320 pt
+        // player (the Express settings column can be 480 pt): every column
+        // gives up width in proportion instead, so none is squeezed to a
+        // sliver whose content is clipped on both sides.
+        let whole = max(0, available - 2 * dividerWidth)
+        let share = whole / (list + transcript + playerMinimum)
+        return (list * share, transcript * share)
     }
 
     /// The opposite column stays put during a drag. If even this column's

@@ -338,7 +338,9 @@ struct MiniWizardView: View {
                     .frame(maxWidth: .infinity)
                 }
                 .padding(Theme.spaceL)
-                .frame(maxWidth: .infinity, alignment: .leading)
+                // minWidth 0: a card that still outgrows the column overflows
+                // on the right instead of being centred and cut on both sides.
+                .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             }
         }
     }

@@ -183,6 +183,16 @@ struct MiniWizardQATests {
         let narrow = TranscriptQAView.columnWidths(available: 640)
         #expect(abs(narrow.list - 220 * (304.0 / 580)) < 0.001)
         #expect(abs(narrow.transcript - 360 * (304.0 / 580)) < 0.001)
+        // The 480 pt Express column: all three columns share the squeeze so the
+        // list and transcript stay readable instead of the player keeping 320.
+        for width: CGFloat in [420, 439, 480, 560] {
+            let columns = TranscriptQAView.columnWidths(available: width)
+            let player = width - columns.list - columns.transcript - 16
+            #expect(columns.list >= 90 && columns.transcript >= 140)
+            #expect(player < 320 && player > columns.list)
+            #expect(abs(columns.list / columns.transcript - 220.0 / 360) < 0.001)
+            #expect(abs(columns.list + player + columns.transcript + 16 - width) < 0.001)
+        }
         // Display compression leaves the same preferences available on expansion.
         let restored = TranscriptQAView.columnWidths(available: 1600, list: 420, transcript: 820)
         #expect(restored.list == 420 && restored.transcript == 820)

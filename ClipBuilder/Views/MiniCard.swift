@@ -67,9 +67,13 @@ struct MiniCard<Content: View>: View {
                 .frame(width: 22, height: 22)
                 .background(Color.accentColor, in: .circle)
                 .accessibilityHidden(true)
+            // Truncates rather than fixed: "Settings - <preset> (modified)"
+            // next to the Save / Load / Reset accessory must never widen the
+            // card past the Express settings column.
             Text(title)
                 .font(.headline)
-                .lineLimit(1).fixedSize()
+                .lineLimit(1).truncationMode(.tail)
+                .help(title)
         }
         .accessibilityElement(children: .ignore)
         .accessibilityLabel("\(number) \(title)")
