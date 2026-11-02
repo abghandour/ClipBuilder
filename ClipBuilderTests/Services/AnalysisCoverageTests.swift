@@ -34,7 +34,8 @@ struct AnalysisCoverageTests {
         let replaced = AnalysisCoverage.report(video: video(.interview), activeRun: run, scenes: [qa()],
                                                transcriptCount: 2, transcriptKey: "new-set")
         #expect(replaced.state == .outdated(stage: "Podcast exchanges"))
-        #expect(AnalysisSteps.missing(video: video(.interview), report: replaced, peopleCount: 1, passes: []) == [.exchanges])
+        #expect(AnalysisSteps.missing(video: video(.interview), report: replaced, peopleCount: 1, passes: [],
+                                      speakerNaming: .init(reasons: [])) == [.exchanges])
     }
 
     private func qa(id: Int64 = 1, ignored: Bool = false, excluded: Bool = false) -> SceneRecord {

@@ -54,7 +54,10 @@ nonisolated enum AnalysisSteps {
             case .transcript:
                 !report.hasTranscript || !report.transcriptUsable
             case .speakerNames:
+                // No map at all (the transcript was redone outside the
+                // podcast pass) is as missing as a suspicious one.
                 speakerNaming?.isSuspicious == true
+                    || (report.hasTranscript && report.transcriptUsable && speakerNaming == nil)
             case .scenes:
                 !report.hasRun || report.state == .outdated(stage: "Visual analysis")
             case .exchanges:

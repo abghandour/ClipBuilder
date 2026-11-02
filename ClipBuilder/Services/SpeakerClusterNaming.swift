@@ -19,8 +19,19 @@ nonisolated enum SpeakerClusterNaming {
         /// returns the same unnamed map, so that is not flagged.
         var verdict: Verdict {
             var reasons: [String] = []
+            // Two or more people were seen in the footage and two or more
+            // voices were heard, yet every voice went to one of them: in an
+            // interview or a podcast the other person speaks too, so the
+            // map failed. One voice heard, or a voice left unnamed, is not
+            // that evidence; a re-map would only repeat it.
             if clusters >= 2, namedClusters == clusters, namedKeys.count == 1 {
-                reasons.append("Several voice clusters share only one named speaker.")
+                if rosterKeys.count >= 2 {
+                    let other = rosterKeys.subtracting(namedKeys).count
+                    reasons.append("\(rosterKeys.count) people are in this video and \(clusters) voices were heard, but every line went to one speaker"
+                                   + (other == 1 ? "; the other person has no lines." : "; the others have no lines."))
+                } else {
+                    reasons.append("Several voice clusters share only one named speaker.")
+                }
             }
             if !namedKeys.isSubset(of: rosterKeys) {
                 reasons.append("A named speaker is no longer in the video's roster.")

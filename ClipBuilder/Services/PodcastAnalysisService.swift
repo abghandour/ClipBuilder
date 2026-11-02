@@ -368,6 +368,10 @@ actor PodcastAnalysisService {
             guard !outcome.turns.isEmpty else { return fallback }
             log(String(format: "Speaker tracking: %d voice(s) over %d slot(s), %d turns, margin %.2f",
                        outcome.clusterCount, visual.tiles.count, outcome.turns.count, outcome.margin))
+            for (cluster, slot) in outcome.anchors.sorted(by: { $0.key < $1.key }) {
+                let person = visual.tiles.first { $0.index == slot }?.personKey ?? "tile \(slot + 1)"
+                log("Voice \(cluster + 1) is \(person): it matches the voice remembered from other files")
+            }
             if let enrollment = outcome.enrollment {
                 let accuracy = enrollment.heldOutAgreement.map {
                     String(format: ", %.0f%% right on %d held-out windows", $0 * 100, enrollment.heldOutWindows)
@@ -387,7 +391,8 @@ actor PodcastAnalysisService {
             } else {
                 log("Voices learned from the border: none — no tile was lit alone long enough, so the audio keeps its blind clustering")
             }
-            return Resolution(turns: outcome.turns, audioTrust: outcome.enrollment?.trust ?? 0, enrollment: outcome.enrollment)
+            return Resolution(turns: outcome.turns, audioTrust: outcome.enrollment?.trust ?? outcome.voiceTrust,
+                              enrollment: outcome.enrollment)
         } catch is CancellationError {
             throw CancellationError()
         } catch {

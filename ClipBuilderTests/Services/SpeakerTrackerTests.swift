@@ -288,3 +288,106 @@ extension SpeakerTrackerTests {
         #expect(outcome.turns.first?.tile != outcome.turns.last?.tile, "each voice keeps the tile it leans to")
     }
 }
+
+extension SpeakerTrackerTests {
+    /// A two-shot interview on neural embeddings: the host speaks for the
+    /// first half, the guest for the second, and the guest's mouth is the
+    /// livelier one throughout (nodding along), so both voices lean toward
+    /// the guest's tile when read alone.
+    private func twoShot(priors: [SpeakerTracker.Prior] = []) -> SpeakerTracker.Input {
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, personKey: "host"),
+                     PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, personKey: "guest")]
+        let bins = 80
+        var motion = [[Double]](repeating: [Double](repeating: 0.2, count: bins), count: 2)
+        for b in 0..<bins {
+            // Three bins in five light the guest, two the host, whoever speaks.
+            motion[b % 5 < 3 ? 1 : 0][b] = 3
+        }
+        func window(_ start: Double, _ vector: [Double]) -> SpeakerFeatures.Window {
+            SpeakerFeatures.Window(start: start, end: start + 1, vector: SpeakerClustering.normalized(vector))
+        }
+        var windows: [SpeakerFeatures.Window] = []
+        for i in 0..<10 { windows.append(window(Double(i), [1, Double(i % 3) * 0.05, 0])) }
+        for i in 10..<20 { windows.append(window(Double(i), [Double(i % 3) * 0.05, 1, 0])) }
+        let activity = VisualSpeechActivity.Activity(binSeconds: 0.25, motion: motion)
+        return .init(audioWindows: windows, activity: activity, speech: [0...20], tiles: tiles,
+                     duration: 20, featureKind: .embedding, priors: priors)
+    }
+
+    @Test("two distinct voices never share a tile: the voice that leans to a taken tile takes the other one")
+    func distinctVoicesTakeDistinctTiles() {
+        let outcome = SpeakerTracker.track(twoShot(), videoID: 1)
+        #expect(outcome.clusterCount == 2 && outcome.anchors.isEmpty)
+        #expect(Set(outcome.clusterSlots.values) == [0, 1], "\(outcome.clusterSlots) affinity=\(outcome.affinity)")
+        #expect(outcome.turns.count == 2, "\(outcome.turns.map { ($0.start, $0.end, $0.tile, $0.cluster) })")
+        #expect(outcome.turns.first?.tile != outcome.turns.last?.tile, "\(outcome.turns.map { ($0.start, $0.end, $0.tile) })")
+        #expect(abs((outcome.turns.first?.end ?? 0) - 10) <= 0.5, "the handover follows the voices")
+    }
+
+    @Test("a remembered voice anchors its cluster to its tile when the border taught nothing")
+    func rememberedVoiceAnchorsCluster() {
+        // Only the host's voice is remembered, and it is the first voice.
+        let outcome = SpeakerTracker.track(twoShot(priors: [.init(slot: 0, vector: [1, 0, 0], windows: 60)]), videoID: 1)
+        #expect(outcome.enrollment == nil, "one remembered voice alone enrolls nothing")
+        #expect(outcome.anchors.values.contains(0), "\(outcome.anchors)")
+        let first = outcome.turns.first
+        #expect(first?.tile == 0 && first?.personKey == "host", "\(outcome.turns.map { ($0.start, $0.end, $0.tile, $0.personKey ?? "-") })")
+        #expect(outcome.turns.last?.tile == 1, "\(outcome.turns.map { ($0.start, $0.end, $0.tile) })")
+        // A memory of another dimension, or of a voice unlike either cluster, anchors nothing.
+        #expect(SpeakerTracker.anchoredClusters(centroids: [[1, 0, 0], [0, 1, 0]], priors: [.init(slot: 0, vector: [1, 0], windows: 9)],
+                                                slots: 2, geometry: .cosine).isEmpty)
+        #expect(SpeakerTracker.anchoredClusters(centroids: [[1, 0, 0], [0, 1, 0]], priors: [.init(slot: 0, vector: [0, 0, 1], windows: 9)],
+                                                slots: 2, geometry: .cosine).isEmpty)
+        #expect(SpeakerTracker.anchoredClusters(centroids: [[1, 0, 0], [0, 1, 0]], priors: [.init(slot: 1, vector: [0, 1, 0], windows: 9)],
+                                                slots: 2, geometry: .cosine) == [1: 1])
+        // Two memories nearest the same cluster: the better-attested one
+        // takes it and the other anchors nothing, never the runner-up.
+        #expect(SpeakerTracker.anchoredClusters(centroids: [[1, 0, 0], [0, 1, 0]],
+                                                priors: [.init(slot: 1, vector: [0.8, 0.6, 0], windows: 9),
+                                                         .init(slot: 0, vector: [1, 0, 0], windows: 90)],
+                                                slots: 2, geometry: .cosine) == [0: 0])
+        #expect(!SpeakerTracker.distinctVoices([[1, 0, 0], [0.9, 0.1, 0]], geometry: .cosine), "one talker split in two")
+        #expect(SpeakerTracker.distinctVoices([[1, 0, 0], [0, 1, 0]], geometry: .cosine))
+        #expect(!SpeakerTracker.distinctVoices([[1, 0, 0], [0, 1, 0]], geometry: .standardized))
+    }
+
+    @Test("with more tiles than voices, elimination alone never places a voice that has no preference")
+    func eliminationNeedsOneTileLeft() {
+        var input = twoShot(priors: [.init(slot: 0, vector: [1, 0, 0], windows: 60)])
+        input.tiles.append(PodcastTile(index: 2, x: 0, y: 0, w: 1, h: 1, personKey: "producer"))
+        // Three tiles' mouths move alike: the second voice prefers nothing.
+        let bins = input.activity.motion[0].count
+        input.activity.motion = [[Double]](repeating: [Double](repeating: 1, count: bins), count: 3)
+        let outcome = SpeakerTracker.track(input, videoID: 1)
+        #expect(outcome.anchors == [0: 0], "\(outcome.anchors)")
+        #expect(outcome.turns.first?.tile == 0, "the remembered voice still owns its tile")
+        #expect(outcome.turns.count == 1, "the unplaced voice follows nothing: \(outcome.turns.map { ($0.start, $0.end, $0.tile) })")
+        #expect(outcome.voiceTrust == SpeakerTracker.blindTrust)
+    }
+
+    @Test("a short reply the placed voice backs survives the turn cleanup")
+    func placedVoiceKeepsShortReply() {
+        // Host speaks 0–8 s, guest answers 8–10 s, host resumes 10–18 s; no
+        // border, only the guest's remembered voice.
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, personKey: "host"),
+                     PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, personKey: "guest")]
+        func window(_ start: Double, _ vector: [Double]) -> SpeakerFeatures.Window {
+            SpeakerFeatures.Window(start: start, end: start + 1, vector: SpeakerClustering.normalized(vector))
+        }
+        var windows: [SpeakerFeatures.Window] = []
+        for i in 0..<8 { windows.append(window(Double(i), [1, Double(i % 3) * 0.05, 0])) }
+        for i in 8..<10 { windows.append(window(Double(i), [Double(i % 3) * 0.05, 1, 0])) }
+        for i in 10..<18 { windows.append(window(Double(i), [1, Double(i % 3) * 0.05, 0])) }
+        let activity = VisualSpeechActivity.Activity(binSeconds: 0.25,
+            motion: [[Double]](repeating: [Double](repeating: 1, count: 72), count: 2))
+        let outcome = SpeakerTracker.track(.init(audioWindows: windows, activity: activity, speech: [0...18], tiles: tiles,
+                                                 duration: 18, featureKind: .embedding,
+                                                 priors: [.init(slot: 1, vector: [0, 1, 0], windows: 60)]), videoID: 1)
+        #expect(outcome.turns.map(\.tile) == [0, 1, 0], "\(outcome.turns.map { ($0.start, $0.end, $0.tile, $0.confidence) })")
+        let words = stride(from: 0.0, to: 18, by: 0.5).map { TranscriptWord(word: "w", start: $0, end: $0 + 0.4) }
+        let kept = PodcastAnalysisService.cleaned(outcome.turns, words: words, audioTrust: outcome.voiceTrust, log: { _ in })
+        #expect(kept.count == 3, "\(kept.map { ($0.start, $0.end, $0.tile) })")
+        let folded = PodcastAnalysisService.cleaned(outcome.turns, words: words, audioTrust: 0, log: { _ in })
+        #expect(folded.count == 1, "without voice trust the reply folds into the host: \(folded.map { ($0.start, $0.end, $0.tile) })")
+    }
+}

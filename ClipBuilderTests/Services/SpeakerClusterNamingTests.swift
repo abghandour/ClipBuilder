@@ -21,6 +21,15 @@ struct SpeakerClusterNamingTests {
         #expect(!SpeakerClusterNaming.Summary(clusters: 1, namedKeys: [], rosterKeys: ["aljo"], layout: .splitHorizontal).verdict.isSuspicious)
         #expect(!verdict(1, ["aljo"], ["aljo"]).isSuspicious)
         #expect(!verdict(2, ["aljo", "ariel"], ["aljo", "ariel"]).isSuspicious)
+        // Two people on screen, every line on one of them: the other one
+        // spoke too, whatever the clusters say.
+        #expect(verdict(2, named: 2, ["johnny"], ["johnny", "marcello"]).reasons.count == 1)
+        // One voice heard, or the second voice left unnamed: not the collapse signature.
+        #expect(!verdict(1, named: 1, ["johnny"], ["johnny", "marcello"]).isSuspicious)
+        #expect(!verdict(2, named: 1, ["johnny"], ["johnny", "marcello"]).isSuspicious)
+        #expect(SpeakerClusterNaming.Summary(clusters: 2, namedClusters: 2, namedKeys: ["johnny"],
+                                             rosterKeys: ["johnny", "marcello"], layout: .splitHorizontal)
+            .verdict.reason.contains("every line went to one speaker"))
         // What the resolver produces for an off-camera interviewer: the
         // dominant cluster named, the other left as Speaker 2. Not flagged,
         // otherwise the step would re-offer the same work forever.

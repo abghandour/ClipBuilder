@@ -68,6 +68,12 @@ nonisolated enum SpeakerTracker {
         var turns: [SpeakerTurn]
         var clusterSlots: [Int: Int]
         var clusterCount: Int
+        /// Clusters a remembered voice placed on a slot (cluster → slot).
+        var anchors: [Int: Int] = [:]
+        /// How far the audio is believed when no profile was enrolled:
+        /// `blindTrust` once distinct voices were placed by memory or
+        /// elimination, else 0. The enrollment's trust outranks it.
+        var voiceTrust: Double = 0
         /// Mean margin between the chosen slot and the runner-up over speech.
         var margin: Double
         /// Diagnostics: the fused grid and the voice-to-slot affinities.
@@ -155,6 +161,9 @@ nonisolated enum SpeakerTracker {
     /// A voice must prefer some slot by at least this much beyond chance
     /// (of a possible 1 − 1/slots) before it is allowed to name that slot.
     static let directionFloor = 0.03
+    /// What distinct voices placed without an enrolled profile are worth
+    /// to the turn cleanup: enough that a reply the voice backs stands.
+    static let blindTrust = 0.9
 
     static func track(_ input: Input, videoID: Int64) -> Outcome {
         let tiles = input.tiles.sorted { $0.index < $1.index }
@@ -203,8 +212,14 @@ nonisolated enum SpeakerTracker {
             let evidence = lit.reduce(0, +) > 0.5 ? lit : bin.mouths
             for c in 0..<clusterCount { for s in 0..<slots { affinity[c][s] += bin.voices[c] * evidence[s] } }
         }
-        var clusterSlots: [Int: Int] = [:]
-        var taken = Set<Int>()
+        // Remembered voices anchor their clusters first: a cluster whose
+        // centroid matches the voice stored for a tile's person is that
+        // person, whatever the mouths say — the border never has to teach
+        // what another file already did.
+        let anchors = anchoredClusters(centroids: clustering.centroids, priors: input.priors,
+                                       slots: slots, geometry: geometry)
+        var clusterSlots = anchors
+        var taken = Set(anchors.values)
         let pairs = (0..<clusterCount).flatMap { c in (0..<slots).map { s in (c, s, affinity[c][s]) } }
             .sorted { $0.2 > $1.2 }
         for (c, s, _) in pairs where clusterSlots[c] == nil {
@@ -226,10 +241,31 @@ nonisolated enum SpeakerTracker {
         // preference-weighted voice would lose to every twitch of a mouth
         // even while the clusters themselves are certain. A voice with no
         // preference (it covers everyone's speech) still says nothing.
-        let direction: [[Double]] = preference.map { row in
+        // Distinct voices are distinct people, so once one of them has a
+        // tile (by memory or by preference) no other voice may point at
+        // it: the exclusive assignment above is what each voice says. On a
+        // two-shot where the guest nods along, the host's voice otherwise
+        // leans a little toward the guest's livelier mouth and the whole
+        // interview lands on one person.
+        // Elimination only decides a voice's tile when it leaves one: as
+        // many voices as tiles, or the voice's own preference. A voice with
+        // several free tiles and no preference still says nothing.
+        let distinct = clusterCount >= 2 && clusterCount <= slots
+            && distinctVoices(clustering.centroids, geometry: geometry)
+        let exclusive = distinct
+            && (!anchors.isEmpty || preference.contains { ($0.max() ?? 0) >= directionFloor })
+        let direction: [[Double]] = preference.enumerated().map { c, row in
             let peak = row.max() ?? 0
+            if anchors[c] != nil || (exclusive && (clusterCount == slots || peak >= directionFloor)),
+               let slot = clusterSlots[c] {
+                return (0..<slots).map { $0 == slot ? 1.0 : 0.0 }
+            }
             return peak >= directionFloor ? row.map { $0 / peak } : row.map { _ in 0 }
         }
+        // Distinct voices placed by memory or elimination are believed the
+        // way a trusted profile is: a short reply the voice backs is kept
+        // by the turn cleanup instead of being folded into the neighbour.
+        let voiceTrust = exclusive || !anchors.isEmpty ? blindTrust : 0
         // Voice profiles from the border: where the picture taught enough,
         // each bin's audio is matched against the slots' own voices, and
         // that match replaces the blind cluster preference in proportion to
@@ -350,9 +386,51 @@ nonisolated enum SpeakerTracker {
             turns[i].confidence = trust * support + (1 - trust) * byMargin
         }
         let overall = margins.isEmpty ? 0 : margins.reduce(0, +) / Double(margins.count)
-        return Outcome(turns: turns, clusterSlots: clusterSlots, clusterCount: clusterCount, margin: overall,
+        return Outcome(turns: turns, clusterSlots: clusterSlots, clusterCount: clusterCount, anchors: anchors,
+                       voiceTrust: voiceTrust, margin: overall,
                        bins: bins, affinity: affinity, enrollment: enrollment, disagreement: disagreement,
                        enrolledVoices: enrolledVoices, highlight: highlight, path: path)
+    }
+
+    /// Which cluster each remembered voice names, by cosine between the
+    /// cluster's centroid and the stored voice: the nearest cluster takes
+    /// the voice's slot when it is close enough and clearly closer than the
+    /// runner-up, one cluster per slot. Only neural embeddings live in the
+    /// stored voices' space.
+    static func anchoredClusters(centroids: [[Double]], priors: [Prior], slots: Int,
+                                 geometry: SpeakerClustering.Geometry) -> [Int: Int] {
+        guard geometry == .cosine, !centroids.isEmpty else { return [:] }
+        let dimension = centroids[0].count
+        var anchors: [Int: Int] = [:]
+        // Every voice is ranked against every cluster; a voice whose
+        // nearest cluster another (better-attested) voice already took
+        // anchors nothing rather than settling for the runner-up.
+        for prior in priors.sorted(by: { $0.windows > $1.windows })
+        where prior.slot >= 0 && prior.slot < slots && prior.vector.count == dimension && !anchors.values.contains(prior.slot) {
+            let ranked = centroids.indices
+                .map { (cluster: $0, cosine: SpeakerClustering.cosine(centroids[$0], prior.vector)) }
+                .sorted { $0.cosine > $1.cosine }
+            guard let best = ranked.first, best.cosine >= VoiceProfiles.nameCosine,
+                  best.cosine - (ranked.dropFirst().first?.cosine ?? -1) >= VoiceProfiles.nameMargin,
+                  anchors[best.cluster] == nil else { continue }
+            anchors[best.cluster] = prior.slot
+        }
+        return anchors
+    }
+
+    /// Whether every pair of clusters is far enough apart to be different
+    /// people: the clustering keeps two voices apart when the picture shows
+    /// two faces, so one talker can still come out as two clusters that
+    /// sit closer than voices ever do. Spectral averages carry no such
+    /// yardstick and are never called distinct.
+    static func distinctVoices(_ centroids: [[Double]], geometry: SpeakerClustering.Geometry) -> Bool {
+        guard geometry == .cosine, centroids.count >= 2 else { return false }
+        for a in centroids.indices {
+            for b in centroids.indices where b > a {
+                if SpeakerClustering.cosine(centroids[a], centroids[b]) >= SpeakerClustering.mergeCosine { return false }
+            }
+        }
+        return true
     }
 
     /// Learn a voice per slot from the stretches where that tile alone was

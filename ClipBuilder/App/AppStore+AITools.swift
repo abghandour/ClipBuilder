@@ -869,6 +869,9 @@ extension AppStore {
                 guard generation == profileGeneration, self.database === database else { return }
                 appendLog(\.analysisLog, ["\(video.filename): transcription saved"])
                 if projectID == activeProjectID { enqueueAutoTranslation(videoID: video.id) }
+                // A talking recording's lines carry speakers: a transcript
+                // made outside the podcast pass gets its speaker map here.
+                if video.type?.usesPodcastPass == true, projectID == activeProjectID { nameSpeakers(video: video) }
             } catch is CancellationError {
                 guard generation == profileGeneration else { return }
                 appendLog(\.analysisLog, ["\(video.filename): transcription stopped"])

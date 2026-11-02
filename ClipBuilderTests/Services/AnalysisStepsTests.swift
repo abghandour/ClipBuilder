@@ -57,12 +57,13 @@ struct AnalysisStepsTests {
     @Test("Outdated or missing exchanges count as missing for talking footage")
     func exchanges() {
         let roster = video(.interview, peopleDetected: true)
+        let named = SpeakerClusterNaming.Verdict(reasons: [])
         #expect(AnalysisSteps.missing(video: roster, report: report(hasRun: true, hasTranscript: true, state: .missingExchanges),
-                                      peopleCount: 1, passes: []) == [.exchanges])
+                                      peopleCount: 1, passes: [], speakerNaming: named) == [.exchanges])
         #expect(AnalysisSteps.missing(video: roster, report: report(hasRun: true, hasTranscript: true, state: .outdated(stage: "Podcast exchanges")),
-                                      peopleCount: 1, passes: []) == [.exchanges])
+                                      peopleCount: 1, passes: [], speakerNaming: named) == [.exchanges])
         #expect(AnalysisSteps.missing(video: roster, report: report(hasRun: true, hasTranscript: true, state: .upToDate),
-                                      peopleCount: 1, passes: []).isEmpty)
+                                      peopleCount: 1, passes: [], speakerNaming: named).isEmpty)
     }
 
     @Test("Fight scoring is missing until a completed v2 pass exists")
@@ -120,6 +121,12 @@ struct AnalysisStepsTests {
         }
         #expect(AnalysisSteps.missing(video: video(.training), report: done, peopleCount: 2, passes: [],
                                       speakerNaming: suspicious).isEmpty)
+        // A transcript with no speaker map at all (redone outside the podcast
+        // pass) needs naming; without a transcript there is nothing to name.
+        #expect(AnalysisSteps.missing(video: video(.interview), report: done, peopleCount: 2, passes: [],
+                                      speakerNaming: nil) == [.speakerNames])
+        #expect(AnalysisSteps.missing(video: video(.interview), report: report(hasRun: true, hasTranscript: false, state: .upToDate),
+                                      peopleCount: 2, passes: [], speakerNaming: nil) == [.transcript])
         #expect(AnalysisSteps.Step.speakerNames.title == "Name speakers")
         #expect(!AnalysisSteps.Step.speakerNames.needsBatch)
     }
