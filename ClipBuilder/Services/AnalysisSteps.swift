@@ -60,9 +60,11 @@ nonisolated enum AnalysisSteps {
                     || (report.hasTranscript && report.transcriptUsable && speakerNaming == nil)
             case .scenes:
                 !report.hasRun || report.state == .outdated(stage: "Visual analysis")
+                    || report.state == .outdated(stage: AnalysisCoverage.typeChangedStage)
             case .exchanges:
                 !report.hasRun || report.state == .missingExchanges
                     || report.state == .outdated(stage: "Podcast exchanges")
+                    || report.state == .outdated(stage: AnalysisCoverage.typeChangedStage)
             case .fightScore:
                 !fightScoreCurrent(videoID: video.id, passes: passes)
             }
@@ -143,8 +145,10 @@ nonisolated struct AnalysisStepBatch: Sendable, Equatable {
         var batch: [Int64: [AnalysisSteps.Step]] = [:]
         for (id, steps) in missing where !steps.isEmpty {
             if steps.contains(where: \.needsBatch) {
+                // The batch's podcast pass maps speakers on the transcript
+                // it ends up with; naming them in place first would read
+                // the transcript the batch is about to replace.
                 batch[id] = steps.filter { $0 != .speakerNames }
-                if steps.contains(.speakerNames) { inPlace[id] = [.speakerNames] }
             } else {
                 inPlace[id] = steps
             }

@@ -58,16 +58,44 @@ struct AnalysisCoverageTests {
         }
     }
 
-    @Test("Untyped requires a run, no exchanges and strictly less than 300 seconds")
+    @Test("Untyped requires a run and no exchanges, at any duration")
     func untyped() {
-        #expect(AnalysisCoverage.report(video: video(nil, duration: 299.9), runs: [run()],
-                                        scenes: [], transcriptCount: 1).state == .untyped)
-        for duration in [300.0, 600] {
+        for duration in [120.0, 299.9, 300, 600] {
             #expect(AnalysisCoverage.report(video: video(nil, duration: duration), runs: [run()],
-                                            scenes: [], transcriptCount: 1).state == .outdated(stage: "Visual analysis"))
+                                            scenes: [], transcriptCount: 1).state == .untyped)
         }
         #expect(AnalysisCoverage.report(video: video(nil), runs: [run(pipeline: AnalysisPipeline.visualPass)],
                                         scenes: [qa()], transcriptCount: 1).state == .upToDate)
+    }
+
+    @Test("A run captured as another type is outdated: scenes or exchanges need a new analysis, not exchanges on old scenes")
+    func typeChanged() {
+        var fightRun = run(pipeline: AnalysisPipeline.visualPass)
+        fightRun.requestJSON = AISettingsJSON.encode(AnalysisRequest(
+            sourceIdentity: "x", videoType: "fight", pipeline: AnalysisPipeline.visualPass, passVersions: [:],
+            plan: AnalysisRequest.capturePlan(defaults: .standard, singleVideo: true, provider: nil, model: nil, includeFightScoring: true)))
+        let same = AnalysisCoverage.report(video: video(.fight), activeRun: fightRun, scenes: [], transcriptCount: 0)
+        #expect(same.state == .upToDate && same.ranAs == .fight)
+        let nowInterview = AnalysisCoverage.report(video: video(.interview), activeRun: fightRun, scenes: [], transcriptCount: 2)
+        #expect(nowInterview.state == .outdated(stage: AnalysisCoverage.typeChangedStage))
+        #expect(AnalysisCoverage.action(for: nowInterview.state) == .analyze)
+        #expect(AnalysisCoverage.message(for: nowInterview, type: .interview).contains("Analyzed as Fight; it is now Interview"))
+        #expect(AnalysisSteps.missing(video: video(.interview), report: nowInterview, peopleCount: 1, passes: [],
+                                      speakerNaming: .init(reasons: [])) == [.exchanges])
+        let nowFight = AnalysisCoverage.report(video: video(.fight), activeRun: {
+            var r = run(pipeline: AnalysisPipeline.podcastPass)
+            var request = AnalysisRequest(sourceIdentity: "x", videoType: "interview", pipeline: AnalysisPipeline.podcastPass, passVersions: [:],
+                                          plan: AnalysisRequest.capturePlan(defaults: .standard, singleVideo: true, provider: nil, model: nil, includeFightScoring: false))
+            request.transcriptKey = "set"
+            r.requestJSON = AISettingsJSON.encode(request)
+            return r
+        }(), scenes: [qa()], transcriptCount: 2, transcriptKey: "set")
+        #expect(nowFight.state == .outdated(stage: AnalysisCoverage.typeChangedStage))
+        #expect(AnalysisSteps.missing(video: video(.fight), report: nowFight, peopleCount: 1, passes: []).contains(.scenes))
+        // A run that never recorded its type, or an untyped video, is not a change.
+        #expect(AnalysisCoverage.report(video: video(.interview), activeRun: run(pipeline: AnalysisPipeline.podcastPass),
+                                        scenes: [qa()], transcriptCount: 2).state == .upToDate)
+        #expect(!AnalysisCoverage.typeChanged(run: fightRun, type: nil))
     }
 
     @Test("Podcast and Interview share exchange coverage and current zero-result messaging",
@@ -155,6 +183,6 @@ struct AnalysisCoverageTests {
             #expect(AnalysisCoverage.action(for: state) == action)
             #expect(!AnalysisCoverage.message(for: state, type: .interview).isEmpty)
         }
-        #expect(AnalysisCoverage.message(for: .untyped, type: nil).contains("Podcast or Interview"))
+        #expect(AnalysisCoverage.message(for: .untyped, type: nil).contains("Set the type"))
     }
 }

@@ -262,6 +262,36 @@ final class GoogleDriveTransfers {
         }
     }
 
+    /// A source was renamed or moved: pending uploads of that record follow
+    /// the file to its new path so they do not fail on the old one. A
+    /// running upload keeps its snapshot; its checkpoint signature carries
+    /// the old path, so a later resume starts the session over.
+    func relinkMedia(recordID: Int64, kind: DriveMedia.Kind, to path: String, profile: String) {
+        for index in jobs.indices
+        where jobs[index].profile == profile && jobs[index].operation == .upload && jobs[index].status != .complete
+            && jobs[index].media?.recordID == recordID && jobs[index].media?.kind == kind {
+            jobs[index].media?.path = path
+        }
+        Task { await persist(profile: profile) }
+    }
+
+    /// Start a stopped or failed upload again from the file's current
+    /// path, dropping whatever the old session had sent.
+    func uploadAgain(_ id: UUID, media: DriveMedia) {
+        guard let job = jobs.first(where: { $0.id == id }), job.isUpload, job.status != .complete, tasks[id] == nil else { return }
+        offlineRetries.removeValue(forKey: id)?.cancel()
+        let context = contexts[job.profile]
+        update(id) {
+            $0.media = media
+            $0.progress = 0
+            $0.totalBytes = nil
+        }
+        Task {
+            await context?.media.discardArtifacts(for: job)
+            start(id)
+        }
+    }
+
     func resume(_ id: UUID) {
         // Asset groups are replanned by manual Refresh; stale actions must never resume alone.
         guard let job = jobs.first(where: { $0.id == id }), !job.isAsset, job.status != .complete else { return }

@@ -725,15 +725,22 @@ extension AppStore {
     /// User pick from the Analyze table's Type column — the manual value
     /// sticks (analysis only fills the type in when it's empty).
     func setVideoType(_ video: VideoRecord, type: VideoType?) {
-        guard let database else { return }
         Task {
-            do {
-                try await database.setVideoType(id: video.id, type: type?.rawValue)
-                if let index = videos.firstIndex(where: { $0.id == video.id }) {
-                    videos[index].videoType = type?.rawValue
-                }
-            } catch {
-                presentError("Could not save the video type", error)
+            do { try await setVideoTypes([video.id: type]) }
+            catch { presentError("Could not save the video type", error) }
+        }
+    }
+
+    /// Saves several types at once and waits for them, so an analysis
+    /// started right after sees the chosen types.
+    func setVideoTypes(_ types: [Int64: VideoType?]) async throws {
+        guard let database else { return }
+        let generation = profileGeneration
+        for (id, type) in types {
+            try await database.setVideoType(id: id, type: type?.rawValue)
+            guard generation == profileGeneration, self.database === database else { throw CancellationError() }
+            if let index = videos.firstIndex(where: { $0.id == id }) {
+                videos[index].videoType = type?.rawValue
             }
         }
     }
@@ -860,7 +867,7 @@ extension AppStore {
                 }
             }
             do {
-                try await requireProjectRecognizers(languages: languages)
+                try await requireRecognizers(for: video)
                 guard generation == profileGeneration, activeProjectID == projectID, self.database === database else { throw CancellationError() }
                 _ = try await transcription.transcribeForVideo(video: video, database: database,
                                                        languageCode: language, force: force,

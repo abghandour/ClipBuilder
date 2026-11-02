@@ -496,11 +496,16 @@ extension AppStore {
         }
         // Timelines naming the file by path (whole-file clips) follow it.
         builder.relinkVideoFile(from: video.url.path, to: destination.path)
+        // Captured now: record ids repeat across profiles, so a profile
+        // switch during the saves must not relink another profile's upload.
+        let profileName = activeProfile.profileName
         Task {
             do {
                 try await database.renameVideo(id: video.id, filename: name, path: destination.path,
                                                provenance: provenance)
                 try await database.relinkTimelineVideoFile(from: video.url.path, to: destination.path)
+                googleDrive.relinkMedia(recordID: video.id, kind: .source, to: destination.path,
+                                        profile: profileName)
                 await renameAnalysisBatches(for: video, newFilename: name)
                 await refreshAllNow()
             } catch {

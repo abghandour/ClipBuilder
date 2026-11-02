@@ -19,10 +19,11 @@ struct VideoLanguagePicker: View {
         let current = current
         let choices = VideoLanguage.choices(including: current.language, project: store.projectLanguages.spoken)
         let source = current.languageSource.flatMap(VideoLanguage.Source.init(rawValue:))
+        let failed = VideoLanguage.detectionFailed(language: current.language, source: current.languageSource)
         Picker("Language", selection: selection) {
             Text("—").tag("")
             ForEach(choices, id: \.self) { locale in
-                Text(VideoLanguage.name(locale)).tag(locale)
+                Text(VideoLanguage.choiceTitle(locale, state: store.recognizerStates[locale])).tag(locale)
             }
         }
         .labelsHidden()
@@ -30,8 +31,8 @@ struct VideoLanguagePicker: View {
         .lineLimit(1)
         .fixedSize()
         .help("The language spoken in this footage. "
-              + (source.map { $0.caption + ". " } ?? "Not known yet. ")
-              + "Transcription uses it before the project's languages.")
+              + (failed ? VideoLanguage.detectionFailedText + " " : source.map { $0.caption + ". " } ?? "Not known yet. ")
+              + "Transcription uses it before the project's languages; a language marked not installed is refused until it is installed.")
     }
 }
 
@@ -40,7 +41,16 @@ struct LanguageBadge: View {
     let video: VideoRecord
 
     var body: some View {
-        if let badge = VideoLanguage.badge(video.language), let language = video.language {
+        if VideoLanguage.detectionFailed(language: video.language, source: video.languageSource) {
+            Text("?")
+                .font(.caption2.weight(.bold)).monospaced()
+                .foregroundStyle(.orange)
+                .padding(.horizontal, 4).padding(.vertical, 1)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 3))
+                .lineLimit(1).fixedSize()
+                .help(VideoLanguage.detectionFailedText)
+                .accessibilityLabel("Language not detected")
+        } else if let badge = VideoLanguage.badge(video.language), let language = video.language {
             Text(badge)
                 .font(.caption2.weight(.bold)).monospaced()
                 .foregroundStyle(.secondary)

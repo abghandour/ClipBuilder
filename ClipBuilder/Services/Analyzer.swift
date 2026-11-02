@@ -943,11 +943,15 @@ actor Analyzer {
     /// (auto-generated or misspelled current name) rides along for review.
     /// Returns the fresh roster plus that proposal.
     /// Route unclassified long recordings before committing to the visual pipeline.
+    /// Shorter recordings are never classified: the prompt needs minutes of
+    /// footage to tell a talk from a fight, so the user is asked instead.
+    nonisolated static let minimumClassifiableDuration: Double = 300
+
     func classifyLongRecording(video: VideoRecord, provider: String?, model: String?,
                                log: @escaping @Sendable (String) -> Void, useLocal: Bool = false,
                                speechFraction: Double? = nil, cuts: [Double]? = nil) async throws -> VideoType? {
         try video.requirePresent()
-        guard video.type == nil, video.duration >= 300 else { return video.type }
+        guard video.type == nil, video.duration >= Self.minimumClassifiableDuration else { return video.type }
         let times = (0..<5).map { (Double($0) + 0.5) * video.duration / 5 }
         let frames = await extractFrames(url: video.url, timestamps: times, log: log)
         guard !frames.isEmpty else { return nil }

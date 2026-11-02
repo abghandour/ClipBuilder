@@ -146,7 +146,8 @@ extension AppStore {
                 if request.requestedPasses.contains("transcript"), request.transcriptKey == nil,
                    !TranscriptionLanguageRules.transcriptUsable(rows: (try? await database.fetchTranscripts(videoID: video.id)) ?? [], video: video) {
                     do {
-                        try await requireProjectRecognizers(languages: ProjectLanguages(spoken: request.spokenLocales ?? [request.language]))
+                        try await requireProjectRecognizers(languages: ProjectLanguages(
+                            spoken: ProjectLanguageResolver.unique((request.spokenLocales ?? []) + [request.language])))
                     } catch is CancellationError {
                         break
                     } catch {
@@ -917,7 +918,9 @@ extension AppStore {
             let projectID = activeProjectID
             Task {
                 do {
-                    try await requireProjectRecognizers()
+                    for video in videos where missing[video.id]?.contains(.transcript) == true {
+                        try await requireRecognizers(for: video)
+                    }
                     guard generation == profileGeneration, activeProjectID == projectID else { return }
                     runMissingAnalysisSteps(missing, videos: videos, syncWhenDone: syncWhenDone, readinessChecked: true)
                 } catch is CancellationError {
@@ -1041,7 +1044,7 @@ extension AppStore {
                         continueAnalysisStepBatch()
                     }
                     do {
-                        if podcast { try await requireProjectRecognizers(languages: languages) }
+                        if podcast { try await requireRecognizers(for: video) }
                         let existingBatches = ((try? await database.fetchAnalysisRuns()) ?? []).count { $0.videoID == video.id }
                         let runName = Self.analysisRunName(for: video, existingBatchCount: existingBatches)
                         let progress: @Sendable (Double, String) -> Void = { fraction, stage in

@@ -43,6 +43,7 @@ extension AppStore {
         }
         projectLanguageAssets = results
         languageAssets = projectID.flatMap { results[$0] } ?? []
+        await refreshRecognizerStates()
     }
 
     func saveProjectLanguages(_ languages: ProjectLanguages?, project: ProjectRecord) async throws {
@@ -56,6 +57,32 @@ extension AppStore {
         projectLanguageAssets[project.id] = nil
         if activeProjectID == project.id { languageAssets = [] }
         Task { await refreshLanguageReadiness() }
+    }
+
+    /// The languages a transcription of this video may run in: the
+    /// project's spoken languages plus the language chosen for the video,
+    /// which the recognizer is forced to.
+    func transcriptionLanguages(for video: VideoRecord?) -> ProjectLanguages {
+        let own = transcriptionLanguage(for: video)
+        return ProjectLanguages(spoken: ProjectLanguageResolver.unique(projectLanguages.spoken + [own]))
+    }
+
+    /// Refuses a transcription of this video whose recognizer is not
+    /// installed, the video's own language included: an uninstalled locale
+    /// never reaches a background pass, where its download would hang.
+    func requireRecognizers(for video: VideoRecord?) async throws {
+        try await requireProjectRecognizers(languages: transcriptionLanguages(for: video))
+    }
+
+    /// Recognizer state per offered video language, for the picker.
+    func refreshRecognizerStates() async {
+        let probe = languageProbe
+        let generation = profileGeneration
+        let choices = VideoLanguage.choices(project: projectLanguages.spoken)
+        var states: [String: LanguageAsset.State] = [:]
+        for locale in choices { states[locale] = await probe.recognizer(locale) }
+        guard generation == profileGeneration else { return }
+        recognizerStates = states
     }
 
     /// Always probes fresh, including when invoked before the first UI refresh finishes.
@@ -124,6 +151,17 @@ extension AppStore {
                         found += 1
                         log("\(video.filename): \(VideoLanguage.name(stored.language ?? candidate.identifier))")
                     } else {
+                        // Remembered as "listened, nothing clear": the row
+                        // can say so, and the file is not sampled again on
+                        // every launch. A transcript or the user still fills it.
+                        // The setter keeps a choice made meanwhile; mirror
+                        // what it stored, not what was asked.
+                        let stored = try await database.setVideoLanguage(id: video.id, language: nil, source: .detected)
+                        guard generation == profileGeneration, self.database === database else { throw CancellationError() }
+                        if let i = videos.firstIndex(where: { $0.id == video.id }) {
+                            videos[i].language = stored.language
+                            videos[i].languageSource = stored.source
+                        }
                         log("\(video.filename): no clear speech in the first minute")
                     }
                 } catch is CancellationError {

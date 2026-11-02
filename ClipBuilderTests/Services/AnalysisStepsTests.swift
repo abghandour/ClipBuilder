@@ -134,11 +134,12 @@ struct AnalysisStepsTests {
 
 @Suite("Analysis step batch")
 struct AnalysisStepBatchTests {
-    @Test("Speaker mapping is awaited in place even when exchanges also need a batch")
+    @Test("A file whose batch runs the podcast pass leaves speaker naming to that pass; alone it runs in place")
     func speakerNamesBeforeBatch() {
-        let parts = AnalysisStepBatch.partition([1: [.speakerNames], 2: [.people, .speakerNames, .exchanges]])
-        #expect(parts.inPlace == [1: [.speakerNames], 2: [.speakerNames]])
-        #expect(parts.batch == [2: [.people, .exchanges]])
+        let parts = AnalysisStepBatch.partition([1: [.speakerNames], 2: [.people, .speakerNames, .exchanges],
+                                                 3: [.transcript, .speakerNames, .exchanges]])
+        #expect(parts.inPlace == [1: [.speakerNames]])
+        #expect(parts.batch == [2: [.people, .exchanges], 3: [.transcript, .exchanges]])
         let run = AnalysisStepBatch(batch: parts.batch, syncWhenDone: true)
         #expect(run.next(inPlaceBusy: true, analyzing: false) == .wait)
     }

@@ -34,6 +34,8 @@ nonisolated enum AnalysisCoverage {
         var latestPipeline: Int?
         var unfinishedWork: Bool = false
         var sameAsActive: Bool? = nil
+        /// The type the active run was captured as, when recorded.
+        var ranAs: VideoType? = nil
         var state: State
     }
 
@@ -74,8 +76,13 @@ nonisolated enum AnalysisCoverage {
         let state: State
         if latest == nil {
             state = transcriptCount > 0 ? .transcriptOnly : .needsAnalysis
-        } else if video.type == nil && video.duration < 300 && qaCount == 0 {
+        } else if video.type == nil && qaCount == 0 {
+            // A run exists and the type is still unknown: the classifier
+            // found nothing (or the visual pass never set one), so the
+            // user must choose before anything type-specific can run.
             state = .untyped
+        } else if typeChanged(run: latest, type: video.type) {
+            state = .outdated(stage: typeChangedStage)
         } else if video.type?.usesPodcastPass == true && qaCount == 0 {
             state = .missingExchanges
         } else if video.type?.usesPodcastPass == true, exchangesFromOtherTranscript(run: latest, transcriptKey: transcriptKey) {
@@ -88,7 +95,22 @@ nonisolated enum AnalysisCoverage {
         return Report(qaCount: qaCount, hasTranscript: transcriptCount > 0, transcriptUsable: transcriptUsable, hasRun: latest != nil,
                       latestPipeline: pipeline,
                       unfinishedWork: hasCheckpoint || passes.contains { $0.videoID == video.id && $0.status != .completed },
-                      sameAsActive: duplicateOf.map { $0.id == activeRun?.id }, state: state)
+                      sameAsActive: duplicateOf.map { $0.id == activeRun?.id }, ranAs: runType(latest), state: state)
+    }
+
+    static let typeChangedStage = "Type changed"
+
+    /// The type the run was captured as, when its request recorded one.
+    static func runType(_ run: AnalysisRun?) -> VideoType? {
+        AISettingsJSON.decode(AnalysisRequest.self, run?.requestJSON)?.videoType.flatMap(VideoType.init(rawValue:))
+    }
+
+    /// True when the active run analyzed the footage as another type than
+    /// the one it has now: its scenes or exchanges were built with the
+    /// wrong prompt and the wrong pass.
+    static func typeChanged(run: AnalysisRun?, type: VideoType?) -> Bool {
+        guard let type, let ran = runType(run) else { return false }
+        return ran != type
     }
 
     /// True when the run grouped its exchanges from a transcript set other
@@ -120,16 +142,24 @@ nonisolated enum AnalysisCoverage {
             "This recording has a transcript but no analysis run. Choose Analyze to add scenes and, for Podcast or Interview, Q&A exchanges."
         case .missingExchanges:
             "Exchanges were never grouped for this \(type?.label.lowercased() ?? "recording"). Choose Run exchanges to group podcast exchanges and add the Q&A view."
+        case .outdated(let stage) where stage == typeChangedStage:
+            "This recording was analyzed as another type; it is now \(type?.label ?? "untyped"). Choose Analyze to redo its analysis as \(type?.label ?? "this type")."
         case .outdated(let stage):
             "\(stage) predates the current pipeline. Choose \(action(for: state)?.title ?? "Analyze") to update it."
         case .untyped:
-            "This recording has no type, so Analyze cannot choose the podcast pass. Set the type to Podcast or Interview, then analyze."
+            "This recording has no type, so analysis cannot tell a talk from a fight. Set the type, then analyze."
         }
+    }
+
+    /// The type-change message naming both types, when the run recorded one.
+    static func typeChangedMessage(ran: VideoType?, now: VideoType?) -> String {
+        "Analyzed as \(ran?.label ?? "another type"); it is now \(now?.label ?? "untyped"). Choose Analyze to redo the analysis as \(now?.label ?? "this type")."
     }
 
     /// A state alone cannot distinguish an old pass from a current pass with no candidates.
     static func message(for report: Report, type: VideoType?) -> String {
         if report.sameAsActive == true { return "Up to date, same settings." }
+        if report.state == .outdated(stage: typeChangedStage) { return typeChangedMessage(ran: report.ranAs, now: type) }
         if report.state == .missingExchanges,
            (report.latestPipeline ?? 0) >= AnalysisPipeline.current(for: type) {
             return "No exchanges were found for this \(type?.label.lowercased() ?? "recording"). Choose Run exchanges to try podcast exchanges again."

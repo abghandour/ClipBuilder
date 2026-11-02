@@ -21,6 +21,25 @@ nonisolated enum VideoLanguage {
     /// make every recognizer guess.
     static let minimumDetectionConfidence = 0.4
 
+    /// True when detection listened and found no clear speech: the row
+    /// says so instead of staying blank, and the user is asked to choose.
+    static func detectionFailed(language: String?, source: String?) -> Bool {
+        (language ?? "").isEmpty && source == Source.detected.rawValue
+    }
+
+    static let detectionFailedText = "Language not detected: no clear speech in the first minute. Choose it here."
+
+    /// The picker's title for a language, with its recognizer state when
+    /// it is not ready on this Mac.
+    static func choiceTitle(_ locale: String, state: LanguageAsset.State?) -> String {
+        switch state {
+        case .downloadable: "\(name(locale)) — not installed"
+        case .unsupported: "\(name(locale)) — not supported"
+        case .missing: "\(name(locale)) — not available"
+        case .installed, nil: name(locale)
+        }
+    }
+
     static let common = ["en-US", "pt-BR", "es-ES", "es-MX", "fr-FR", "de-DE", "it-IT", "ja-JP", "ko-KR",
                          "zh-CN", "ar-SA", "ru-RU", "hi-IN", "nl-NL", "tr-TR", "pl-PL"]
 

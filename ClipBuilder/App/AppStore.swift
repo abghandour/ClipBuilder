@@ -66,6 +66,8 @@ final class AppStore {
     }
     var languageAssets: [LanguageAsset] = []
     var projectLanguageAssets: [Int64: [LanguageAsset]] = [:]
+    /// Recognizer state per language the video picker offers.
+    var recognizerStates: [String: LanguageAsset.State] = [:]
     var languageReadinessRevision = 0
     var languageProbe = LanguageProbe.live
     var languageEditorProject: ProjectRecord?

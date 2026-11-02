@@ -46,3 +46,23 @@ struct VideoLanguageTests {
         #expect(video.language == nil && video.languageSource == "user")
     }
 }
+
+@Suite("Video language detection trace")
+struct VideoLanguageDetectionTraceTests {
+    @Test("a detected source with no language is a failed detection; a user blank or a found language is not")
+    func detectionFailed() {
+        #expect(VideoLanguage.detectionFailed(language: nil, source: "detected"))
+        #expect(VideoLanguage.detectionFailed(language: "", source: "detected"))
+        #expect(!VideoLanguage.detectionFailed(language: nil, source: "user"))
+        #expect(!VideoLanguage.detectionFailed(language: nil, source: nil))
+        #expect(!VideoLanguage.detectionFailed(language: "pt-BR", source: "detected"))
+    }
+
+    @Test("picker titles carry the recognizer state when it is not installed")
+    func choiceTitles() {
+        #expect(VideoLanguage.choiceTitle("es-ES", state: .downloadable) == "\(VideoLanguage.name("es-ES")) — not installed")
+        #expect(VideoLanguage.choiceTitle("es-ES", state: .unsupported) == "\(VideoLanguage.name("es-ES")) — not supported")
+        #expect(VideoLanguage.choiceTitle("es-ES", state: .installed) == VideoLanguage.name("es-ES"))
+        #expect(VideoLanguage.choiceTitle("es-ES", state: nil) == VideoLanguage.name("es-ES"))
+    }
+}

@@ -17,6 +17,10 @@ struct AnalyzeView: View {
     @State private var pendingDriveUploads: [DriveMedia] = []
     @State private var skippedDriveUploads = 0
     @State private var sortOrder: [KeyPathComparator<SourceRow>] = []
+    /// The sort and the column order/visibility the user chose, kept on
+    /// this Mac only (user defaults, not the profile).
+    @AppStorage("sources.table.sort") private var storedSort = ""
+    @AppStorage("sources.table.columns") private var columnCustomization = TableColumnCustomization<SourceRow>()
     /// Projects each source belongs to, for the inspector's Projects row.
     @State private var projectNames: [Int64: [String]] = [:]
     @State private var projectNamesVersion = 0
@@ -43,6 +47,7 @@ struct AnalyzeView: View {
     /// Analyze was pressed on videos whose last analysis did not finish:
     /// the prompt asks whether to resume or start over.
     @State private var resumePrompt: ResumePrompt?
+    @State private var typePrompt: TypePrompt?
     @State private var showingImporter = false
     @State private var showingProjectVideoPicker = false
     @State private var showingProjectFromSelection = false
@@ -201,7 +206,11 @@ struct AnalyzeView: View {
                                              newPersonName = suggested
                                              reassignVideo = video
                                              reassignPerson = person
-                                         })
+                                         },
+                                         coverage: tableSummary.coverage[video.id],
+                                         missingSteps: missingSteps,
+                                         onAnalyze: { startAnalysis(of: [video]) },
+                                         onRunSteps: { runSteps($0, video: video) })
                             .frame(maxHeight: .infinity)
                     } else {
                         SourcesPanePlaceholder(videoCount: store.videos.count, selectionCount: selection.count)
@@ -410,6 +419,11 @@ struct AnalyzeView: View {
             DispatchPlanSheet(operation: pending.operation, videos: pending.videos,
                               onStart: pending.run)
         }
+        .sheet(item: $typePrompt) { prompt in
+            VideoTypePromptSheet(videos: prompt.untyped,
+                                 onContinue: { typePrompt = nil; prompt.continue($0) },
+                                 onCancel: { typePrompt = nil })
+        }
         .sheet(isPresented: $showingProjectVideoPicker) {
             ProjectVideoPickerSheet()
         }
@@ -492,6 +506,9 @@ struct AnalyzeView: View {
         var videoID: Int64?
         var type: String?
         var peopleDetectedAt: String?
+        /// The transcript's usability depends on the chosen language.
+        var language: String?
+        var languageSource: String?
         var runsVersion: Int
         var scenesVersion: Int
         var transcriptCountsVersion: Int
@@ -520,7 +537,9 @@ struct AnalyzeView: View {
     /// footer's "N files · Analyze N steps" button.
     private var allMissingSteps: [Int64: [AnalysisSteps.Step]] {
         let present = store.videos.filter(\.isPresent)
-        let key = AllStepsKey(videos: present.map { "\($0.id)|\($0.videoType ?? "")|\($0.peopleDetectedAt ?? "")|\($0.activeRunKey ?? "")" },
+        let key = AllStepsKey(videos: present.map {
+            "\($0.id)|\($0.videoType ?? "")|\($0.peopleDetectedAt ?? "")|\($0.activeRunKey ?? "")|\($0.language ?? "")|\($0.languageSource ?? "")"
+        },
                               runsVersion: store.analysisRunsVersion, scenesVersion: store.scenesVersion,
                               transcriptCountsVersion: store.transcriptCountsVersion, peopleVersion: store.videoPeopleVersion,
                               speakerNamingVersion: store.speakerNamingVersion,
@@ -566,7 +585,7 @@ struct AnalyzeView: View {
             Spacer(minLength: 0)
             if summary.files > 0 {
                 Button(AnalysisSteps.batchButtonTitle(files: summary.files, steps: summary.steps)) {
-                    store.runMissingAnalysisSteps(missing, videos: store.videos, syncWhenDone: true)
+                    runAllMissingSteps()
                 }
                 .buttonStyle(.borderedProminent)
                 .lineLimit(1).fixedSize()
@@ -578,10 +597,30 @@ struct AnalyzeView: View {
         .padding(.vertical, Theme.spaceXS)
     }
 
+    /// The footer's batch, after the type question for files that have
+    /// none: the missing steps are recomputed once the types are saved,
+    /// since the type decides which steps a file expects.
+    private func runAllMissingSteps() {
+        let missing = allMissingSteps
+        // A stopped run resumes with the type its request recorded, so
+        // only files without one are asked.
+        let untyped = store.videos.filter { $0.type == nil && missing[$0.id] != nil && store.analysisCheckpoints[$0.id] == nil }
+        if !untyped.isEmpty {
+            typePrompt = TypePrompt(untyped: untyped) { _ in
+                let refreshed = allMissingSteps
+                guard !refreshed.isEmpty else { return }
+                store.runMissingAnalysisSteps(refreshed, videos: store.videos, syncWhenDone: true)
+            }
+            return
+        }
+        store.runMissingAnalysisSteps(missing, videos: store.videos, syncWhenDone: true)
+    }
+
     /// Steps the previewed recording is still missing; empty hides the button.
     private var missingSteps: [AnalysisSteps.Step] {
         guard let video = previewVideo else { return [] }
         let key = StepsKey(videoID: video.id, type: video.videoType, peopleDetectedAt: video.peopleDetectedAt,
+                           language: video.language, languageSource: video.languageSource,
                            runsVersion: store.analysisRunsVersion, scenesVersion: store.scenesVersion,
                            transcriptCountsVersion: store.transcriptCountsVersion, peopleVersion: store.videoPeopleVersion,
                            speakerNamingVersion: store.speakerNamingVersion,
@@ -618,11 +657,19 @@ struct AnalyzeView: View {
         let videos = selectedVideos
         let absent = videos.contains { !$0.isPresent }
         let steps = missingSteps
+        // Several files selected: only the actions that take a selection
+        // of files stay (add to or remove from a project, remove), so the
+        // per-file analysis and generation controls never act on a batch
+        // by accident.
+        let single = selection.count <= 1
         return FlowLayout(spacing: 6) {
-            if let video = previewVideo, !steps.isEmpty {
+            if let video = previewVideo {
+                DriveUploadFooter(video: video)
+            }
+            if single, let video = previewVideo, !steps.isEmpty {
                 let busy = stepsInFlight(video)
                 Button(AnalysisSteps.buttonTitle(count: steps.count)) {
-                    store.runMissingAnalysisSteps(steps, video: video)
+                    runSteps(steps, video: video)
                 }
                 .buttonStyle(.borderedProminent)
                 .disabled(busy || store.isAnalyzing || !video.isPresent)
@@ -632,32 +679,32 @@ struct AnalyzeView: View {
                       : VideoRecord.notPresentReason)
                 if busy { ProgressView().controlSize(.small) }
             }
-            iconButton(selection.count > 1 ? "Analyze \(selection.count) videos"
-                       : videos.first.map { store.duplicateAnalysis(for: $0) != nil ? "Analyze again" : "Analyze" } ?? "Analyze",
-                       systemImage: "sparkles",
-                       help: absent ? VideoRecord.notPresentReason : selection.count > 1
-                           ? "Analyzes the \(selection.count) selected videos back to back with the same plan — each lands in its own analyze batch on the Scenes screen"
-                           : videos.first.map { store.analysisRequestHelp(for: $0) } ?? "Select a video to analyze.") {
-                if !videos.isEmpty { startAnalysis(of: videos) }
+            if single {
+                iconButton(videos.first.map { store.duplicateAnalysis(for: $0) != nil ? "Analyze again" : "Analyze" } ?? "Analyze",
+                           systemImage: "sparkles",
+                           help: absent ? VideoRecord.notPresentReason
+                               : videos.first.map { store.analysisRequestHelp(for: $0) } ?? "Select a video to analyze.") {
+                    if !videos.isEmpty { startAnalysis(of: videos) }
+                }
+                .disabled(selection.isEmpty || store.isAnalyzing || checkingAnalysis || absent)
+                iconButton("Run full pipeline", systemImage: "arrow.triangle.turn.up.right.diamond",
+                           help: "Analyze the selected video and generate reels from it in one run") {
+                    showAnalyzeWizard = true
+                }
+                .disabled(selection.isEmpty || store.isPipelineRunning || absent)
+                iconButton("Generate with AI Wizard", systemImage: "wand.and.stars",
+                           help: absent ? VideoRecord.notPresentReason
+                               : "Open the AI Wizard on the selected video's analysis to generate a video from it") {
+                    store.openWizard(with: videos)
+                }
+                .disabled(selection.isEmpty || absent)
+                iconButton("Build in AI Builder", systemImage: "hammer",
+                           help: absent ? VideoRecord.notPresentReason
+                               : "Create a timeline with the selected video and open it in the AI Builder") {
+                    store.buildTimeline(from: videos)
+                }
+                .disabled(selection.isEmpty || absent)
             }
-            .disabled(selection.isEmpty || store.isAnalyzing || checkingAnalysis || absent)
-            iconButton("Run full pipeline", systemImage: "arrow.triangle.turn.up.right.diamond",
-                       help: "Analyze the selected videos and generate reels from them in one run") {
-                showAnalyzeWizard = true
-            }
-            .disabled(selection.isEmpty || store.isPipelineRunning || absent)
-            iconButton("Generate with AI Wizard", systemImage: "wand.and.stars",
-                       help: absent ? VideoRecord.notPresentReason
-                           : "Open the AI Wizard on the selected videos' analysis to generate a video from them") {
-                store.openWizard(with: videos)
-            }
-            .disabled(selection.isEmpty || absent)
-            iconButton("Build in AI Builder", systemImage: "hammer",
-                       help: absent ? VideoRecord.notPresentReason
-                           : "Create a timeline with the selected videos and open it in the AI Builder") {
-                store.buildTimeline(from: videos)
-            }
-            .disabled(selection.isEmpty || absent)
             if store.isHomeProject {
                 Menu {
                     ForEach(store.projects.filter { !$0.isHome && !$0.archived }) { project in
@@ -677,9 +724,11 @@ struct AnalyzeView: View {
                 .disabled(selection.isEmpty)
                 .help("Add the selected videos to a project")
             } else {
-                iconButton("Add from Home", systemImage: "folder.badge.plus",
-                           help: "Add videos already in this profile's Home project") {
-                    showingProjectVideoPicker = true
+                if single {
+                    iconButton("Add from Home", systemImage: "folder.badge.plus",
+                               help: "Add videos already in this profile's Home project") {
+                        showingProjectVideoPicker = true
+                    }
                 }
                 iconButton("Remove from project", systemImage: "minus.circle",
                            help: "Take the selected videos out of this project; they stay in Home") {
@@ -687,9 +736,11 @@ struct AnalyzeView: View {
                 }
                 .disabled(selection.isEmpty)
             }
-            iconButton("Scan for duplicates", systemImage: "rectangle.on.rectangle",
-                       help: "Find source videos that are copies of each other") {
-                showDuplicateScan = true
+            if single {
+                iconButton("Scan for duplicates", systemImage: "rectangle.on.rectangle",
+                           help: "Find source videos that are copies of each other") {
+                    showDuplicateScan = true
+                }
             }
             iconButton(store.isTeamAttachedProfile ? "Remove from this Mac" : "Remove source",
                        systemImage: "trash",
@@ -718,8 +769,36 @@ struct AnalyzeView: View {
         .help(help)
     }
 
-    private func startAnalysis(of videos: [VideoRecord]) {
+    /// Runs steps of one file, after the type question when the file has
+    /// no type and no stopped run: a short untyped recording would
+    /// otherwise get the visual pass unasked. The steps are narrowed to
+    /// what the chosen type expects; when none survive, every step the
+    /// file is then missing runs.
+    private func runSteps(_ steps: [AnalysisSteps.Step], video: VideoRecord) {
+        guard video.type == nil, store.analysisCheckpoints[video.id] == nil else {
+            store.runMissingAnalysisSteps(steps, video: video)
+            return
+        }
+        typePrompt = TypePrompt(untyped: [video]) { confirmed in
+            guard let updated = confirmed.first else { return }
+            let expected = AnalysisSteps.expected(for: updated.type)
+            let wanted = steps.filter { expected.contains($0) }
+            store.runMissingAnalysisSteps(wanted.isEmpty ? (allMissingSteps[updated.id] ?? []) : wanted, video: updated)
+        }
+    }
+
+    private func startAnalysis(of videos: [VideoRecord], typesConfirmed: Bool = false) {
         guard videos.allSatisfy(\.isPresent) else { store.presentError(VideoRecord.notPresentReason); return }
+        // A recording with no type gets the wrong passes; ask before the
+        // run, once, unless it is resuming where it stopped.
+        let untyped = videos.filter { $0.type == nil && store.analysisCheckpoints[$0.id] == nil }
+        if !typesConfirmed, !untyped.isEmpty {
+            typePrompt = TypePrompt(untyped: untyped) { confirmed in
+                let byID = Dictionary(uniqueKeysWithValues: confirmed.map { ($0.id, $0) })
+                startAnalysis(of: videos.map { byID[$0.id] ?? $0 }, typesConfirmed: true)
+            }
+            return
+        }
         let unfinished = videos.filter { store.analysisCheckpoints[$0.id] != nil }
         if unfinished.isEmpty {
             if videos.count == 1, let video = videos.first,
@@ -757,6 +836,14 @@ struct AnalyzeView: View {
         var unfinished: [VideoRecord]
     }
 
+    /// The type question asked before a run; `continue` gets the videos
+    /// with their chosen types saved.
+    struct TypePrompt: Identifiable {
+        let id = UUID()
+        var untyped: [VideoRecord]
+        var `continue`: ([VideoRecord]) -> Void
+    }
+
     /// What the resume prompt says: where each unfinished run stopped.
     private func resumeMessage(_ prompt: ResumePrompt) -> String {
         let lines = prompt.unfinished.compactMap { video -> String? in
@@ -792,12 +879,6 @@ struct AnalyzeView: View {
     }
 
     /// A table-only projection keeps the sortable label out of persisted video records.
-    private nonisolated struct SourceRow: Identifiable {
-        var video: VideoRecord
-        var id: Int64 { video.id }
-        var createdDate: Date { video.createdDate }
-    }
-
     private struct ProjectNamesKey: Equatable {
         var storeID: ObjectIdentifier
         var generation: Int
@@ -877,6 +958,8 @@ struct AnalyzeView: View {
             (video.id, AnalysisCoverage.report(video: video, activeRun: store.activeLayer(videoID: video.id).run,
                                                scenes: scenesByVideo[video.id] ?? [],
                                                transcriptCount: transcriptCounts[video.id] ?? 0,
+                                               transcriptUsable: store.transcriptUsable(video),
+                                               transcriptKey: store.transcriptFacts[video.id]?.transcriptionKey,
                                                passes: store.analysisPasses, hasCheckpoint: store.analysisCheckpoints[video.id] != nil,
                                                duplicateOf: store.duplicateAnalysis(for: video)))
         })
@@ -896,6 +979,28 @@ struct AnalyzeView: View {
                             coverage: coverage)
     }
 
+    /// Steps in flight for a file, from the store's per-pass sets.
+    private func runningSteps(_ video: VideoRecord) -> Set<AnalysisSteps.Step> {
+        var running: Set<AnalysisSteps.Step> = []
+        if store.analyzingVideoIDs.contains(video.id) { running.formUnion([.scenes, .exchanges]) }
+        if store.detectingPeopleVideoID == video.id { running.insert(.people) }
+        if store.transcribingVideoIDs.contains(video.id) { running.insert(.transcript) }
+        if store.speakerMappingVideoIDs.contains(video.id) { running.insert(.speakerNames) }
+        if store.fightScoringInFlight.contains(video.id) { running.insert(.fightScore) }
+        return running
+    }
+
+    private func chipInputs(video: VideoRecord, summary: TableSummary) -> AnalysisStepPresentation.Inputs {
+        let report = summary.coverage[video.id]
+            ?? AnalysisCoverage.Report(qaCount: 0, hasTranscript: false, hasRun: false, latestPipeline: nil, state: .needsAnalysis)
+        return AnalysisStepPresentation.Inputs(
+            type: video.type, report: report,
+            peopleCount: summary.peopleCounts[video.id] ?? 0, peopleDetectedAt: video.peopleDetectedAt,
+            sceneCount: summary.sceneCounts[video.id] ?? 0, qaCount: summary.qaCounts[video.id] ?? 0,
+            speakerNaming: store.speakerNamingSummaries[video.id]?.verdict,
+            missing: allMissingSteps[video.id] ?? [], running: runningSteps(video))
+    }
+
     @ViewBuilder
     private func coverageControl(video: VideoRecord, report: AnalysisCoverage.Report?) -> some View {
         if store.duplicateAnalysis(for: video) != nil {
@@ -907,20 +1012,30 @@ struct AnalyzeView: View {
                 fightStatsFocusVideoID = video.id
                 fightStatsFocusRequest = UUID()
             }
-        } else if let report, report.state != .needsAnalysis,
-           let action = AnalysisCoverage.action(for: report.state) {
+        } else if let report, report.state == .untyped {
+            // The step chips cover missing and outdated work; a run with no
+            // type is the one state they cannot act on.
             HStack(spacing: 6) {
-                Image(systemName: "arrow.triangle.2.circlepath")
+                Image(systemName: "questionmark.circle")
                     .foregroundStyle(.orange)
-                    .accessibilityLabel("Analysis update available")
-                Button(action.title) { performCoverageAction(action, video: video) }
+                    .accessibilityLabel("Type unknown")
+                Button(AnalysisCoverage.Action.setType.title) { performCoverageAction(.setType, video: video) }
                     .buttonStyle(.bordered)
                     .controlSize(.small)
                     .lineLimit(1)
                     .fixedSize()
-                    .disabled(store.isAnalyzing || (action != .setType && !video.isPresent))
             }
             .help(AnalysisCoverage.message(for: report, type: video.type))
+        } else if store.analysisCheckpoints[video.id] != nil, !stepsInFlight(video) {
+            Button {
+                startAnalysis(of: [video])
+            } label: {
+                Label("Unfinished", systemImage: "pause.circle")
+                    .foregroundStyle(.orange)
+            }
+            .buttonStyle(.plain)
+            .lineLimit(1).fixedSize()
+            .help("An analysis of this file stopped before it finished. Click to resume it or start over.")
         } else {
             Color.clear
         }
@@ -942,8 +1057,8 @@ struct AnalyzeView: View {
 
     private var table: some View {
         let summary = tableSummary
-        return Table(summary.videos, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("File") { row in
+        return Table(summary.videos, selection: $selection, sortOrder: $sortOrder, columnCustomization: $columnCustomization) {
+            TableColumn("File", value: \.filename) { row in
                 let video = row.video
                 HStack(spacing: Theme.spaceXS) {
                     // No gesture on the cell: a SwiftUI tap in a table cell
@@ -965,8 +1080,6 @@ struct AnalyzeView: View {
                         DriveMediaBadge(media: video.driveMedia)
                         DriveFetchIndicator(media: video.driveMedia)
                     }
-                    AIInfoButton(video: video)
-                    LanguageBadge(video: video)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .clipped()
@@ -978,6 +1091,8 @@ struct AnalyzeView: View {
                 .environment(store)
             }
             .width(min: 200, ideal: 320)
+            .customizationID(SourcesTableSort.Column.file.rawValue)
+            .disabledCustomizationBehavior(.visibility)
 
             TableColumn("Created", value: \.createdDate) { row in
                 let video = row.video
@@ -985,104 +1100,62 @@ struct AnalyzeView: View {
                     .help(video.createdDate.formatted(date: .complete, time: .standard))
             }
             .width(min: 85, ideal: 100)
+            .customizationID(SourcesTableSort.Column.created.rawValue)
 
-            TableColumn("Duration") { row in
+            TableColumn("Duration", value: \.duration) { row in
                 Text(row.video.duration.timecode)
                     .monospacedDigit()
             }
             .width(70)
+            .customizationID(SourcesTableSort.Column.duration.rawValue)
 
-            TableColumn("Type") { row in
+            TableColumn("Type", value: \.typeLabel) { row in
                 let video = row.video
                 Text(video.type?.label ?? "—")
                     .foregroundStyle(video.type == nil ? .tertiary : .secondary)
-                    .help(video.type == nil ? "Not classified yet — analysis infers the footage type"
+                    .help(video.type == nil ? "No type yet — Analyze asks for one, or set it in the detail pane"
                                             : "Footage type; change it in the detail pane")
             }
             .width(min: 70, ideal: 90)
+            .customizationID(SourcesTableSort.Column.type.rawValue)
+
+            // Two-letter code, or "?" when detection found nothing; the
+            // language is changed in the detail pane.
+            TableColumn("Lang", value: \.language) { row in
+                LanguageBadge(video: row.video)
+            }
+            .width(min: 36, ideal: 40)
+            .customizationID(SourcesTableSort.Column.lang.rawValue)
 
             TableColumn("Status") { row in
                 let video = row.video
-                if store.analyzingVideoIDs.contains(video.id) {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Analyzing…")
+                let batches = summary.batchCounts[video.id] ?? 0
+                // Batch picker, then one chip per step the type expects
+                // (count when done, click to run when missing or outdated),
+                // then the states the chips cannot act on.
+                HStack(spacing: 6) {
+                    AnalysisBatchControl(store: store, video: video, compact: true) { runs in
+                        batchComparison = ScenesView.CompareRequest(runs: runs, video: video)
                     }
-                    .foregroundStyle(.secondary)
-                } else if store.detectingPeopleVideoID == video.id {
-                    HStack(spacing: 6) {
-                        ProgressView()
-                            .controlSize(.small)
-                        Text("Detecting people…")
-                    }
-                    .foregroundStyle(.secondary)
-                    .help("The people pass is watching this video in the background")
-                } else {
-                    let batches = summary.batchCounts[video.id] ?? 0
-                    let people = summary.peopleCounts[video.id] ?? 0
-                    let hasTranscript = (summary.transcriptCounts[video.id] ?? 0) > 0
-                    // Analysis, people, transcript, Q&A, and update action.
-                    // Coverage is computed once per library snapshot.
-                    // Fixed slots so the marks line up as columns down
-                    // the table; empty slots keep their width.
-                    HStack(spacing: 6) {
-                        AnalysisBatchControl(store: store, video: video, compact: true) { runs in
-                            batchComparison = ScenesView.CompareRequest(runs: runs, video: video)
-                        }
-                        .foregroundStyle(batches > 0 ? Color.green : Color.secondary)
-                        .frame(width: 58, alignment: .leading)
-                        Group {
-                            if people > 0 {
-                                Label("\(people)", systemImage: "person.2.fill")
-                                    .foregroundStyle(.secondary)
-                                    .monospacedDigit()
-                                    .help("\(people) \(people == 1 ? "person" : "people") found")
-                                    .accessibilityLabel("\(people) people found")
-                            } else {
-                                Color.clear
-                            }
-                        }
-                        .frame(width: 44, alignment: .leading)
-                        Group {
-                            if hasTranscript {
-                                Image(systemName: "text.quote")
-                                    .foregroundStyle(.secondary)
-                                    .help("Transcript ready")
-                                    .accessibilityLabel("Transcript ready")
-                            } else {
-                                Color.clear
-                            }
-                        }
-                        .frame(width: 18, alignment: .center)
-                        Group {
-                            let qaCount = summary.qaCounts[video.id] ?? 0
-                            if qaCount > 0 {
-                                Label("\(qaCount)", systemImage: "bubble.left.and.bubble.right")
-                                    .foregroundStyle(.secondary)
-                                    .monospacedDigit()
-                                    .help("\(qaCount) Q&A exchanges")
-                                    .accessibilityLabel("\(qaCount) Q&A exchanges")
-                            } else {
-                                Color.clear
-                            }
-                        }
-                        .frame(width: 54, alignment: .leading)
-                        coverageControl(video: video, report: summary.coverage[video.id])
-                            .frame(width: 136, alignment: .leading)
-                        if let verdict = store.speakerNamingSummaries[video.id]?.verdict, verdict.isSuspicious {
-                            Image(systemName: "person.crop.circle.badge.questionmark")
-                                .foregroundStyle(.orange)
-                                .help(verdict.reason)
-                                .accessibilityLabel("Name speakers: \(verdict.reason)")
-                        }
-                    }
-                    .lineLimit(1)
-                    .fixedSize()
+                    .foregroundStyle(batches > 0 ? Color.green : Color.secondary)
+                    .frame(width: 58, alignment: .leading)
+                    AnalysisStepChips(store: store, video: video,
+                                      chips: AnalysisStepPresentation.chips(chipInputs(video: video, summary: summary)),
+                                      missing: allMissingSteps[video.id] ?? [],
+                                      run: { runSteps($0, video: video) })
+                    coverageControl(video: video, report: summary.coverage[video.id])
                 }
+                .lineLimit(1)
+                .fixedSize()
             }
-            .width(min: 334, ideal: 350)
+            .width(min: 420, ideal: 480)
+            .customizationID("status")
         }
+        // Headers sort (click, click again to flip) and the sort is kept
+        // across launches; columns reorder by dragging their headers and
+        // show or hide from the header's context menu.
+        .onAppear { if sortOrder.isEmpty { sortOrder = SourcesTableSort.decode(storedSort) } }
+        .onChange(of: sortOrder) { _, order in storedSort = SourcesTableSort.encode(order) }
         // The empty-row stripes render as detached gray bars on this macOS,
         // reading as debris under a short table — rows separate fine without
         // them.
@@ -1330,6 +1403,39 @@ private struct VideoPreviewPane: View {
     let onSelectVideo: (VideoRecord) -> Void
     /// Requests the name sheet from AnalyzeView, outside the split view.
     let onReassignNewPerson: (PersonRecord, VideoRecord, String) -> Void
+    /// Coverage of the active run, for the reason lines under Type,
+    /// Language and the active batch.
+    var coverage: AnalysisCoverage.Report? = nil
+    var missingSteps: [AnalysisSteps.Step] = []
+    /// Starts a full analysis of this video (type prompt and plan included).
+    var onAnalyze: () -> Void = {}
+    /// Runs the given steps of this video (type prompt included).
+    var onRunSteps: ([AnalysisSteps.Step]) -> Void = { _ in }
+
+    /// A wrapped orange reason with its one action, under the control it
+    /// explains.
+    private func reasonLine(_ text: String, action: AnalysisCoverage.Action?,
+                            perform: @escaping (AnalysisCoverage.Action) -> Void) -> some View {
+        reasonLine(text, actionTitle: action?.title, help: action.map { "\($0.title) this recording" } ?? "") {
+            if let action { perform(action) }
+        }
+        .disabled(store.isAnalyzing || !video.isPresent)
+    }
+
+    private func reasonLine(_ text: String, actionTitle: String?, help: String, perform: @escaping () -> Void) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: Theme.spaceS) {
+            Text(text)
+                .font(.caption2).foregroundStyle(.orange)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 0)
+            if let actionTitle {
+                Button(actionTitle, action: perform)
+                    .controlSize(.small)
+                    .lineLimit(1).fixedSize()
+                    .help(help)
+            }
+        }
+    }
 
     /// What the player area shows while there is no player.
     private enum Availability { case loading, downloading, ready, unavailable }
@@ -1445,6 +1551,24 @@ private struct VideoPreviewPane: View {
                 if active.missingPin {
                     Text("pinned batch not on this Mac yet").font(.caption2).foregroundStyle(.orange)
                 }
+                if let coverage, coverage.state != .upToDate, coverage.state != .needsAnalysis,
+                   coverage.state != .outdated(stage: AnalysisCoverage.typeChangedStage), coverage.sameAsActive != true {
+                    reasonLine(AnalysisCoverage.message(for: coverage, type: video.type),
+                               action: AnalysisCoverage.action(for: coverage.state)) { action in
+                        switch action {
+                        case .analyze: onAnalyze()
+                        case .runExchanges: onRunSteps([.exchanges])
+                        case .setType: break
+                        }
+                    }
+                }
+                if let verdict = store.speakerNamingSummaries[video.id]?.verdict, verdict.isSuspicious {
+                    reasonLine(verdict.reason, actionTitle: "Name speakers again",
+                               help: "Runs the speaker naming pass again on the current transcript and people") {
+                        onRunSteps([.speakerNames])
+                    }
+                    .disabled(store.speakerMappingVideoIDs.contains(video.id) || !video.isPresent)
+                }
             }
             VStack(spacing: 2) {
                 HStack(spacing: 4) {
@@ -1458,6 +1582,7 @@ private struct VideoPreviewPane: View {
                     .buttonStyle(.borderless)
                     .controlSize(.mini)
                     .help("File Name Wizard: builds a descriptive name for this file from what's on record — people, type, fight research, scene stories — reviewed before renaming")
+                    AIInfoButton(size: 12, video: video)
                 }
                 Text("\(video.duration.timecode) · \(video.width)×\(video.height)")
                     .font(.caption2)
@@ -1472,12 +1597,35 @@ private struct VideoPreviewPane: View {
                 Spacer()
                 VideoTypePicker(video: video, focusRequest: typeFocusRequest)
             }
+            if let coverage, coverage.state == .outdated(stage: AnalysisCoverage.typeChangedStage) {
+                reasonLine(AnalysisCoverage.typeChangedMessage(ran: coverage.ranAs, now: video.type),
+                           actionTitle: "Analyze", help: "Redoes the analysis with the passes this type uses") { onAnalyze() }
+                    .disabled(store.isAnalyzing || !video.isPresent)
+            } else if video.type == nil {
+                Text(Analyzer.minimumClassifiableDuration <= video.duration
+                     ? "No type yet. Analysis guesses one from the first minutes, or choose it here."
+                     : "No type yet, and the recording is too short to guess one. Choose it here before analyzing.")
+                    .font(.caption2).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+            }
             HStack {
                 Text("Language")
                     .font(.caption.weight(.medium))
                     .lineLimit(1).fixedSize()
                 Spacer()
                 VideoLanguagePicker(video: video)
+            }
+            if let coverage, coverage.hasTranscript, !coverage.transcriptUsable {
+                let transcriptLanguage = store.transcriptFacts[video.id]?.language
+                reasonLine("The transcript is in \(transcriptLanguage.map(VideoLanguage.name) ?? "another language"); this video is \(video.language.map(VideoLanguage.name) ?? "set to another language"). Transcribe again to match.",
+                           actionTitle: "Transcribe again", help: "Transcribes the video again in its language") {
+                    onRunSteps([.transcript])
+                }
+                .disabled(store.transcribingVideoIDs.contains(video.id) || !video.isPresent)
+            } else if VideoLanguage.detectionFailed(language: video.language, source: video.languageSource) {
+                Text(VideoLanguage.detectionFailedText)
+                    .font(.caption2).foregroundStyle(.orange)
+                    .fixedSize(horizontal: false, vertical: true)
             }
             HStack(alignment: .firstTextBaseline) {
                 Text("Projects")
