@@ -2,6 +2,10 @@ import Foundation
 import Testing
 @testable import Clip_Builder
 
+// Serialized: two tests run the same "Clip Builder Dub" shortcut, and
+// concurrent `shortcuts run` calls can deliver one run's output to the
+// other's path, so the m4a is gone before ffmpeg reads it.
+@Suite(.serialized)
 struct SiriDubVoicesTests {
     @Test func naturalAssetsBecomeRankedVoicesAndSiriOwnAssetsAreIgnored() {
         let voices = SiriDubVoices.voices(fromSpecifiers: [
