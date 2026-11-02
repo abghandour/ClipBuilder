@@ -19,7 +19,8 @@ extension Database {
                 width=excluded.width,
                 height=excluded.height,
                 wide=excluded.wide,
-                created_at=COALESCE(videos.created_at, excluded.created_at)
+                created_at=COALESCE(videos.created_at, excluded.created_at),
+                hidden=0
             RETURNING id
             """, [.text(hash), .text(filename), .text(path), .real(duration),
                   .integer(Int64(width)), .integer(Int64(height)), .integer(wide ? 1 : 0), .text(created)])
@@ -31,6 +32,18 @@ extension Database {
     func setVideosHidden(_ ids: [Int64], _ hidden: Bool) throws {
         for id in ids {
             try connection.execute("UPDATE videos SET hidden = ? WHERE id = ?", [.integer(hidden ? 1 : 0), .integer(id)])
+        }
+    }
+
+    /// The Sources page's remove: the row leaves every list and every
+    /// project, but its scenes, transcripts, batches and people stay, so the
+    /// same file added again (same content hash) comes back analyzed.
+    func retireVideos(_ ids: [Int64]) throws {
+        try connection.transaction {
+            for id in ids {
+                try connection.execute("UPDATE videos SET hidden = 1 WHERE id = ?", [.integer(id)])
+                try connection.execute("DELETE FROM project_videos WHERE video_id = ?", [.integer(id)])
+            }
         }
     }
 

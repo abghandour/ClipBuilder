@@ -10,8 +10,15 @@ struct BuilderView: View {
     @Environment(\.undoManager) private var undoManager
 
     @State private var playingClip: TimelineClip?
-    @State private var showDubSetup = false
     @State private var showScenePicker = false
+    /// Width of the timeline pane. Under `compactControlsWidth` the controls
+    /// bar drops its menu titles; under `tightControlsWidth` also the
+    /// "Timeline" caption, the Add title and the zoom glyphs, so the bar,
+    /// and with it the track header column, never grows wider than the pane
+    /// down to its 560-point minimum.
+    @State private var timelinePaneWidth: CGFloat = 0
+    private static let compactControlsWidth: CGFloat = 980
+    private static let tightControlsWidth: CGFloat = 780
     @State private var showBRollPicker = false
     @AppStorage("builder.browserTab") private var browserTab = "scenes"
     @State private var pickerFind: BuilderWizardPickerRequest?
@@ -161,10 +168,12 @@ struct BuilderView: View {
                                     discardWizard: discardWizard, openWizardPicker: openWizardPicker,
                                     scriptTools: scriptTools)
                 }
-                    // Wide enough for the four browser tabs (a segmented picker
-                    // never compresses) and the Wizard's provider/model row;
-                    // narrower restored widths clipped both.
-                    .rememberedPaneWidth("pane.builder.browser", min: 320, initial: 340, max: 480)
+                    // Wide enough for the four browser tabs: a segmented picker
+                    // never compresses and measures 328 points plus the pane's
+                    // 8-point padding on each side. Narrower widths centre the
+                    // content in the pane and clip both edges, which cut the
+                    // Wizard's Run button at the old 320-point minimum.
+                    .rememberedPaneWidth("pane.builder.browser", min: 352, initial: 360, max: 480)
                     .frame(maxHeight: .infinity, alignment: .top)
                 // Preview/inspector above, timeline below, with a draggable
                 // divider between them; the timeline's height is remembered.
@@ -202,6 +211,12 @@ struct BuilderView: View {
                     TimelineView(onPlayClip: { playingClip = $0 })
                         .frame(maxHeight: .infinity)
                     }
+                    // Leading-aligned and clipped: if the bar is still wider than
+                    // the pane, the overflow is cut on the right, never the
+                    // "Timeline" text or the track header column on the left.
+                    .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
+                    .clipped()
+                    .onGeometryChange(for: CGFloat.self) { $0.size.width } action: { timelinePaneWidth = $0 }
                     .rememberedPaneHeight("pane.builder.timeline", min: 180, initial: 300)
                 }
                 .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
@@ -223,19 +238,9 @@ struct BuilderView: View {
         .screenTitle(store.openTimeline?.name ?? "Timeline", subtitle: "\(store.activeProject?.name ?? "Project") · \(model.document.videoTrack.count) clips · \(model.totalDuration.timecode)")
         .askAI(BuilderAssistant())
         .background { BuilderCleanupCutsPublisher() }
-        .sheet(isPresented: $showDubSetup) { DubSetupSheet() }
         .sheet(isPresented: $showAllTimelines) { TimelinesView(presentedAsSheet: true) }
         .toolbar {
             if pageVisible {
-                ToolbarItem {
-                    Button {
-                        showDubSetup = true
-                    } label: {
-                        ToolbarBubbleLabel(text: "Dub…", systemImage: "waveform")
-                    }
-                    .disabled(model.document.videoTrack.isEmpty)
-                    .help("Replace the speech on this timeline with a synthetic voice in another language")
-                }
                 ToolbarItem {
                     Button {
                         if let id = store.openTimelineID { store.startHookVariants(timelineID: id) }
@@ -430,10 +435,15 @@ struct BuilderView: View {
         let model = store.builder
         let _ = model.revision
         let undo = model.undoManager
-        return HStack(spacing: Theme.spaceM) {
-            Text("Timeline")
-                .font(.caption.weight(.semibold))
-                .foregroundStyle(.secondary)
+        let compact = timelinePaneWidth > 0 && timelinePaneWidth < Self.compactControlsWidth
+        let tight = timelinePaneWidth > 0 && timelinePaneWidth < Self.tightControlsWidth
+        return HStack(spacing: tight ? Theme.spaceS : Theme.spaceM) {
+            if !tight {
+                Text("Timeline")
+                    .font(.caption.weight(.semibold))
+                    .foregroundStyle(.secondary)
+                    .lineLimit(1).fixedSize()
+            }
 
             HStack(spacing: Theme.spaceXS) {
                 Button("Undo", systemImage: "arrow.uturn.backward") { undo?.undo() }
@@ -450,10 +460,12 @@ struct BuilderView: View {
                            showImagePicker: $showImagePicker,
                            showGenerateImage: $showGenerateImage,
                            showBRollPicker: $showBRollPicker)
+                .labelStyle(TimelineControlLabelStyle(compact: tight))
 
             Divider().frame(height: 16)
 
             CropStyleMenu()
+                .labelStyle(TimelineControlLabelStyle(compact: compact))
 
             Menu {
                 Picker("Canvas", selection: Binding(
@@ -505,7 +517,8 @@ struct BuilderView: View {
             } label: {
                 Label(model.document.renderSettings.preset.label, systemImage: "aspectratio")
             }
-            .help("Output canvas and encode quality for this timeline")
+            .labelStyle(TimelineControlLabelStyle(compact: compact))
+            .help("Output canvas (\(model.document.renderSettings.preset.label)) and encode quality for this timeline")
 
             Menu {
                 Picker("Cadence", selection: Binding(
@@ -533,27 +546,32 @@ struct BuilderView: View {
             } label: {
                 Label(model.document.pacing.cadence.label, systemImage: "metronome")
             }
-            .help("Cadence guide shown on the timeline ruler")
+            .labelStyle(TimelineControlLabelStyle(compact: compact))
+            .help("Cadence guide shown on the timeline ruler (\(model.document.pacing.cadence.label))")
 
-            Spacer()
+            Spacer(minLength: Theme.spaceS)
 
-            Image(systemName: "minus.magnifyingglass")
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
+            if !tight {
+                Image(systemName: "minus.magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
             Slider(value: Binding(
                 get: { model.pointsPerSecond },
                 set: { model.pointsPerSecond = $0 }),
                 in: 20...200)
-                .frame(width: 140)
+                .frame(width: compact ? 80 : 140)
                 .accessibilityLabel("Timeline zoom")
                 .accessibilityValue("\(Int(model.pointsPerSecond)) points per second")
-            Image(systemName: "plus.magnifyingglass")
-                .foregroundStyle(.secondary)
-                .accessibilityHidden(true)
+            if !tight {
+                Image(systemName: "plus.magnifyingglass")
+                    .foregroundStyle(.secondary)
+                    .accessibilityHidden(true)
+            }
 
             Divider().frame(height: 16)
 
-            BuilderPreviewControls()
+            BuilderPreviewControls(compact: compact)
         }
         .controlSize(.small)
         .padding(.horizontal, Theme.spaceM)
@@ -570,6 +588,24 @@ struct BuilderView: View {
         case .overlay(let uid): model.removeOverlayBlock(uid)
         case .crop(let uid): model.removeCropBlock(uid)
         case nil: break
+        }
+    }
+}
+
+/// Timeline controls-bar menus: full title and icon when the pane is wide,
+/// icon only when it is narrow. A plain style switch, not a ViewThatFits,
+/// because these labels sit on AppKit-hosted menus.
+struct TimelineControlLabelStyle: LabelStyle {
+    var compact: Bool
+
+    func makeBody(configuration: Configuration) -> some View {
+        if compact {
+            configuration.icon
+        } else {
+            HStack(spacing: Theme.spaceXS) {
+                configuration.icon
+                configuration.title.lineLimit(1)
+            }
         }
     }
 }

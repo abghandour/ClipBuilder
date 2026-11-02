@@ -16,7 +16,9 @@ struct AnalyzeView: View {
     @State private var showingDriveUpload = false
     @State private var pendingDriveUploads: [DriveMedia] = []
     @State private var skippedDriveUploads = 0
-    @State private var sortOrder: [KeyPathComparator<VideoRecord>] = []
+    @State private var sortOrder: [KeyPathComparator<SourceRow>] = []
+    @State private var projectNames: [Int64: String] = [:]
+    @State private var projectNamesVersion = 0
     @Environment(AppStore.self) private var store
     @Environment(\.workspacePageVisible) private var pageVisible
 
@@ -143,6 +145,8 @@ struct AnalyzeView: View {
     private func runAssistantCommand(_ command: AssistantCommand) {
         switch command.actionID {
         case "sources.add": showingImporter = true
+        case "sources.addFromHome":
+            if !store.isHomeProject { showingProjectVideoPicker = true }
         case "sources.analyze.missing": runMissingSteps()
         case "sources.transcribe.missing": runMissingSteps(only: .transcript)
         case "sources.speakers.name": runMissingSteps(only: .speakerNames)
@@ -264,12 +268,12 @@ struct AnalyzeView: View {
             store.isTeamAttachedProfile
                 ? (pendingSourceRemoval.count == 1 ? "Remove this source from this Mac?"
                                                    : "Remove \(pendingSourceRemoval.count) sources from this Mac?")
-                : (pendingSourceRemoval.count == 1 ? "Delete this source?"
-                                                   : "Delete \(pendingSourceRemoval.count) sources?"),
+                : (pendingSourceRemoval.count == 1 ? "Remove this source?"
+                                                   : "Remove \(pendingSourceRemoval.count) sources?"),
             isPresented: Binding(get: { !pendingSourceRemoval.isEmpty }, set: { if !$0 { pendingSourceRemoval = [] } }),
             titleVisibility: .visible
         ) {
-            Button(store.isTeamAttachedProfile ? "Remove from this Mac" : "Delete", role: .destructive) {
+            Button(store.isTeamAttachedProfile ? "Remove from this Mac" : "Remove", role: .destructive) {
                 let videos = pendingSourceRemoval
                 pendingSourceRemoval = []
                 selection.subtract(videos.map(\.id))
@@ -283,7 +287,10 @@ struct AnalyzeView: View {
                       : "")
                      + "The sources disappear from this Mac's lists but stay on record for your team.")
             } else {
-                Text("Scenes, transcripts, analyze batches and people tags for these sources are deleted. Files in the profile's source folder move to the Trash.")
+                Text((store.isHomeProject
+                      ? "Removing from Home removes the source from every project. "
+                      : "The source is removed from Home and from every project, not only this one. ")
+                     + "Its scenes, transcripts and analyze batches are kept, so adding the same file again needs no new analysis. Files in the profile's source folder move to the Trash.")
             }
         }
         .screenTitle("Sources", subtitle: "\(store.videos.count) source videos")
@@ -292,12 +299,33 @@ struct AnalyzeView: View {
         .toolbar {
             if pageVisible {
                 ToolbarItemGroup {
-                    Button {
-                        showingImporter = true
-                    } label: {
-                        ToolbarBubbleLabel(text: "Add Videos", systemImage: "plus")
+                    if store.isHomeProject {
+                        Button {
+                            showingImporter = true
+                        } label: {
+                            ToolbarBubbleLabel(text: "Add Videos", systemImage: "plus")
+                        }
+                        .help("Add source videos to this project")
+                    } else {
+                        Menu {
+                            Button("From Finder…") { showingImporter = true }
+                                .lineLimit(1).fixedSize()
+                            Button(store.homeVideosNotInProjectCount > 0
+                                   ? "From Home… (\(store.homeVideosNotInProjectCount) available)"
+                                   : "From Home… (none available)") { showingProjectVideoPicker = true }
+                                .lineLimit(1).fixedSize()
+                                .disabled(store.homeVideosNotInProjectCount == 0)
+                            Button("From Google Drive…") { showingDriveBrowser = true }
+                                .lineLimit(1).fixedSize()
+                        } label: {
+                            ToolbarBubbleLabel(text: "Add Videos", systemImage: "plus")
+                        } primaryAction: {
+                            showingImporter = true
+                        }
+                        // The indicator is the only way to open the menu on a
+                        // split button; the label itself runs the Finder importer.
+                        .help("Add new videos, or open the menu to pick videos from Home")
                     }
-                    .help("Add source videos to this project")
                     Button { showingDriveBrowser = true } label: { ToolbarBubbleLabel(text: "Add from Google Drive…", systemImage: "icloud.and.arrow.down") }
                         .help("Pick videos from Google Drive and add them to this project")
                     Button {
@@ -409,6 +437,7 @@ struct AnalyzeView: View {
         .onChange(of: store.restoredAnalysisRequests) { comparisonRevision += 1 }
         .onChange(of: store.transcriptCountsVersion) { comparisonRevision += 1 }
         .onChange(of: store.videoPeopleVersion) { comparisonRevision += 1 }
+        .task(id: projectNamesKey) { await loadProjectNames() }
         .onReceive(NotificationCenter.default.publisher(for: UserDefaults.didChangeNotification)) { _ in
             refreshComparisonPlanKey()
         }
@@ -642,8 +671,8 @@ struct AnalyzeView: View {
                 .disabled(selection.isEmpty)
                 .help("Add the selected videos to a project")
             } else {
-                iconButton("Add existing videos", systemImage: "folder.badge.plus",
-                           help: "Add videos that are already in another project") {
+                iconButton("Add from Home", systemImage: "folder.badge.plus",
+                           help: "Add videos already in this profile's Home project") {
                     showingProjectVideoPicker = true
                 }
                 iconButton("Remove from project", systemImage: "minus.circle",
@@ -656,11 +685,11 @@ struct AnalyzeView: View {
                        help: "Find source videos that are copies of each other") {
                 showDuplicateScan = true
             }
-            iconButton(store.isTeamAttachedProfile ? "Remove from this Mac" : "Delete source",
+            iconButton(store.isTeamAttachedProfile ? "Remove from this Mac" : "Remove source",
                        systemImage: "trash",
                        help: store.isTeamAttachedProfile
                            ? "Remove the selected sources from this Mac: local copies are offloaded to Google Drive and the rows are hidden here; teammates keep them"
-                           : "Delete the selected sources with their scenes, transcripts and batches; files in the profile's source folder go to the Trash") {
+                           : "Remove the selected sources from every project; their analysis is kept and files in the profile's source folder go to the Trash") {
                 pendingSourceRemoval = videos
             }
             .disabled(selection.isEmpty || store.isAnalyzing || store.isBuilderRendering
@@ -756,6 +785,47 @@ struct AnalyzeView: View {
         return w <= 50 && h <= 50 ? "\(w):\(h)" : String(format: "%.2f:1", value)
     }
 
+    /// A table-only projection keeps the sortable label out of persisted video records.
+    private nonisolated struct SourceRow: Identifiable {
+        var video: VideoRecord
+        var projects: String
+        var id: Int64 { video.id }
+        var createdDate: Date { video.createdDate }
+    }
+
+    private struct ProjectNamesKey: Equatable {
+        var storeID: ObjectIdentifier
+        var generation: Int
+        var projectID: Int64?
+        var videosVersion: Int
+        var projects: [ProjectRecord]
+    }
+
+    private var projectNamesKey: ProjectNamesKey {
+        ProjectNamesKey(storeID: ObjectIdentifier(store), generation: store.profileGeneration,
+                        projectID: store.activeProjectID, videosVersion: store.videosVersion, projects: store.projects)
+    }
+
+    private func loadProjectNames() async {
+        let key = projectNamesKey
+        guard store.isHomeProject, let database = store.database else {
+            projectNames = [:]
+            projectNamesVersion += 1
+            return
+        }
+        do {
+            let names = try await database.projectNames(forVideos: store.videos.map(\.id))
+            guard !Task.isCancelled, key == projectNamesKey, store.database === database else { return }
+            projectNames = names.mapValues { $0.joined(separator: ", ") }
+            projectNamesVersion += 1
+        } catch {
+            guard !Task.isCancelled, key == projectNamesKey, store.database === database else { return }
+            projectNames = [:]
+            projectNamesVersion += 1
+            store.presentError("Could not load source projects", error)
+        }
+    }
+
     private struct TableKey: Equatable {
         var storeID: ObjectIdentifier
         var videosVersion: Int
@@ -765,11 +835,13 @@ struct AnalyzeView: View {
         var transcriptCountsVersion: Int
         var passes: [AnalysisPassRecord]
         var unfinishedVideoIDs: Set<Int64>
-        var sortOrder: [KeyPathComparator<VideoRecord>]
+        var sortOrder: [KeyPathComparator<SourceRow>]
+        var projectNamesVersion: Int
+        var isHomeProject: Bool
     }
 
     private struct TableSummary {
-        var videos: [VideoRecord]
+        var videos: [SourceRow]
         var sceneCounts: [Int64: Int]
         var batchCounts: [Int64: Int]
         var transcriptCounts: [Int64: Int]
@@ -786,7 +858,7 @@ struct AnalyzeView: View {
                            scenesVersion: store.scenesVersion, peopleVersion: store.videoPeopleVersion,
                            transcriptCountsVersion: store.transcriptCountsVersion,
                            passes: store.analysisPasses, unfinishedVideoIDs: Set(store.analysisCheckpoints.keys),
-                           sortOrder: sortOrder)
+                           sortOrder: sortOrder, projectNamesVersion: projectNamesVersion, isHomeProject: store.isHomeProject)
         return tableMemo(key) { computeTableSummary() }
     }
 
@@ -812,7 +884,8 @@ struct AnalyzeView: View {
         for (video, roster) in store.videoPeopleCounts where roster > (peopleCounts[video] ?? 0) {
             peopleCounts[video] = roster
         }
-        return TableSummary(videos: store.videos.sorted(using: sortOrder), sceneCounts: sceneCounts,
+        let rows = store.videos.map { SourceRow(video: $0, projects: store.isHomeProject ? projectNames[$0.id] ?? "—" : "—") }
+        return TableSummary(videos: rows.sorted(using: sortOrder), sceneCounts: sceneCounts,
                             batchCounts: batchCounts, transcriptCounts: transcriptCounts,
                             peopleCounts: peopleCounts, qaCounts: store.sceneIndex.qaCountsByVideo,
                             coverage: coverage)
@@ -865,7 +938,8 @@ struct AnalyzeView: View {
     private var table: some View {
         let summary = tableSummary
         return Table(summary.videos, selection: $selection, sortOrder: $sortOrder) {
-            TableColumn("File") { video in
+            TableColumn("File") { row in
+                let video = row.video
                 HStack(spacing: Theme.spaceXS) {
                     // No gesture on the cell: a SwiftUI tap in a table cell
                     // makes AppKit apply the row selection only after mouse
@@ -898,19 +972,21 @@ struct AnalyzeView: View {
             }
             .width(min: 200, ideal: 320)
 
-            TableColumn("Created", value: \.createdDate) { video in
+            TableColumn("Created", value: \.createdDate) { row in
+                let video = row.video
                 Text(video.createdDate, format: .dateTime.year().month(.twoDigits).day(.twoDigits))
                     .help(video.createdDate.formatted(date: .complete, time: .standard))
             }
             .width(min: 85, ideal: 100)
 
-            TableColumn("Duration") { video in
-                Text(video.duration.timecode)
+            TableColumn("Duration") { row in
+                Text(row.video.duration.timecode)
                     .monospacedDigit()
             }
             .width(70)
 
-            TableColumn("Type") { video in
+            TableColumn("Type") { row in
+                let video = row.video
                 Text(video.type?.label ?? "—")
                     .foregroundStyle(video.type == nil ? .tertiary : .secondary)
                     .help(video.type == nil ? "Not classified yet — analysis infers the footage type"
@@ -918,7 +994,15 @@ struct AnalyzeView: View {
             }
             .width(min: 70, ideal: 90)
 
-            TableColumn("Status") { video in
+            if store.isHomeProject {
+                TableColumn("Projects", value: \.projects) { row in
+                    Text(row.projects).lineLimit(1).help(row.projects)
+                }
+                .width(min: 100, ideal: 160)
+            }
+
+            TableColumn("Status") { row in
+                let video = row.video
                 if store.analyzingVideoIDs.contains(video.id) {
                     HStack(spacing: 6) {
                         ProgressView()
@@ -1055,12 +1139,17 @@ struct AnalyzeView: View {
                         Button(project.name) { store.addVideos(Array(ids), to: project.id) }
                     }
                 }
-            } else {
-                Divider()
+            }
+            Divider()
+            if !store.isHomeProject {
                 Button("Remove from Project", role: .destructive) {
                     pendingRemoval = ids
                 }
             }
+            Button(store.isTeamAttachedProfile ? "Remove from this Mac…" : "Remove Source…", role: .destructive) {
+                pendingSourceRemoval = store.videos.filter { ids.contains($0.id) }
+            }
+            .disabled(store.isAnalyzing || store.isBuilderRendering || store.isWizardRunning || store.isPipelineRunning)
         } primaryAction: { ids in
             // AppKit's own double-click, so single clicks select on mouse down.
             if ids.count == 1, let video = store.videos.first(where: { $0.id == ids.first }) {
@@ -1078,6 +1167,27 @@ struct AnalyzeView: View {
                 RoundedRectangle(cornerRadius: Theme.mediaRadius)
                     .strokeBorder(Color.accentColor, lineWidth: 3)
                     .allowsHitTesting(false)
+            } else if store.videos.isEmpty && !store.isHomeProject {
+                ContentUnavailableView {
+                    Label("No sources in \(store.activeProject?.name ?? "this project") yet", systemImage: "film")
+                } description: {
+                    Text(store.homeVideosNotInProjectCount > 0
+                         ? "Add new files, or pick from the \(store.homeVideosNotInProjectCount) videos already in this profile's Home project."
+                         : "Add new files; Home has no videos yet either.")
+                } actions: {
+                    if store.homeVideosNotInProjectCount > 0 {
+                        Button("Add from Home…") { showingProjectVideoPicker = true }
+                            .lineLimit(1).fixedSize()
+                            .buttonStyle(.borderedProminent)
+                        Button("Add Videos…") { showingImporter = true }
+                            .lineLimit(1).fixedSize()
+                            .buttonStyle(.bordered)
+                    } else {
+                        Button("Add Videos…") { showingImporter = true }
+                            .lineLimit(1).fixedSize()
+                            .buttonStyle(.borderedProminent)
+                    }
+                }
             } else if store.videos.isEmpty {
                 ContentUnavailableView {
                     Label("Add your first source video", systemImage: "film")

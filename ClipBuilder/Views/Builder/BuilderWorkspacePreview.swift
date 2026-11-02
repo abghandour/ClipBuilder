@@ -55,6 +55,8 @@ struct BuilderWorkspacePreview: View {
 struct BuilderPreviewControls: View {
     @Environment(AppStore.self) private var store
     @AppStorage(PlaybackSpeed.key) private var speed = 1.0
+    /// Narrow timeline pane: the Preview and Replay buttons show icons only.
+    var compact = false
 
     var body: some View {
         let model = store.builder
@@ -80,9 +82,11 @@ struct BuilderPreviewControls: View {
                 }
                 if store.builderPreviewLastPlayed != nil {
                     Button("Replay", systemImage: "arrow.counterclockwise", action: store.replayBuilderPreview)
+                        .labelStyle(TimelineControlLabelStyle(compact: compact))
                         .help("Play the last preview run again from where it started")
                 }
                 Button("Preview \(seconds) s", systemImage: "play.fill") { store.startBuilderPreview() }
+                    .labelStyle(TimelineControlLabelStyle(compact: compact))
                     .buttonStyle(.borderedProminent)
                     .disabled(store.isBuilderRendering || model.document.videoTrack.isEmpty)
                     .help(store.isBuilderRendering

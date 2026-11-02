@@ -210,6 +210,63 @@ extension Database {
             """, [.integer(projectID)]).map(Self.videoRecord)
     }
 
+    func countVideosNotInProject(_ projectID: Int64) throws -> Int {
+        guard try !isHomeProject(projectID) else { return 0 }
+        return Int(try connection.query("""
+            SELECT COUNT(*) AS count FROM videos v
+            WHERE v.hidden = 0 AND NOT EXISTS (
+                SELECT 1 FROM project_videos current
+                WHERE current.project_id = ? AND current.video_id = v.id
+            )
+            """, [.integer(projectID)]).first?["count"]?.intValue ?? 0)
+    }
+
+    /// One batch, including archived ordinary projects. Home is implicit.
+    func projectNames(forVideos ids: [Int64]) throws -> [Int64: [String]] {
+        guard !ids.isEmpty else { return [:] }
+        let json = String(decoding: try JSONEncoder().encode(ids), as: UTF8.self)
+        let rows = try connection.query("""
+            SELECT pv.video_id, p.name FROM project_videos pv
+            JOIN projects p ON p.id = pv.project_id
+            WHERE p.is_home = 0 AND pv.video_id IN (SELECT value FROM json_each(?))
+            ORDER BY p.name COLLATE NOCASE, p.id
+            """, [.text(json)])
+        var result: [Int64: [String]] = [:]
+        for row in rows {
+            guard let id = row["video_id"]?.intValue, let name = row["name"]?.stringValue else { continue }
+            result[id, default: []].append(name)
+        }
+        return result
+    }
+
+    /// Three queries regardless of the number of videos, with no project scope.
+    func fetchVideoFacts(ids: [Int64]) throws -> [Int64: HomeVideoCandidate.Facts] {
+        guard !ids.isEmpty else { return [:] }
+        let json = String(decoding: try JSONEncoder().encode(ids), as: UTF8.self)
+        var result = Dictionary(uniqueKeysWithValues: Set(ids).map { ($0, HomeVideoCandidate.Facts()) })
+        for row in try connection.query("""
+            SELECT DISTINCT video_id FROM scenes WHERE video_id IN (SELECT value FROM json_each(?))
+            """, [.text(json)]) {
+            if let id = row["video_id"]?.intValue { result[id]?.hasScenes = true }
+        }
+        for row in try connection.query("""
+            SELECT DISTINCT video_id FROM transcripts WHERE video_id IN (SELECT value FROM json_each(?))
+            """, [.text(json)]) {
+            if let id = row["video_id"]?.intValue { result[id]?.hasTranscript = true }
+        }
+        for row in try connection.query("""
+            SELECT pv.video_id, pv.project_id FROM project_videos pv
+            JOIN projects p ON p.id = pv.project_id
+            WHERE p.is_home = 0 AND pv.video_id IN (SELECT value FROM json_each(?))
+            ORDER BY pv.project_id
+            """, [.text(json)]) {
+            if let id = row["video_id"]?.intValue, let projectID = row["project_id"]?.intValue {
+                result[id]?.projectIDs.append(projectID)
+            }
+        }
+        return result
+    }
+
     func projectIDs(forVideo videoID: Int64) throws -> [Int64] {
         try connection.query(
             "SELECT project_id FROM project_videos WHERE video_id = ? ORDER BY project_id",

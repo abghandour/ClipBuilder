@@ -115,10 +115,12 @@ final class AppStore {
     // Project workspace. Projects scope footage, scenes, timelines, and
     // outputs while people, Instagram, and resources remain profile-wide.
     var projects: [ProjectRecord] = [] { didSet { updateBugReportContext() } }
+    var homeVideosNotInProjectCount = 0
     var activeProjectID: Int64? {
         didSet {
             updateBugReportContext()
             if oldValue != activeProjectID {
+                homeVideosNotInProjectCount = 0
                 languageAssets = activeProjectID.flatMap { projectLanguageAssets[$0] } ?? []
                 languageTranslationInstall = nil
                 resetMiniFootage()
@@ -1472,6 +1474,7 @@ final class AppStore {
             let loadedProjects = try? await database.fetchProjects()
             guard generation == profileGeneration else { return }
             projects = loadedProjects ?? projects
+            await refreshHomeAvailability()
         } catch {
             presentError("Could not load the library", error)
         }
@@ -1634,6 +1637,8 @@ final class AppStore {
         let folder = activeProfile.sourceFolderURL.standardizedFileURL
         let profile = activeProfile
         let generation = profileGeneration
+        let destination = projects.first { $0.id == projectID }
+        let destinationLabel = destination?.isHome == true ? "Home" : "\(destination?.name ?? "project") and Home"
         enqueueSourceDiscovery(profile: profile) {
             let copyResult = await Task.detached(priority: .utility) {
                 var paths: [String] = []
@@ -1660,6 +1665,9 @@ final class AppStore {
                 let additions = matches.filter { !inProject.contains($0.id) }
                 try await database.assignVideos(additions.map(\.id), to: projectID)
                 if generation == self.profileGeneration {
+                    if !additions.isEmpty {
+                        self.appendLog(\.analysisLog, ["Added \(additions.count) video(s) to \(destinationLabel)"])
+                    }
                     self.refreshProjectCatalog()
                     if self.activeProjectID == projectID { self.refreshAll() }
                     if scan.settling > 0 { self.scheduleSettledRescan(generation: generation) }

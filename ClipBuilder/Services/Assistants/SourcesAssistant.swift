@@ -12,6 +12,8 @@ nonisolated struct SourcesAssistant: PageAssistant {
 
     struct Snapshot: Equatable, Sendable {
         var sourceCount = 0
+        /// Zero in Home; ordinary projects can reuse these profile videos.
+        var homeAvailable = 0
         var presentCount = 0
         var transcribedCount = 0
         /// Files on this Mac with any missing or outdated step (the footer).
@@ -58,6 +60,7 @@ nonisolated struct SourcesAssistant: PageAssistant {
     static func context(_ s: Snapshot) -> AssistantContext {
         var facts = [
             AssistantFact("sources", "Sources", s.sourceCount),
+            AssistantFact("home.available", "Available from Home", s.homeAvailable),
             AssistantFact("present", "On this Mac", s.presentCount),
             AssistantFact("transcribed", "Transcribed", s.transcribedCount),
             AssistantFact("missing.files", "Files missing steps", s.missingFiles),
@@ -81,6 +84,7 @@ nonisolated struct SourcesAssistant: PageAssistant {
         let state = store.assistant.state(page)
         var s = Snapshot()
         s.sourceCount = store.videos.count
+        s.homeAvailable = store.isHomeProject ? 0 : store.homeVideosNotInProjectCount
         s.presentCount = store.videos.count(where: \.isPresent)
         s.transcribedCount = store.videos.count { (store.transcriptCounts[$0.id] ?? 0) > 0 }
         s.missingFiles = state.count("missing.files")
@@ -115,6 +119,12 @@ nonisolated struct SourcesAssistant: PageAssistant {
         }
         let sources = context.int("sources") ?? 0
         if sources == 0 {
+            let available = context.int("home.available") ?? 0
+            if available > 0 {
+                rows.append(.init(id: "sources.addFromHome", kind: .insight,
+                                  title: "Home has \(available) videos not in this project",
+                                  reason: "Pick the ones this project needs", actionID: "sources.addFromHome"))
+            }
             rows.append(.init(id: "sources.add.none", kind: .action, title: "Add source videos",
                               reason: "This project has no sources yet", actionID: "sources.add"))
             return rows
@@ -171,6 +181,13 @@ nonisolated struct SourcesAssistant: PageAssistant {
                 return .started(jobTitle: "Language Assets")
             },
             .command("sources.add", "Add Videos", "plus", message: "Choose videos to add."),
+            AssistantAction(id: "sources.addFromHome", title: "Add from Home", systemImage: "folder.badge.plus",
+                            isAvailable: { $0.activeProjectID != nil && !$0.isHomeProject && $0.homeVideosNotInProjectCount > 0 },
+                            handledByPage: true) { store in
+                store.selectSection(.sources)
+                store.assistant.sendCommand("sources.addFromHome")
+                return .handled("Choose videos from Home to add to this project.")
+            },
             .command("sources.analyze.missing", "Analyze missing steps", "sparkles",
                      message: "Analyzing every missing step.", available: idle),
             .command("sources.transcribe.missing", "Transcribe", "text.quote",
@@ -198,6 +215,7 @@ nonisolated struct SourcesAssistant: PageAssistant {
     static func route(_ text: String) -> String? {
         let t = AssistantText.normalized(text)
         if t.isEmpty { return nil }
+        if AssistantText.mentions(t, ["from home", "home project", "home videos"]) { return "sources.addFromHome" }
         if AssistantText.mentions(t, ["language", "recognizer", "translation pack"]) { return "languages.install" }
         if AssistantText.mentions(t, ["duplicate", "copies", "same video"]) { return "sources.duplicates.scan" }
         if AssistantText.mentions(t, ["file name", "filename", "rename", "better name"]) { return "sources.names.suggest" }

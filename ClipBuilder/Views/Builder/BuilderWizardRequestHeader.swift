@@ -41,7 +41,10 @@ struct BuilderWizardRequestHeader: View {
                     .pickerStyle(.menu)
                     .labelsHidden()
                     .lineLimit(1)
-                    .frame(maxWidth: 220)
+                    // Left-aligned so no gap opens after the provider. The pane's
+                    // 352-point minimum fits both pickers; a ViewThatFits here
+                    // cycled the AttributeGraph once the page was paused.
+                    .frame(maxWidth: 220, alignment: .leading)
                     .disabled(model.busy || (model.phase == .awaitingPrerequisites || model.phase == .awaitingReply))
                     .onChange(of: model.agentModel) { _, _ in model.saveModelPreference() }
                     .help("The model this provider runs for Builder edits. Default uses the provider's model from Settings → AI.")

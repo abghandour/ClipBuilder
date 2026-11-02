@@ -10,6 +10,8 @@ enum Theme {
     static let spaceM: CGFloat = 12
     static let spaceL: CGFloat = 16
     static let spaceXL: CGFloat = 20
+    /// Sidebar rows sit this much further in than their group header.
+    static let sidebarRowIndent: CGFloat = 12
 
     /// Card surfaces (scene cards, library cards): one radius + padding.
     static let cardRadius: CGFloat = 8

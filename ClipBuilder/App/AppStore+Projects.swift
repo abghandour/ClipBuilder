@@ -76,10 +76,12 @@ extension AppStore {
             let snapshot = try await database.fetchLibrarySnapshot(projectID: id)
             let loadedTimelines = try await database.fetchTimelines(projectID: id)
             let loadedProjects = try await database.fetchProjects()
+            let homeAvailability = try await database.countVideosNotInProject(id)
             // A profile switch or another project load meanwhile owns the lists now.
             guard generation == profileGeneration, activeProjectID == id else { return }
             timelines = loadedTimelines
             projects = loadedProjects
+            homeVideosNotInProjectCount = homeAvailability
             applyLibrarySnapshot(snapshot, generation: generation)
             let state = projectState(for: activeProject)
             if SidebarSection(rawValue: state.section) == .wizardMini {
@@ -214,23 +216,39 @@ extension AppStore {
 
     func addVideos(_ videoIDs: [Int64], to projectID: Int64) {
         guard !videoIDs.isEmpty, let database else { return }
+        let generation = profileGeneration
         Task {
             do {
                 try await database.assignVideos(videoIDs, to: projectID)
-                projects = try await database.fetchProjects()
+                let updated = try await database.fetchProjects()
+                guard generation == profileGeneration, self.database === database else { return }
+                projects = updated
+                await refreshHomeAvailability()
+                guard generation == profileGeneration, self.database === database else { return }
                 if activeProjectID == projectID { refreshAll() }
-            } catch { presentError("Could not add the files to the project", error) }
+            } catch {
+                guard generation == profileGeneration, self.database === database else { return }
+                presentError("Could not add the files to the project", error)
+            }
         }
     }
 
     func removeVideos(_ videoIDs: [Int64], from projectID: Int64) {
         guard !videoIDs.isEmpty, let database else { return }
+        let generation = profileGeneration
         Task {
             do {
                 try await database.removeVideos(videoIDs, from: projectID)
-                projects = try await database.fetchProjects()
+                let updated = try await database.fetchProjects()
+                guard generation == profileGeneration, self.database === database else { return }
+                projects = updated
+                await refreshHomeAvailability()
+                guard generation == profileGeneration, self.database === database else { return }
                 if activeProjectID == projectID { refreshAll() }
-            } catch { presentError("Could not remove the files from the project", error) }
+            } catch {
+                guard generation == profileGeneration, self.database === database else { return }
+                presentError("Could not remove the files from the project", error)
+            }
         }
     }
 
@@ -240,11 +258,13 @@ extension AppStore {
         activeProfile.teamID != nil && activeProfile.profileID != nil
     }
 
-    /// The Sources footer's remove action. Team-attached profile: the local
-    /// copy is offloaded to Drive when one exists and the row is hidden on
-    /// this Mac; teammates keep it. Otherwise the row and everything that
-    /// hangs off it are deleted and a file inside the profile's source
-    /// folder goes to the Trash (files elsewhere are left alone).
+    /// The Sources page's remove action, offered in every project including
+    /// Home. Team-attached profile: the local copy is offloaded to Drive when
+    /// one exists and the row is hidden on this Mac; teammates keep it.
+    /// Otherwise the row is retired: hidden, out of every project, with its
+    /// scenes, transcripts and batches kept so the same file added again is
+    /// not analyzed twice. A file inside the profile's source folder goes to
+    /// the Trash (files elsewhere are left alone).
     func removeSources(_ videos: [VideoRecord]) {
         guard !videos.isEmpty, let database else { return }
         let ids = videos.map(\.id)
@@ -290,8 +310,9 @@ extension AppStore {
         let folder = profile.sourceFolderURL.standardizedFileURL.path
         Task {
             do {
-                try await database.deleteVideos(ids)
+                try await database.retireVideos(ids)
                 guard generation == profileGeneration else { return }
+                await refreshAllNow()
                 let trashed = await Task.detached(priority: .utility) { () -> Int in
                     var count = 0
                     for video in videos {
@@ -303,9 +324,11 @@ extension AppStore {
                     }
                     return count
                 }.value
-                appendLog(\.analysisLog, ["Deleted \(ids.count) source(s)" + (trashed > 0 ? ", \(trashed) file(s) moved to the Trash" : "")])
+                appendLog(\.analysisLog, ["Removed \(ids.count) source(s) from every project; analysis kept"
+                    + (trashed > 0 ? ", \(trashed) file(s) moved to the Trash" : "")])
+                refreshProjectCatalog()
                 refreshAll()
-            } catch { presentError("Could not delete the sources", error) }
+            } catch { presentError("Could not remove the sources", error) }
         }
     }
 
@@ -326,9 +349,36 @@ extension AppStore {
         }
     }
 
-    func availableVideosForProjectPicker() async -> [VideoRecord] {
-        guard let database, let activeProjectID else { return [] }
-        return (try? await database.fetchVideosNotInProject(activeProjectID)) ?? []
+    func refreshHomeAvailability() async {
+        guard let database, let projectID = activeProjectID, !isHomeProject else {
+            homeVideosNotInProjectCount = 0
+            return
+        }
+        let generation = profileGeneration
+        let count = try? await database.countVideosNotInProject(projectID)
+        guard generation == profileGeneration, self.database === database, activeProjectID == projectID else { return }
+        if let count { homeVideosNotInProjectCount = count }
+    }
+
+    func availableVideosForProjectPicker() async -> [HomeVideoCandidate] {
+        guard let database, let projectID = activeProjectID, !isHomeProject else { return [] }
+        let generation = profileGeneration
+        do {
+            let videos = try await database.fetchVideosNotInProject(projectID)
+            let ids = videos.map(\.id)
+            let facts = try await database.fetchVideoFacts(ids: ids)
+            let names = try await database.projectNames(forVideos: ids)
+            guard generation == profileGeneration, self.database === database, activeProjectID == projectID else { return [] }
+            return videos.map { video in
+                let fact = facts[video.id] ?? HomeVideoCandidate.Facts()
+                return HomeVideoCandidate(video: video, hasScenes: fact.hasScenes, hasTranscript: fact.hasTranscript,
+                                          projectIDs: fact.projectIDs, projectNames: names[video.id] ?? [])
+            }
+        } catch {
+            guard generation == profileGeneration, self.database === database, activeProjectID == projectID else { return [] }
+            presentError("Could not load videos from Home", error)
+            return []
+        }
     }
 
     private func projectState(for project: ProjectRecord?) -> ProjectUIState {
@@ -441,6 +491,7 @@ extension AppStore {
                 timelines = loaded ?? timelines
             }
             analysisComparisonKeys = [:]
+            await refreshHomeAvailability()
             await refreshLanguageReadiness()
         }
     }

@@ -35,13 +35,19 @@ struct ProjectSidebarView: View {
                     showingNewProject = true
                 }
             } label: {
-                HStack(spacing: Theme.spaceS) {
-                    Image(systemName: store.activeProject?.isHome == true ? "house.fill" : "folder")
-                        .foregroundStyle(Theme.projectTint)
-                    Text(store.isShowingProjectsHome || store.activeProject == nil
-                         ? "Choose a project…" : store.activeProject?.name ?? "Home")
-                        .bold()
-                        .lineLimit(1)
+                HStack(spacing: 0) {
+                    // Same Label, icon and body font as the rows below, so the
+                    // project reads as the parent of those rows, not as a
+                    // section caption.
+                    Label {
+                        Text(store.isShowingProjectsHome || store.activeProject == nil
+                             ? "Choose a project…" : store.activeProject?.name ?? "Home")
+                            .bold()
+                            .lineLimit(1)
+                    } icon: {
+                        Image(systemName: store.activeProject?.isHome == true ? "house.fill" : "folder")
+                            .foregroundStyle(Theme.projectTint)
+                    }
                     Spacer()
                     Image(systemName: "chevron.down")
                         .foregroundStyle(.secondary)
@@ -51,7 +57,7 @@ struct ProjectSidebarView: View {
             .buttonStyle(.plain)
             .foregroundStyle(.primary)
             .textCase(nil)
-            .font(.subheadline)
+            .font(.body)
         }
     }
 
@@ -79,6 +85,7 @@ struct ProjectSidebarView: View {
                             Image(systemName: section.systemImage)
                                 .foregroundStyle(section.tint)
                         }
+                        .padding(.leading, Theme.sidebarRowIndent)
                         .badge(section.shortcutLabel.map { Text($0).monospaced() })
                         .tag(section)
                         .disabled(store.activeProjectID == nil)
@@ -96,6 +103,7 @@ struct ProjectSidebarView: View {
                             Image(systemName: section.systemImage)
                                 .foregroundStyle(section.tint)
                         }
+                        .padding(.leading, Theme.sidebarRowIndent)
                         .badge(section.shortcutLabel.map { Text($0).monospaced() })
                         .tag(section)
                     }
@@ -109,6 +117,7 @@ struct ProjectSidebarView: View {
                             Image(systemName: section.systemImage)
                                 .foregroundStyle(section.tint)
                         }
+                        .padding(.leading, Theme.sidebarRowIndent)
                         .tag(section)
                     }
                 }

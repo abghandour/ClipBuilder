@@ -33,6 +33,49 @@ struct SourcesAssistantTests {
         #expect(rows.first?.actionID == "sources.analyze.missing")
     }
 
+    @Test func emptyProjectSuggestsHomeBeforeFinder() {
+        let context = context { $0.sourceCount = 0; $0.homeAvailable = 3 }
+        let rows = SourcesAssistant().suggestions(for: context)
+        #expect(context.int("home.available") == 3)
+        #expect(rows.map(\.id) == ["sources.addFromHome", "sources.add.none"])
+        #expect(rows.first?.kind == .insight)
+        #expect(rows.first?.title == "Home has 3 videos not in this project")
+        #expect(rows.first?.reason == "Pick the ones this project needs")
+        #expect(rows.first?.actionID == "sources.addFromHome")
+        #expect(!ids(self.context { $0.homeAvailable = 3 }).contains("sources.addFromHome"))
+    }
+
+    @MainActor
+    @Test func homeSnapshotSuppressesAvailabilityAndAction() async throws {
+        let temp = try await TempDatabase()
+        try await temp.database.ensureDefaultProject(profileName: "Test", legacyTimelineJSON: nil)
+        let homeID = try #require(try await temp.database.homeProjectID())
+        let projectID = try await temp.database.createProject(profileName: "Test", name: "Empty")
+        let settings = AppSettings()
+        let profile = Fixtures.brand(name: "SourcesAssistantHomeTests")
+        let store = AppStore(settings: settings, profiles: [profile], active: profile, ai: AIService(config: settings.ai))
+        store.diagnosticLogSink = { _, _ in }
+        store.projects = try await temp.database.fetchProjects()
+        store.activeProjectID = homeID
+        store.homeVideosNotInProjectCount = 3 // Even a stale count cannot suggest adding to Home.
+        let assistant = SourcesAssistant()
+        let action = try #require(assistant.actions(store: store).first { $0.id == "sources.addFromHome" })
+        #expect(assistant.snapshot(store: store).homeAvailable == 0)
+        #expect(!ids(SourcesAssistant.context(assistant.snapshot(store: store))).contains("sources.addFromHome"))
+        #expect(!action.isAvailable(store))
+
+        store.activeProjectID = projectID
+        #expect(store.homeVideosNotInProjectCount == 0)
+        #expect(!action.isAvailable(store))
+        store.homeVideosNotInProjectCount = 3
+        #expect(assistant.snapshot(store: store).homeAvailable == 3)
+        #expect(action.isAvailable(store))
+        store.selectedSection = .scenes
+        _ = action.run(store)
+        #expect(store.selectedSection == .sources)
+        #expect(store.assistant.pendingCommand?.actionID == "sources.addFromHome")
+    }
+
     @Test func missingTranscriptSuggestsTranscribe() {
         #expect(ids(context { $0.missingSteps = ["transcript": 1] }) == ["sources.transcribe.missing"])
         #expect(!ids(context { $0.missingSteps = ["people": 2] }).contains("sources.transcribe.missing"))
@@ -78,6 +121,7 @@ struct SourcesAssistantTests {
     }
 
     @Test func routing() {
+        #expect(SourcesAssistant.route("Add from Home") == "sources.addFromHome")
         #expect(SourcesAssistant.route("Analyze everything that is missing") == "sources.analyze.missing")
         #expect(SourcesAssistant.route("Transcribe the sources without a transcript") == "sources.transcribe.missing")
         #expect(SourcesAssistant.route("Suggest better file names for the selected videos") == "sources.names.suggest")

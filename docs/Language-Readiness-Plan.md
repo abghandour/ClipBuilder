@@ -1,6 +1,6 @@
 # Project languages and language readiness
 
-Date: November 1, 2026. Status: draft, not implemented. Requested by the user
+Date: November 1, 2026. Status: implemented November 1, 2026 (Release 1.142), Codex-reviewed, findings applied; server migration applied. Requested by the user
 on November 1, 2026 after a teammate ran Transcribe and got no transcript.
 
 ## What the user asked for
