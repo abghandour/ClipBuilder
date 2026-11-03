@@ -40,12 +40,14 @@ nonisolated enum WizardResultsLayout {
     }
 
     /// Split the scroll area into equal columns for `count` cards.
-    static func grid(count: Int, available: CGSize) -> Grid {
+    /// `chromeHeight` is what sits under each picture; a bare player with a
+    /// caption passes less than a full result card.
+    static func grid(count: Int, available: CGSize, chromeHeight: CGFloat = cardChromeHeight + 2 * cardPadding) -> Grid {
         let count = max(1, count)
         let usable = max(minCardWidth, available.width - horizontalPadding)
         let columns = max(1, min(count, Int((usable + spacing) / (minCardWidth + spacing))))
         let columnWidth = ((usable - spacing * CGFloat(columns - 1)) / CGFloat(columns)).rounded(.down)
-        let maxHeight = max(180, (available.height - cardChromeHeight - 2 * cardPadding).rounded(.down))
+        let maxHeight = max(180, (available.height - chromeHeight).rounded(.down))
         return Grid(columns: columns, columnWidth: max(minCardWidth, columnWidth), playerMaxHeight: maxHeight)
     }
 

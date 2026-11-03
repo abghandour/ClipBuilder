@@ -14,11 +14,15 @@ nonisolated enum WizardPodcastTimeline {
             .map(\.videoID))
         var turns: [Int64: [SpeakerTurn]] = [:]
         var rosters: [Int64: [VideoPersonRecord]] = [:]
+        var sentenceEnds: [Int64: [Double]] = [:]
         for id in ids {
             turns[id] = try await database.fetchSpeakerTurns(videoID: id)
             rosters[id] = try await database.fetchVideoPeople(videoID: id)
+            if options.requestedFraming.vipSentences == true {
+                sentenceEnds[id] = VIPFocusPlanning.sentenceEnds(rows: try await database.fetchTranscripts(videoID: id))
+            }
         }
-        // Interview focus frames from face positions seen in the clip itself.
+        // VIP focus frames from face positions seen in the clip itself.
         let subject = options.requestedFraming.subject == .auto ? plan.framing ?? .speakerFocus : options.requestedFraming.subject
         if subject == .speakerFocus {
             for id in ids.sorted() {
@@ -37,14 +41,15 @@ nonisolated enum WizardPodcastTimeline {
         let layoutScenes = options.requestedFraming.subject == .layout && options.useBRoll
             ? try await database.fetchScenes(projectID: options.projectID, scope: .active, includeExcluded: false) : []
         return await cutDocuments(plan: plan, sceneMap: sceneMap, options: options,
-            videos: videos, turns: turns, rosters: rosters, layouts: ScreenCropStore.all(), brollScenes: layoutScenes, people: people, tagText: tagText,
+            videos: videos, turns: turns, rosters: rosters, sentenceEnds: sentenceEnds, layouts: ScreenCropStore.all(), brollScenes: layoutScenes, people: people, tagText: tagText,
             captionStyle: captionStyle, profile: profile, imageAspects: imageAspects, log: log)
     }
 
     @MainActor
     static func cutDocuments(plan: WizardPlan, sceneMap: [Int64: SceneRecord], options: WizardOptions,
                              videos: [VideoRecord], turns: [Int64: [SpeakerTurn]],
-                             rosters: [Int64: [VideoPersonRecord]] = [:], layouts: [ScreenCropLayout], brollScenes: [SceneRecord] = [],
+                             rosters: [Int64: [VideoPersonRecord]] = [:], sentenceEnds: [Int64: [Double]] = [:],
+                             layouts: [ScreenCropLayout], brollScenes: [SceneRecord] = [],
                              people: [PersonRecord] = [], tagText: [String: String] = [:], captionStyle: CaptionStyle = CaptionStyle(),
                              profile: BrandProfile = BrandProfile(name: "Default"), imageAspects: [UUID: CGFloat] = [:],
                              log: (String) -> Void = { _ in }) -> [Int: TimelineDocument] {
@@ -84,7 +89,7 @@ nonisolated enum WizardPodcastTimeline {
             }
             var document = PodcastRecipeTimeline.build(subject: subject, video: video, range: clip.start...clip.end,
                 sourceScene: scene, turns: turns[video.id] ?? [], roster: rosters[video.id] ?? [],
-                layouts: layouts, settings: options.renderSettings, options: options, sources: videos, brollCuts: cuts, scenes: allScenes, people: people, tagText: tagText,
+                sentenceEnds: sentenceEnds[video.id] ?? [], layouts: layouts, settings: options.renderSettings, options: options, sources: videos, brollCuts: cuts, scenes: allScenes, people: people, tagText: tagText,
                 captionStyle: captionStyle, profile: profile, imageAspects: imageAspects, log: log)
             // The transient Builder may append a Full Screen tail to its
             // cropping row. A cut owns only its chosen layout and exact span.

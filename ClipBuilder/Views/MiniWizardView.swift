@@ -187,6 +187,8 @@ struct MiniWizardView: View {
             if currentRun != nil { UITiming.responseReady(screen: "Express", what: footageKind.rawValue) }
         }
         .onChange(of: store.profileGeneration) { _, _ in restoreAnswers() }
+        // The focus frame was dragged on the previous source's picture.
+        .onChange(of: videoPath) { _, _ in miniSettings.framing.focusFrame = nil }
         .onChange(of: miniSettings) { _, value in
             guard settingsProfile == profileName, store.activeProfile.profileName == profileName else { return }
             value.remember(profileName: profileName)
@@ -700,7 +702,7 @@ struct MiniWizardView: View {
     /// panel's disabled state).
     private var canGenerateKept: Bool {
         guard let run = currentRun, flow.canExpand(.settings), settingsProfile == profileName else { return false }
-        return run.keptCount > 0 && !store.isWizardRunning && !store.isOpeningWizardInEditor(projectID: run.projectID)
+        return run.keptCount > 0 && !store.isWizardRunning && !store.isWizardBatchJobRunning(projectID: run.projectID)
     }
 
     /// The Highlights candidate selected in Footage, when the run on screen has one.
@@ -733,14 +735,33 @@ struct MiniWizardView: View {
         // first, so an action sent with it runs on the new settings.
         if let patch = command.settings, settingsProfile == profileName {
             var instructionsText: String?
-            WizardAssistant.applyExpress(patch, settings: &miniSettings, length: &length, instructions: &instructionsText)
+            let kindBefore = footageKind
+            WizardAssistant.applyExpress(patch, settings: &miniSettings, length: &length, instructions: &instructionsText,
+                                         footageKind: &footageKind)
             if let instructionsText {
                 instructions.wrappedValue = instructionsText
                 saveInstructions()
             }
+            // The store's footage selection follows the form at once, so an
+            // action in the same answer runs on the kind just chosen rather
+            // than the batch the store still holds.
+            if footageKind != kindBefore { store.selectMiniFootage(flow: flow) }
         }
         if command.isSettingsOnly { return }
         let id = command.actionID
+        // The rough cut sheet's Apply (and its Generate): the sheet's framing
+        // becomes the page's before anything runs.
+        if id == WizardAssistant.applyFramingAction || id == WizardAssistant.generateWithFramingAction,
+           let value = Framing.split(command.text) {
+            guard settingsProfile == profileName else { return }
+            miniSettings.framing = value
+        }
+        if id == WizardAssistant.findHighlightsAction {
+            // The brief is already in the instructions (from the patch or
+            // typed earlier); find the highlights with it.
+            runAssistantRequest(instructions.wrappedValue)
+            return
+        }
         if let toggle = WizardAssistant.expressToggles.first(where: {
             id == WizardAssistant.setActionID($0.field, on: true, express: true)
                 || id == WizardAssistant.setActionID($0.field, on: false, express: true)
@@ -773,14 +794,16 @@ struct MiniWizardView: View {
                 }
             }
             store.regenerateMiniCandidate(selectionID: candidate.id, note: note)
-        case "wizard.generate", "wizard.openInEditor":
+        case WizardAssistant.applyFramingAction:
+            break
+        case "wizard.generate", WizardAssistant.generateWithFramingAction, "wizard.openInEditor", "wizard.roughCut":
             guard canGenerateKept, let run = currentRun else {
                 store.presentNotice("Ask AI", store.isWizardRunning ? "The Wizard is already working."
                                     : "Keep footage in 2 Footage first, then Generate.")
                 return
             }
             store.generateMiniVideosRecordingPicks(settings: miniSettings, flow: flow, batchID: run.batchID,
-                                                   mode: id == "wizard.openInEditor" ? .openInEditor : .render)
+                mode: id == "wizard.openInEditor" ? .openInEditor : id == "wizard.roughCut" ? .roughCut : .render)
         default:
             break
         }

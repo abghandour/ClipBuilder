@@ -305,10 +305,12 @@ struct WizardPreviewCompositeTests {
             guard case .cells(let cells) = result.framing else { Issue.record("Expected cells"); return nil }
             return cells.first?.source
         }
-        let smooth = source(moves: .smooth, at: 10.4)
-        let cut = source(moves: .cuts, at: 10.4)
+        // The VIP's answer from 10 earns a cutaway to the host at 18: a glide
+        // is half-way at 18.4, a cut is already on the host.
+        let smooth = source(moves: .smooth, at: 18.4)
+        let cut = source(moves: .cuts, at: 18.4)
         #expect(smooth != cut)
-        #expect(cut == source(moves: .cuts, at: 12))
+        #expect(cut == source(moves: .cuts, at: 19.5))
         let profile = Fixtures.brand()
         options.framing?.moves = .smooth
         let before = PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: [])
@@ -341,8 +343,8 @@ struct WizardPreviewCompositeTests {
             guard case .cells(let cells) = result.framing, cells.count == 1 else { Issue.record("Expected one cell"); return nil }
             return cells[0].source
         }
-        // The move toward the tight shot starts at 10 s and takes 0.8 s.
-        guard let before = source(at: 9.9), let middle = source(at: 10.4), let after = source(at: 12) else { return }
+        // The cutaway to the host 8 s into the answer starts at 18 s and glides 0.8 s.
+        guard let before = source(at: 17.9), let middle = source(at: 18.4), let after = source(at: 19.5) else { return }
         #expect(before != after)
         #expect(middle != before && middle != after, "half-way through the move the crop is between the two shots")
         #expect(min(before.minX, after.minX) - 0.001 <= middle.minX && middle.minX <= max(before.minX, after.minX) + 0.001)
@@ -420,7 +422,7 @@ struct WizardPreviewCompositeTests {
         #expect(PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: []) != before)
     }
 
-    /// The render samples faces in the clip before planning Interview focus;
+    /// The render samples faces in the clip before planning VIP focus;
     /// the preview must plan from the same refined faces or its crop and
     /// name tags land elsewhere than the output's.
     @Test func interviewPreviewPlansFromTheRefinedRosterLikeTheRender() async {
@@ -469,9 +471,8 @@ struct WizardPreviewCompositeTests {
         video.podcastLayout = PodcastLayout.singleCamera.rawValue
         video.duration = 60
         // Two speech feeds on one camera, the host on the left, the VIP on the
-        // right: close enough that a 9:16 two-shot holds both faces (a full
-        // height column is 0.316 of a 16:9 source), far enough apart that the
-        // two-shot is not the tight shot (outside the dead zone).
+        // right, far enough apart that their face-tight shots differ (outside
+        // the dead zone).
         let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, faceX: 0.46, faceY: 0.28),
                      PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, faceX: 0.59, faceY: 0.28)]
         video.podcastTilesJSON = String(decoding: try JSONEncoder().encode(tiles), as: UTF8.self)
@@ -495,16 +496,16 @@ struct WizardPreviewCompositeTests {
             }
             return cells[0].source
         }
-        guard let opening = source(at: 0), let middle = source(at: nil), let answer = source(at: 30) else { return }
+        guard let opening = source(at: 0), let middle = source(at: nil), let answer = source(at: 15) else { return }
         var recipe = CropRecipe(kind: .interview)
         recipe.interviewZoom = 0
         recipe.interviewPunchIn = .talker
         let plan = try? CropRecipePlanner.plan(recipe, video: video, range: 0...40, turns: turns, roster: [vip, host],
             layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16)
         let detail = "tiles=\(plan?.tiles ?? []) path=\(plan?.slots.first?.path ?? []) notes=\(plan?.notes ?? [])"
-        #expect(middle == answer, "the default moment is the middle of the range")
-        #expect(opening != answer, "the opening two-shot differs from the tight answer shot \(detail)")
-        #expect(opening.minX < answer.minX, "the two-shot reaches toward the host on the left")
+        #expect(middle == source(at: 20), "the default moment is the middle of the range")
+        #expect(opening != answer, "the host's opening shot differs from the VIP's answer shot \(detail)")
+        #expect(opening.minX < answer.minX, "the host sits on the left")
     }
 
     @Test func interviewPullBackChangesAnchoredPreviewWhileInterviewerTalks() throws {
@@ -1165,8 +1166,10 @@ extension WizardPreviewCompositeTests {
         #expect(try source(at: 9.995) == opening)
         let question = try source(at: 10)
         #expect(abs(question.midX - 0.54) < 0.001 && question != opening)
-        #expect(try source(at: 19.995) == question)
-        #expect(try source(at: 20) == opening)
+        // 2 s into the question the picture returns to the guest, who answers at 20.
+        #expect(try source(at: 11.995) == question)
+        #expect(try source(at: 12) == opening)
+        #expect(try source(at: 25) == opening)
         let profile = Fixtures.brand()
         let cuts = PreviewKey(options: options, scene: scene, profile: profile, contentRevision: 0, overlayTexts: [])
         options.framing?.moves = .smooth

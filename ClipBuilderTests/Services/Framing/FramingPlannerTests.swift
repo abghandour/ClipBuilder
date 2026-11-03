@@ -15,6 +15,27 @@ struct FramingPlannerTests {
                 confidence: 1, personKey: "guest", tile: 0)], layouts: ScreenCropStore.builtIn, hasBRoll: broll)
     }
 
+    @Test func vipFocusTimingsReachTheRecipeClamped() throws {
+        let recipe = try #require(FramingPlanner.resolve(framing: Framing(subject: .speakerFocus, vipShow: 9, vipStretch: 1, vipSentences: true),
+            context: context(vip: true)).recipe)
+        #expect(recipe.kind == .interview && recipe.vipShow == 5 && recipe.vipStretch == 4 && recipe.vipSentences == true)
+        let plain = try #require(FramingPlanner.resolve(framing: Framing(subject: .speakerFocus), context: context(vip: true)).recipe)
+        #expect(plain.vipShow == nil && plain.vipStretch == nil && plain.vipSentences == nil)
+    }
+
+    @Test func steadyCameraNamesTheSteadyTuningExceptForFighterFocus() throws {
+        let off = FramingPlanner.resolve(framing: Framing(subject: .speakerFocus), context: context())
+        #expect(off.recipe?.steady == nil && off.camera == "conversation" && !off.isSteady)
+        let on = FramingPlanner.resolve(framing: Framing(subject: .speakerFocus, steady: true), context: context())
+        #expect(on.recipe?.steady == true && on.camera == "steady" && on.isSteady)
+        let stage = FramingPlanner.resolve(framing: Framing(subject: .centerStage, steady: true), context: context())
+        #expect(stage.camera == "steady")
+        let fight = FramingPlanner.resolve(framing: Framing(subject: .vipFocus, steady: true), context: context(type: .fight))
+        #expect(fight.camera == "fast" && !fight.isSteady, "fighter focus keeps its fast camera")
+        #expect(CenterStageService.Tuning.named("steady").deadZoneWidth < CenterStageService.Tuning.conversation.deadZoneWidth)
+        #expect(CenterStageService.Tuning.named("steady").smoothing < CenterStageService.Tuning.conversation.smoothing)
+    }
+
     @Test func originalKeepsAStaticWindowAndCenterStageUsesBalancedTracking() throws {
         let window = FreeCropRect(xFrac: 0.1, wFrac: 0.8)
         let original = Framing(subject: .original, fit: .blurredFill, focusFrame: window, lockAspect: false)

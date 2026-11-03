@@ -26,8 +26,9 @@ struct InterviewFaceSamplingTests {
 
     @Test func sampleTimesAreTheRangeStartAndEachSettledMove() {
         let times = InterviewFaceSampling.sampleTimes(video: video(), range: 10...30, turns: turns(), roster: roster())
-        // Moves at 15 (host) and 22 (guest) on the source clock, each settled 0.8 s later.
-        #expect(times == [10.1, 15.8, 22.8])
+        // Shots at 15 (the host asks) and 17 (back to the guest) on the source
+        // clock, each settled 0.8 s later.
+        #expect(times == [10.1, 15.8, 17.8])
         #expect(InterviewFaceSampling.sampleTimes(video: video(), range: 10...10, turns: turns(), roster: roster()).isEmpty)
     }
 
@@ -68,15 +69,17 @@ struct InterviewFaceSamplingTests {
 }
 
 extension InterviewFaceSamplingTests {
+    /// The stored punch-in no longer changes the shots; cuts settle at once.
     @Test(arguments: InterviewPunchIn.allCases)
-    func samplesFollowTheChosenShotsAndCutTiming(punchIn: InterviewPunchIn) {
+    func samplesFollowTheShotsAndCutTimingWhateverThePunchIn(punchIn: InterviewPunchIn) {
         #expect(InterviewFaceSampling.sampleTimes(video: video(), range: 10...30, turns: turns(), roster: roster(),
-            punchIn: punchIn, cuts: true) == [10.1, 15, 22])
+            punchIn: punchIn, cuts: true) == [10.1, 15, 17])
         #expect(InterviewFaceSampling.sampleTimes(video: video(), range: 10...30, turns: turns(), roster: roster(),
-            punchIn: punchIn) == [10.1, 15.8, 22.8])
+            punchIn: punchIn) == [10.1, 15.8, 17.8])
+        // The host asks from 5 to 20: VIP opening, the host at 5, back at 7,
+        // the host again at 15 and back at 17.
         let later = [SpeakerTurn(videoID: 1, start: 5, end: 20, cluster: 1, confidence: 1, personKey: "host", tile: 1)]
-        let expected = punchIn == .vip ? [0.1] : [0.1, 5]
         #expect(InterviewFaceSampling.sampleTimes(video: video(), range: 0...20, turns: later, roster: roster(),
-            punchIn: punchIn, cuts: true) == expected)
+            punchIn: punchIn, cuts: true) == [0.1, 5, 7, 15, 17])
     }
 }

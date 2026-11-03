@@ -322,7 +322,9 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             let framing = await WizardPreviewFraming.resolveCached(options: options, record: record, video: video,
                 face: face, turns: turns, roster: roster, people: taggedPeople, layouts: ScreenCropStore.all(), time: time,
                 sceneStart: original.startTime, contentBox: scene.contentBox,
-                sources: snapshotForWorker?.layoutSources ?? [], scenes: snapshotForWorker?.layoutScenes ?? [], brollCuts: brollCuts)
+                sources: snapshotForWorker?.layoutSources ?? [], scenes: snapshotForWorker?.layoutScenes ?? [], brollCuts: brollCuts,
+                sentenceEnds: options.requestedFraming.vipSentences == true
+                    ? VIPFocusPlanning.sentenceEnds(segments: snapshotForWorker?.segments ?? []) : [])
             scene.framing = framing.framing
             scene.framingWarning = framing.warning
             let templates = OverlayTemplateStore.list()

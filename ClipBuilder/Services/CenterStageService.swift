@@ -174,9 +174,18 @@ actor CenterStageService {
                                        deadZoneZoom: 0.03, minCropHeightFraction: 0.72,
                                        padding: 1.5)
 
+        /// Steady camera: follows the person with no dead zone to drift in,
+        /// slowly, so the recording camera's own pans and nudges are absorbed
+        /// rather than shown, and zoom only changes for a real size change.
+        static let steady = Tuning(analysisInterval: 0.15, keyframeInterval: 0.3,
+                                   smoothing: 0.08, deadZoneWidth: 0.01,
+                                   deadZoneZoom: 0.12, minCropHeightFraction: 0.6,
+                                   padding: 1.4, timeBasedSmoothing: true)
+
         static func named(_ name: String) -> Tuning {
             switch name {
             case "conversation": return .conversation
+            case "steady": return .steady
             case "smooth": return .smooth
             case "fast": return .fastAction
             default: return .balanced

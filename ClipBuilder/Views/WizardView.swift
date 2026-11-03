@@ -947,6 +947,7 @@ struct WizardView: View {
                 HStack(spacing: Theme.spaceM) {
                     generationAction
                     openInEditorAction
+                    roughCutAction
                     Spacer(minLength: Theme.spaceS)
                     manualBuildAction
                 }
@@ -954,6 +955,7 @@ struct WizardView: View {
                     HStack(spacing: Theme.spaceM) {
                         generationAction
                         openInEditorAction
+                        roughCutAction
                     }
                     manualBuildAction
                 }
@@ -1002,7 +1004,7 @@ struct WizardView: View {
     func generateEnabled(route: GenerateRoute, flow: WizardCardFlow) -> Bool {
         switch route {
         case .stopFindingFootage, .stopWizard: false
-        case .renderKept: !flow.isBusy && !store.isOpeningWizardInEditor(projectID: store.activeProjectID)
+        case .renderKept: !flow.isBusy && !store.isWizardBatchJobRunning(projectID: store.activeProjectID)
         case .start, .findMoments: canStart
         }
     }
@@ -1034,6 +1036,24 @@ struct WizardView: View {
             .help(flow.outputCount(oneReel: outputMode == .oneReel) == 1
                   ? "Open in Editor: build the kept take as a Builder timeline with these settings, without rendering"
                   : "Open in Editor: build \(flow.outputCount(oneReel: false)) Builder timelines, one per kept selection, without rendering")
+        }
+    }
+
+    /// Rough cut, next to Open in Editor: the kept takes rendered small and
+    /// plain so framing and focus can be checked in motion before Generate.
+    @ViewBuilder var roughCutAction: some View {
+        if openInEditorShown {
+            let flow = cardFlow
+            Button {
+                renderKeptSelections(mode: .roughCut)
+            } label: {
+                Label("Rough cut", systemImage: "viewfinder")
+            }
+            .labelStyle(.iconOnly).controlSize(.large)
+            .disabled(!openInEditorEnabled)
+            .help(flow.outputCount(oneReel: outputMode == .oneReel) == 1
+                  ? "Rough cut: a quick small render of the kept take to check framing and focus in motion, without \(WizardRoughCut.leftOut); nothing is saved"
+                  : "Rough cut: quick small renders of the \(flow.outputCount(oneReel: false)) kept selections to check framing and focus in motion, without \(WizardRoughCut.leftOut); nothing is saved")
         }
     }
 
@@ -1356,8 +1376,14 @@ struct WizardView: View {
     /// through the same route and checks as the buttons.
     private func runAssistantCommand(_ command: AssistantCommand) {
         if let patch = command.settings { WizardAssistant.applyFull(patch) }
+        // The rough cut sheet's Apply (and its Generate): the sheet's framing
+        // becomes the page's before anything runs.
+        if command.actionID == WizardAssistant.applyFramingAction || command.actionID == WizardAssistant.generateWithFramingAction,
+           let value = Framing.split(command.text) {
+            framing = value.joined
+        }
         switch command.actionID {
-        case "wizard.generate":
+        case "wizard.generate", WizardAssistant.generateWithFramingAction:
             guard generateEnabled else {
                 store.presentNotice("Ask AI", generateUnavailableMessage)
                 return
@@ -1368,13 +1394,15 @@ struct WizardView: View {
             case .findMoments: findMoments()
             case .stopFindingFootage, .stopWizard: break
             }
-        case "wizard.openInEditor":
+        case WizardAssistant.applyFramingAction:
+            break
+        case "wizard.openInEditor", "wizard.roughCut":
             guard openInEditorEnabled else {
                 store.presentNotice("Ask AI", openInEditorShown ? generateUnavailableMessage
-                                    : "Open in Editor needs kept takes. Keep a take in Footage first.")
+                                    : "\(command.actionID == "wizard.roughCut" ? "Rough cut" : "Open in Editor") needs kept takes. Keep a take in Footage first.")
                 return
             }
-            renderKeptSelections(mode: .openInEditor)
+            renderKeptSelections(mode: command.actionID == "wizard.roughCut" ? .roughCut : .openInEditor)
         case "wizard.history":
             // The history bar sits with Generate under Settings.
             open(.settings)

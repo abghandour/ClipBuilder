@@ -19,6 +19,16 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
     var layout: String?
     /// Speaker focus's shot: a recipe kind, or nil for the app's pick per scene.
     var speakerShot: CropRecipe.Kind?
+    /// Steady camera: the picture follows the person inside their feed with a
+    /// slow, calm camera, so movement of the recording camera is absorbed
+    /// instead of showing through a fixed crop. Nil is off.
+    var steady: Bool?
+    /// VIP focus timings: seconds an asker or a cutaway stays on screen (nil:
+    /// 2 s), seconds a talker holds the picture before the other side is
+    /// shown (nil: 8 s), and whether a change waits for the sentence to end.
+    var vipShow: Double?
+    var vipStretch: Double?
+    var vipSentences: Bool?
 
     /// The shots Speaker focus can be told to use, in menu order.
     static let speakerShots: [CropRecipe.Kind] = [.talker, .interview, .talkerAndRest, .talkerAndPrevious, .talkerAndRotation]
@@ -72,7 +82,10 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
     enum Fit: String, Codable, Hashable, Sendable { case fill, blurredFill }
 
     enum CodingKeys: String, CodingKey {
-        case subject, moves, fit, feather, blur, layout, people, vips
+        case subject, moves, fit, feather, blur, layout, people, vips, steady
+        case vipShow = "vip_show"
+        case vipStretch = "vip_stretch"
+        case vipSentences = "vip_sentences"
         case pullBack = "pull_back"
         case focusFrame = "focus_frame"
         case lockAspect = "lock_aspect"
@@ -83,7 +96,8 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
     init(subject: Subject = .auto, pullBack: Double = 0, moves: Moves = .smooth,
          fit: Fit = .fill, feather: Double = 0.08, blur: Double = 0.5,
          focusFrame: FreeCropRect? = nil, lockAspect: Bool? = nil, people: People? = nil, vips: [String]? = nil,
-         layout: String? = nil, sourceRoles: [String: String]? = nil, speakerShot: CropRecipe.Kind? = nil) {
+         layout: String? = nil, sourceRoles: [String: String]? = nil, speakerShot: CropRecipe.Kind? = nil,
+         steady: Bool? = nil, vipShow: Double? = nil, vipStretch: Double? = nil, vipSentences: Bool? = nil) {
         self.subject = subject
         self.pullBack = pullBack
         self.moves = moves
@@ -97,6 +111,10 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
         self.layout = layout
         self.sourceRoles = sourceRoles
         self.speakerShot = speakerShot
+        self.steady = steady
+        self.vipShow = vipShow
+        self.vipStretch = vipStretch
+        self.vipSentences = vipSentences
     }
 
     init(from decoder: Decoder) throws {
@@ -114,6 +132,10 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
         sourceRoles = try c.decodeIfPresent([String: String].self, forKey: .sourceRoles)
         layout = try c.decodeIfPresent(String.self, forKey: .layout)
         speakerShot = try c.decodeIfPresent(CropRecipe.Kind.self, forKey: .speakerShot)
+        steady = try c.decodeIfPresent(Bool.self, forKey: .steady)
+        vipShow = try c.decodeIfPresent(Double.self, forKey: .vipShow)
+        vipStretch = try c.decodeIfPresent(Double.self, forKey: .vipStretch)
+        vipSentences = try c.decodeIfPresent(Bool.self, forKey: .vipSentences)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -132,6 +154,10 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
         try c.encodeIfPresent(sourceRoles, forKey: .sourceRoles)
         try c.encodeIfPresent(layout, forKey: .layout)
         try c.encodeIfPresent(speakerShot, forKey: .speakerShot)
+        try c.encodeIfPresent(steady, forKey: .steady)
+        try c.encodeIfPresent(vipShow, forKey: .vipShow)
+        try c.encodeIfPresent(vipStretch, forKey: .vipStretch)
+        try c.encodeIfPresent(vipSentences, forKey: .vipSentences)
     }
 
     /// One scalar for AppStorage, Express memory and the shared preset catalog.

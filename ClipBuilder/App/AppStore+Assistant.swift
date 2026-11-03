@@ -104,6 +104,9 @@ private nonisolated final class FirstResultGate<T: Sendable>: Sendable {
 final class AssistantModel {
     nonisolated static let suggestionLimit = 5
     nonisolated static let defaultTimeout: Duration = .seconds(12)
+    /// A typed request carries the page's whole settings whitelist and its
+    /// reading rules; the CLI-backed providers need longer than a ranking.
+    nonisolated static let understandTimeout: Duration = .seconds(45)
 
     /// One `AITask.assist` call: prompt in, reply out. Injected by tests;
     /// nil uses `store.ai`.
@@ -136,6 +139,7 @@ final class AssistantModel {
     private(set) var closeRequest: UUID?
     @ObservationIgnored var assistCall: AssistCall?
     @ObservationIgnored var assistTimeout: Duration = AssistantModel.defaultTimeout
+    @ObservationIgnored var understandTimeout: Duration = AssistantModel.understandTimeout
     @ObservationIgnored private var refreshTask: Task<Void, Never>?
     @ObservationIgnored private var refreshingFingerprint: String?
     @ObservationIgnored private var askTasks: [String: Task<Void, Never>] = [:]
@@ -365,9 +369,10 @@ final class AssistantModel {
     }
 
     /// The real `AITask.assist` call; the model's own timeout bounds it too.
-    nonisolated static func liveCall(_ ai: AIService) -> AssistCall {
-        { prompt in
-            try await ai.call(prompt: prompt, task: .assist, timeout: 12)
+    nonisolated static func liveCall(_ ai: AIService, timeout: Duration = defaultTimeout) -> AssistCall {
+        let seconds = Double(timeout.components.seconds)
+        return { prompt in
+            try await ai.call(prompt: prompt, task: .assist, timeout: seconds)
         }
     }
 
@@ -436,7 +441,7 @@ final class AssistantModel {
             return outcome
         }
         return understand(text, assistant: assistant, store: store, unrecognized: outcome,
-                          call: assistCall ?? Self.liveCall(store.ai))
+                          call: assistCall ?? Self.liveCall(store.ai, timeout: understandTimeout))
     }
 
     static let askingMessage = "Asking…"
@@ -468,8 +473,9 @@ final class AssistantModel {
             record(unrecognized, page: page, store: store)
             return unrecognized
         }
-        let prompt = PageAssistantPrompt.build(context: context, actions: catalogue, settings: settings, question: text)
-        let timeout = assistTimeout
+        let prompt = PageAssistantPrompt.build(context: context, actions: catalogue, settings: settings, question: text,
+                                               guidance: assistant.understandingGuidance(store: store))
+        let timeout = understandTimeout
         let token = AssistRequestToken(page: page, profileGeneration: store.profileGeneration,
                                        projectID: store.activeProjectID, fingerprint: context.fingerprint,
                                        navigation: navigationGeneration)

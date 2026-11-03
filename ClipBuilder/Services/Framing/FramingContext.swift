@@ -17,6 +17,9 @@ nonisolated struct FramingContext: Sendable {
     var brollCuts: [PodcastHighlightBRollPlanner.Cut] = []
     var scenes: [SceneRecord] = []
     var chosenSubject: Framing.Subject?
+    /// Transcript sentence ends on the source clock (VIP focus's "finish the
+    /// sentence"); empty when the caller has no transcript at hand.
+    var sentenceEnds: [Double] = []
 
     var sourceID: Int64 { video.id }
     var sourcePath: String { video.url.path }

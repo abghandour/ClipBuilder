@@ -68,6 +68,10 @@ final class AppStore {
     var projectLanguageAssets: [Int64: [LanguageAsset]] = [:]
     /// Recognizer state per language the video picker offers.
     var recognizerStates: [String: LanguageAsset.State] = [:]
+    /// Installed dub voices, for Ask AI's dub language choices (the picker
+    /// loads them itself); filled once per launch by `loadDubVoicesForAssistant`.
+    @ObservationIgnored var dubVoicesForAssistant: [DubSynthesizer.Voice] = []
+    @ObservationIgnored var dubVoicesForAssistantRequested = false
     var languageReadinessRevision = 0
     var languageProbe = LanguageProbe.live
     var languageEditorProject: ProjectRecord?
@@ -426,6 +430,9 @@ final class AppStore {
     var pendingWizardSelectionReview: WizardSelectionReviewRequest?
     var wizardSelections: [WizardSelectionSummary] = []
     var miniRuns: [MiniWizardFlow.FootageKind: MiniWizardRun] = [:]
+    /// Rough cut requests by id, so the review sheet can re-run one with
+    /// edited framing (docs/Rough-Cut-Plan.md). Pruned when a new one starts.
+    var roughCutRequests: [UUID: RoughCutRequest] = [:]
     /// Highlight history (docs/Highlight-History-Plan.md, Phase 2), newest
     /// first, per bar: Express keeps one list per source video, the full
     /// wizard one per project. Both pages stay alive, so each bar has its own

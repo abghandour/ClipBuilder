@@ -3,6 +3,8 @@ import SwiftUI
 /// Form-style alignment without a Form's capped content column.
 struct MiniRow<Control: View>: View {
     @Environment(\.settingsLabelWidth) private var labelWidth
+    @Environment(\.settingsDetailBelow) private var detailBelow
+    @Environment(\.settingsRowDividers) private var dividers
     let label: String
     /// One line to the right of the control, truncated before it squeezes the control.
     var detail: String?
@@ -30,13 +32,22 @@ struct MiniRow<Control: View>: View {
                     .labelsHidden()
                     .toggleStyle(.switch)
                     .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-                    .frame(maxWidth: detail == nil ? SettingsRowMetrics.controlWidth : nil, alignment: .leading)
-                if let detail {
+                    .frame(maxWidth: detail == nil || detailBelow ? SettingsRowMetrics.controlWidth : nil, alignment: .leading)
+                if let detail, !detailBelow {
                     SettingsRowDetail(detail)
                 }
                 Spacer(minLength: 0)
             }
-            Divider()
+            if let detail, detailBelow {
+                // The whole explanation under the control (a narrow pane
+                // such as the Rough cut sheet), aligned with the control.
+                Text(detail)
+                    .font(.callout).foregroundStyle(.secondary)
+                    .fixedSize(horizontal: false, vertical: true)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.leading, labelWidth + Theme.spaceM)
+            }
+            if dividers { Divider() }
         }
     }
 }
@@ -92,6 +103,11 @@ enum SettingsRowMetrics {
 extension EnvironmentValues {
     /// The label column of the rows in scope; dependent groups narrow it to their longest label.
     @Entry var settingsLabelWidth: CGFloat = SettingsRowMetrics.labelWidth
+    /// A row's detail goes on its own line under the control instead of
+    /// beside it (narrow panes where a one-line detail would be all ellipsis).
+    @Entry var settingsDetailBelow = false
+    /// Rows end with a Divider unless a pane turns them off.
+    @Entry var settingsRowDividers = true
 }
 
 /// The widest natural label width among the rows in a subtree.

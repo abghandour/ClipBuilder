@@ -28,11 +28,19 @@ struct WizardSelectionRulesTests {
     @Test func identicalSceneIDEvenWithDifferentFootageIsInvalid() {
         let source = Fixtures.scene()
         let saved = WizardSelectionRules.snapshot(Fixtures.plan(), scenes: [source])
+        // The same file under a new video row is a re-import of the same footage;
+        // a new row at another path is something else.
         var changed = source
         changed.videoID = 2
+        #expect(WizardSelectionRules.resolvedPlan(saved, scenes: [changed]) != nil)
+        changed.videoPath = "/tmp/other.mp4"
         #expect(WizardSelectionRules.resolvedPlan(saved, scenes: [changed]) == nil)
+        // A renamed source keeps its video row and duration: still the same footage.
         changed = source
-        changed.videoPath = "/tmp/replacement.mp4"
+        changed.videoPath = "/tmp/renamed.mp4"
+        #expect(WizardSelectionRules.resolvedPlan(saved, scenes: [changed]) != nil)
+        // A different file at the same row has another duration.
+        changed.videoDuration = source.videoDuration + 10
         #expect(WizardSelectionRules.resolvedPlan(saved, scenes: [changed]) == nil)
         changed = source
         changed.startTime = 3

@@ -77,6 +77,10 @@ nonisolated enum FramingPlanner {
         recipe.interviewZoomMoves = false
         recipe.interviewPunchIn = .talker
         recipe.interviewCuts = framing.moves == .cuts
+        recipe.steady = framing.steady == true ? true : nil
+        recipe.vipShow = framing.vipShow.map { VIPFocusPlanning.clamp($0, to: VIPFocusPlanning.showRange) }
+        recipe.vipStretch = framing.vipStretch.map { VIPFocusPlanning.clamp($0, to: VIPFocusPlanning.stretchRange) }
+        recipe.vipSentences = framing.vipSentences == true ? true : nil
         return .tracked(recipe, region: frame, fit: framing.fit, feather: framing.feather, blur: framing.blur)
     }
 
@@ -106,7 +110,7 @@ nonisolated enum FramingPlanner {
     /// recording, or nil when it can. The same text the settings row shows.
     static func shotReason(_ kind: CropRecipe.Kind, feeds: Int, hasVIP: Bool) -> String? {
         switch kind {
-        case .interview: hasVIP ? nil : "Interview focus needs a VIP tagged in People."
+        case .interview: hasVIP ? nil : "VIP focus needs a VIP tagged in People."
         case .talkerAndRest: feeds < 2 ? "\(kind.name) needs a recording with two or more feeds."
             : feeds > 4 ? "\(kind.name) fits at most four feeds." : nil
         case .talkerAndPrevious, .talkerAndRotation: feeds < 2 ? "\(kind.name) needs a recording with two or more feeds." : nil
@@ -180,7 +184,7 @@ nonisolated enum FramingPlanner {
         }
         var composition = try CropRecipePlanner.plan(recipe, video: context.video, range: context.range,
             turns: context.turns, roster: context.roster, layouts: context.layouts, canvasAspect: context.canvasAspect,
-            availableTiles: region == nil ? nil : context.feeds)
+            availableTiles: region == nil ? nil : context.feeds, sentenceEnds: context.sentenceEnds)
         if let region {
             for index in composition.slots.indices {
                 var slot = composition.slots[index]
@@ -210,7 +214,16 @@ nonisolated extension FramingPlan {
         return nil
     }
     var isStatic: Bool { if case .static = self { return true }; return false }
-    var camera: String { recipe?.fighterFocus == true ? "fast" : recipe?.centerStage == true ? "balanced" : "conversation" }
+    /// The tracking camera's tuning name (`CenterStageService.Tuning.named`).
+    /// Fighter focus stays fast whatever else is set; Steady camera takes the
+    /// calm preset for everything else.
+    var camera: String {
+        if recipe?.fighterFocus == true { return "fast" }
+        if recipe?.steady == true { return "steady" }
+        return recipe?.centerStage == true ? "balanced" : "conversation"
+    }
+    /// Whether the plan asked for the steady camera (and is not fighter focus).
+    var isSteady: Bool { recipe?.steady == true && recipe?.fighterFocus != true }
 }
 
 nonisolated extension WizardOptions {

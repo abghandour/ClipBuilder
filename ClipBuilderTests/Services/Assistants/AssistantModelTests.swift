@@ -360,7 +360,7 @@ struct AssistantModelTests {
 
     @Test func typedRequestDeadlineIgnoresASlowWorkerAndItsLateAnswer() async throws {
         let store = makeStore()
-        store.assistant.assistTimeout = .milliseconds(40)
+        store.assistant.understandTimeout = .milliseconds(40)
         let late = Counter()
         store.assistant.assistCall = { _ in
             // Like ProcessRunner: keeps running well after it is cancelled, then answers.
@@ -473,7 +473,7 @@ struct AssistantModelTests {
 
     @Test func aFailedCallKeepsTheUnrecognizedOutcome() async throws {
         let store = makeStore()
-        store.assistant.assistTimeout = .milliseconds(30)
+        store.assistant.understandTimeout = .milliseconds(30)
         store.assistant.assistCall = { _ in
             try await Task.sleep(for: .seconds(30))
             return AIResponse(text: "{}", provider: "claude", model: nil, task: "assist", fellBack: false)

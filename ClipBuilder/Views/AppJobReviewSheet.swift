@@ -39,6 +39,8 @@ struct AppJobReviewSheet: View {
                 HookVariantReadout(groupID: groupID, jobID: job.id, alternatives: alternatives, provenance: provenance)
             case .fightStory(let review):
                 FightStoryReviewSheet(jobID: job.id, review: review)
+            case .roughCut(let review):
+                RoughCutReviewSheet(jobID: job.id, review: review)
             default:
                 simple
             }

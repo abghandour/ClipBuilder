@@ -72,6 +72,17 @@ struct PageAssistantPromptTests {
         #expect(section(S.suggestions, in: empty) == ["(none)"])
     }
 
+    @Test func guidanceLandsInTheTaskSection() {
+        let plain = PageAssistantPrompt.build(context: context, actions: actions, settings: settings, question: "x")
+        #expect(!plain.contains("GUIDE-MARK"))
+        let guided = PageAssistantPrompt.build(context: context, actions: actions, settings: settings, question: "x",
+                                               guidance: "\n  GUIDE-MARK rules here  \n")
+        #expect(section(S.task, in: guided).last == "GUIDE-MARK rules here")
+        #expect(guided.range(of: "GUIDE-MARK")!.lowerBound < guided.range(of: S.answer)!.lowerBound)
+        let ranking = PageAssistantPrompt.build(context: context, actions: actions, settings: [], question: nil, guidance: "GUIDE-MARK")
+        #expect(!ranking.contains("GUIDE-MARK"), "ranking prompts take no guidance")
+    }
+
     // MARK: - Ranking replies
 
     @Test func rankingKeepsKnownIdsInOrderAndDropsTheRest() {
@@ -189,9 +200,16 @@ struct AssistantSettingTests {
         }
     }
 
-    @Test func expressWhitelistIsThePlansKeys() {
-        #expect(WizardAssistant.expressSettings.map(\.key)
-                == ["length", "captions", "nameTags", "safeAreaOnly", "watermark", "transition", "aiInstructions"])
+    @Test func expressWhitelistCoversTheSettingsCard() {
+        let keys = WizardAssistant.expressSettings(profile: BrandProfile(name: "T"), overlays: ["Lower third"]).map(\.key)
+        #expect(keys == ["footageKind", "length", "quality", "canvas", "look", "transition", "framing",
+                         "captions", "captionPosition", "captionStyle", "captionLanguage",
+                         "nameTags", "nameTagPosition", "nameTagStyle", "safeAreaOnly",
+                         "watermark", "watermarkDesign", "watermarkOpacity", "overlay", "overlayDesign",
+                         "introVideo", "outroVideo", "muteSourceAudio", "music", "dub", "dubLanguage",
+                         "aiInstructions"])
+        #expect(!keys.contains("broll"), "Express B-roll is manual")
+        #expect(!WizardAssistant.expressSettings(profile: BrandProfile(name: "T"), overlays: []).map(\.key).contains("overlayDesign"))
         #expect(WizardAssistant.fullSettings.map(\.key)
                 == ["targetDurationSeconds", "addCaptions", "includeHeadline", "formatPreset", "aiInstructions"])
         #expect(ScenesAssistant.settings(tags: ["fight"]).map(\.key) == ["favoritesOnly", "tagFilter", "searchText", "sortByScore"])

@@ -5,10 +5,11 @@ import Foundation
 /// traits and reports finishing while the next reel renders, and a timings
 /// summary at the end. Express gathers its takes from its candidates; the
 /// AI Wizard from its saved selections' best takes.
-/// What the shared batch does with its takes: render them (Generate), or
-/// build each one's Builder timeline with every setting applied (Open in Editor).
+/// What the shared batch does with its takes: render them (Generate),
+/// build each one's Builder timeline with every setting applied (Open in
+/// Editor), or render each one small and plain for a framing check (Rough cut).
 nonisolated enum WizardBatchMode: Sendable {
-    case render, openInEditor
+    case render, openInEditor, roughCut
 }
 
 /// The batch's takes after the shared preparation, and the options they render with.
@@ -73,10 +74,18 @@ extension AppStore {
                              mode: WizardBatchMode = .render,
                              onResults: @escaping @MainActor () -> Void = {}) {
         guard let database, !isWizardRunning else { return }
-        if mode == .openInEditor {
+        switch mode {
+        case .openInEditor:
             openWizardBatchInEditor(database: database, projectID: projectID, options: options, oneReel: oneReel,
                                     cameraFocus: cameraFocus, gatherTakes: gatherTakes, combine: combine)
             return
+        case .roughCut:
+            renderWizardBatchRoughCut(database: database, projectID: projectID, options: options, oneReel: oneReel,
+                                      cameraFocus: cameraFocus, gatherTakes: gatherTakes, combine: combine,
+                                      namespace: source == .express ? WizardAssistant.expressNamespace : WizardAssistant.fullNamespace)
+            return
+        case .render:
+            break
         }
         let profile = activeProfile
         let generation = profileGeneration
@@ -211,6 +220,169 @@ extension AppStore {
     func isOpeningWizardInEditor(projectID: Int64?) -> Bool {
         guard let projectID else { return false }
         return jobs.running.contains { $0.kind == .openInEditor && $0.projectID == projectID }
+    }
+
+    /// True while a rough cut is rendering for this project.
+    func isRoughCutRunning(projectID: Int64?) -> Bool {
+        guard let projectID else { return false }
+        return jobs.running.contains { $0.kind == .roughCut && $0.projectID == projectID }
+    }
+
+    /// True while either Builder-bound batch job (Open in Editor, Rough cut)
+    /// runs for this project; Generate and both buttons wait for it.
+    func isWizardBatchJobRunning(projectID: Int64?) -> Bool {
+        isOpeningWizardInEditor(projectID: projectID) || isRoughCutRunning(projectID: projectID)
+    }
+
+    /// Where one rough cut job's files live: per profile database and per
+    /// job, so a review still on screen never sees another job's files.
+    nonisolated static func roughCutDirectory(database: Database, jobID: UUID) -> URL {
+        SettingsStore.cacheDirectory.appendingPathComponent("rough-cuts", isDirectory: true)
+            .appendingPathComponent(database.path.deletingPathExtension().lastPathComponent, isDirectory: true)
+            .appendingPathComponent(jobID.uuidString, isDirectory: true)
+    }
+
+    /// Deletes rough cut folders no retained job result still points at.
+    private func pruneRoughCuts(keeping current: URL) {
+        let live = Set(jobs.items.flatMap { job -> [URL] in
+            guard case .roughCut(let review)? = job.result else { return [] }
+            return review.cuts.map { $0.url.deletingLastPathComponent() }
+        }).union([current])
+        let root = current.deletingLastPathComponent()
+        guard let folders = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
+        for folder in folders where !live.contains { $0.standardizedFileURL == folder.standardizedFileURL } {
+            try? FileManager.default.removeItem(at: folder)
+        }
+    }
+
+    /// Rough cut: the batch's shared preparation with every non-framing
+    /// layer turned off (`WizardRoughCut.options`), each take's document
+    /// built as Open in Editor would, stripped (`WizardRoughCut.strip`) and
+    /// rendered small through the exact-preview path. Nothing is saved to
+    /// the library; the files sit in the cache until the next rough cut of
+    /// the project. The result opens a player sheet with Generate.
+    @discardableResult
+    private func renderWizardBatchRoughCut(database: Database, projectID: Int64, options: WizardOptions,
+                                           oneReel: Bool, cameraFocus: Bool,
+                                           gatherTakes: @escaping @Sendable (Database) async throws -> [WizardSelectionTake],
+                                           combine: @escaping @Sendable (Database, [WizardSelectionTake]) async throws -> WizardSelectionTake,
+                                           namespace: String, requestID: UUID = UUID()) -> UUID? {
+        guard !isWizardBatchJobRunning(projectID: projectID) else { return nil }
+        let profile = activeProfile
+        let generation = profileGeneration
+        let wizard = wizard
+        let renderer = multitrackRenderer
+        let project = projects.first { $0.id == projectID } ?? activeProject
+        let roughOptions = WizardRoughCut.options(options)
+        let jobID = UUID()
+        let directory = Self.roughCutDirectory(database: database, jobID: jobID)
+        // The request outlives the job so the review sheet can run it again
+        // with other framing; requests no retained review points at go.
+        let retained = Set(jobs.items.compactMap { job -> UUID? in
+            guard case .roughCut(let review)? = job.result else { return nil }
+            return review.requestID
+        })
+        roughCutRequests = roughCutRequests.filter { retained.contains($0.key) }
+        roughCutRequests[requestID] = RoughCutRequest(projectID: projectID, options: options, oneReel: oneReel,
+            cameraFocus: cameraFocus, gatherTakes: gatherTakes, combine: combine, namespace: namespace)
+        let framing = options.requestedFraming
+        let canvasAspect = options.renderSettings.aspectRatio
+        return jobs.start(.roughCut, title: "Rough cut — \(project?.name ?? "Project")", project: project,
+                   profileGeneration: generation, subjectID: "wizard-rough-\(projectID)") { [weak self] log in
+            guard let self else { return nil }
+            func checkContext() throws {
+                try Task.checkCancellation()
+                guard self.profileGeneration == generation, self.database === database else { throw CancellationError() }
+            }
+            try await self.wizardSelectionSaveTask?.value
+            try await self.sceneEditSaveTask?.value
+            let prepared = try await self.prepareWizardBatchTakes(database: database, profile: profile,
+                options: roughOptions, oneReel: oneReel, cameraFocus: cameraFocus,
+                gatherTakes: gatherTakes, combine: combine,
+                stage: { log($0) }, preparationSink: { _ in log })
+            // Preparation can return after a Stop; nothing on disk changes until
+            // the job is known to be current.
+            try checkContext()
+            let count = prepared.takes.count
+            self.pruneRoughCuts(keeping: directory)
+            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            // The folder belongs to the review once the job returns it; until
+            // then a failure or Stop takes it away.
+            var handedOver = false
+            defer { if !handedOver { try? FileManager.default.removeItem(at: directory) } }
+            var cuts: [RoughCut] = []
+            var failures: [String] = []
+            for (index, take) in prepared.takes.enumerated() {
+                try checkContext()
+                log("PROGRESS:\(Double(index) / Double(max(1, count)))")
+                log(count == 1 ? "Rendering the rough cut…" : "Rendering rough cut \(index + 1) of \(count)…")
+                let selectionName = try? await database.wizardSelection(id: take.selectionID)?.name
+                try checkContext()
+                let base = selectionName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+                let name = base.isEmpty ? (count == 1 ? "Rough cut" : "Rough cut \(index + 1)") : base
+                do {
+                    let document = WizardRoughCut.strip(try await wizard.editorDocument(take: take, options: prepared.options,
+                        profile: profile, database: database, tagTextPrepared: true,
+                        preparedTagFields: prepared.tagFields, emit: log))
+                    try checkContext()
+                    let sceneIDs = Set(take.sceneIDs).union(document.videoTrack.compactMap(\.sceneID))
+                    let scenes = try await database.fetchScenes(ids: sceneIDs)
+                    try checkContext()
+                    let result = try await renderer.render(document: document, scenes: scenes, profile: profile,
+                                                           database: database, preview: true, emit: log)
+                    // The exact-preview path leaves its file to the caller.
+                    defer { try? FileManager.default.removeItem(at: result.url) }
+                    try checkContext()
+                    let destination = directory.appendingPathComponent("rough-\(index + 1).mp4")
+                    try FileManager.default.copyItemReplacing(at: result.url, to: destination)
+                    cuts.append(RoughCut(url: destination, name: name, duration: result.duration))
+                } catch {
+                    if error is CancellationError || Task.isCancelled { throw CancellationError() }
+                    try checkContext()
+                    failures.append(name)
+                    self.logEvent("job", "Rough cut: \"\(name)\" failed: \(error.userMessage)")
+                    log("Could not render \"\(name)\": \(error.userMessage)")
+                }
+            }
+            try checkContext()
+            let failureNote = failures.isEmpty ? ""
+                : " Failed: \(failures.map { "\"\($0)\"" }.joined(separator: ", "))."
+            guard !cuts.isEmpty else {
+                throw AppJobEmptyResult(message: count == 1 ? "Could not render the rough cut.\(failureNote)"
+                                        : "Could not render any of the \(count) rough cuts.\(failureNote)")
+            }
+            log((cuts.count == 1 ? "Rough cut ready (\(cuts[0].duration.timecode))."
+                : "\(cuts.count) rough cuts ready.") + failureNote)
+            handedOver = true
+            // What the sheet's framing rows need: the recordings behind the
+            // takes and their footage type.
+            let videoIDs = Array(Set(try await database.fetchScenes(ids: Set(prepared.takes.flatMap(\.sceneIDs))).map(\.videoID))).sorted()
+            let sourceType = videoIDs.lazy.compactMap { id in self.videos.first { $0.id == id }?.type }.first ?? .other
+            return .roughCut(RoughCutReview(projectID: projectID, cuts: cuts, namespace: namespace, requestID: requestID,
+                framing: framing, sourceType: sourceType, videoIDs: videoIDs, canvasAspect: canvasAspect))
+        }
+    }
+
+    /// The review sheet's "Preview again": the same takes, page and options
+    /// as the stored request, with the sheet's framing. A new job; the open
+    /// sheet watches it by the returned id and swaps in its cuts.
+    @discardableResult
+    func rerunRoughCut(requestID: UUID, framing: Framing) -> UUID? {
+        guard let database, let request = roughCutRequests[requestID] else {
+            presentNotice("Rough cut", "That rough cut's request is gone. Start a new one from the page.")
+            return nil
+        }
+        guard !isWizardRunning, !isWizardBatchJobRunning(projectID: request.projectID) else {
+            presentNotice("Rough cut", "The Wizard is already working on this project.")
+            return nil
+        }
+        var options = request.options
+        options.framing = framing
+        roughCutRequests[requestID]?.options = options
+        return renderWizardBatchRoughCut(database: database, projectID: request.projectID, options: options,
+                                         oneReel: request.oneReel, cameraFocus: request.cameraFocus,
+                                         gatherTakes: request.gatherTakes, combine: request.combine,
+                                         namespace: request.namespace, requestID: requestID)
     }
 
     /// Open in Editor: the batch's shared preparation, then each reel's take

@@ -58,7 +58,7 @@ struct InterviewFocusRecipeTests {
         #expect(tight.notes.contains { $0.contains("speaks longest") })
         #expect(tight.tiles.first { $0.index == 1 }?.personKey == "guest", "name tags read the placed feed identity")
         #expect(tight.tiles.first { $0.index == 0 }?.personKey == "host", "the one feed left is the interviewer's")
-        // Name tags: the guest is in every shot, the host in the two-shots,
+        // Name tags: the guest's shots and the host's cutaways tile the clip,
         // and concurrent tags never sit on top of each other.
         let people = [NameTagPlanner.Person(key: "guest", name: "Guest"), NameTagPlanner.Person(key: "host", name: "Host")]
         let areas = NameTagPlanner.areas(plan: tight, tiles: tight.tiles, roster: roster, layouts: ScreenCropStore.builtIn,
@@ -66,9 +66,12 @@ struct InterviewFocusRecipeTests {
         let tags = NameTagPlanner.plan(areas: areas, people: people, settings: .init())
         let guest = tags.filter { $0.personKey == "guest" }.sorted { $0.start < $1.start }
         #expect(guest.first?.start == 0 && guest.last?.end == 40)
-        #expect(zip(guest, guest.dropFirst()).allSatisfy { abs($0.end - $1.start) < 0.001 })
         let host = tags.filter { $0.personKey == "host" }
         #expect(!host.isEmpty)
+        for (shot, next) in zip(guest, guest.dropFirst()) where next.start - shot.end > 0.001 {
+            #expect(host.contains { abs($0.start - shot.end) < 0.001 && abs($0.end - next.start) < 0.001 },
+                    "the gap \(shot.end)–\(next.start) is a cutaway to the host")
+        }
         for h in host {
             for g in guest where g.start < h.end && g.end > h.start {
                 #expect(!g.rect.intersects(h.rect))
@@ -82,18 +85,18 @@ struct InterviewFocusRecipeTests {
 
     @Test func kindAndDefaultsMatchSpecification() throws {
         #expect(CropRecipe.Kind.interview.rawValue == "interview_focus")
-        #expect(CropRecipe.Kind.interview.name == "Interview focus")
-        #expect(CropRecipe.Kind.interview.summary == "Tight on the VIP while they talk; a slow pull back brings the interviewer in while they ask.")
+        #expect(CropRecipe.Kind.interview.name == "VIP focus" && CropRecipe.Kind.vip.name == "VIP on screen")
+        #expect(CropRecipe.Kind.interview.summary == "Full screen on whoever talks; a question returns to the VIP after 2 s, and a long answer cuts away to the asker for 2 s every 8 s.")
+        #expect(CropRecipePlanner.hold(for: CropRecipe(kind: .interview)) == 2)
         #expect(WizardCameraFocus.summary("interview_focus") == CropRecipe.Kind.interview.summary)
         #expect(CropRecipe.builtIn.contains { $0.kind == .interview })
         #expect(try JSONDecoder().decode(CropRecipe.Kind.self, from: JSONEncoder().encode(CropRecipe.Kind.interview)) == .interview)
-        #expect(CropRecipePlanner.layoutName(kind: .interview, people: 1) == CropLayoutRef.fullScreenName)
-        for feeds in [2, 3, 4] {
-            #expect(CropRecipePlanner.layoutName(kind: .interview, people: feeds) == "50-50 Horizontal")
+        // One person at a time whatever the feed count (November 2, 2026).
+        for feeds in [1, 2, 3, 4] {
+            #expect(CropRecipePlanner.layoutName(kind: .interview, people: feeds) == CropLayoutRef.fullScreenName)
         }
         let recipe = CropRecipe(kind: .interview)
-        #expect(CropRecipePlanner.defaultSlots(recipe, areas: 1, tiles: []) == [.vip])
-        #expect(CropRecipePlanner.defaultSlots(recipe, areas: 2, tiles: []) == [.vip, .talker])
+        #expect(CropRecipePlanner.defaultSlots(recipe, areas: 1, tiles: []) == [.talker])
     }
 
     @Test func singleCameraUsesPlainFullScreenPathOnRelativeClock() throws {
@@ -106,8 +109,10 @@ struct InterviewFocusRecipeTests {
             let slot = try #require(plan.slots.first)
             #expect(slot.subject == .vip && slot.region == nil && slot.trackingSpans == nil && slot.window == nil && slot.focus == nil)
             let path = try #require(slot.path)
-            #expect(path.map(\.t) == [0, 5, 5.8, 12, 12.8, 20])
-            #expect(path[2].h > path[0].h)
+            // Guest 10–15, the host asks 15–22 (shown 2 s), back to the guest at 17.
+            #expect(path.map(\.t) == [0, 5, 5.8, 7, 7.8, 20])
+            #expect(abs(path[0].x + path[0].w / 2 - 0.36) < 0.001 && abs(path[2].x + path[2].w / 2 - 0.54) < 0.001)
+            #expect(path[4].x == path[0].x && path[4].h == path[0].h)
             #expect(CenterStageService.pathMatchesCanvas(path, sourceSize: CGSize(width: 1920, height: 1080), canvasAspect: 9.0 / 16))
         }
     }
@@ -128,28 +133,64 @@ struct InterviewFocusRecipeTests {
         #expect(path[0].h == 0.6)
     }
 
-    @Test func separateFeedsUseVIPOnTopAndTalkerBelow() throws {
+    @Test func separateFeedsShowOnePersonAtATimeStartingOnTheVIP() throws {
         for layout in [PodcastLayout.splitHorizontal, .grid] {
             var video = video()
             video.podcastLayout = layout.rawValue
             let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, personKey: "guest"),
                          PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, personKey: "host")]
             video.podcastTilesJSON = String(decoding: try JSONEncoder().encode(tiles), as: UTF8.self)
-            let plan = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video,
-                turns: turns(), roster: roster(), layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16)
-            #expect(plan.layout.name == "50-50 Horizontal")
-            #expect(plan.slots.map(\.subject) == [.vip, .talker])
-            #expect(plan.slots[0].region == FreeCropRect(xFrac: 0, yFrac: 0, wFrac: 0.5, hFrac: 1))
-            // The VIP cell already shows the guest, so while the guest talks the
-            // talker cell holds the host: with two feeds that is a still host cell.
-            #expect(plan.slots[1].path == nil)
-            #expect(plan.slots[1].region == FreeCropRect(xFrac: 0.5, yFrac: 0, wFrac: 0.5, hFrac: 1))
-            // Only the host's own turn is outlined, not the stretches where the host stands in.
-            #expect(plan.slots[1].talking == [15...22])
+            // The host asks first and the guest answers: the opening is on the
+            // VIP all the same, then the picture cuts to whoever talks.
+            let turns = [SpeakerTurn(videoID: 1, start: 3, end: 10, cluster: 1, confidence: 1, personKey: "host", tile: 1),
+                         SpeakerTurn(videoID: 1, start: 10, end: 40, cluster: 0, confidence: 1, personKey: "guest", tile: 0)]
+            var recipe = CropRecipe(kind: .interview)
+            recipe.interviewCuts = true
+            let plan = try CropRecipePlanner.plan(recipe, video: video,
+                turns: turns, roster: roster(), layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16)
+            #expect(plan.layout.isFullScreen && plan.slots.map(\.subject) == [.talker])
+            let path = try #require(plan.slots[0].path)
+            func centre(at time: Double) -> Double? {
+                path.last(where: { $0.t <= time }).map { $0.x + $0.w / 2 }
+            }
+            #expect(try #require(centre(at: 0)) < 0.5, "opens on the guest's feed before anyone talks")
+            #expect(try #require(centre(at: 4)) > 0.5, "the host's feed while the host asks")
+            #expect(try #require(centre(at: 6)) < 0.5, "back to the guest 2 s into the question")
+            #expect(try #require(centre(at: 20)) < 0.5, "on the guest while they answer")
+            #expect(try #require(centre(at: 19)) > 0.5, "a 2 s cutaway to the host 8 s into the answer")
+            #expect(path.allSatisfy { $0.w <= 0.5 + 0.0001 }, "never wider than one feed")
+            #expect(plan.slots[0].talking == [3...5, 10...18, 20...28, 30...40])
         }
     }
 
-    @Test func severalVIPsUseExistingRotationWithSlowMoves() throws {
+    @Test func steadyCameraTracksEachFeedInsteadOfHoldingAFixedCrop() throws {
+        var video = video()
+        video.podcastLayout = PodcastLayout.splitHorizontal.rawValue
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, personKey: "guest"),
+                     PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, personKey: "host")]
+        video.podcastTilesJSON = String(decoding: try JSONEncoder().encode(tiles), as: UTF8.self)
+        let turns = [SpeakerTurn(videoID: 1, start: 3, end: 10, cluster: 1, confidence: 1, personKey: "host", tile: 1),
+                     SpeakerTurn(videoID: 1, start: 10, end: 40, cluster: 0, confidence: 1, personKey: "guest", tile: 0)]
+        var recipe = CropRecipe(kind: .interview)
+        recipe.interviewCuts = true
+        recipe.steady = true
+        let plan = try CropRecipePlanner.plan(recipe, video: video,
+            turns: turns, roster: roster(), layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16)
+        let spans = try #require(plan.slots[0].trackingSpans)
+        // Guest's feed, the host's feed while they ask, the guest's feed from
+        // 2 s into the question, cutaways to the host at 18 and 28: the camera
+        // tracks the person inside each feed, so the recording camera's moves are absorbed.
+        #expect(spans.map(\.start) == [0, 3, 5, 18, 20, 28, 30] && spans.last?.end == 40)
+        #expect(spans.map { $0.region.xFrac } == [0, 0.5, 0, 0.5, 0, 0.5, 0] && spans.allSatisfy { $0.region.wFrac == 0.5 })
+        #expect(spans.allSatisfy { $0.focus != nil }, "each span seeds the camera on the person's face")
+        // Off: the same recording keeps its fixed crops.
+        recipe.steady = nil
+        let fixed = try CropRecipePlanner.plan(recipe, video: video,
+            turns: turns, roster: roster(), layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16)
+        #expect(fixed.slots[0].trackingSpans == nil && fixed.slots[0].path != nil)
+    }
+
+    @Test func severalVIPsTakeTurnsInTheReturnsWithGlides() throws {
         var roster = roster()
         roster.append(VideoPersonRecord(videoID: 1, personID: 3, key: "guest2", name: "Guest 2", descriptor: "", portraitAt: 0,
             portraitBox: .init(x: 0.75, y: 0.2, w: 0.04, h: 0.1), vip: true))
@@ -157,30 +198,32 @@ struct InterviewFocusRecipeTests {
         let plan = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video(), range: 0...20,
             turns: turns, roster: roster, layouts: [], canvasAspect: 9.0 / 16)
         let path = try #require(plan.slots.first?.path)
-        #expect(path.map(\.t) == [0, 6, 6.8, 12, 12.8, 20])
-        #expect(path[0].x != path[2].x && path[0].x == path[4].x)
+        // The host asks the whole clip: host, guest at 2, host again at 10, guest 2 at 12.
+        #expect(path.map(\.t) == [0, 2, 2.8, 10, 10.8, 12, 12.8, 20])
+        #expect(abs(path[0].x + path[0].w / 2 - 0.54) < 0.001 && path[4].x == path[0].x)
+        #expect(abs(path[2].x + path[2].w / 2 - 0.36) < 0.001 && abs(path[6].x + path[6].w / 2 - 0.77) < 0.001)
         #expect(plan.slots[0].trackingSpans == nil && plan.slots[0].region == nil)
     }
 
-    @Test func closeFacesRemainStaticAndImpossibleTwoShotReportsWhy() throws {
+    @Test func closeFacesStayStillAndPullBackOpensEveryShot() throws {
         var roster = roster()
         roster[1].portraitBox = .init(x: 0.38, y: 0.2, w: 0.04, h: 0.1)
         let still = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video(),
             turns: turns(), roster: roster, layouts: [], canvasAspect: 9.0 / 16)
-        // Close faces used to share one static frame at the conversation height;
-        // with a face-tight 0 % the camera now moves between the VIP and the two-shot.
-        #expect(still.slots[0].path?.first?.t == 0 && still.slots[0].path?.last?.t == 40)
+        // Faces this close share one face-tight frame: a move would be a twitch.
+        #expect(still.slots[0].path?.map(\.t) == [0, 40])
         #expect(still.notes.isEmpty)
         #expect(still.slots[0].region == nil)
         roster[1].portraitBox = .init(x: 0.85, y: 0.2, w: 0.04, h: 0.1)
         let distant = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video(),
             turns: turns(), roster: roster, layouts: [], canvasAspect: 9.0 / 16)
-        #expect(distant.notes.count == 1 && distant.notes[0].hasPrefix("Two-shot cannot hold both faces"))
-        // The anchored shot follows Pull back: the face-tight height at 0, full height at 1.
+        #expect(distant.notes.isEmpty, "no two-shot, so nothing to explain")
+        // Every shot follows Pull back: the face-tight height at 0, full height at 1.
         let source = Double(video().width) / Double(video().height)
         let close = InterviewFocusPlanning.tightHeight(
             vipFace: CGRect(x: 0.85 * source, y: 0.2, width: 0.04 * source, height: 0.1), canvasAspect: 9.0 / 16, maxHeight: 1)
-        #expect(distant.slots[0].path?.contains { abs($0.h - close) < 0.001 } == true, "the tight shot is face-tight")
+        #expect(distant.slots[0].path?.contains { abs($0.h - close) < 0.001 } == true, "the host's shot is face-tight")
+        #expect(distant.slots[0].path?.contains { abs($0.x + $0.w / 2 - 0.87) < 0.001 } == true, "and centred on the host")
         #expect(distant.slots[0].path?.allSatisfy { $0.h < 1 } == true, "nothing opens to the full height at 0 %")
         var pulledBack = CropRecipe(kind: .interview)
         pulledBack.interviewZoom = 1
@@ -223,7 +266,7 @@ struct InterviewFocusRecipeTests {
         let clip = try #require(document.videoTrack.first)
         let path = try #require(clip.cameraPath)
         #expect(document.videoTrack.count == 1 && clip.centerStage && clip.areaRegion == nil)
-        #expect(path.map(\.t) == [0, 5, 5.8, 12, 12.8, 20])
+        #expect(path.map(\.t) == [0, 5, 5.8, 7, 7.8, 20])
         #expect(clip.sourceStart == 10 && clip.sourceEnd == 30 && clip.duration == 20)
         #expect(CenterStageService.pathMatchesCanvas(path, sourceSize: CGSize(width: 1920, height: 1080)))
     }
@@ -237,7 +280,7 @@ extension InterviewFocusRecipeTests {
         let plan = try CropRecipePlanner.plan(recipe, video: video(), range: 10...30,
             turns: turns(), roster: roster(), layouts: [], canvasAspect: 9.0 / 16)
         let path = try #require(plan.slots.first?.path)
-        #expect(path.map(\.t) == [0, 4.99, 5, 11.99, 12, 20])
+        #expect(path.map(\.t) == [0, 4.99, 5, 6.99, 7, 20])
         #expect(abs(path[2].x + path[2].w / 2 - 0.54) < 0.001)
         #expect(path[2] != path[0] && path[4].x == path[0].x)
         #expect(CameraKeyframes.isCut(path, at: 2) && CameraKeyframes.isCut(path, at: 4))
@@ -263,8 +306,15 @@ extension InterviewFocusRecipeTests {
         let changes = path.indices.dropFirst().filter { !CameraKeyframes.sameRect(path[$0 - 1], path[$0]) }
         #expect(!changes.isEmpty)
         #expect(changes.allSatisfy { CameraKeyframes.isCut(path, at: $0) })
-        let question = try #require(CenterStageService.interpolated(path, at: 20))
-        #expect(abs(question.x + question.w / 2 - 0.54) < 0.001)
+        // The guest's 15 s answer earns a cutaway at 8 (nobody asked yet: the
+        // next person in turn, the host), the host's question is shown at 15,
+        // the guest is back at 17 and answers from 22.
+        func centre(_ time: Double) throws -> Double {
+            let shot = try #require(CenterStageService.interpolated(path, at: time))
+            return shot.x + shot.w / 2
+        }
+        let centres = try [9.0, 11, 16, 20].map(centre)
+        #expect(zip(centres, [0.54, 0.36, 0.54, 0.36]).allSatisfy { abs($0 - $1) < 0.001 }, "\(centres)")
     }
 
     /// The talker cell holds the previous talker while the VIP cell is on the
@@ -291,7 +341,7 @@ extension InterviewFocusRecipeTests {
         #expect(opening.map(\.tile) == [1])
     }
 
-    @Test func gridWithTwoVIPsNeverShowsTheSameFeedTwice() throws {
+    @Test func gridWithTwoVIPsStillShowsOnePersonAtATime() throws {
         var video = video()
         video.podcastLayout = PodcastLayout.grid.rawValue
         let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 0.5, personKey: "guest"),
@@ -306,21 +356,21 @@ extension InterviewFocusRecipeTests {
                      SpeakerTurn(videoID: 1, start: 15, end: 20, cluster: 0, confidence: 1, personKey: "guest", tile: 0)]
         let plan = try CropRecipePlanner.plan(CropRecipe(kind: .interview), video: video, range: 0...20,
             turns: turns, roster: roster, layouts: ScreenCropStore.builtIn, canvasAspect: 9.0 / 16)
-        #expect(plan.slots.map(\.subject) == [.vip, .talker])
-        func vipRegion(at t: Double) -> FreeCropRect? {
-            plan.slots[0].trackingSpans?.first { t >= $0.start && t < $0.end }?.region ?? plan.slots[0].region
-        }
+        // Two VIPs on a grid: still one person at a time, whoever talks.
+        #expect(plan.layout.isFullScreen && plan.slots.map(\.subject) == [.talker])
         func tile(containing rect: FreeCropRect) -> Int? {
             let cx = rect.xFrac + rect.wFrac / 2, cy = rect.yFrac + rect.hFrac / 2
             return tiles.first { cx >= $0.x && cx < $0.x + $0.w && cy >= $0.y && cy < $0.y + $0.h }?.index
         }
-        let path = try #require(plan.slots[1].path)
+        let path = try #require(plan.slots[0].path)
+        // Guest 0–10, the host asks 10–15 (shown 2 s), the guest from 12.
+        let expected: [(time: Double, tile: Int)] = [(0, 0), (10, 1), (12, 0)]
         var samples = 0
         for t in stride(from: 0.25, to: 20, by: 0.5) {
             let shot = try #require(CenterStageService.interpolated(path, at: t))
-            let vip = try #require(vipRegion(at: t))
-            let talkerTile = tile(containing: FreeCropRect(xFrac: shot.x, yFrac: shot.y, wFrac: shot.w, hFrac: shot.h))
-            #expect(talkerTile != nil && talkerTile != tile(containing: vip), "t=\(t)")
+            let shown = tile(containing: FreeCropRect(xFrac: shot.x, yFrac: shot.y, wFrac: shot.w, hFrac: shot.h))
+            #expect(shown == expected.last { $0.time <= t }?.tile, "t=\(t)")
+            #expect(shot.w <= 0.5 + 0.0001 && shot.h <= 0.5 + 0.0001, "never wider than one feed at t=\(t)")
             samples += 1
         }
         #expect(samples == 40)

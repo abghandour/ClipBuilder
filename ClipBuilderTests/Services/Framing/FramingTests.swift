@@ -24,6 +24,22 @@ struct FramingTests {
         #expect(defaults.moves == .smooth && defaults.pullBack == 0)
     }
 
+    @Test func steadyRoundTripsAndStaysOutOfTheDefaultEncoding() throws {
+        #expect(Framing().joined == "{}")
+        let steady = Framing(subject: .speakerFocus, steady: true)
+        #expect(steady.joined.contains("\"steady\":true"))
+        #expect(Framing.split(steady.joined) == steady)
+        #expect(Framing.split("{\"subject\":\"speakerFocus\"}")?.steady == nil, "older requests decode with it off")
+    }
+
+    @Test func vipFocusTimingsRoundTripAndStayOutOfTheDefaultEncoding() throws {
+        let timed = Framing(subject: .speakerFocus, speakerShot: .interview, vipShow: 1.5, vipStretch: 12, vipSentences: true)
+        #expect(timed.joined.contains("\"vip_sentences\":true") && timed.joined.contains("\"vip_show\":1.5"))
+        #expect(Framing.split(timed.joined) == timed)
+        #expect(!Framing(subject: .speakerFocus).joined.contains("vip_"))
+        #expect(Framing.split("{\"subject\":\"speakerFocus\"}")?.vipSentences == nil, "older requests decode with the defaults")
+    }
+
     @Test func originalWinsAndRemovedControlsDoNotInventAChoice() {
         var old = WizardOptions()
         #expect(Framing.legacy(from: old) == Framing())
@@ -129,7 +145,11 @@ struct FramingTests {
         let defaults = try #require(UserDefaults(suiteName: suite))
         defer { defaults.removePersistentDomain(forName: suite) }
         mini.remember(profileName: profile.profileName, defaults: defaults)
-        #expect(MiniWizardSettings.remembered(profile: profile, defaults: defaults).framing == mini.framing)
+        // Express memory keeps the framing but not the frame: it was dragged
+        // for one video's picture and frames nobody on the next.
+        var withoutFrame = mini.framing
+        withoutFrame.focusFrame = nil
+        #expect(MiniWizardSettings.remembered(profile: profile, defaults: defaults).framing == withoutFrame)
         WizardExpressExtras.apply(to: &options, defaults: defaults)
         var restored = WizardOptions()
         WizardExpressExtras.apply(to: &restored, defaults: defaults)

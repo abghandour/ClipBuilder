@@ -21,11 +21,54 @@ struct FramingRows: View {
     /// Everyone the selected recordings know, one entry per person key.
     @State private var roster: [(record: VideoPersonRecord, videoURL: URL)] = []
 
+    /// VIP focus: how long the other side is shown, how long a talker holds
+    /// the picture, and whether changes wait for the sentence to end.
+    @ViewBuilder private var vipFocusRows: some View {
+        let show = Binding(get: { framing.vipShow ?? VIPFocusPlanning.askerShow },
+                           set: { framing.vipShow = $0 == VIPFocusPlanning.askerShow ? nil : $0 })
+        let stretch = Binding(get: { framing.vipStretch ?? VIPFocusPlanning.vipStretch },
+                              set: { framing.vipStretch = $0 == VIPFocusPlanning.vipStretch ? nil : $0 })
+        SettingsRow("Asker", detail: "How long the asker, or a cutaway from a long answer, stays on screen before the VIP is back.") {
+            Slider(value: show, in: VIPFocusPlanning.showRange, step: 0.5).accessibilityLabel("Asker on screen")
+            Text("\(show.wrappedValue, format: .number.precision(.fractionLength(0...1))) s")
+                .monospacedDigit().lineLimit(1).fixedSize()
+        }
+        SettingsRow("Hold", detail: "How long a talker holds the picture before the other side is shown for a moment.") {
+            Slider(value: stretch, in: VIPFocusPlanning.stretchRange, step: 1).accessibilityLabel("Talker holds the picture")
+            Text("\(stretch.wrappedValue, format: .number.precision(.fractionLength(0))) s")
+                .monospacedDigit().lineLimit(1).fixedSize()
+        }
+        SettingsRow("Sentences", detail: framing.vipSentences == true
+            ? "A change waits for the end of the sentence being spoken; a new talker still cuts at once. Needs a transcript."
+            : "Changes happen on the clock, mid-sentence or not.") {
+            Toggle(isOn: Binding(get: { framing.vipSentences == true }, set: { framing.vipSentences = $0 ? true : nil })) {
+                Text("Finish the sentence").lineLimit(1).fixedSize()
+            }
+            .toggleStyle(.switch)
+            .accessibilityLabel("Finish the sentence")
+            .help("Hold a shot until the sentence ends instead of cutting away in the middle of it")
+        }
+    }
+
     /// The run's VIPs: the request's own choice, else the People tags.
     private var vipKeys: Set<String> {
         framing.vips.map(Set.init) ?? Set(roster.filter(\.record.isVIP).map(\.record.key))
     }
     private var hasVIP: Bool { !vipKeys.isEmpty }
+    /// Steady camera applies where a person is followed inside a feed;
+    /// fighter focus keeps its fast camera.
+    private var showsSteady: Bool {
+        switch framing.subject {
+        case .speakerFocus, .centerStage: true
+        case .vipFocus: type != .fight
+        case .auto, .original, .layout: false
+        }
+    }
+    /// VIP focus's timings apply when that shot is chosen, or when Auto will
+    /// pick it (a VIP is tagged).
+    private var showsVIPFocusRows: Bool {
+        framing.subject == .speakerFocus && (framing.speakerShot == .interview || (framing.speakerShot == nil && hasVIP))
+    }
     private var showsVIPPicker: Bool {
         (framing.subject == .centerStage && framing.people == .vips)
             || (framing.subject == .layout && framing.layout == FramingMenu.vipsLayout)
@@ -143,6 +186,19 @@ struct FramingRows: View {
                 .labelsHidden()
                 .accessibilityLabel("Moves")
             }
+            if showsVIPFocusRows { vipFocusRows }
+        }
+        if showsSteady {
+            SettingsRow("Camera", detail: framing.steady == true
+                ? "Follows the person slowly inside their feed; the recording camera's own moves are absorbed."
+                : "A fixed crop of the feed; movement of the recording camera shows through.") {
+                Toggle(isOn: Binding(get: { framing.steady == true }, set: { framing.steady = $0 ? true : nil })) {
+                    Text("Steady").lineLimit(1).fixedSize()
+                }
+                .toggleStyle(.switch)
+                .accessibilityLabel("Steady camera")
+                .help("Track the person with a slow, calm camera so pans and nudges of the recording camera do not show")
+            }
         }
         SettingsRow("Fit") {
             Picker("Fit", selection: Binding(get: { framing.fit }, set: { fit in
@@ -240,28 +296,37 @@ struct FramingRows: View {
         let names = roster.filter { vipKeys.contains($0.record.key) }.map(\.record.displayName)
         return SettingsRow("VIPs", detail: names.isEmpty ? "Nobody yet. Tap a face to make them a VIP for this run."
                            : names.joined(separator: ", ") + (framing.vips == nil ? " (from People)" : " (this run)")) {
-            HStack(spacing: Theme.spaceM) {
-                ForEach(roster, id: \.record.key) { entry in
-                    let isVIP = vipKeys.contains(entry.record.key)
-                    var badged = entry.record
-                    let _ = badged.vip = isVIP
-                    Button {
-                        var keys = vipKeys
-                        if !keys.insert(entry.record.key).inserted { keys.remove(entry.record.key) }
-                        let tagged = Set(roster.filter(\.record.isVIP).map(\.record.key))
-                        framing.vips = keys == tagged ? nil : keys.sorted()
-                    } label: {
-                        VStack(spacing: 2) {
-                            VideoPersonAvatar(record: badged, videoURL: entry.videoURL, size: 32)
-                                .overlay(Circle().strokeBorder(isVIP ? Color.accentColor : .clear, lineWidth: 2))
-                            Text(entry.record.displayName).font(.caption).lineLimit(1).fixedSize()
-                                .foregroundStyle(isVIP ? .primary : .secondary)
-                        }
+            // Every face in a row when they fit; a narrow column scrolls them
+            // sideways instead of cutting the last ones off.
+            ViewThatFits(in: .horizontal) {
+                vipFaces
+                ScrollView(.horizontal) { vipFaces }
+            }
+        }
+    }
+
+    private var vipFaces: some View {
+        HStack(spacing: Theme.spaceM) {
+            ForEach(roster, id: \.record.key) { entry in
+                let isVIP = vipKeys.contains(entry.record.key)
+                var badged = entry.record
+                let _ = badged.vip = isVIP
+                Button {
+                    var keys = vipKeys
+                    if !keys.insert(entry.record.key).inserted { keys.remove(entry.record.key) }
+                    let tagged = Set(roster.filter(\.record.isVIP).map(\.record.key))
+                    framing.vips = keys == tagged ? nil : keys.sorted()
+                } label: {
+                    VStack(spacing: 2) {
+                        VideoPersonAvatar(record: badged, videoURL: entry.videoURL, size: 32)
+                            .overlay(Circle().strokeBorder(isVIP ? Color.accentColor : .clear, lineWidth: 2))
+                        Text(entry.record.displayName).font(.caption).lineLimit(1).fixedSize()
+                            .foregroundStyle(isVIP ? .primary : .secondary)
                     }
-                    .buttonStyle(.plain)
-                    .help(isVIP ? "VIP for this run. Click to drop." : "Click to make \(entry.record.displayName) a VIP for this run.")
-                    .accessibilityLabel("\(entry.record.displayName)\(isVIP ? ", VIP" : "")")
                 }
+                .buttonStyle(.plain)
+                .help(isVIP ? "VIP for this run. Click to drop." : "Click to make \(entry.record.displayName) a VIP for this run.")
+                .accessibilityLabel("\(entry.record.displayName)\(isVIP ? ", VIP" : "")")
             }
         }
     }

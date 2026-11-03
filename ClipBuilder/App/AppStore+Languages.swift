@@ -176,6 +176,17 @@ extension AppStore {
         }
     }
 
+    /// Installed dub voices for Ask AI's dub language list, loaded once.
+    func loadDubVoicesForAssistant() {
+        guard !dubVoicesForAssistantRequested else { return }
+        dubVoicesForAssistantRequested = true
+        let engine = dubEngine
+        Task { [weak self] in
+            let voices = await DubLanguageChoices.voices(engine: engine)
+            self?.dubVoicesForAssistant = voices
+        }
+    }
+
     func installLanguageAssets() {
         guard let project = activeProject else { return }
         let generation = profileGeneration

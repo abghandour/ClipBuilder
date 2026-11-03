@@ -20,6 +20,10 @@ nonisolated protocol PageAssistant: Sendable {
     /// `AssistantSetting.normalize`). Pages whose settings live in view
     /// @State send it through `store.assistant.sendSettings`.
     @MainActor func apply(settings: [String: String], store: AppStore) -> AskAIOutcome
+    /// Page-specific reading rules appended to the understanding prompt's
+    /// TASK (how to split a description between settings, instructions
+    /// and an action). Nil: the generic task text only.
+    @MainActor func understandingGuidance(store: AppStore) -> String?
 }
 
 nonisolated extension PageAssistant {
@@ -30,6 +34,7 @@ nonisolated extension PageAssistant {
     @MainActor func apply(settings: [String: String], store: AppStore) -> AskAIOutcome {
         .unavailable("Ask AI cannot change settings on \(page).")
     }
+    @MainActor func understandingGuidance(store: AppStore) -> String? { nil }
 }
 
 nonisolated enum AskAIOutcome: Equatable, Sendable {

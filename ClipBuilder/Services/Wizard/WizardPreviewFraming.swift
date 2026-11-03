@@ -92,7 +92,7 @@ nonisolated enum WizardPreviewFraming {
                         people: [PersonRecord], layouts: [ScreenCropLayout], time moment: Double? = nil,
                         sceneStart: Double? = nil, contentBox: RenderEngine.ContentBox? = nil,
                         sources: [VideoRecord] = [], scenes: [SceneRecord] = [],
-                        brollCuts: [PodcastHighlightBRollPlanner.Cut] = [])
+                        brollCuts: [PodcastHighlightBRollPlanner.Cut] = [], sentenceEnds: [Double] = [])
         -> (framing: WizardPreviewComposite.Framing, warning: String?) {
         let time = min(record.endTime, max(record.startTime, moment ?? (record.startTime + record.endTime) / 2))
         var context = video.map { FramingContext(video: $0, range: record.startTime...record.endTime,
@@ -103,6 +103,7 @@ nonisolated enum WizardPreviewFraming {
         context.sources = sources
         context.scenes = scenes
         context.brollCuts = brollCuts
+        context.sentenceEnds = sentenceEnds
         let resolved = FocusFrame.clipped(FramingPlanner.resolve(framing: options.requestedFraming, context: context), contentBox: contentBox)
         let warning = FramingPlanner.warning(framing: options.requestedFraming, context: context)
         let fallback: WizardPreviewComposite.Framing
@@ -132,10 +133,10 @@ nonisolated enum WizardPreviewFraming {
     }
 
     /// Refines a roster's portraits from faces seen in the scene, the way the
-    /// render does before it plans Interview focus.
+    /// render does before it plans VIP focus.
     typealias RosterRefiner = @Sendable (VideoRecord, [VideoPersonRecord], ClosedRange<Double>, [SpeakerTurn], InterviewPunchIn, Bool) async -> [VideoPersonRecord]
 
-    /// Interview focus is the one camera focus whose render plans from faces
+    /// VIP focus is the one camera focus whose render plans from faces
     /// sampled in the clip (`InterviewFaceSampling.refinedRoster`) instead of
     /// the roster's stored portraits. A preview planned from the stored
     /// portraits lands its crop and name tags elsewhere, so it refines too.
@@ -145,7 +146,7 @@ nonisolated enum WizardPreviewFraming {
 
     /// Called from the preview's background task. Focus edits re-plan bounded
     /// tracking on cache misses; ordinary previews keep their cheap still. The
-    /// Interview focus face samples (a few frame decodes per scene) are kept
+    /// VIP focus face samples (a few frame decodes per scene) are kept
     /// in `InterviewPreviewRosterCache` so revisiting a scene is free.
     static func resolveCached(options: WizardOptions, record: SceneRecord, video: VideoRecord?,
                               face: CGRect?, turns: [SpeakerTurn], roster: [VideoPersonRecord],
@@ -156,7 +157,7 @@ nonisolated enum WizardPreviewFraming {
                               time moment: Double? = nil, sceneStart: Double? = nil,
                               contentBox: RenderEngine.ContentBox? = nil,
                               sources: [VideoRecord] = [], scenes: [SceneRecord] = [],
-                              brollCuts: [PodcastHighlightBRollPlanner.Cut] = []) async
+                              brollCuts: [PodcastHighlightBRollPlanner.Cut] = [], sentenceEnds: [Double] = []) async
         -> (framing: WizardPreviewComposite.Framing, warning: String?) {
         var roster = roster
         if video?.type == .fight, options.requestedFraming.subject == .vipFocus {
@@ -177,7 +178,7 @@ nonisolated enum WizardPreviewFraming {
         }
         let fallback = resolve(options: options, record: record, video: video, face: face,
             turns: turns, roster: roster, people: people, layouts: layouts, time: moment, sceneStart: sceneStart, contentBox: contentBox,
-            sources: sources, scenes: scenes, brollCuts: brollCuts)
+            sources: sources, scenes: scenes, brollCuts: brollCuts, sentenceEnds: sentenceEnds)
         let centerStage = options.requestedFraming.subject == .centerStage
         if options.requestedFraming.focusFrame != nil || centerStage, options.requestedFraming.subject != .layout,
            case .cells(var cells) = fallback.framing {
@@ -204,7 +205,8 @@ nonisolated enum WizardPreviewFraming {
                 do {
                     let window = trackingWindow(time: time, range: record.startTime...record.endTime,
                         span: span.map { (record.startTime + $0.start)...(record.startTime + $0.end) })
-                    let camera = options.requestedFraming.subject == .centerStage ? "balanced" : "conversation"
+                    let camera = options.requestedFraming.steady == true ? "steady"
+                        : options.requestedFraming.subject == .centerStage ? "balanced" : "conversation"
                     let identity = try FeedPathCache.identity(source: record.videoURL, region: region,
                         start: window.lowerBound, duration: window.upperBound - window.lowerBound,
                         tuning: camera, aspect: aspect, focus: focus)
@@ -361,7 +363,7 @@ nonisolated enum WizardPreviewFraming {
     }
 }
 
-/// Face-refined rosters for Interview focus previews, keyed by the recording,
+/// Face-refined rosters for VIP focus previews, keyed by the recording,
 /// the scene's source range and the roster the refinement started from.
 actor InterviewPreviewRosterCache {
     static let shared = InterviewPreviewRosterCache()

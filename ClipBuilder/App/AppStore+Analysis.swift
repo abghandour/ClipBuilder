@@ -766,7 +766,7 @@ extension AppStore {
                 let turns = try await database.fetchSpeakerTurns(videoID: video.id)
                 var roster = try await database.fetchVideoPeople(videoID: video.id)
                 var recipe = CropRecipe(kind: kind, highlightTalker: highlightTalker)
-                // Interview focus follows the wizard's Pull back and Zoom in/out choices,
+                // VIP focus follows the wizard's Pull back and Moves choices,
                 // so a Builder compose frames like the wizard would.
                 let defaults = UserDefaults.standard
                 if defaults.object(forKey: "wizard.interviewZoom") != nil {

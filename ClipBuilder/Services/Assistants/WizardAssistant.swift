@@ -10,9 +10,9 @@ nonisolated struct WizardAssistantRequest: Equatable, Sendable {
 
 nonisolated struct WizardAssistant: PageAssistant {
     let page = "AI Wizard"
-    let examples = ["Make a 30-second reel of the funniest moments",
+    let examples = ["Vertical 30 s reel of the best counters, Portuguese captions, music, no source audio",
                     "Find the three best highlights about fight strategy",
-                    "Build a reel around the knockout and the walkout"]
+                    "Square canvas, name tags on, keep the watermark"]
 
     enum Decision: Equatable, Sendable {
         case send
@@ -36,20 +36,28 @@ nonisolated struct WizardAssistant: PageAssistant {
     @MainActor
     func handle(_ text: String, store: AppStore) -> AskAIOutcome {
         let text = text.trimmingCharacters(in: .whitespacesAndNewlines)
+        if store.wizardMode == .express {
+            guard !text.isEmpty else { return .unavailable("Describe the reel you want.") }
+            // "Regenerate it with more jokes": the selected candidate, with that note.
+            if let note = Self.regenerateNote(text) {
+                guard let action = actions(store: store).first(where: { $0.id == "wizard.regenerate" }),
+                      action.isAvailable(store) else {
+                    return .unavailable(store.isWizardRunning ? "The Wizard is already working."
+                                        : "Select a Highlights candidate in Footage first, then ask to regenerate it.")
+                }
+                store.assistant.sendCommand("wizard.regenerate", text: note, namespace: Self.expressNamespace)
+                return .handled(note.isEmpty ? "Sent Regenerate to Express." : "Sent Regenerate to Express with your note.")
+            }
+            // Everything else is read by the AI against the Express form: a
+            // described reel sets the picture and audio controls, its "which
+            // moments" part becomes the instructions, and
+            // `express.findHighlights` runs when asked (`understandingGuidance`).
+            return AssistantText.unrecognized(page: page, examples: examples)
+        }
         // "make it 30 seconds", "turn on captions": a settings change, not a
         // reel to generate. `AssistantModel.send` gives it to the AI, which
         // reads it against the settings whitelist below.
         if Self.isSettingsRequest(text) { return AssistantText.unrecognized(page: page, examples: examples) }
-        // "Regenerate it with more jokes": the selected candidate, with that note.
-        if store.wizardMode == .express, let note = Self.regenerateNote(text) {
-            guard let action = actions(store: store).first(where: { $0.id == "wizard.regenerate" }),
-                  action.isAvailable(store) else {
-                return .unavailable(store.isWizardRunning ? "The Wizard is already working."
-                                    : "Select a Highlights candidate in Footage first, then ask to regenerate it.")
-            }
-            store.assistant.sendCommand("wizard.regenerate", text: note, namespace: Self.expressNamespace)
-            return .handled(note.isEmpty ? "Sent Regenerate to Express." : "Sent Regenerate to Express with your note.")
-        }
         let profile = store.activeProfile.profileName
         let videoPath = UserDefaults.standard.string(forKey: MiniWizardMemory.key(for: .videoPath, profileName: profile)) ?? ""
         switch Self.decide(text: text, mode: store.wizardMode, hasVideo: !videoPath.isEmpty,
@@ -256,7 +264,7 @@ nonisolated struct WizardAssistant: PageAssistant {
             add("interviewCuts", "Interview cuts", m.resolvedInterviewPunchIn)
         }
         if m.interviewZoom != defaults.interviewZoom { add("interviewZoom", "Interview zoom", String(format: "%.2f", m.interviewZoom)) }
-        if m.interviewZoomMoves { add("interviewZoomMoves", "Interview focus", "zooms in place") }
+        if m.interviewZoomMoves { add("interviewZoomMoves", "VIP focus", "zooms in place") }
         if !m.cameraFocus.isEmpty { add("cameraFocus", "Camera focus", m.cameraFocus) }
         if m.quality != defaults.quality { add("quality", "Quality", m.quality.rawValue) }
         if m.preset != defaults.preset { add("format", "Format", m.preset.label) }
@@ -349,7 +357,8 @@ nonisolated struct WizardAssistant: PageAssistant {
 
     @MainActor
     func context(store: AppStore) -> AssistantContext {
-        store.wizardMode == .express ? Self.context(express: expressSnapshot(store: store))
+        if store.wizardMode == .express { store.loadDubVoicesForAssistant() }
+        return store.wizardMode == .express ? Self.context(express: expressSnapshot(store: store))
             : Self.context(full: fullSnapshot(store: store))
     }
 
@@ -566,6 +575,13 @@ nonisolated struct WizardAssistant: PageAssistant {
             },
         ]
         if express {
+            // The old Ask AI hand-off: instructions in, Highlights found.
+            actions.append(command(Self.findHighlightsAction, "Find highlights from the instructions", "sparkles",
+                                   message: "Sent to Express.", available: { store in
+                guard !store.isWizardRunning, let page = store.assistant.expressPage,
+                      page.projectID == store.activeProjectID else { return false }
+                return page.sourceName != nil
+            }))
             // The Footage card's per-candidate Regenerate, on the selected candidate.
             actions.append(command("wizard.regenerate", "Regenerate with note", "arrow.clockwise",
                                    message: "Sent Regenerate to Express.", available: { store in
@@ -629,19 +645,95 @@ nonisolated struct WizardAssistant: PageAssistant {
     }
 
     static let instructionsLimit = 2000
+    static let findHighlightsAction = "express.findHighlights"
+    /// The rough cut sheet's Apply: `text` carries `Framing.joined`, and the
+    /// page it came from (by namespace) makes it its framing.
+    static let applyFramingAction = "wizard.applyFraming"
+    /// The sheet's Generate: apply its framing, then the page's Generate.
+    static let generateWithFramingAction = "wizard.generateWithFraming"
 
-    /// Express: `length`, the four switches, `transition`, `aiInstructions`.
-    static var expressSettings: [AssistantSetting] {
-        let lengths = MiniWizardFlow.Length.allCases
-        var settings = [AssistantSetting("length", "Length", .choice(lengths.map(\.rawValue)),
-                                         choiceLabels: Dictionary(uniqueKeysWithValues: lengths.map { ($0.rawValue, $0.label) }))]
-        let switches = ["captions", "nameTags", "safeAreaOnly", "watermark"]
-        settings += expressToggles.filter { switches.contains($0.field) }.map { AssistantSetting($0.field, $0.label, .bool) }
-        settings.append(AssistantSetting("transition", "Transition",
-                                         .choice([WizardPlanRules.randomTransitionChoice] + RenderEngine.allTransitions)))
-        settings.append(AssistantSetting("aiInstructions", "AI instructions", .text(maxLength: instructionsLimit)))
+    /// Choice values a picker shows as "nothing chosen" (profile default,
+    /// brand logo, any bumper).
+    static let defaultChoice = "default"
+
+    /// Express: every control of the Settings card the AI may set from a
+    /// described reel. B-roll stays manual; music track and bumper names
+    /// are chosen in the card (their lists load asynchronously there).
+    static func expressSettings(profile: BrandProfile, overlays: [String], sourceType: VideoType? = nil,
+                                dubVoices: [DubSynthesizer.Voice] = [], dubLanguage: String? = nil) -> [AssistantSetting] {
+        func choice(_ key: String, _ label: String, _ values: [(String, String)]) -> AssistantSetting {
+            AssistantSetting(key, label, .choice(values.map(\.0)),
+                             choiceLabels: Dictionary(values, uniquingKeysWith: { first, _ in first }))
+        }
+        let kinds = MiniWizardFlow.FootageKind.allCases.map { ($0.rawValue, $0.label) }
+        let lengths = MiniWizardFlow.Length.allCases.map { ($0.rawValue, $0.label) }
+        let qualities = EncodeQuality.allCases.filter { $0 != .custom }.map { ($0.rawValue, $0.rawValue.capitalized) }
+        let canvases = RenderPreset.allCases.filter { $0 != .custom }.map { ($0.rawValue, $0.label) }
+        // The card's Effect menu: looks and film stocks only; the catalogue's
+        // adjustment presets need parameters Express never sets.
+        let looks = [("", "None")] + EffectCatalog.presets.filter { $0.group == "looks" || $0.group == "film" }.map { ($0.id, $0.name) }
+        // Only the subjects the source's type allows: the render swaps any
+        // other back to the type's default.
+        let framings = FramingMenu.allowed(type: sourceType ?? .other).map { ($0.rawValue, $0.rawValue) }
+        let captionStyles = [(defaultChoice, "Profile default")] + (profile.captionStyles ?? []).map { ($0.id.uuidString, $0.name) }
+        let tagStyles = [(defaultChoice, "Profile default")] + (profile.tagStyles ?? []).map { ($0.id.uuidString, $0.name) }
+        let watermarks = [(defaultChoice, "Brand logo")] + overlays.map { ($0, $0) }
+        let dubLanguages = [(defaultChoice, "Default (\(DubLanguageChoices.name(DubLanguageChoices.defaultLanguage)))")]
+            + DubLanguageChoices.languages(voices: dubVoices, selected: dubLanguage).map { ($0, DubLanguageChoices.name($0)) }
+        var settings: [AssistantSetting] = [
+            choice("footageKind", "Footage", kinds),
+            choice("length", "Length (Highlights)", lengths),
+            choice("quality", "Quality", qualities),
+            choice("canvas", "Canvas (aspect and resolution)", canvases),
+            choice("look", "Effect (look graded into the footage)", looks),
+            AssistantSetting("transition", "Transition", .choice([WizardPlanRules.randomTransitionChoice] + RenderEngine.allTransitions)),
+            choice("framing", "Framing subject", framings),
+        ]
+        settings += expressToggles.filter { $0.field == "captions" }.map { AssistantSetting($0.field, $0.label, .bool) }
+        settings += [
+            choice("captionPosition", "Caption position", [(defaultChoice, "Auto"), ("bottom", "Bottom"), ("middle", "Middle"), ("top", "Top")]),
+            choice("captionStyle", "Caption style", captionStyles),
+            choice("captionLanguage", "Caption language", [("native", "Native (spoken language)"), ("english", "English")]),
+            AssistantSetting("nameTags", "Name tags", .bool),
+            choice("nameTagPosition", "Name tag position", [(defaultChoice, "Auto"), ("topLeading", "Top left"), ("topTrailing", "Top right"),
+                                                            ("bottomLeading", "Bottom left"), ("bottomTrailing", "Bottom right")]),
+            choice("nameTagStyle", "Name tag style", tagStyles),
+            AssistantSetting("safeAreaOnly", "Safe area only (keep text clear of platform buttons)", .bool),
+            AssistantSetting("watermark", "Watermark", .bool),
+            choice("watermarkDesign", "Watermark design", watermarks),
+            AssistantSetting("watermarkOpacity", "Watermark opacity (percent)", .integer(5...100)),
+            AssistantSetting("overlay", "Overlay (a saved design over the video)", .bool),
+        ]
+        if !overlays.isEmpty { settings.append(choice("overlayDesign", "Overlay design", overlays.map { ($0, $0) })) }
+        settings += [
+            AssistantSetting("introVideo", "Intro bumper", .bool),
+            AssistantSetting("outroVideo", "Outro bumper", .bool),
+            AssistantSetting("muteSourceAudio", "Mute source audio (fight and training footage)", .bool),
+            AssistantSetting("music", "Music from the library (fight and training footage)", .bool),
+            AssistantSetting("dub", "Dub the speech", .bool),
+            choice("dubLanguage", "Dub language", dubLanguages),
+            AssistantSetting("aiInstructions", "AI instructions (which moments to pick)", .text(maxLength: instructionsLimit)),
+        ]
         return settings
     }
+
+    /// How the model reads a described reel against the Express form.
+    static let expressGuidance = """
+    This page is a form for one reel from one source. Translate every picture requirement (canvas, \
+    quality, effect, transition, framing, captions and their position, style and language, name tags, \
+    watermark, overlay, intro, outro) and every audio requirement (mute source audio, music, dub and \
+    its language) into the matching settings. Words like "vertical", "portrait", "TikTok" or "Reels" \
+    mean a 9:16 canvas; "square" 1:1; "landscape", "YouTube" or "widescreen" 16:9. captionLanguage \
+    has two values: native (captions in the language spoken in the footage) and english (captions \
+    translated to English). Captions asked in the footage's own language are native; English captions \
+    on footage in another language are english; captions asked in any other language cannot be set \
+    here, so leave captionLanguage out and say so in "reply". A language named for the voice is a dub \
+    (dub plus dubLanguage). The part of the request that says which moments or topics to pick goes into \
+    aiInstructions, in the user's words, without the settings already applied. Choose \
+    \(findHighlightsAction) only when the request asks to find, make, build or generate the reel now; \
+    otherwise leave "action" null so the user reviews the form first. Leave out settings the request \
+    does not mention.
+    """
 
     /// Full wizard: `targetDurationSeconds`, `addCaptions`, `includeHeadline`,
     /// `formatPreset`, `aiInstructions`.
@@ -656,7 +748,18 @@ nonisolated struct WizardAssistant: PageAssistant {
 
     @MainActor
     func assistSettings(store: AppStore) -> [AssistantSetting] {
-        store.wizardMode == .express ? Self.expressSettings : Self.fullSettings
+        guard store.wizardMode == .express else { return Self.fullSettings }
+        let snapshot = expressSnapshot(store: store)
+        let source = snapshot.sourceName.flatMap { name in store.videos.first { $0.filename == name } }
+        return Self.expressSettings(profile: store.activeProfile,
+                                    overlays: OverlayTemplateStore.list().filter { !$0.composition.isEmpty }.map(\.name),
+                                    sourceType: source?.type, dubVoices: store.dubVoicesForAssistant,
+                                    dubLanguage: snapshot.settings.dubLanguage)
+    }
+
+    @MainActor
+    func understandingGuidance(store: AppStore) -> String? {
+        store.wizardMode == .express ? Self.expressGuidance : nil
     }
 
     @MainActor
@@ -703,14 +806,47 @@ nonisolated struct WizardAssistant: PageAssistant {
     /// Express: the same writes as its own controls, on the form's state.
     static func applyExpress(_ patch: [String: String], settings: inout MiniWizardSettings,
                              length: inout MiniWizardFlow.Length, instructions: inout String?) {
+        var kind = MiniWizardFlow.FootageKind.highlights
+        applyExpress(patch, settings: &settings, length: &length, instructions: &instructions, footageKind: &kind)
+    }
+
+    /// Every whitelisted key into the form's state; "default" clears a
+    /// choice back to the card's own default.
+    static func applyExpress(_ patch: [String: String], settings: inout MiniWizardSettings,
+                             length: inout MiniWizardFlow.Length, instructions: inout String?,
+                             footageKind: inout MiniWizardFlow.FootageKind) {
+        func optional(_ value: String) -> String? { value == defaultChoice || value.isEmpty ? nil : value }
         for (key, value) in patch {
             if let toggle = expressToggles.first(where: { $0.field == key }) {
                 settings[keyPath: toggle.keyPath] = value == AssistantSetting.true
                 continue
             }
+            let on = value == AssistantSetting.true
             switch key {
+            case "footageKind": if let wanted = MiniWizardFlow.FootageKind(rawValue: value) { footageKind = wanted }
             case "length": if let wanted = MiniWizardFlow.Length(rawValue: value) { length = wanted }
+            case "quality": if let wanted = EncodeQuality(rawValue: value) { settings.quality = wanted }
+            case "canvas": if let wanted = RenderPreset(rawValue: value) { settings.preset = wanted }
+            case "look": settings.look = value
             case "transition": settings.transition = value
+            case "framing": if let wanted = Framing.Subject(rawValue: value) { settings.framing.subject = wanted }
+            case "captionPosition": settings.captionPosition = optional(value)
+            case "captionStyle": settings.captionStyleID = optional(value)
+            case "captionLanguage": settings.englishCaptions = value == "english"
+            case "nameTagPosition": settings.nameTagPosition = optional(value)
+            case "nameTagStyle": settings.nameTagStyleID = optional(value)
+            case "watermarkDesign": settings.watermarkOverlay = optional(value)
+            case "watermarkOpacity": if let percent = Int(value) { settings.watermarkOpacity = Double(percent) / 100 }
+            case "overlayDesign":
+                // As the card's picker: a new design starts from its own
+                // texts and placements, never the previous design's.
+                settings.overlayTemplate = optional(value)
+                settings.overlayTexts = []
+                settings.overlayEdits = OverlayEdits()
+            case "muteSourceAudio": settings.muteSourceAudio = on
+            case "music": settings.music = on
+            case "dub": settings.dub = on
+            case "dubLanguage": settings.dubLanguage = optional(value)
             case "aiInstructions": instructions = value
             default: continue
             }

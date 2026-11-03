@@ -65,7 +65,7 @@ nonisolated enum PageAssistantPrompt {
     }
 
     static func build(context: AssistantContext, actions: [Action], settings: [AssistantSetting],
-                      question: String?, suggestions: [AssistantSuggestion] = []) -> String {
+                      question: String?, suggestions: [AssistantSuggestion] = [], guidance: String? = nil) -> String {
         var parts: [String] = []
         parts.append("""
         You are Ask AI inside Clip Builder, a macOS app that turns a profile's source footage into \
@@ -94,7 +94,7 @@ nonisolated enum PageAssistantPrompt {
             only. Settings are applied before the action runs. If the page cannot do it, set "action" \
             to null, leave "settings" empty, and say why in "reply". "reply" is one short sentence to \
             the user saying what you did.
-            """)
+            """ + (guidance.map { "\n" + $0.trimmingCharacters(in: .whitespacesAndNewlines) } ?? ""))
             parts.append(Section.answer + "\n" + """
             Reply with JSON only, no prose and no code fence:
             {"action": "<action id>" or null, "settings": {"<setting key>": <value>}, "reply": "<one sentence>"}

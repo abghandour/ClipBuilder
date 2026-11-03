@@ -22,12 +22,14 @@ struct MiniGeneratePanel: View {
                 HStack(spacing: Theme.spaceS) {
                     generateButton
                     openInEditorButton
+                    roughCutButton
                     Spacer(minLength: 0)
                     resetButton
                 }
                 HStack(spacing: Theme.spaceS) {
                     generateButton
                     openInEditorButton
+                    roughCutButton
                     resetButton
                 }
             }
@@ -61,7 +63,7 @@ struct MiniGeneratePanel: View {
             Text(flow.generateButtonTitle(keptCount: run.keptCount)).lineLimit(1).fixedSize()
         }
         .buttonStyle(.borderedProminent)
-        .disabled(run.keptCount == 0 || store.isOpeningWizardInEditor(projectID: run.projectID))
+        .disabled(run.keptCount == 0 || store.isWizardBatchJobRunning(projectID: run.projectID))
     }
 
     /// The same reel as an editable Builder timeline, every setting applied.
@@ -73,8 +75,22 @@ struct MiniGeneratePanel: View {
             Label("Open in Editor", systemImage: "hammer")
         }
         .labelStyle(.iconOnly)
-        .disabled(run.keptCount == 0 || store.isOpeningWizardInEditor(projectID: run.projectID))
+        .disabled(run.keptCount == 0 || store.isWizardBatchJobRunning(projectID: run.projectID))
         .help("Open in Editor: build this reel as a Builder timeline with every setting applied, without rendering it")
+    }
+
+    /// A small plain render of the same reel: framing and focus in motion,
+    /// before the final render. The result opens in a player sheet.
+    private var roughCutButton: some View {
+        Button {
+            store.generateMiniVideosRecordingPicks(settings: settings, flow: flow, batchID: run.batchID,
+                                                   mode: .roughCut)
+        } label: {
+            Label("Rough cut", systemImage: "viewfinder")
+        }
+        .labelStyle(.iconOnly)
+        .disabled(run.keptCount == 0 || store.isWizardBatchJobRunning(projectID: run.projectID))
+        .help("Rough cut: a quick small render of this reel to check framing and focus in motion, without \(WizardRoughCut.leftOut); nothing is saved")
     }
 
     private var effectiveSettings: MiniWizardSettings {

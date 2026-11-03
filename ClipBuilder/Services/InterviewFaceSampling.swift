@@ -1,16 +1,17 @@
 import CoreGraphics
 import Foundation
 
-/// Fresh face boxes for Interview focus. The planner frames from the roster's
+/// Fresh face boxes for VIP focus. The planner frames from the roster's
 /// portrait boxes, which were measured once, often minutes away from the
-/// clip; before an Interview focus plan is built the roster is refined with
+/// clip; before a VIP focus plan is built the roster is refined with
 /// faces seen at the shot starts the plan will use. The maths here is pure;
 /// `refinedRoster` is the only piece that decodes frames, one per sample time.
 nonisolated enum InterviewFaceSampling {
     static let maximumSamples = 6
 
-    /// Source times to look at: the range start and every planned move,
-    /// thinned evenly to `maximumSamples`.
+    /// Source times to look at: the range start and every planned shot change,
+    /// thinned evenly to `maximumSamples`. `punchIn` is a stored setting VIP
+    /// focus no longer reads; callers still pass it.
     static func sampleTimes(video: VideoRecord, range: ClosedRange<Double>, turns: [SpeakerTurn],
                             roster: [VideoPersonRecord], limit: Int = maximumSamples,
                             punchIn: InterviewPunchIn = .vip, cuts: Bool = false) -> [Double] {
@@ -18,14 +19,14 @@ nonisolated enum InterviewFaceSampling {
         var tiles = feedTiles(video: video, roster: roster, turns: turns)
         if tiles.isEmpty { tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 1, h: 1)] }
         let vipTiles = VIPRecipePlanning.tiles(tiles, roster: roster).map(\.index)
-        let hold = max(CropRecipe(kind: .interview).minimumHold, VIPRotation.minimumHold)
-        let segments = CropRecipePlanner.segments(turns: turns, tiles: tiles, range: range, hold: hold,
-            fillOpening: punchIn == .vip)
-        let moves = InterviewFocusPlanning.moves(segments: segments, vipTiles: vipTiles, range: range, hold: hold, punchIn: punchIn)
-        // The first shot settles a moment after the range starts; a move's
-        // shot is in place once its ramp has finished.
+        let hold = CropRecipePlanner.hold(for: CropRecipe(kind: .interview))
+        let segments = CropRecipePlanner.segments(turns: turns, tiles: tiles, range: range, hold: hold, fillOpening: false)
+        let events = VIPFocusPlanning.events(segments: segments, tiles: tiles.map(\.index), vipTiles: vipTiles,
+            range: range, hold: hold)
+        // The first shot settles a moment after the range starts; a later
+        // shot is in place once its glide has finished.
         var times = [min(range.upperBound, range.lowerBound + 0.1)]
-            + moves.dropFirst().map { min(range.upperBound, $0.time + (cuts ? 0 : InterviewFocusPlanning.moveSeconds)) }
+            + events.dropFirst().map { min(range.upperBound, $0.time + (cuts ? 0 : InterviewFocusPlanning.moveSeconds)) }
         times = Array(Set(times)).sorted()
         return thinned(times, limit: limit)
     }
@@ -75,7 +76,7 @@ nonisolated enum InterviewFaceSampling {
         let tiles = feedTiles(video: video, roster: roster, turns: turns)
         let feeds = tiles.filter { $0.personKey != nil }
         guard !feeds.isEmpty else {
-            log("Interview focus: no feed is linked to a person; keeping the roster portraits")
+            log("VIP focus: no feed is linked to a person; keeping the roster portraits")
             return roster
         }
         let times = sampleTimes(video: video, range: range, turns: turns, roster: roster, punchIn: punchIn, cuts: cuts)
@@ -101,9 +102,9 @@ nonisolated enum InterviewFaceSampling {
             guard let key = tile.personKey else { continue }
             if let face = merged(seen) {
                 faces[key] = face
-                log("Interview focus: face of \(key) seen at \(seen.count) of \(times.count) shot starts")
+                log("VIP focus: face of \(key) seen at \(seen.count) of \(times.count) shot starts")
             } else {
-                log("Interview focus: no face seen for \(key) at \(times.count) shot starts; keeping the portrait")
+                log("VIP focus: no face seen for \(key) at \(times.count) shot starts; keeping the portrait")
             }
         }
         return applying(faces: faces, at: first, to: roster)

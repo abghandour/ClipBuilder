@@ -206,9 +206,9 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var highlightMaxSeconds: Double? = nil
     var highlightMaxCount: Int? = nil
     var highlightFraming: CropRecipe.Kind? = nil
-    /// Interview focus pull-back, 0...1; nil keeps the tight default.
+    /// VIP focus pull-back, 0...1; nil keeps the tight default.
     var interviewZoom: Double? = nil
-    /// Interview focus "Zoom in/out for focus"; nil or false pans toward the interviewer.
+    /// VIP focus "Zoom in/out for focus"; nil or false pans toward the interviewer.
     var interviewZoomMoves: Bool? = nil
     var interviewCuts: Bool? = nil
     var interviewPunchIn: String? = nil

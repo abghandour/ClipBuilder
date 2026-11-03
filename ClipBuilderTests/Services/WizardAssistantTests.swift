@@ -26,6 +26,71 @@ struct WizardAssistantTests {
         #expect(WizardAssistant.decide(text: "a reel", mode: .full, hasVideo: false, hasScenes: true, running: false) == .send)
     }
 
+    @Test func expressPatchSetsPictureAndAudioControls() {
+        var settings = MiniWizardSettings()
+        var length = MiniWizardFlow.Length.automatic
+        var kind = MiniWizardFlow.FootageKind.qa
+        var instructions: String?
+        WizardAssistant.applyExpress([
+            "footageKind": "highlights", "length": "30", "quality": "compact", "canvas": "square1080",
+            "look": "vintage", "transition": "Dissolve", "framing": "centerStage",
+            "captions": "true", "captionPosition": "top", "captionStyle": "default", "captionLanguage": "english",
+            "nameTags": "true", "nameTagPosition": "topTrailing", "nameTagStyle": "ABCDEF",
+            "safeAreaOnly": "true", "watermark": "false", "watermarkDesign": "Lower third", "watermarkOpacity": "40",
+            "overlay": "true", "overlayDesign": "Promo", "introVideo": "true", "outroVideo": "false",
+            "muteSourceAudio": "true", "music": "true", "dub": "true", "dubLanguage": "en-US",
+            "aiInstructions": "the best counters",
+        ], settings: &settings, length: &length, instructions: &instructions, footageKind: &kind)
+        #expect(kind == .highlights && length == .thirty)
+        #expect(settings.quality == .compact && settings.preset == .square1080 && settings.look == "vintage")
+        #expect(settings.transition == "Dissolve" && settings.framing.subject == .centerStage)
+        #expect(settings.captions && settings.captionPosition == "top" && settings.captionStyleID == nil && settings.englishCaptions)
+        #expect(settings.nameTags && settings.nameTagPosition == "topTrailing" && settings.nameTagStyleID == "ABCDEF")
+        #expect(settings.safeAreaOnly && !settings.watermark && settings.watermarkOverlay == "Lower third" && settings.watermarkOpacity == 0.4)
+        #expect(settings.overlay && settings.overlayTemplate == "Promo" && settings.introVideo && !settings.outroVideo)
+        #expect(settings.muteSourceAudio && settings.music && settings.dub && settings.dubLanguage == "en-US")
+        #expect(instructions == "the best counters")
+
+        // "default" clears a choice; unknown values leave the field alone.
+        WizardAssistant.applyExpress(["nameTagStyle": "default", "canvas": "hexagon", "dubLanguage": "default"],
+                                     settings: &settings, length: &length, instructions: &instructions, footageKind: &kind)
+        #expect(settings.nameTagStyleID == nil && settings.preset == .square1080 && settings.dubLanguage == nil)
+    }
+
+    @Test func expressWhitelistValuesMatchWhatApplyAccepts() {
+        var profile = BrandProfile(name: "T")
+        let style = NamedCaptionStyle(name: "Bold", style: CaptionStyle())
+        profile.captionStyles = [style]
+        let settings = WizardAssistant.expressSettings(profile: profile, overlays: ["Lower third"])
+        let captionStyle = settings.first { $0.key == "captionStyle" }
+        #expect(captionStyle?.normalize("Bold") == style.id.uuidString)
+        #expect(captionStyle?.normalize("profile default") == WizardAssistant.defaultChoice)
+        #expect(settings.first { $0.key == "canvas" }?.normalize("9:16 · 1080p") == "portrait1080")
+        #expect(settings.first { $0.key == "dubLanguage" }?.normalize("Portuguese (Brazil)") == "pt-BR")
+        #expect(settings.first { $0.key == "watermarkOpacity" }?.normalize(150) == nil)
+        #expect(settings.first { $0.key == "dubLanguage" }?.normalize("default") == WizardAssistant.defaultChoice)
+        #expect(settings.first { $0.key == "nameTagPosition" }?.normalize("Bottom right") == "bottomTrailing")
+        #expect(WizardAssistant.expressGuidance.contains(WizardAssistant.findHighlightsAction))
+        // Looks are the card's menu, not the whole catalogue; framing follows the source type.
+        let looks = settings.first { $0.key == "look" }
+        #expect(looks?.normalize("vintage") == "vintage" && looks?.normalize("brightness") == nil)
+        let fight = WizardAssistant.expressSettings(profile: profile, overlays: [], sourceType: .fight)
+        #expect(fight.first { $0.key == "framing" }?.normalize("centerStage") == nil)
+        #expect(fight.first { $0.key == "framing" }?.normalize("vipFocus") == "vipFocus")
+        #expect(!fight.map(\.key).contains("outputMode"), "Express renders one reel only")
+    }
+
+    @Test func overlayDesignChangeResetsTextsAndEdits() {
+        var settings = MiniWizardSettings()
+        settings.overlayTemplate = "A"
+        settings.overlayTexts = ["custom"]
+        var length = MiniWizardFlow.Length.automatic
+        var kind = MiniWizardFlow.FootageKind.highlights
+        var instructions: String?
+        WizardAssistant.applyExpress(["overlayDesign": "B"], settings: &settings, length: &length, instructions: &instructions, footageKind: &kind)
+        #expect(settings.overlayTemplate == "B" && settings.overlayTexts.isEmpty && settings.overlayEdits == OverlayEdits())
+    }
+
     // MARK: - Context and suggestions
 
     private func express(_ edit: (inout WizardAssistant.ExpressSnapshot) -> Void = { _ in }) -> AssistantContext {

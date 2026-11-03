@@ -4,6 +4,24 @@ import Testing
 
 @Suite("Mini Wizard memory")
 struct MiniWizardMemoryTests {
+    @Test func aDraggedFocusFrameIsNotRememberedForTheNextVideo() throws {
+        let suite = "FocusFrameMemoryTests.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        var settings = MiniWizardSettings()
+        settings.framing = Framing(subject: .speakerFocus, moves: .cuts)
+        settings.framing.focusFrame = FreeCropRect(xFrac: 0.37, yFrac: 0, wFrac: 0.26, hFrac: 1)
+        _ = settings.remember(profileName: "P", defaults: defaults)
+        let restored = MiniWizardSettings.remembered(profile: Fixtures.brand(name: "P"), defaults: defaults)
+        #expect(restored.framing.subject == .speakerFocus && restored.framing.moves == .cuts)
+        #expect(restored.framing.focusFrame == nil)
+        // Memory written by an earlier build still carries one: dropped on read.
+        var withFrame = settings.framing
+        withFrame.focusFrame = FreeCropRect(xFrac: 0.1, yFrac: 0.1, wFrac: 0.5, hFrac: 0.5)
+        defaults.set(withFrame.joined, forKey: MiniWizardMemory.key(for: .framing, profileName: "P"))
+        #expect(MiniWizardSettings.remembered(profile: Fixtures.brand(name: "P"), defaults: defaults).framing.focusFrame == nil)
+    }
+
     @Test func framingMigratesOldMemoryOnceAndStaysProfileScoped() throws {
         let suite = "FramingMemoryTests.\(UUID().uuidString)"
         let defaults = try #require(UserDefaults(suiteName: suite))

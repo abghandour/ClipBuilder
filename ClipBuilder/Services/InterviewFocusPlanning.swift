@@ -13,7 +13,9 @@ nonisolated enum InterviewPunchIn: String, Codable, CaseIterable, Sendable {
     }
 }
 
-/// Static interview shots and slow moves, independent of decoding and persistence.
+/// Face-tight shots and the glides between them for VIP focus on a single
+/// camera, independent of decoding and persistence. The two-shot machinery
+/// in `rects` is kept for its tests; the planner uses `tight`.
 nonisolated enum InterviewFocusPlanning {
     static let moveSeconds = FramingHolds.glide
     static let deadZoneCenter = 0.05
@@ -166,65 +168,14 @@ nonisolated enum InterviewFocusPlanning {
         return min(maxHeight, max(minimumHeight, byHeight, byWidth))
     }
 
-    /// Source-clock changes. Duration is known in advance, so qualifying turns
-    /// start their ramp at the change, or when the current shot's hold expires.
-    static func moves(segments: [CropRecipePlanner.Segment], vipTiles: [Int], range: ClosedRange<Double>,
-                      hold: Double = VIPRotation.minimumHold, minimumTurn: Double = CropRecipePlanner.minimumTurn,
-                      punchIn: InterviewPunchIn = .vip)
-        -> [(time: Double, kind: Shot.Kind)] {
-        let segments = segments.filter { $0.end > range.lowerBound && $0.start < range.upperBound }
-            .sorted { $0.start < $1.start }
-        func kind(_ segment: CropRecipePlanner.Segment) -> Shot.Kind {
-            let isVIP = vipTiles.contains(segment.talker)
-            switch punchIn {
-            case .vip: return isVIP ? .tight : .twoShot
-            case .interviewer: return isVIP ? .twoShot : .interviewerTight
-            case .talker: return isVIP ? .tight : .interviewerTight
-            }
-        }
-        // Preserve the VIP default; other choices start wide if speech has not begun.
-        let opening = punchIn == .vip ? segments.first : segments.first { $0.start <= range.lowerBound }
-        var result: [(time: Double, kind: Shot.Kind)] = [
-            (range.lowerBound, opening.map(kind) ?? (punchIn == .vip ? .tight : .twoShot))
-        ]
-        for segment in segments {
-            guard let current = result.last, kind(segment) != current.kind,
-                  segment.end - segment.start >= minimumTurn else { continue }
-            let time = max(segment.start, current.time + max(VIPRotation.minimumHold, hold), range.lowerBound + 1)
-            guard time < segment.end, time < range.upperBound - VIPRotation.tail else { continue }
-            result.append((time, kind(segment)))
-        }
-        return result
-    }
-
     static func inDeadZone(tight: FreeCropRect, twoShot: FreeCropRect) -> Bool {
         abs((tight.xFrac + tight.wFrac / 2) - (twoShot.xFrac + twoShot.wFrac / 2)) < deadZoneCenter
             && abs((tight.yFrac + tight.hFrac / 2) - (twoShot.yFrac + twoShot.hFrac / 2)) < deadZoneCenter
             && abs(tight.hFrac - twoShot.hFrac) < deadZoneHeight * min(tight.hFrac, twoShot.hFrac)
     }
 
-    /// Move times are on the source clock; keyframes count from the first move.
-    static func path(moves: [(time: Double, kind: Shot.Kind)], tight: FreeCropRect, twoShot: FreeCropRect,
-                     interviewerTight: FreeCropRect? = nil, length: Double,
-                     moveSeconds: Double = moveSeconds) -> [CameraPathKeyframe] {
-        let moves = moves.isEmpty ? [(time: 0.0, kind: Shot.Kind.tight)] : moves
-        return path(shots: moves.map {
-            ($0.time, Shot(kind: $0.kind, rect: rect(for: $0.kind, tight: tight,
-                twoShot: twoShot, interviewerTight: interviewerTight)))
-        }, length: length, moveSeconds: moveSeconds)
-    }
-
-    static func rect(for kind: Shot.Kind, tight: FreeCropRect, twoShot: FreeCropRect,
-                     interviewerTight: FreeCropRect?) -> FreeCropRect {
-        switch kind {
-        case .tight: inDeadZone(tight: tight, twoShot: twoShot) ? twoShot : tight
-        case .twoShot: twoShot
-        case .interviewerTight: interviewerTight.map { inDeadZone(tight: $0, twoShot: twoShot) ? twoShot : $0 } ?? twoShot
-        }
-    }
-
-    /// Also used when the existing VIP rotation changes which pair of rectangles
-    /// is in focus. Identical rectangles produce only the opening and final hold.
+    /// Shot times are on the source clock; keyframes count from the first shot.
+    /// Near-identical rectangles produce only the opening and final hold.
     static func path(shots: [(time: Double, shot: Shot)], length: Double,
                      moveSeconds: Double = moveSeconds) -> [CameraPathKeyframe] {
         guard let first = shots.first, length > 0 else { return [] }

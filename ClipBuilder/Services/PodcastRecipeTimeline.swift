@@ -6,7 +6,7 @@ enum PodcastRecipeTimeline {
     /// Shared speech-precise composition for highlights and individual Wizard cuts.
     static func build(subject: Framing.Subject? = nil, video: VideoRecord, range: ClosedRange<Double>,
                       sourceScene: SceneRecord?, turns: [SpeakerTurn], roster: [VideoPersonRecord],
-                      layouts: [ScreenCropLayout], settings: RenderSettings,
+                      sentenceEnds: [Double] = [], layouts: [ScreenCropLayout], settings: RenderSettings,
                       options: WizardOptions = WizardOptions(), hasBRoll: Bool = false, sources: [VideoRecord] = [],
                       brollCuts: [PodcastHighlightBRollPlanner.Cut] = [], scenes: [SceneRecord] = [], people: [PersonRecord] = [], tagText: [String: String],
                       captionStyle: CaptionStyle = CaptionStyle(), profile: BrandProfile = BrandProfile(name: "Default"),
@@ -22,6 +22,7 @@ enum PodcastRecipeTimeline {
         context.sources = sources
         context.brollCuts = brollCuts
         context.scenes = scenes
+        context.sentenceEnds = sentenceEnds
         var resolved = FramingPlanner.resolve(framing: options.requestedFraming, context: context)
         if let warning = FramingPlanner.warning(framing: options.requestedFraming, context: context) { log(warning) }
         var plan: CropRecipePlanner.Plan?

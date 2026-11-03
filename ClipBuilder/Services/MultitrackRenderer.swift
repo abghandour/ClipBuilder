@@ -438,7 +438,8 @@ actor MultitrackRenderer {
                         }
                         let region = CenterStageService.validRegion(clip.areaRegion ?? Self.cellBounds(of: clip) ?? FreeCropRect())
                         let box = AreaFramer.pixelBounds(of: area)
-                        let camera = clip.framingPlan?.sourceWindow == nil ? "conversation" : clip.framingPlan?.camera ?? "conversation"
+                        let camera = clip.framingPlan?.isSteady == true ? "steady"
+                            : clip.framingPlan?.sourceWindow == nil ? "conversation" : clip.framingPlan?.camera ?? "conversation"
                         let identity = try FeedPathCache.identity(source: source, region: region,
                             start: clip.sourceStart, duration: clip.duration * clip.speed, tuning: camera,
                             aspect: box.width / box.height, focus: clip.areaFocus)

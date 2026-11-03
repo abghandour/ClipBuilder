@@ -8,10 +8,6 @@ struct InterviewFocusPlanningTests {
     private let sourceAspect = 16.0 / 9
     private let canvasAspect = 9.0 / 16
 
-    private func segment(_ start: Double, _ end: Double, _ talker: Int) -> CropRecipePlanner.Segment {
-        .init(start: start, end: end, talker: talker, recent: [])
-    }
-
     /// The planner's tightest height for a normalised face (what 0 % gives).
     private func tightHeight(for face: CGRect) -> Double {
         InterviewFocusPlanning.tightHeight(
@@ -104,8 +100,7 @@ struct InterviewFocusPlanningTests {
         #expect(pair.note != nil)
         #expect(pair.tight == pair.twoShot)
         #expect(InterviewFocusPlanning.inDeadZone(tight: pair.tight, twoShot: pair.twoShot))
-        let path = InterviewFocusPlanning.path(moves: [(0, .tight), (4, .twoShot), (8, .tight)],
-            tight: pair.tight, twoShot: pair.twoShot, length: 12)
+        let path = InterviewFocusPlanning.path(shots: [(0, shot(pair.tight)), (4, shot(pair.twoShot)), (8, shot(pair.tight))], length: 12)
         #expect(path.map(\.t) == [0, 12])
         #expect(path.allSatisfy { $0.x == pair.twoShot.xFrac && $0.h == 1 })
     }
@@ -124,71 +119,20 @@ struct InterviewFocusPlanningTests {
         #expect(two.minY <= vip.minY - vip.height * InterviewFocusPlanning.vipMarginY + 0.0001)
     }
 
-    @Test func deadZoneUsesTwoShotForEntireClip() {
+    private func shot(_ rect: FreeCropRect) -> InterviewFocusPlanning.Shot { .init(kind: .tight, rect: rect) }
+
+    @Test func deadZoneShotsCollapseToOneStill() {
         let tight = FreeCropRect(xFrac: 0.3, yFrac: 0.1, wFrac: 0.2, hFrac: 0.6)
-        let two = FreeCropRect(xFrac: 0.29, yFrac: 0.1, wFrac: 0.21, hFrac: 0.62)
-        let path = InterviewFocusPlanning.path(moves: [(10, .tight), (14, .twoShot), (20, .tight)],
-            tight: tight, twoShot: two, length: 20)
+        let near = FreeCropRect(xFrac: 0.29, yFrac: 0.1, wFrac: 0.21, hFrac: 0.62)
+        let path = InterviewFocusPlanning.path(shots: [(10, shot(tight)), (14, shot(near)), (20, shot(tight))], length: 20)
         #expect(path.map(\.t) == [0, 20])
-        #expect(path.allSatisfy { $0.x == two.xFrac && $0.y == two.yFrac && $0.w == two.wFrac && $0.h == two.hFrac })
+        #expect(path.allSatisfy { $0.x == tight.xFrac && $0.y == tight.yFrac && $0.w == tight.wFrac && $0.h == tight.hFrac })
     }
 
-    @Test func bothKindsOfShortInterjectionNeverMove() {
-        for opening in [0, 1] {
-            let moves = InterviewFocusPlanning.moves(segments: [segment(10, 15, opening),
-                segment(15, 15.9, 1 - opening), segment(15.9, 30, opening)], vipTiles: [0], range: 10...30)
-            #expect(moves.count == 1)
-            #expect(moves.first?.time == 10)
-            #expect(moves.first?.kind == (opening == 0 ? .tight : .twoShot))
-        }
-    }
-
-    @Test func holdWaitsFourSecondsAndExpiredTurnsDoNotMove() {
-        let moves = InterviewFocusPlanning.moves(segments: [segment(10, 12, 0), segment(12, 17, 1), segment(17, 30, 0)],
-            vipTiles: [0], range: 10...30)
-        #expect(moves.map(\.time) == [10, 14, 18])
-        #expect(moves.map(\.kind) == [.tight, .twoShot, .tight])
-        let expired = InterviewFocusPlanning.moves(segments: [segment(10, 12, 0), segment(12, 13.5, 1), segment(13.5, 30, 0)],
-            vipTiles: [0], range: 10...30)
-        #expect(expired.count == 1)
-    }
-
-    @Test func openingFollowsFirstTalkerAndHasNoImmediateMove() {
-        let moves = InterviewFocusPlanning.moves(segments: [segment(10, 10.2, 1), segment(10.2, 30, 0)],
-            vipTiles: [0], range: 10...30)
-        #expect(moves.first?.kind == .twoShot)
-        #expect(moves.map(\.time) == [10, 14])
-        #expect(InterviewFocusPlanning.moves(segments: [], vipTiles: [0], range: 10...30).first?.kind == .tight)
-    }
-
-    @Test func silenceAndChangesBetweenInterviewersKeepTheSameShot() {
-        let moves = InterviewFocusPlanning.moves(segments: [segment(0, 5, 1), segment(8, 12, 2), segment(15, 20, 1)],
-            vipTiles: [0], range: 0...20)
-        #expect(moves.count == 1 && moves.first?.kind == .twoShot)
-        let vipMoves = InterviewFocusPlanning.moves(segments: [segment(0, 5, 0), segment(5, 20, 2)],
-            vipTiles: [0, 2], range: 0...20)
-        #expect(vipMoves.count == 1 && vipMoves.first?.kind == .tight)
-    }
-
-    @Test func oneSecondTurnQualifiesAndTailSuppressesLateMoves() {
-        let exact = InterviewFocusPlanning.moves(segments: [segment(0, 5, 0), segment(5, 6, 1), segment(6, 20, 0)],
-            vipTiles: [0], range: 0...20)
-        #expect(exact.map(\.time) == [0, 5, 9])
-        for change in [7.5, 8.0, 9.0] {
-            let tail = InterviewFocusPlanning.moves(segments: [segment(0, change, 0), segment(change, 10, 1)],
-                vipTiles: [0], range: 0...10)
-            #expect(tail.count == 1)
-        }
-        let before = InterviewFocusPlanning.moves(segments: [segment(0, 7.4, 0), segment(7.4, 10, 1)],
-            vipTiles: [0], range: 0...10)
-        #expect(before.map(\.time) == [0, 7.4])
-    }
-
-    @Test func pathsHoldStillBetweenPointEightSecondRampsWithoutCutDuplicates() {
-        let pair = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [host],
-            sourceAspect: sourceAspect, canvasAspect: canvasAspect)
-        let path = InterviewFocusPlanning.path(moves: [(10, .tight), (14, .twoShot), (19, .tight)],
-            tight: pair.tight, twoShot: pair.twoShot, length: 20)
+    @Test func pathsHoldStillBetweenPointEightSecondGlidesWithoutCutDuplicates() {
+        let guest = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [], sourceAspect: sourceAspect, canvasAspect: canvasAspect).tight
+        let asker = InterviewFocusPlanning.rects(vipFace: host, otherFaces: [], sourceAspect: sourceAspect, canvasAspect: canvasAspect).tight
+        let path = InterviewFocusPlanning.path(shots: [(10, shot(guest)), (14, shot(asker)), (19, shot(guest))], length: 20)
         #expect(path.map(\.t) == [0, 4, 4.8, 9, 9.8, 20])
         for (from, to) in zip(path, path.dropFirst()) {
             if from.x != to.x || from.y != to.y || from.w != to.w || from.h != to.h {
@@ -198,14 +142,14 @@ struct InterviewFocusPlanningTests {
         }
         #expect(path[0].x == path[1].x && path[0].h == path[1].h)
         #expect(path[2].x == path[3].x && path[2].h == path[3].h)
+        #expect(InterviewFocusPlanning.path(shots: [], length: 20).isEmpty)
     }
 
     @Test(arguments: [9.0 / 16, 1.0, 16.0 / 9])
     func roundedRectanglesMatchCanvasAndStayInsideSource(aspect: Double) {
         let pair = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [host],
             sourceAspect: sourceAspect, canvasAspect: aspect)
-        let path = InterviewFocusPlanning.path(moves: [(0, .tight), (4, .twoShot)],
-            tight: pair.tight, twoShot: pair.twoShot, length: 12)
+        let path = InterviewFocusPlanning.path(shots: [(0, shot(pair.tight)), (4, shot(pair.twoShot))], length: 12)
         #expect(CenterStageService.pathMatchesCanvas(path, sourceSize: CGSize(width: 1920, height: 1080), canvasAspect: aspect))
         for frame in path {
             #expect(frame.x >= 0 && frame.y >= 0 && frame.x + frame.w <= 1.0001 && frame.y + frame.h <= 1.0001)
@@ -302,37 +246,6 @@ struct InterviewFocusPlanningTests {
 }
 
 extension InterviewFocusPlanningTests {
-    @Test(arguments: InterviewPunchIn.allCases)
-    func punchInSelectsTheRequestedSpeaker(punchIn: InterviewPunchIn) {
-        let moves = InterviewFocusPlanning.moves(segments: [segment(10, 15, 0), segment(15, 22, 1), segment(22, 30, 0)],
-            vipTiles: [0], range: 10...30, punchIn: punchIn)
-        let expected: [InterviewFocusPlanning.Shot.Kind]
-        switch punchIn {
-        case .vip: expected = [.tight, .twoShot, .tight]
-        case .interviewer: expected = [.twoShot, .interviewerTight, .twoShot]
-        case .talker: expected = [.tight, .interviewerTight, .tight]
-        }
-        #expect(moves.map(\.kind) == expected)
-        #expect(moves.map(\.time) == [10, 15, 22])
-        let short = InterviewFocusPlanning.moves(segments: [segment(0, 5, 0), segment(5, 5.9, 1), segment(5.9, 20, 0)],
-            vipTiles: [0], range: 0...20, punchIn: punchIn)
-        #expect(short.count == 1)
-        let held = InterviewFocusPlanning.moves(segments: [segment(0, 2, 0), segment(2, 7, 1), segment(7, 20, 0)],
-            vipTiles: [0], range: 0...20, punchIn: punchIn)
-        #expect(held.map(\.time) == [0, 4, 8])
-        let tail = InterviewFocusPlanning.moves(segments: [segment(0, 19, 0), segment(19, 20, 1)],
-            vipTiles: [0], range: 0...20, punchIn: punchIn)
-        #expect(tail.count == 1)
-    }
-
-    @Test func whoeverTalksStartsWideUntilSpeechIsKnown() {
-        let moves = InterviewFocusPlanning.moves(segments: [segment(5, 12, 1), segment(12, 20, 0)],
-            vipTiles: [0], range: 0...20, punchIn: .talker)
-        #expect(moves.map(\.time) == [0, 5, 12])
-        #expect(moves.map(\.kind) == [.twoShot, .interviewerTight, .tight])
-        #expect(InterviewFocusPlanning.moves(segments: [], vipTiles: [0], range: 0...20, punchIn: .talker).first?.kind == .twoShot)
-    }
-
     @Test(arguments: [0.0, 0.5, 1.0])
     func interviewerTightUsesTheOtherFaceAndPullBack(zoom: Double) throws {
         let pair = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [host],
@@ -343,18 +256,15 @@ extension InterviewFocusPlanningTests {
         #expect(abs(close.hFrac - (tightHeight(for: host) + (1 - tightHeight(for: host)) * zoom)) < 0.001)
         let alone = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [],
             sourceAspect: sourceAspect, canvasAspect: canvasAspect)
-        #expect(alone.interviewerTight == nil)
-        let fallback = InterviewFocusPlanning.path(moves: [(0, .interviewerTight)],
-            tight: alone.tight, twoShot: alone.twoShot, length: 10)
-        #expect(fallback.allSatisfy { $0.x == alone.twoShot.xFrac })
+        #expect(alone.interviewerTight == nil && alone.twoShot == alone.tight && alone.note == nil)
     }
 
     @Test func cutsHoldUntilTheBoundaryAndNeverRamp() throws {
         let pair = InterviewFocusPlanning.rects(vipFace: vip, otherFaces: [host],
             sourceAspect: sourceAspect, canvasAspect: canvasAspect)
         let close = try #require(pair.interviewerTight)
-        let path = InterviewFocusPlanning.path(moves: [(10, .twoShot), (15, .interviewerTight), (22, .tight)],
-            tight: pair.tight, twoShot: pair.twoShot, interviewerTight: close, length: 20, moveSeconds: 0)
+        let path = InterviewFocusPlanning.path(shots: [(10, shot(pair.twoShot)), (15, shot(close)), (22, shot(pair.tight))],
+            length: 20, moveSeconds: 0)
         #expect(path.map(\.t) == [0, 5 - CameraKeyframes.cutGap, 5, 12 - CameraKeyframes.cutGap, 12, 20])
         #expect(CameraKeyframes.isCut(path, at: 2) && CameraKeyframes.isCut(path, at: 4))
         for time in [0.0, 4.0, 4.995] {
@@ -384,13 +294,11 @@ extension InterviewFocusPlanningTests {
         let tight = FreeCropRect(xFrac: 0.3, yFrac: 0.1, wFrac: 0.2, hFrac: 0.6)
         let two = FreeCropRect(xFrac: 0.29, yFrac: 0.1, wFrac: 0.21, hFrac: 0.62)
         let host = FreeCropRect(xFrac: 0.65, yFrac: 0.1, wFrac: 0.2, hFrac: 0.6)
-        let path = InterviewFocusPlanning.path(moves: [(0, .tight), (5, .interviewerTight), (10, .twoShot)],
-            tight: tight, twoShot: two, interviewerTight: host, length: 15)
+        let path = InterviewFocusPlanning.path(shots: [(0, shot(tight)), (5, shot(host)), (10, shot(two))], length: 15)
         #expect(path.map(\.t) == [0, 5, 5.8, 10, 10.8, 15])
-        #expect(path[0].x == two.xFrac && path[2].x == host.xFrac && path[4].x == two.xFrac)
+        #expect(path[0].x == tight.xFrac && path[2].x == host.xFrac && path[4].x == two.xFrac)
         let nearHost = FreeCropRect(xFrac: 0.31, yFrac: 0.1, wFrac: 0.2, hFrac: 0.6)
-        let direct = InterviewFocusPlanning.path(shots: [(0, .init(kind: .tight, rect: tight)),
-            (5, .init(kind: .interviewerTight, rect: nearHost))], length: 10)
+        let direct = InterviewFocusPlanning.path(shots: [(0, shot(tight)), (5, shot(nearHost))], length: 10)
         #expect(direct.map(\.t) == [0, 10])
     }
 }

@@ -6,9 +6,9 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var preset: RenderPreset = .portrait1080
     var framing = Framing()
     var cameraFocus = ""
-    /// Interview focus pull-back, 0 (tight) to 1 (full height).
+    /// VIP focus pull-back, 0 (tight) to 1 (full height).
     var interviewZoom = 0.0
-    /// Interview focus moves by zooming in place instead of panning toward the interviewer.
+    /// VIP focus moves by zooming in place instead of panning toward the interviewer.
     var interviewZoomMoves = false
     var interviewCuts: Bool? = false
     var interviewPunchIn: String?
@@ -380,6 +380,9 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         }
         if let saved = Framing.split(defaults.string(forKey: key(.framing))) {
             result.framing = saved
+            // A focus frame is dragged for one video's picture; restored on
+            // another video it frames nobody.
+            result.framing.focusFrame = nil
         } else {
             result.framing = result.legacyFraming
             let oldFields: [MiniWizardMemory.Field] = [.cameraFocus, .interviewZoom, .interviewZoomMoves, .interviewCuts, .interviewPunchIn]
@@ -408,6 +411,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         set(nameTagStyleID, forKey: key(.nameTagStyleID))
         set(nameTagPosition, forKey: key(.nameTagPosition))
         set(safeAreaPlatforms, forKey: key(.safeAreaPlatforms))
+        var framing = framing
+        framing.focusFrame = nil
         set(framing.joined, forKey: key(.framing))
         set(overlayTemplate, forKey: key(.overlayTemplate))
         set(overlayTexts, forKey: key(.overlayTexts))

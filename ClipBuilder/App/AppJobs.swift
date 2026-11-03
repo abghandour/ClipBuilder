@@ -14,6 +14,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
     case hookVariants
     case fightStory
     case openInEditor
+    case roughCut
 
     var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief || self == .generateImage }
     /// Routine cycles finish quietly; the outcome goes to the activity log only.
@@ -60,6 +61,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .hookVariants: "Hook Variants"
         case .fightStory: "Fight Story"
         case .openInEditor: "Open in Editor"
+        case .roughCut: "Rough Cut"
         }
     }
 
@@ -71,7 +73,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .socialExport, .dub, .generateImage, .trackImage, .builderAssistant, .hookVariants, .fightStory: "builder"
         case .profileStarter, .overlayTemplate, .imageSearch, .resourceExport, .resourceImport,
              .evaluateReelModel, .publishLessons, .teamSync: "app"
-        case .criticBrief, .evaluateCritic, .postText, .openInEditor: "wizard"
+        case .criticBrief, .evaluateCritic, .postText, .openInEditor, .roughCut: "wizard"
         default: "analysis"
         }
     }
@@ -126,6 +128,8 @@ nonisolated enum AppJobResult: Equatable, Sendable {
     case hookVariants(groupID: String, alternatives: [HookAlternative], provenance: AIProvenance?)
     /// An evidence-linked fight story timeline, created but not opened.
     case fightStory(FightStoryReview)
+    /// Small plain renders of the kept reel(s), for a framing check.
+    case roughCut(RoughCutReview)
 
     var committedOnCancellation: Bool {
         switch self {

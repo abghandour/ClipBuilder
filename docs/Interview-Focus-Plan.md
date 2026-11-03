@@ -1,6 +1,6 @@
 # Interview focus: the VIP first, the interviewer still in the picture
 
-Date: October 22, 2026. Status: implemented (phases 0–4); verified on the Tanner Boser interview by planning and frame crops, not yet by a full render.
+Date: October 22, 2026. Status: superseded on November 2, 2026 by docs/VIP-Focus-Plan.md (the two-shot and pull-back moves are gone; the recipe kind keeps its raw value). Was: implemented (phases 0–4); verified on the Tanner Boser interview by planning and frame crops, not yet by a full render.
 
 ## Goal
 

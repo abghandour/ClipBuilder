@@ -20,7 +20,7 @@ nonisolated enum VIPRecipePlanning {
         }
     }
 
-    /// Interview focus only. When the recording's one VIP has a portrait that
+    /// VIP focus only. When the recording's one VIP has a portrait that
     /// lands on no feed (an analysis from before portraits were snapped to
     /// faces can cover the whole frame), the VIP is placed on the feed that
     /// speaks longest: interviewees answer at length, interviewers ask briefly.
@@ -44,7 +44,7 @@ nonisolated enum VIPRecipePlanning {
             return tile
         }
         let name = vip.name.isEmpty ? vip.key : vip.name
-        return (placed, "Interview focus: the portrait of \(name) lands on no feed; placing them on the feed "
+        return (placed, "VIP focus: the portrait of \(name) lands on no feed; placing them on the feed "
             + "that speaks longest (\(Int(speech[chosen.index, default: 0].rounded())) s)")
     }
 

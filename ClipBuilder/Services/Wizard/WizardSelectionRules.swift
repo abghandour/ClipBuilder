@@ -63,8 +63,11 @@ nonisolated enum WizardSelectionRules {
         for id in ids {
             guard let reference = plan.footage?.first(where: { $0.sceneID == id }),
                   let start = reference.start, let end = reference.end else { return nil }
+            // The same video row (a renamed file keeps it) or the same file
+            // under a new row; a different file at either is caught by the
+            // duration check below.
             func same(_ scene: SceneRecord) -> Bool {
-                scene.videoID == reference.videoID && scene.videoPath == reference.videoPath
+                (scene.videoID == reference.videoID || scene.videoPath == reference.videoPath)
                     && abs(scene.startTime - start) < 0.001 && abs(scene.endTime - end) < 0.001
                     && (reference.videoDuration == nil || abs(scene.videoDuration - reference.videoDuration!) < 0.001)
             }
