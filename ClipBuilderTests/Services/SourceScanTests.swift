@@ -90,4 +90,62 @@ struct SourceScanTests {
         #expect(videos.first { $0.path == file.path }.map { $0.duration > 2.5 } == true)
         #expect(videos.contains { $0.path == other.path && $0.duration == 0 })
     }
+
+    @Test("A copy added again is linked to the row whose file is not on this Mac")
+    func reAddedCopyLinksTheMissingRow() async throws {
+        let temp = try await TempDatabase()
+        let input = realPath(temp.directory.url).appendingPathComponent("Input", isDirectory: true)
+        try FileManager.default.createDirectory(at: input, withIntermediateDirectories: true)
+        let source = try await FixtureVideo.make(in: temp.directory.url, wide: true)
+        let duration = await FFmpeg.info(of: source).duration
+        // What Team Sync leaves: the teammate's hash, no path on this Mac.
+        let synced = try await temp.database.registerVideo(
+            hash: "teammate-hash", filename: "Johnny Walker og Interview.mp4", path: "",
+            duration: duration, width: 3840, height: 2160, wide: true)
+        try await temp.database.connection.execute(
+            "INSERT INTO analysis_runs (video_id, name, instructions) VALUES (?, 'run', '')", [.integer(synced)])
+        let copy = input.appendingPathComponent("Johnny Walker og Interview.mov")
+        try FileManager.default.copyItem(at: source, to: copy)
+        try age(copy, seconds: 60)
+
+        let analyzer = Analyzer(ai: AIService(config: AIConfig()))
+        let profile = makeProfile(input: input)
+        let scan = try await analyzer.scanSourceFolder(profile: profile, database: temp.database)
+        #expect(scan.linked == 1 && scan.discovered == 0)
+        let videos = try await temp.database.fetchVideos()
+        #expect(videos.count == 1 && videos.first?.id == synced)
+        #expect(videos.first?.path == copy.path && videos.first?.hash == "teammate-hash" && videos.first?.width == 1920)
+        // Scanning again changes nothing.
+        let again = try await analyzer.scanSourceFolder(profile: profile, database: temp.database)
+        #expect(again == Analyzer.SourceScan())
+    }
+
+    @Test("A blank copy registered under its own hash is folded into the row it duplicates")
+    func blankDuplicateMergesIntoTheMissingRow() async throws {
+        let temp = try await TempDatabase()
+        let input = realPath(temp.directory.url).appendingPathComponent("Input", isDirectory: true)
+        try FileManager.default.createDirectory(at: input, withIntermediateDirectories: true)
+        let source = try await FixtureVideo.make(in: temp.directory.url, wide: true)
+        let duration = await FFmpeg.info(of: source).duration
+        let copy = input.appendingPathComponent("Interview.mp4")
+        try FileManager.default.copyItem(at: source, to: copy)
+        try age(copy, seconds: 60)
+        let analyzer = Analyzer(ai: AIService(config: AIConfig()))
+        let profile = makeProfile(input: input)
+        _ = try await analyzer.scanSourceFolder(profile: profile, database: temp.database)
+        let blank = try #require(try await temp.database.fetchVideos().first)
+        let project = try await temp.database.createProject(profileName: "Scan test", name: "P", videoIDs: [blank.id])
+        // The teammate's row arrives afterwards, with content attached.
+        let synced = try await temp.database.registerVideo(
+            hash: "teammate-hash", filename: "Interview.mp4", path: "",
+            duration: duration, width: 1920, height: 1080, wide: true)
+        try await temp.database.connection.execute(
+            "INSERT INTO analysis_runs (video_id, name, instructions) VALUES (?, 'run', '')", [.integer(synced)])
+
+        let scan = try await analyzer.scanSourceFolder(profile: profile, database: temp.database)
+        #expect(scan.linked == 1)
+        let videos = try await temp.database.fetchVideos()
+        #expect(videos.map(\.id) == [synced] && videos.first?.path == copy.path)
+        #expect(try await temp.database.fetchVideos(projectID: project).map(\.id) == [synced])
+    }
 }

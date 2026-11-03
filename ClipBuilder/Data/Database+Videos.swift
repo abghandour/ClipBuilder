@@ -27,6 +27,38 @@ extension Database {
         return rows.first?["id"]?.intValue ?? connection.lastInsertRowID
     }
 
+    /// Point a row whose file is not on this Mac at a copy added here. The
+    /// hash stays: it is the team-wide identity of the footage.
+    func linkVideo(id: Int64, path: String, duration: Double, width: Int, height: Int, wide: Bool) throws {
+        try connection.execute("""
+            UPDATE videos SET path = ?, duration = ?, width = ?, height = ?, wide = ?, hidden = 0 WHERE id = ?
+            """, [.text(path), .real(duration), .integer(Int64(width)), .integer(Int64(height)),
+                  .integer(wide ? 1 : 0), .integer(id)])
+    }
+
+    /// Whether anything was produced from the video: analysis, scenes or a
+    /// transcript. A blank row can be folded into another without loss.
+    func videoHasContent(id: Int64) throws -> Bool {
+        for table in ["analysis_runs", "scenes", "transcripts"] {
+            let row = try connection.query("SELECT 1 FROM \(table) WHERE video_id = ? LIMIT 1", [.integer(id)]).first
+            if row != nil { return true }
+        }
+        return false
+    }
+
+    /// Give `target` the blank duplicate's file and project memberships and
+    /// remove the duplicate. The caller checks `videoHasContent` first.
+    func mergeVideo(_ duplicate: VideoRecord, into target: VideoRecord) throws {
+        guard let path = duplicate.path else { return }
+        try linkVideo(id: target.id, path: path, duration: duplicate.duration,
+                      width: duplicate.width, height: duplicate.height, wide: duplicate.wide)
+        try connection.execute("""
+            INSERT OR IGNORE INTO project_videos (project_id, video_id)
+            SELECT project_id, ? FROM project_videos WHERE video_id = ?
+            """, [.integer(target.id), .integer(duplicate.id)])
+        try deleteVideos([duplicate.id])
+    }
+
     /// Hide sources from every list on this Mac without touching the row
     /// itself (teammates and sync keep it).
     func setVideosHidden(_ ids: [Int64], _ hidden: Bool) throws {

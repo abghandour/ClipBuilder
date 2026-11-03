@@ -208,11 +208,32 @@ extension View {
     /// A form row that only exists because the row above it is switched on
     /// or set a certain way: indented so the hierarchy is visible.
     func formDependent() -> some View {
-        padding(.leading, Theme.spaceXL)
+        modifier(FormDependent())
     }
 
     /// Attaches the field's tooltip (also read by VoiceOver as the hint).
     func fieldHelp(_ help: FieldHelp) -> some View {
         self.help(help.tooltip)
+    }
+}
+
+/// Rows and captions that exist because the row above is switched on. The
+/// indent shows what they belong to. In the Full wizard's step rows the
+/// label column gives up the same amount, so the controls and captions keep
+/// the column's x and only the labels move in.
+private struct FormDependent: ViewModifier {
+    @Environment(\.wizardStepRows) private var usesStepRows
+    @Environment(\.settingsLabelWidth) private var labelWidth
+    @Environment(\.formCaptionIndent) private var captionIndent
+
+    func body(content: Content) -> some View {
+        if usesStepRows {
+            content
+                .environment(\.settingsLabelWidth, max(labelWidth - Theme.spaceXL, Theme.spaceXL))
+                .environment(\.formCaptionIndent, max(captionIndent - Theme.spaceXL, 0))
+                .padding(.leading, Theme.spaceXL)
+        } else {
+            content.padding(.leading, Theme.spaceXL)
+        }
     }
 }

@@ -1589,6 +1589,9 @@ final class AppStore {
                 if scan.repaired > 0 {
                     self.appendLog(\.analysisLog, ["Removed \(scan.repaired) duplicate registration(s) of files that were still copying"])
                 }
+                if scan.linked > 0 {
+                    self.appendLog(\.analysisLog, ["Linked \(scan.linked) re-added video(s) to their existing entries"])
+                }
                 self.refreshAll()
                 // Files still arriving are registered once they stop changing;
                 // the folder watcher only sees the directory, not their growth.
@@ -1640,8 +1643,10 @@ final class AppStore {
             if copied > 0 {
                 self.appendLog(\.analysisLog, ["Added \(copied) video(s) to the Input folder"])
             }
+            var linked = 0
             do {
                 let scan = try await self.scanSourcesForAutoUpload(profile: profile, database: database)
+                linked = scan.linked
                 if generation == self.profileGeneration {
                     self.refreshAll()
                     if scan.settling > 0 { self.scheduleSettledRescan(generation: generation) }
@@ -1649,11 +1654,15 @@ final class AppStore {
             } catch {
                 self.presentError("Folder scan failed", error)
             }
-            // Adding what is already here must say so, not do nothing.
-            if !alreadyThere.isEmpty {
+            // Adding what is already here must say so, not do nothing. A copy
+            // that revived an entry without a file on this Mac is not nothing.
+            if !alreadyThere.isEmpty && linked == 0 {
                 self.presentNotice(alreadyThere.count == 1 ? "Already in Sources" : "Already in Sources (\(alreadyThere.count))",
                                    "\(Self.nameList(alreadyThere)) \(alreadyThere.count == 1 ? "is" : "are") already in the Input folder"
                                    + (copied > 0 ? "; the other \(copied) \(copied == 1 ? "was" : "were") added." : ". Nothing was added."))
+            } else if linked > 0 {
+                self.presentNotice(linked == 1 ? "Linked to Existing Source" : "Linked to Existing Sources (\(linked))",
+                                   "\(linked == 1 ? "A copy was" : "\(linked) copies were") linked to \(linked == 1 ? "an entry" : "entries") whose file was not on this Mac; scenes and transcripts carry over.")
             }
             for failure in failures {
                 self.presentError("Could not add \(failure)")

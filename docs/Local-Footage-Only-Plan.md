@@ -1,6 +1,6 @@
 # Local footage only
 
-Date: November 3, 2026. Status: implemented (uncommitted).
+Date: November 3, 2026. Status: shipped in 1.148; re-added copies link since 1.149.
 
 ## Why
 
@@ -33,6 +33,17 @@ screen but Sources, where a Drive copy can be downloaded.
   selection's Drive menu offers "Download N Local Copies"). A file that is
   neither here nor on Drive is left out of the table. The scene count column
   comes from `allSceneCountsByVideo`, counted before the local filter.
+
+- **Re-adding a copy links it** (`SourceRelink`, since 1.149). A row that
+  Team Sync brought over has no path on this Mac, so 1.148 hid it even from
+  Sources, and adding the file again registered a second, blank row (or
+  said "Already in Sources" when the copy already sat in the Input folder).
+  The folder scan now points such a row at a file with the same base name
+  and a duration within one second, keeping the row's hash because it is
+  the team-wide identity (sync key, highlight history, Drive check). A
+  blank duplicate the copy registered earlier is folded into that row with
+  its project memberships. A copy that was already analyzed on its own is
+  left alone, so two rows can remain in that case.
 
 ## Not done
 

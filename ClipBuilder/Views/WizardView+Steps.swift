@@ -157,7 +157,10 @@ extension WizardView {
             }
         }
         .environment(\.wizardStepRows, true)
-        .environment(\.formCaptionIndent, SettingsRowMetrics.labelWidth + Theme.spaceM)
+        .environment(\.settingsLabelWidth, SettingsRowMetrics.stepLabelWidth)
+        .environment(\.formCaptionIndent, SettingsRowMetrics.stepLabelWidth + Theme.spaceM)
+        // Rows are separated by space, never by rules.
+        .environment(\.settingsRowDividers, false)
         .toggleStyle(.switch)
         .textFieldStyle(.roundedBorder)
         .safeAreaInset(edge: .bottom, spacing: 0) {
@@ -291,7 +294,6 @@ extension WizardView {
                         .lineLimit(1).fixedSize()
                 }
             }
-            Divider()
             if needsFootageProposal {
                 FormCaption("Describe your idea to find matching footage in this project.")
                 briefFields
@@ -342,7 +344,6 @@ extension WizardView {
                     ? "No saved selection yet. Find the moments to review and keep takes here."
                     : "No saved selection uses the chosen sources. Find the moments for them, or Show all.")
             } else {
-                Divider()
                 WizardFootageReviewView(selections: visibleSelections, options: presentationOptions())
                     .id("\(store.activeProjectID ?? 0):\(store.scenesVersion):\(visibleSelections.map(\.id))")
                     .frame(maxWidth: .infinity)

@@ -11,6 +11,7 @@ struct ProjectCardView: View {
     let onDrop: ([URL]) -> Void
 
     var body: some View {
+        // The card is one block: nothing hangs under its background.
         VStack(alignment: .leading, spacing: 0) {
             Button(action: onOpen) {
                 VStack(alignment: .leading, spacing: Theme.spaceM) {
@@ -48,15 +49,6 @@ struct ProjectCardView: View {
                     .font(.caption)
                     .foregroundStyle(.secondary)
 
-                    HStack {
-                        Text(languageSummary).lineLimit(1)
-                        if let message = LanguageReadiness.summary(store.projectLanguageAssets[project.id] ?? []) {
-                            Image(systemName: "exclamationmark.triangle").foregroundStyle(.orange)
-                                .help(message).accessibilityLabel(message)
-                        }
-                    }
-                    .font(.caption).foregroundStyle(.secondary)
-
                     if let lastOpenedDate = project.lastOpenedDate {
                         Text("Opened \(lastOpenedDate.formatted(.relative(presentation: .named)))")
                             .font(.caption)
@@ -74,11 +66,8 @@ struct ProjectCardView: View {
                 .contentShape(.rect(cornerRadius: Theme.cardRadius))
             }
             .buttonStyle(.plain)
-            Button("Languages…", systemImage: "globe") { store.languageEditorProject = project }
-                .font(.caption).lineLimit(1).fixedSize().padding(Theme.cardPadding)
         }
         .contextMenu {
-            Button("Languages…", systemImage: "globe") { store.languageEditorProject = project }
             if project.isHome {
                 Button("Open Home", systemImage: "house.fill", action: onOpen)
             } else {
@@ -99,11 +88,6 @@ struct ProjectCardView: View {
         .accessibilityLabel(
             "\(project.name), \(project.sourceCount) sources, \(project.timelineCount) timelines, \(project.outputCount) outputs"
         )
-    }
-    private var languageSummary: String {
-        let languages = store.resolvedLanguages(for: project)
-        let spoken = languages.spoken.isEmpty ? "Auto-detect" : languages.spoken.map(DubLanguageChoices.name).joined(separator: ", ")
-        return spoken
     }
 }
 

@@ -49,6 +49,9 @@ actor Analyzer {
         /// Zero-duration rows removed because the same file registered
         /// properly under its finished fingerprint.
         var repaired = 0
+        /// Rows without a file on this Mac that were pointed at a copy added
+        /// here (`SourceRelink`), instead of registering a blank duplicate.
+        var linked = 0
     }
 
     /// Size and modification date: the two values a copy in progress changes.
@@ -121,7 +124,19 @@ actor Analyzer {
                 result.settling += 1; continue
             }
             let wide = info.width > 0 && info.height > 0 && info.width > info.height
-            if known[candidate.hash] == nil { result.discovered += 1 }
+            if known[candidate.hash] == nil {
+                // A re-added copy of footage whose row has no file here (a
+                // teammate's row, a moved file) takes that row over, scenes
+                // and transcript included, rather than registering blank.
+                if let target = SourceRelink.target(filename: candidate.url.lastPathComponent, duration: info.duration,
+                                                    path: candidate.url.path, in: videos) {
+                    try await database.linkVideo(id: target.id, path: candidate.url.path, duration: info.duration,
+                                                 width: info.width, height: info.height, wide: wide)
+                    if target.path != candidate.url.path { result.linked += 1 }
+                    continue
+                }
+                result.discovered += 1
+            }
             try await database.registerVideo(hash: candidate.hash, filename: candidate.url.lastPathComponent,
                                              path: candidate.url.path, duration: info.duration,
                                              width: info.width, height: info.height, wide: wide)
@@ -139,6 +154,14 @@ actor Analyzer {
         if !ghosts.isEmpty {
             try await database.deleteVideos(ghosts.map(\.id))
             result.repaired = ghosts.count
+        }
+        // A copy registered under its own hash while the row it duplicates
+        // had no file here: fold the copy into that row while nothing has
+        // been produced from it yet.
+        for pair in SourceRelink.duplicates(in: registered) where pair.local.id != pair.missing.id {
+            guard try await !database.videoHasContent(id: pair.local.id) else { continue }
+            try await database.mergeVideo(pair.local, into: pair.missing)
+            result.linked += 1
         }
         // Only after every row was rewritten — a thrown probe retries the
         // full pass on the next scan.

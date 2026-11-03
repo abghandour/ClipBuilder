@@ -23,7 +23,6 @@ struct WizardHostView: View {
             .padding(.horizontal, Theme.spaceM)
             .padding(.vertical, Theme.spaceS)
             .background(.bar)
-            Divider()
 
             switch store.wizardMode {
             case .full:

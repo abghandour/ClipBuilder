@@ -96,6 +96,9 @@ enum SettingsRowMetrics {
     /// Fits the common labels ("Focus frame", "Safe area only"); a longer one
     /// widens its own row rather than pushing every row's control right.
     static let labelWidth: CGFloat = 96
+    /// The Full wizard's steps share one fixed column so every control
+    /// starts on the same x; a label longer than this wraps.
+    static let stepLabelWidth: CGFloat = 160
     /// Sliders and text fields stop here; menus and pickers keep their natural size.
     static let controlWidth: CGFloat = 360
     /// Rows without dividers sit 1.5x the usual gap apart so the space does the separating.

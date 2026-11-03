@@ -273,7 +273,7 @@ extension WizardView {
                         }
                     }
                     .disabled(store.isWizardRunning)
-                    Divider()
+                    .padding(.bottom, Theme.spaceS)
                 }
             }
         }

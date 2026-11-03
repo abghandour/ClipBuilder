@@ -964,7 +964,6 @@ struct WizardView: View {
         .padding(.horizontal, Theme.spaceL)
         .padding(.vertical, Theme.spaceM)
         .background(.bar)
-        .overlay(alignment: .top) { Divider() }
     }
 
     var generationSummary: String {

@@ -5,9 +5,10 @@ extension EnvironmentValues {
 }
 
 /// Opt-in alignment for shared controls used outside a Form. Existing Forms and
-/// Express retain their own layout. Narrow panes stack instead of wrapping labels.
+/// Express retain their own layout.
 struct WizardControlRow<Content: View>: View {
     @Environment(\.wizardStepRows) private var usesStepRows
+    @Environment(\.settingsLabelWidth) private var labelWidth
     let title: String
     var detail: String?
     @ViewBuilder let content: Content
@@ -20,25 +21,19 @@ struct WizardControlRow<Content: View>: View {
 
     var body: some View {
         if usesStepRows {
-            ViewThatFits(in: .horizontal) {
+            // One label column for every row of a step, so every control
+            // starts on the same x; a long label wraps inside the column.
+            // The explanation goes under the control, never beside it.
+            VStack(alignment: .leading, spacing: Theme.spaceXS) {
                 HStack(alignment: .firstTextBaseline, spacing: Theme.spaceM) {
-                    // minWidth: a label longer than the column widens its own row instead of being clipped.
-                    label.frame(minWidth: SettingsRowMetrics.labelWidth, alignment: .trailing)
-                    control.frame(maxWidth: detail == nil ? SettingsRowMetrics.controlWidth : nil, alignment: .leading)
-                    if let detail {
-                        SettingsRowDetail(detail)
-                    }
+                    label.frame(width: labelWidth, alignment: .trailing)
+                    control.frame(maxWidth: SettingsRowMetrics.controlWidth, alignment: .leading)
                     Spacer(minLength: 0)
                 }
-                VStack(alignment: .leading, spacing: Theme.spaceS) {
-                    label
-                    if let detail {
-                        Text(detail).font(.callout).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    content.labelsHidden()
-                        .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-                        .frame(maxWidth: .infinity, alignment: .trailing)
+                if let detail {
+                    Text(detail).font(.callout).foregroundStyle(.secondary)
+                        .fixedSize(horizontal: false, vertical: true)
+                        .padding(.leading, labelWidth + Theme.spaceM)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -48,7 +43,9 @@ struct WizardControlRow<Content: View>: View {
     }
 
     private var label: some View {
-        Text(title).lineLimit(1).fixedSize()
+        Text(title)
+            .multilineTextAlignment(.trailing)
+            .fixedSize(horizontal: false, vertical: true)
             .accessibilityHidden(true) // Native control still owns its accessible label.
     }
 
