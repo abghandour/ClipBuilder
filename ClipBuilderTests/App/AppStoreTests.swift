@@ -339,6 +339,13 @@ struct AppStoreTests {
         let profiles = [Fixtures.brand(name: "One"), Fixtures.brand(name: "Two")]
         let store = makeStore(profiles: profiles)
         let staleGeneration = store.profileGeneration
+        // Scenes of footage that is not on this Mac are left out of the
+        // store, so the fixture's file must exist (another test may have
+        // marked its path missing).
+        let path = try #require(Fixtures.video().path)
+        try Data("x".utf8).write(to: URL(fileURLWithPath: path))
+        defer { try? FileManager.default.removeItem(atPath: path) }
+        FootageAvailability.refresh(path: path, driveFileID: nil)
         let snapshot = Fixtures.snapshot(videos: [Fixtures.video()], scenes: [Fixtures.scene()])
 
         // The fetch completes after the profile moved on: its rows belong
