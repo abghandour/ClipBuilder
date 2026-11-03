@@ -19,7 +19,7 @@ struct RangeReviewView<Footer: View>: View {
     var autoplay = true
     /// The transcript column stays up with nothing selected, so a drag can
     /// start on a word and mark the draft (Transcript and Fight picks). Same
-    /// column order as the default: list, player, words.
+    /// column order as the default: list, words, player.
     var transcriptLeading = false
     /// Heading above the list when there is no Keep checkbox.
     var listTitle: String? = nil
@@ -154,7 +154,15 @@ struct RangeReviewView<Footer: View>: View {
                     // The word panel is one view whether or not something is
                     // selected, so a drag that starts with nothing selected
                     // keeps its gesture state while it selects the draft.
+                    // Words sit next to the list, the player on the right.
                     if let context = selected ?? items.first {
+                        Group {
+                            if let leadingPanel { leadingPanel }
+                            else { wordPanel(selected: context, video: context.video, inactive: selected == nil) }
+                        }
+                        .frame(width: widths.transcript, alignment: .leading).clipped()
+                        columnDivider(.transcript, width: widths.transcript, otherWidth: widths.list,
+                                      available: geometry.size.width)
                         if let selected {
                             trimSurface(item: selected).padding(Theme.spaceS)
                             .frame(width: playerWidth).frame(maxHeight: .infinity, alignment: .top).clipped()
@@ -163,13 +171,6 @@ struct RangeReviewView<Footer: View>: View {
                                                    description: Text(emptyMessage))
                                 .frame(width: playerWidth, alignment: .center).frame(maxHeight: .infinity)
                         }
-                        columnDivider(.transcript, width: widths.transcript, otherWidth: widths.list,
-                                      available: geometry.size.width)
-                        Group {
-                            if let leadingPanel { leadingPanel }
-                            else { wordPanel(selected: context, video: context.video, inactive: selected == nil) }
-                        }
-                        .frame(width: widths.transcript, alignment: .leading).clipped()
                     } else {
                         ContentUnavailableView(emptyTitle, systemImage: "text.bubble",
                                                description: Text(emptyMessage))
@@ -180,11 +181,11 @@ struct RangeReviewView<Footer: View>: View {
                     columnDivider(.list, width: widths.list, otherWidth: widths.transcript,
                                   available: geometry.size.width)
                     if let selected, let video {
-                        trimSurface(item: selected).padding(Theme.spaceS)
-                            .frame(width: playerWidth).frame(maxHeight: .infinity, alignment: .top).clipped()
+                        wordPanel(selected: selected, video: video).frame(width: widths.transcript, alignment: .leading).clipped()
                         columnDivider(.transcript, width: widths.transcript, otherWidth: widths.list,
                                       available: geometry.size.width)
-                        wordPanel(selected: selected, video: video).frame(width: widths.transcript, alignment: .leading).clipped()
+                        trimSurface(item: selected).padding(Theme.spaceS)
+                            .frame(width: playerWidth).frame(maxHeight: .infinity, alignment: .top).clipped()
                     } else {
                         ContentUnavailableView(emptyTitle, systemImage: "text.bubble",
                                                description: Text(emptyMessage))
@@ -324,11 +325,6 @@ struct RangeReviewView<Footer: View>: View {
                                       draft = (span.lowerBound, span.upperBound)
                                   }
                               },
-                              onSpanClear: {
-                                  guard isEnabled, canTrim, let range else { draft = nil; return }
-                                  draft = nil
-                                  commit(range.lowerBound...range.lowerBound)
-                              },
                               accessory: inactive ? nil : transcriptAccessory?(selected),
                               footer: AnyView(rangeActions(selected, inactive: inactive)))
     }
@@ -373,7 +369,7 @@ struct RangeReviewView<Footer: View>: View {
         }, onReset: {
             if column == .list { listWidth = Double(column.defaultWidth) }
             else { transcriptWidth = Double(column.defaultWidth) }
-        }, isLeading: column == .list)
+        }, isLeading: true) // Both resized columns sit left of their divider.
     }
 
     private var itemList: some View {

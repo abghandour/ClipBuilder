@@ -3,7 +3,7 @@ import SwiftUI
 
 /// The rough cut job's result: a player per cut, so framing and focus can be
 /// checked in motion, beside the framing controls the cut was made with.
-/// Preview again re-runs the same takes with the edited framing and swaps the
+/// Regenerate re-runs the same takes with the edited framing and swaps the
 /// new cuts into this same sheet; Apply hands the framing to the page it came
 /// from, Discard changes nothing. The cuts are small and plain by design
 /// (docs/Rough-Cut-Plan.md); nothing is saved.
@@ -11,7 +11,7 @@ struct RoughCutReviewSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
-    /// The job whose result is on screen; Preview again moves it to the new job.
+    /// The job whose result is on screen; Regenerate moves it to the new job.
     @State private var jobID: UUID
     @State private var review: RoughCutReview
     @State private var framing: Framing
@@ -19,7 +19,7 @@ struct RoughCutReviewSheet: View {
     @State private var aspects: [String: CGFloat] = [:]
     /// Playback rate for every player, so a setting can be judged quickly or slowly.
     @State private var speed: Float = 1
-    /// The Preview again job this sheet is waiting for.
+    /// The Regenerate job this sheet is waiting for.
     @State private var pendingJobID: UUID?
 
     static let speeds: [Float] = [0.5, 1, 1.5, 2]
@@ -54,7 +54,7 @@ struct RoughCutReviewSheet: View {
                 Text(review.cuts.count == 1 ? "Rough cut" : "\(review.cuts.count) rough cuts")
                     .font(.headline)
                     .lineLimit(1).fixedSize()
-                Text("Framing and focus only, small and plain. Left out: \(WizardRoughCut.leftOut). Change the framing and preview again; Apply puts it on the page.")
+                Text("Framing and focus only, small and plain. Left out: \(WizardRoughCut.leftOut). Change the framing and regenerate; Apply puts it on the page.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -97,24 +97,23 @@ struct RoughCutReviewSheet: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.tail)
                 } else if framingChanged {
-                    Text("Framing changed. Preview again to see it, Apply to keep it.")
+                    Text("Framing changed. Regenerate to see it, Apply to keep it.")
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.tail)
                 }
                 Spacer()
+                // Regenerate only once the preview is stale: the framing on
+                // the right differs from what the players show.
+                Button("Regenerate") {
+                    pendingJobID = store.rerunRoughCut(requestID: review.requestID, framing: framing)
+                }
+                .disabled(busy || !framingChanged)
+                .help(busy ? "The Wizard is already working on this project."
+                      : framingChanged ? "Render the rough cut again with the framing above; the new cut replaces this one here"
+                      : "The preview already shows this framing")
                 Button("Discard") { finish() }
                     .keyboardShortcut(.cancelAction)
                     .help("Close without changing the page's framing")
-                Button("Preview again") {
-                    pendingJobID = store.rerunRoughCut(requestID: review.requestID, framing: framing)
-                }
-                .disabled(busy)
-                .help(busy ? "The Wizard is already working on this project." : "Render the rough cut again with the framing above; the new cut replaces this one here")
-                Button("Generate") {
-                    send(WizardAssistant.generateWithFramingAction)
-                }
-                .disabled(busy)
-                .help("Apply the framing above and render the final video with every setting on the page")
                 Button("Apply") {
                     send(WizardAssistant.applyFramingAction)
                 }
@@ -152,7 +151,7 @@ struct RoughCutReviewSheet: View {
         .onChange(of: store.profileGeneration) { _, _ in finish() }
     }
 
-    /// Over the players while Preview again renders: progress, the job's
+    /// Over the players while Regenerate renders: progress, the job's
     /// last line and Stop, the same as its status-bar row.
     private func rendering(_ job: AppJob) -> some View {
         VStack(spacing: Theme.spaceM) {

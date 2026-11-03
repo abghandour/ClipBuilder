@@ -314,6 +314,27 @@ nonisolated enum TranscriptQATrim {
         frames.filter { $0.value.contains(point) }.keys.min()
     }
 
+    /// The word under the point, else the nearest word on the same row whose
+    /// gap the point landed in: a press between two words or in the leading
+    /// between rows still counts. `tolerance` is in points on each axis.
+    static func nearestWord(at point: CGPoint, frames: [Int: CGRect], tolerance: CGFloat = 6) -> Int? {
+        if let exact = word(at: point, frames: frames) { return exact }
+        let candidates = frames.filter { entry in
+            let frame = entry.value
+            return point.y >= frame.minY - tolerance && point.y <= frame.maxY + tolerance
+                && point.x >= frame.minX - tolerance && point.x <= frame.maxX + tolerance
+        }
+        func distance(_ frame: CGRect) -> CGFloat {
+            let dx = max(0, max(frame.minX - point.x, point.x - frame.maxX))
+            let dy = max(0, max(frame.minY - point.y, point.y - frame.maxY))
+            return dx * dx + dy * dy
+        }
+        return candidates.min { a, b in
+            let da = distance(a.value), db = distance(b.value)
+            return da == db ? a.key < b.key : da < db
+        }?.key
+    }
+
     static func snap(_ time: Double, edge: Edge, words: [Word], tolerance: Double = 1.5) -> Double {
         let boundaries = words.map { edge == .start ? $0.start : $0.end }
         let nearest = boundaries.min {

@@ -93,7 +93,7 @@ and pans while the guest sits still).
   `FramingRows` (Framing, Pull back, Shot, Moves, Camera, Fit, Blur,
   Feather, Focus frame, Zoom, VIPs) in a column beside the players, bound to
   its own copy of the framing. The page is not touched until Apply.
-- **Preview again.** The store keeps every rough cut request
+- **Regenerate** (was "Preview again"). The store keeps every rough cut request
   (`AppStore.roughCutRequests`, `RoughCutRequest`: project, options, takes
   closures, page namespace), pruned to the ids retained job results still
   point at when a new job starts. `rerunRoughCut(requestID:framing:)`

@@ -1876,7 +1876,7 @@ actor MultitrackRenderer {
     }
 
     /// Bump when CenterStageService/AreaFramer output or tracking semantics change.
-    nonisolated static let framingVersion = "multitrack-framing-v9-focus"
+    nonisolated static let framingVersion = "multitrack-framing-v10-motion"
 
     /// Portraits of the tagged VIPs in a source, cropped from their roster frames.
     /// Empty when nobody is tagged, which lets Center Stage frame everyone.

@@ -260,9 +260,9 @@ extension MiniWizardFlowTests {
 extension MiniWizardFlowTests {
     @Test func generateTitleAndSettingsSummary() {
         let separate = MiniWizardFlow(outputMode: .separateVideos)
-        #expect(separate.generateButtonTitle(keptCount: 1) == "Generate Video")
-        #expect(separate.generateButtonTitle(keptCount: 3) == "Generate Video")
-        #expect(MiniWizardFlow(outputMode: .oneReel).generateButtonTitle(keptCount: 3) == "Generate Video")
+        #expect(separate.generateButtonTitle(keptCount: 1) == "Generate")
+        #expect(separate.generateButtonTitle(keptCount: 3) == "Generate")
+        #expect(MiniWizardFlow(outputMode: .oneReel).generateButtonTitle(keptCount: 3) == "Generate")
         #expect(separate.outputCount(keptCount: 3) == 1)
         #expect(MiniWizardFlow(outputMode: .oneReel).outputCount(keptCount: 3) == 1)
         #expect(MiniWizardFlow(outputMode: .oneReel).outputCount(keptCount: 0) == 0)

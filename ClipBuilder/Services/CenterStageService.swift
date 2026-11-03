@@ -100,7 +100,7 @@ nonisolated struct AppearanceSignature: Sendable {
 
     /// Inverse of the display-orientation mapping, for normalized
     /// top-left-origin rects.
-    fileprivate static func bufferRect(fromDisplay rect: CGRect,
+    static func bufferRect(fromDisplay rect: CGRect,
                                    orientation: CGImagePropertyOrientation) -> CGRect {
         switch orientation {
         case .down:
@@ -151,6 +151,14 @@ actor CenterStageService {
         /// Normalize smoothing to elapsed time and sample the keyframe clock
         /// independently of detection cadence (used by conversation tracking).
         var timeBasedSmoothing = false
+        /// Reduce camera motion: measure the recording camera's shake while
+        /// decoding and zoom the crop in where it shakes so it can cancel it.
+        var stabilizes = false
+        /// With `stabilizes`: a target further than this fraction of the frame
+        /// width from the crop (the source zoomed or re-framed) is reacquired
+        /// with `reacquireSmoothing` instead of the slow glide.
+        var reacquireDistance = 0.15
+        var reacquireSmoothing = 0.4
 
         /// Slow, cinematic drift — interviews, posed footage.
         static let smooth = Tuning(analysisInterval: 0.15, keyframeInterval: 0.4,
@@ -174,13 +182,14 @@ actor CenterStageService {
                                        deadZoneZoom: 0.03, minCropHeightFraction: 0.72,
                                        padding: 1.5)
 
-        /// Steady camera: follows the person with no dead zone to drift in,
-        /// slowly, so the recording camera's own pans and nudges are absorbed
-        /// rather than shown, and zoom only changes for a real size change.
+        /// Reduce camera motion ("steady"): follows the person with no dead
+        /// zone to drift in, slowly, so the recording camera's own pans are
+        /// absorbed, zoom only changes for a real size change, and shaky
+        /// stretches are measured and countered (`CameraMotionPlanning`).
         static let steady = Tuning(analysisInterval: 0.15, keyframeInterval: 0.3,
                                    smoothing: 0.08, deadZoneWidth: 0.01,
                                    deadZoneZoom: 0.12, minCropHeightFraction: 0.6,
-                                   padding: 1.4, timeBasedSmoothing: true)
+                                   padding: 1.4, timeBasedSmoothing: true, stabilizes: true)
 
         static func named(_ name: String) -> Tuning {
             switch name {
@@ -261,13 +270,18 @@ actor CenterStageService {
         // Rotated sources (portrait-stored with a rotation flag) need Vision
         // told the display orientation, or people are hunted in sideways
         // frames and the boxes come back in the wrong coordinate space.
+        let motion = Mutex<[CameraMotionSample]>([])
+        var collectMotion: (@Sendable (CameraMotionSample) -> Void)?
+        if tuning.stabilizes {
+            collectMotion = { (sample: CameraMotionSample) in motion.withLock { $0.append(sample) } }
+        }
         let targets = try await trackPeople(asset: info.asset, track: info.track,
                                             start: start, duration: duration,
                                             focusRanges: focusRanges,
                                             focusPortraits: focusPortraits,
                                             avoidPortraits: avoidPortraits,
                                             orientation: Self.displayOrientation(of: info.preferredTransform),
-                                            tuning: tuning, log: emit)
+                                            tuning: tuning, motion: collectMotion, log: emit)
         let analyzed = targets.filter(\.inFocus)
         let trackedShare = analyzed.isEmpty ? 0
             : Double(analyzed.filter(\.tracked).count) / Double(analyzed.count)
@@ -279,9 +293,14 @@ actor CenterStageService {
                 format: "people visible in only %.0f%% of the clip", trackedShare * 100))
         }
 
+        let shakes = motion.withLock { $0 }
+        if tuning.stabilizes {
+            emit(CameraMotionPlanning.summary(CameraMotionPlanning.profile(shakes), duration: duration,
+                                              cuts: CameraMotionPlanning.cuts(in: shakes)))
+        }
         let keyframes = cameraPath(from: targets, size: info.size, duration: duration,
                                    tuning: tuning, hints: hints,
-                                   aspect: renderSize.width / renderSize.height)
+                                   aspect: renderSize.width / renderSize.height, motion: shakes)
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("centerstage_\(UUID().uuidString).mp4")
         log?("Encode: Center Stage camera path export")
@@ -379,13 +398,19 @@ actor CenterStageService {
         let info = try await loadSource(source, requireWide: false)
         let region = Self.validRegion(region)
         let samples = Mutex<[FeedPathSample]>([])
+        let motion = Mutex<[CameraMotionSample]>([])
+        var collectMotion: (@Sendable (CameraMotionSample) -> Void)?
+        if tuning.stabilizes {
+            collectMotion = { (sample: CameraMotionSample) in motion.withLock { $0.append(sample) } }
+        }
         let targets: [Target]
         var reusable = true
         do {
             targets = try await trackPeople(asset: info.asset, track: info.track,
                 start: start, duration: duration, focusRanges: [],
                 orientation: Self.displayOrientation(of: info.preferredTransform), tuning: tuning,
-                region: region, evidence: { sample in samples.withLock { $0.append(sample) } }, log: log)
+                region: region, evidence: { sample in samples.withLock { $0.append(sample) } },
+                motion: collectMotion, log: log)
         } catch {
             try Task.checkCancellation()
             reusable = false
@@ -406,9 +431,20 @@ actor CenterStageService {
         let share = Double(focused.filter(\.tracked).count) / Double(max(1, focused.count))
         let size = CGSize(width: info.size.width * region.wFrac, height: info.size.height * region.hFrac)
         let evidence = samples.withLock { $0 }
+        let shakes = motion.withLock { $0 }
+        if tuning.stabilizes {
+            log(CameraMotionPlanning.summary(CameraMotionPlanning.profile(shakes), duration: duration,
+                                             cuts: CameraMotionPlanning.cuts(in: shakes)))
+            let failed = shakes.filter { !$0.dx.isFinite }.count
+            if failed > 0, failed * 10 > shakes.count {
+                // Too much of the shake went unmeasured: do not cache this as the stabilized path.
+                reusable = false
+                log("Reduce camera motion: \(failed) of \(shakes.count) frame pairs unmeasured; path not cached")
+            }
+        }
         let local: [CameraPathKeyframe]
         if share >= 0.1 {
-            local = cameraPath(from: focused, size: size, duration: duration, tuning: tuning, aspect: aspect).map {
+            local = cameraPath(from: focused, size: size, duration: duration, tuning: tuning, aspect: aspect, motion: shakes).map {
                 CameraPathKeyframe(t: $0.time, x: $0.crop.minX / size.width, y: $0.crop.minY / size.height,
                     w: $0.crop.width / size.width, h: $0.crop.height / size.height)
             }
@@ -471,7 +507,8 @@ actor CenterStageService {
     /// Deterministic detection fixtures exercise the production smoothing/FaceGuard
     /// path independently of Vision model availability or detector revisions.
     func pathForDetectionFixture(_ samples: [FeedPathSample], size: CGSize, duration: Double,
-                                 tuning: Tuning, aspect: Double, focus: AreaFocus? = nil) -> [CameraPathKeyframe] {
+                                 tuning: Tuning, aspect: Double, focus: AreaFocus? = nil,
+                                 motion: [CameraMotionSample] = []) -> [CameraPathKeyframe] {
         let targets = samples.compactMap { sample -> Target? in
             let bodies = sample.faces.map { Self.bodyEstimate(fromFace: $0) }
             guard let first = bodies.first else { return nil }
@@ -479,7 +516,8 @@ actor CenterStageService {
                           tracked: true, faces: sample.faces)
         }
         guard !targets.isEmpty else { return [] }
-        return cameraPath(from: Self.focusedTargets(targets, focus: focus), size: size, duration: duration, tuning: tuning, aspect: aspect).map {
+        return cameraPath(from: Self.focusedTargets(targets, focus: focus), size: size, duration: duration,
+                          tuning: tuning, aspect: aspect, motion: motion).map {
             CameraPathKeyframe(t: $0.time, x: $0.crop.minX / size.width, y: $0.crop.minY / size.height,
                               w: $0.crop.width / size.width, h: $0.crop.height / size.height)
         }
@@ -593,6 +631,7 @@ actor CenterStageService {
                              region: FreeCropRect? = nil,
                              fighterFocus: Bool = false, fighterHasVIP: Bool = false, fighterRegion: FreeCropRect? = nil,
                              evidence: (@Sendable (FeedPathSample) -> Void)? = nil,
+                             motion: (@Sendable (CameraMotionSample) -> Void)? = nil,
                              log: @Sendable (String) -> Void = { print($0) }) async throws -> [Target] {
         let decodePermit = try await MediaWorkScheduler.current.acquire(.decoding)
         defer { withExtendedLifetime(decodePermit) {} }
@@ -692,10 +731,25 @@ actor CenterStageService {
             previousPatch = patch
         }
 
+        // Reduce camera motion: compare consecutive frames while they are decoded anyway.
+        let meter = motion == nil ? nil : CameraMotionMeter(orientation: orientation, region: region)
+        var motionSamples = 0
         while reader.status == .reading, let sample = readerOutput.copyNextSampleBuffer() {
             try Task.checkCancellation()
             let time = CMSampleBufferGetPresentationTimeStamp(sample).seconds - start
             guard let pixelBuffer = CMSampleBufferGetImageBuffer(sample) else { continue }
+            if let meter, let motion, meter.wants(time) {
+                let visionPermit = try await MediaWorkScheduler.current.acquire(.vision)
+                let failuresBefore = meter.failures
+                if let measured = await meter.measure(pixelBuffer, time: time) {
+                    motion(measured)
+                    motionSamples += 1
+                } else if meter.failures > failuresBefore {
+                    // A failed registration is reported, not silently skipped.
+                    motion(CameraMotionSample(time: time, dx: .nan, dy: .nan))
+                }
+                withExtendedLifetime(visionPermit) {}
+            }
             guard time + 1e-6 >= nextAnalysis else {
                 recordEvidence(pixelBuffer, time: time)
                 continue
@@ -810,6 +864,7 @@ actor CenterStageService {
         }
         reader.cancelReading()
         log("Center Stage: \(faceSamples) of \(analyzedSamples) samples framed from faces")
+        if let meter { log("Reduce camera motion: \(motionSamples) frame pairs compared, \(meter.failures) failed") }
         guard !targets.isEmpty else {
             throw CenterStageError(message: "No frames could be analyzed for tracking.")
         }
@@ -1023,7 +1078,68 @@ actor CenterStageService {
     private func cameraPath(from targets: [Target], size: CGSize, duration: Double,
                             tuning: Tuning,
                             hints: [(time: Double, crop: CGRect)] = [],
-                            aspect: Double = Double(RenderEngine.outputWidth) / Double(RenderEngine.outputHeight)) -> [Keyframe] {
+                            aspect: Double = Double(RenderEngine.outputWidth) / Double(RenderEngine.outputHeight),
+                            motion: [CameraMotionSample] = []) -> [Keyframe] {
+        let path = smoothedPath(from: targets, size: size, duration: duration, tuning: tuning, hints: hints, aspect: aspect,
+                                cuts: tuning.stabilizes ? CameraMotionPlanning.cuts(in: motion) : [])
+        return stabilized(path, targets: targets, motion: motion, size: size, duration: duration, tuning: tuning, aspect: aspect)
+    }
+
+    /// Reduce camera motion: where the measured shake profile says the
+    /// recording camera shook, the crop zooms in for margin and moves against
+    /// the shake at a dense cadence; calm footage returns the path untouched.
+    private func stabilized(_ keyframes: [Keyframe], targets: [Target], motion: [CameraMotionSample],
+                            size: CGSize, duration: Double, tuning: Tuning, aspect: Double) -> [Keyframe] {
+        guard tuning.stabilizes, !keyframes.isEmpty,
+              let profile = CameraMotionPlanning.profile(motion) else { return keyframes }
+        let bounds = CGRect(origin: .zero, size: size)
+        let minHeight = size.height * tuning.minCropHeightFraction
+        // One pass over the keyframes, the dense times and the targets, all
+        // sorted; cursors advance monotonically so long clips stay linear.
+        var targetCursor = 0
+        func faces(at time: Double) -> [CGRect] {
+            while targetCursor + 1 < targets.count, targets[targetCursor + 1].time <= time { targetCursor += 1 }
+            guard !targets.isEmpty, targets[targetCursor].inFocus else { return [] }
+            return targets[targetCursor].faces.map {
+                CGRect(x: $0.minX * size.width, y: $0.minY * size.height,
+                       width: $0.width * size.width, height: $0.height * size.height)
+            }
+        }
+        func settle(_ crop: CGRect, at time: Double) -> CGRect {
+            guard let shake = profile.shake(at: time) else { return crop }
+            let moved = CameraMotionPlanning.stabilized(crop: crop,
+                shake: CGPoint(x: shake.x * size.width, y: shake.y * size.height),
+                margin: CGSize(width: shake.marginX * size.width, height: shake.marginY * size.height),
+                bounds: bounds, minHeight: minHeight, aspect: aspect)
+            return FaceGuard.contain(moved, faces: faces(at: time), bounds: bounds)
+        }
+        // A dense time within a millisecond of a keyframe is dropped: two
+        // keyframes a float rounding apart would give ffmpeg a zero-length ramp.
+        let tolerance = 1e-3
+        let dense = CameraMotionPlanning.denseTimes(profile, through: duration)
+        var result: [Keyframe] = []
+        var denseCursor = 0
+        for (index, keyframe) in keyframes.enumerated() {
+            while denseCursor < dense.count, dense[denseCursor] < keyframe.time - tolerance {
+                let time = dense[denseCursor]
+                denseCursor += 1
+                guard index > 0 else { continue }
+                // Between the previous keyframe and this one (a cut pair shares a time, so `previous` is its later half).
+                let previous = keyframes[index - 1]
+                guard time > previous.time + tolerance else { continue }
+                let fraction = (time - previous.time) / (keyframe.time - previous.time)
+                result.append(Keyframe(time: time, crop: settle(Self.blend(previous.crop, keyframe.crop, fraction: fraction), at: time)))
+            }
+            while denseCursor < dense.count, abs(dense[denseCursor] - keyframe.time) <= tolerance { denseCursor += 1 }
+            result.append(Keyframe(time: keyframe.time, crop: settle(keyframe.crop, at: keyframe.time)))
+        }
+        return result
+    }
+
+    private func smoothedPath(from targets: [Target], size: CGSize, duration: Double,
+                              tuning: Tuning,
+                              hints: [(time: Double, crop: CGRect)] = [],
+                              aspect: Double, cuts: [Double] = []) -> [Keyframe] {
         let pixelHints = hints
             .map { (time: $0.time, crop: Self.hintCrop($0.crop, size: size, aspect: aspect)) }
             .sorted { $0.time < $1.time }
@@ -1044,11 +1160,26 @@ actor CenterStageService {
         current = FaceGuard.contain(current, faces: faces(targets[0]), bounds: bounds)
         var smoothed: [(time: Double, crop: CGRect, pinned: Bool)] = [(0, current, false)]
         var previousTime = 0.0
+        var cutIndex = 0
+        let sortedCuts = cuts.sorted()
         for target in targets {
             let elapsed = max(0, target.time - previousTime)
-            let alpha = tuning.timeBasedSmoothing
+            var alpha = tuning.timeBasedSmoothing
                 ? 1 - pow(1 - tuning.smoothing, elapsed / 0.1) : tuning.smoothing
             previousTime = target.time
+            // The source cut to another shot since the last target: the crop
+            // jumps to this target instead of gliding across the cut.
+            var snap = false
+            while cutIndex < sortedCuts.count, sortedCuts[cutIndex] <= target.time {
+                let cutTime = max(sortedCuts[cutIndex], smoothed.last?.time ?? 0)
+                smoothed.append((cutTime, current, true))
+                let landed = FaceGuard.contain(Self.desiredCrop(forUnion: target.union, size: size, tuning: tuning, aspect: aspect),
+                                               faces: faces(target), bounds: bounds)
+                current = landed
+                smoothed.append((cutTime, current, true))
+                snap = true
+                cutIndex += 1
+            }
             // Hints passed since the last target: snap exactly onto them.
             while hintIndex < pixelHints.count, pixelHints[hintIndex].time <= target.time {
                 let hint = pixelHints[hintIndex]
@@ -1071,6 +1202,15 @@ actor CenterStageService {
             let deadZoneScale = current.height * tuning.deadZoneZoom
             let moveX = abs(desired.midX - current.midX) > deadZoneX
             let zoom = abs(desired.height - current.height) > deadZoneScale
+            if tuning.stabilizes, !snap,
+               abs(desired.midX - current.midX) > size.width * tuning.reacquireDistance
+                || abs(desired.midY - current.midY) > size.width * tuning.reacquireDistance
+                || abs(desired.height - current.height) > current.height * 0.25 {
+                // The picture re-framed (a digital zoom, a jump in the
+                // subject): catch up quickly, then settle back to the glide.
+                alpha = tuning.timeBasedSmoothing
+                    ? 1 - pow(1 - tuning.reacquireSmoothing, elapsed / 0.1) : tuning.reacquireSmoothing
+            }
             if moveX || zoom {
                 current = CGRect(x: current.minX + (desired.minX - current.minX) * alpha,
                                  y: current.minY + (desired.minY - current.minY) * alpha,
@@ -1100,15 +1240,26 @@ actor CenterStageService {
             var times = Set(smoothed.filter(\.pinned).map(\.time))
             times.formUnion(stride(from: 0, through: duration, by: tuning.keyframeInterval))
             times.insert(duration)
+            // A time with two entries is a jump: both halves survive so the
+            // export cuts instead of ramping (CameraKeyframes.isCut).
+            var jumps = Set<Double>()
+            for (a, b) in zip(smoothed, smoothed.dropFirst()) where a.time == b.time && a.pinned && b.pinned { jumps.insert(a.time) }
             var cursor = 0
-            return times.sorted().map { time in
+            var result: [Keyframe] = []
+            for time in times.sorted() {
+                if jumps.contains(time), let firstAt = smoothed.firstIndex(where: { $0.time == time }) {
+                    // The first half of the pair ends the ramp; the last entry
+                    // at this time (below) starts the next one.
+                    result.append(Keyframe(time: time, crop: smoothed[firstAt].crop))
+                }
                 while cursor + 1 < smoothed.count && smoothed[cursor + 1].time <= time { cursor += 1 }
                 let from = smoothed[cursor]
-                guard cursor + 1 < smoothed.count else { return Keyframe(time: time, crop: from.crop) }
+                guard cursor + 1 < smoothed.count else { result.append(Keyframe(time: time, crop: from.crop)); continue }
                 let to = smoothed[cursor + 1]
                 let fraction = to.time > from.time ? min(1, max(0, (time - from.time) / (to.time - from.time))) : 1
-                return Keyframe(time: time, crop: Self.blend(from.crop, to.crop, fraction: fraction))
+                result.append(Keyframe(time: time, crop: Self.blend(from.crop, to.crop, fraction: fraction)))
             }
+            return result
         }
 
         // Downsample to ramp keyframes; pinned hint entries always survive.

@@ -98,6 +98,8 @@ enum SettingsRowMetrics {
     static let labelWidth: CGFloat = 96
     /// Sliders and text fields stop here; menus and pickers keep their natural size.
     static let controlWidth: CGFloat = 360
+    /// Rows without dividers sit 1.5x the usual gap apart so the space does the separating.
+    static let plainRowSpacing: CGFloat = Theme.spaceM * 1.5
 }
 
 extension EnvironmentValues {
@@ -122,12 +124,13 @@ struct SettingsLabelWidthKey: PreferenceKey {
 /// captions line up with its own controls.
 struct MiniDependents<Content: View>: View {
     @Environment(\.settingsLabelWidth) private var parentLabelWidth
+    @Environment(\.settingsRowDividers) private var dividers
     @ViewBuilder let content: Content
     @State private var widestLabel: CGFloat = 0
 
     var body: some View {
         let column = widestLabel > 0 ? widestLabel : SettingsRowMetrics.labelWidth
-        VStack(alignment: .leading, spacing: Theme.spaceM) {
+        VStack(alignment: .leading, spacing: dividers ? Theme.spaceM : SettingsRowMetrics.plainRowSpacing) {
             content
         }
         .environment(\.settingsLabelWidth, column)

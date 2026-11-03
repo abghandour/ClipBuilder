@@ -363,7 +363,7 @@ extension AppStore {
         }
     }
 
-    /// The review sheet's "Preview again": the same takes, page and options
+    /// The review sheet's "Regenerate": the same takes, page and options
     /// as the stored request, with the sheet's framing. A new job; the open
     /// sheet watches it by the returned id and swaps in its cuts.
     @discardableResult

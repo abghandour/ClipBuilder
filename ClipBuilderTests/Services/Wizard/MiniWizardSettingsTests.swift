@@ -564,7 +564,7 @@ extension MiniWizardSettingsTests {
             #expect(settings.includeBRoll == nil && !settings.includesBRoll)
             let flow = MiniWizardFlow(outputMode: settings.outputMode)
             #expect(flow.outputCount(keptCount: 4) == 1)
-            #expect(flow.generateButtonTitle(keptCount: 4) == "Generate Video")
+            #expect(flow.generateButtonTitle(keptCount: 4) == "Generate")
             #expect(!flow.settingsSummary(settings).contains("reel"))
             settings.didEditBRoll()
             #expect(settings.includesBRoll && settings.step2Options(base: .init()).useBRoll == true)

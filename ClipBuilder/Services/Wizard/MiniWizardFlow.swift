@@ -138,7 +138,7 @@ nonisolated struct MiniWizardFlow: Sendable {
     }
 
     func generateButtonTitle(keptCount: Int) -> String {
-        "Generate Video"
+        "Generate"
     }
 
     func settingsSummary(_ settings: MiniWizardSettings) -> String {

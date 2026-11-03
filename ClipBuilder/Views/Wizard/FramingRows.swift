@@ -30,11 +30,13 @@ struct FramingRows: View {
                               set: { framing.vipStretch = $0 == VIPFocusPlanning.vipStretch ? nil : $0 })
         SettingsRow("Asker", detail: "How long the asker, or a cutaway from a long answer, stays on screen before the VIP is back.") {
             Slider(value: show, in: VIPFocusPlanning.showRange, step: 0.5).accessibilityLabel("Asker on screen")
+                .frame(maxWidth: SettingsRowMetrics.controlWidth)
             Text("\(show.wrappedValue, format: .number.precision(.fractionLength(0...1))) s")
                 .monospacedDigit().lineLimit(1).fixedSize()
         }
         SettingsRow("Hold", detail: "How long a talker holds the picture before the other side is shown for a moment.") {
             Slider(value: stretch, in: VIPFocusPlanning.stretchRange, step: 1).accessibilityLabel("Talker holds the picture")
+                .frame(maxWidth: SettingsRowMetrics.controlWidth)
             Text("\(stretch.wrappedValue, format: .number.precision(.fractionLength(0))) s")
                 .monospacedDigit().lineLimit(1).fixedSize()
         }
@@ -190,14 +192,14 @@ struct FramingRows: View {
         }
         if showsSteady {
             SettingsRow("Camera", detail: framing.steady == true
-                ? "Follows the person slowly inside their feed; the recording camera's own moves are absorbed."
+                ? "Examines the footage first; where the recording camera shakes, the crop zooms in and moves against it."
                 : "A fixed crop of the feed; movement of the recording camera shows through.") {
                 Toggle(isOn: Binding(get: { framing.steady == true }, set: { framing.steady = $0 ? true : nil })) {
-                    Text("Steady").lineLimit(1).fixedSize()
+                    Text("Reduce camera motion").lineLimit(1).fixedSize()
                 }
                 .toggleStyle(.switch)
-                .accessibilityLabel("Steady camera")
-                .help("Track the person with a slow, calm camera so pans and nudges of the recording camera do not show")
+                .accessibilityLabel("Reduce camera motion")
+                .help("Measure the recording camera's shake ahead of time and zoom the crop in on shaky stretches so it can cancel the movement")
             }
         }
         SettingsRow("Fit") {

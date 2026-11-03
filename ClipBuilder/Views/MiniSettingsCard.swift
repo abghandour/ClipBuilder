@@ -23,7 +23,8 @@ struct MiniSettingsCard: View {
     var body: some View {
         let tabs = flow.settingsTabs
         let current = flow.effectiveSettingsTab(tab)
-        VStack(alignment: .leading, spacing: Theme.spaceM) {
+        // No rules between rows: the gap alone separates them.
+        VStack(alignment: .leading, spacing: SettingsRowMetrics.plainRowSpacing) {
             Picker("Settings", selection: Binding(get: { current }, set: { tab = $0 })) {
                 ForEach(tabs, id: \.self) { tab in
                     Text(tab.label).lineLimit(1).fixedSize().tag(tab)
@@ -40,6 +41,8 @@ struct MiniSettingsCard: View {
             }
         }
         .environment(\.formCaptionIndent, SettingsRowMetrics.labelWidth + Theme.spaceM)
+        .environment(\.settingsRowDividers, false)
+        .environment(\.settingsDetailBelow, true)
         .disabled(store.isWizardRunning)
     }
 

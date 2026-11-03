@@ -946,16 +946,16 @@ struct WizardView: View {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: Theme.spaceM) {
                     generationAction
-                    openInEditorAction
                     roughCutAction
+                    openInEditorAction
                     Spacer(minLength: Theme.spaceS)
                     manualBuildAction
                 }
                 VStack(alignment: .leading, spacing: Theme.spaceS) {
                     HStack(spacing: Theme.spaceM) {
                         generationAction
-                        openInEditorAction
                         roughCutAction
+                        openInEditorAction
                     }
                     manualBuildAction
                 }
@@ -1039,21 +1039,21 @@ struct WizardView: View {
         }
     }
 
-    /// Rough cut, next to Open in Editor: the kept takes rendered small and
-    /// plain so framing and focus can be checked in motion before Generate.
+    /// Preview, next to Generate: the kept takes rendered small and plain so
+    /// framing and focus can be checked in motion before the final render.
     @ViewBuilder var roughCutAction: some View {
         if openInEditorShown {
             let flow = cardFlow
             Button {
                 renderKeptSelections(mode: .roughCut)
             } label: {
-                Label("Rough cut", systemImage: "viewfinder")
+                Text("Preview").lineLimit(1).fixedSize()
             }
-            .labelStyle(.iconOnly).controlSize(.large)
+            .controlSize(.large)
             .disabled(!openInEditorEnabled)
             .help(flow.outputCount(oneReel: outputMode == .oneReel) == 1
-                  ? "Rough cut: a quick small render of the kept take to check framing and focus in motion, without \(WizardRoughCut.leftOut); nothing is saved"
-                  : "Rough cut: quick small renders of the \(flow.outputCount(oneReel: false)) kept selections to check framing and focus in motion, without \(WizardRoughCut.leftOut); nothing is saved")
+                  ? "Preview: a quick small render of the kept take to check framing and focus in motion, without \(WizardRoughCut.leftOut); nothing is saved"
+                  : "Preview: quick small renders of the \(flow.outputCount(oneReel: false)) kept selections to check framing and focus in motion, without \(WizardRoughCut.leftOut); nothing is saved")
         }
     }
 
@@ -1399,7 +1399,7 @@ struct WizardView: View {
         case "wizard.openInEditor", "wizard.roughCut":
             guard openInEditorEnabled else {
                 store.presentNotice("Ask AI", openInEditorShown ? generateUnavailableMessage
-                                    : "\(command.actionID == "wizard.roughCut" ? "Rough cut" : "Open in Editor") needs kept takes. Keep a take in Footage first.")
+                                    : "\(command.actionID == "wizard.roughCut" ? "Preview" : "Open in Editor") needs kept takes. Keep a take in Footage first.")
                 return
             }
             renderKeptSelections(mode: command.actionID == "wizard.roughCut" ? .roughCut : .openInEditor)

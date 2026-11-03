@@ -267,15 +267,15 @@ extension WizardView {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: Theme.spaceM) {
                     generationAction
-                    openInEditorAction
                     roughCutAction
+                    openInEditorAction
                     manualBuildAction
                 }
                 VStack(alignment: .leading, spacing: Theme.spaceS) {
                     HStack(spacing: Theme.spaceM) {
                         generationAction
-                        openInEditorAction
                         roughCutAction
+                        openInEditorAction
                     }
                     manualBuildAction
                 }

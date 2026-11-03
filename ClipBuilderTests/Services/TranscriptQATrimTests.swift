@@ -338,6 +338,19 @@ struct TranscriptQATrimTests {
         #expect(TranscriptQATrim.word(at: CGPoint(x: 10, y: 10), frames: overlap) == 2)
     }
 
+    @Test func nearestWordForgivesTheGapsBetweenWordsAndRows() {
+        let frames = [1: CGRect(x: 10, y: 10, width: 30, height: 18),
+                      2: CGRect(x: 44, y: 10, width: 40, height: 18),
+                      3: CGRect(x: 10, y: 34, width: 50, height: 18)]
+        #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 20, y: 15), frames: frames) == 1, "an exact hit wins")
+        #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 43, y: 15), frames: frames) == 2, "the gap between words goes to the nearer word")
+        #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 41, y: 15), frames: frames) == 1)
+        #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 20, y: 30), frames: frames) == 1, "the leading between rows goes to the nearer row")
+        #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 20, y: 32), frames: frames) == 3)
+        #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 200, y: 15), frames: frames) == nil, "far from every word is still a miss")
+        #expect(TranscriptQATrim.nearestWord(at: .zero, frames: [:]) == nil)
+    }
+
     @Test func lineStartWordsMarkEveryWrappedLineOfTheTightestPick() {
         // Pick A covers words 1-5 over two lines; pick B (tighter) owns words 3-4 on the second line.
         let words = (1...6).map { TranscriptQATrim.Word(id: $0, text: "w", start: Double($0), end: Double($0) + 1) }

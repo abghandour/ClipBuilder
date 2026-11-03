@@ -119,3 +119,79 @@ struct CenterStageServiceTests {
         #expect(abs(crop.yFrac - (face.minY - crop.hFrac * FaceGuard.headroom)) < 0.001)
     }
 }
+
+extension CenterStageServiceTests {
+    /// Reduce camera motion: a shaky stretch earns dense keyframes whose
+    /// crops zoom in and move with the measured shake; calm footage and the
+    /// non-stabilizing tunings leave the path exactly as before.
+    @Test func measuredShakeZoomsInAndCountersTheMotionOnlyWhereItShakes() async throws {
+        let samples = stride(from: 0.0, through: 12, by: 0.25).map {
+            FeedPathSample(time: $0, faces: [CGRect(x: 0.45, y: 0.3, width: 0.1, height: 0.15)], expression: nil)
+        }
+        var previous = 0.0
+        let motion = stride(from: 0.0, through: 12, by: 1.0 / 30).map { time -> CameraMotionSample in
+            let position = (3...6).contains(time) ? 0.02 * sin(2 * .pi * 4 * time) : 0
+            defer { previous = position }
+            return CameraMotionSample(time: time, dx: position - previous, dy: (position - previous) / 2)
+        }
+        let service = CenterStageService()
+        let size = CGSize(width: 1920, height: 1080)
+        let plain = await service.pathForDetectionFixture(samples, size: size, duration: 12, tuning: .steady, aspect: 9.0 / 16)
+        let steadied = await service.pathForDetectionFixture(samples, size: size, duration: 12, tuning: .steady,
+                                                             aspect: 9.0 / 16, motion: motion)
+        let calm = await service.pathForDetectionFixture(samples, size: size, duration: 12, tuning: .steady,
+                                                         aspect: 9.0 / 16, motion: motion.map { CameraMotionSample(time: $0.time, dx: 0, dy: 0) })
+        let conversation = await service.pathForDetectionFixture(samples, size: size, duration: 12, tuning: .conversation,
+                                                                 aspect: 9.0 / 16, motion: motion)
+        #expect(calm == plain, "no shake above the threshold: the path is untouched")
+        #expect(conversation == (await service.pathForDetectionFixture(samples, size: size, duration: 12, tuning: .conversation, aspect: 9.0 / 16)),
+                "only the steady tuning measures and counters motion")
+        #expect(steadied.count > plain.count + 40, "dense keyframes inside the shaky stretch")
+        #expect(steadied.filter { $0.t > 8 }.count == plain.filter { $0.t > 8 }.count, "the calm tail keeps its cadence")
+        let before = try #require(CenterStageService.interpolated(plain, at: 4.5))
+        let after = try #require(CenterStageService.interpolated(steadied, at: 4.5))
+        #expect(after.h < before.h - 0.01, "zoomed in for margin")
+        // The crop follows the measured content shift (same sign).
+        let shakePeak = steadied.filter { (4...5).contains($0.t) }
+        let drift = shakePeak.map { $0.x + $0.w / 2 }
+        #expect(try #require(drift.max()) - #require(drift.min()) > 0.02, "the crop moves against the shake")
+        for keyframe in steadied { #expect(keyframe.x >= -1e-9 && keyframe.x + keyframe.w <= 1 + 1e-9 && keyframe.y >= -1e-9 && keyframe.y + keyframe.h <= 1 + 1e-9) }
+        // Keyframe times never sit a float rounding apart (ffmpeg would get a zero-length ramp).
+        for (a, b) in zip(steadied, steadied.dropFirst()) { #expect(b.t == a.t || b.t - a.t > 1e-3, "\(a.t) \(b.t)") }
+        #expect(steadied.map(\.t) == steadied.map(\.t).sorted())
+    }
+}
+
+
+extension CenterStageServiceTests {
+    /// A shot change in the source makes the camera jump to the new framing
+    /// at the cut; a re-frame without a cut (a digital zoom) is caught up
+    /// quickly under the stabilizing tuning and slowly otherwise.
+    @Test func sourceCutSnapsAndReframingReacquiresQuickly() async throws {
+        let samples = stride(from: 0.0, through: 12, by: 0.25).map { time in
+            FeedPathSample(time: time, faces: [CGRect(x: time < 6 ? 0.2 : 0.7, y: 0.3, width: 0.1, height: 0.15)], expression: nil)
+        }
+        let motion = stride(from: 0.0, through: 12, by: 1.0 / 30).map {
+            CameraMotionSample(time: $0, dx: 0, dy: 0, cut: abs($0 - 6) < 1e-9)
+        }
+        let service = CenterStageService()
+        let size = CGSize(width: 1920, height: 1080)
+        let snapped = await service.pathForDetectionFixture(samples, size: size, duration: 12, tuning: .steady,
+                                                            aspect: 9.0 / 16, motion: motion)
+        let glided = await service.pathForDetectionFixture(samples, size: size, duration: 12, tuning: .steady,
+                                                           aspect: 9.0 / 16, motion: motion.map { CameraMotionSample(time: $0.time, dx: 0, dy: 0) })
+        func centre(_ path: [CameraPathKeyframe], at time: Double) throws -> Double {
+            let keyframe = try #require(CenterStageService.interpolated(path, at: time))
+            return keyframe.x + keyframe.w / 2
+        }
+        #expect(snapped.filter { abs($0.t - 6) < 1e-9 }.count == 2, "two keyframes at the cut: a jump, not a ramp")
+        let beforeCut = try centre(snapped, at: 5.9), atCut = try centre(snapped, at: 6.0)
+        #expect(beforeCut < 0.35 && atCut > 0.6, "right-continuous at the cut")
+        #expect(try abs(centre(snapped, at: 6.3) - 0.7) < 0.08)
+        // Without a cut flag the steady camera still reacquires within a second.
+        let glidedBefore = try centre(glided, at: 5.7)
+        #expect(glided.filter { abs($0.t - 6) < 1e-9 }.count <= 1 && glidedBefore < 0.35, "no jump without a cut")
+        #expect(try abs(centre(glided, at: 7.0) - 0.7) < 0.1, "fast reacquire under the stabilizing tuning")
+        for (a, b) in zip(snapped, snapped.dropFirst()) { #expect(b.t == a.t || b.t - a.t > 1e-3, "\(a.t) \(b.t)") }
+    }
+}

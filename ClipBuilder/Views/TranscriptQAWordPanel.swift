@@ -24,7 +24,6 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     /// Word clicks then no longer move the nearer end; the anchors still adjust.
     var spanSelection = false
     var onSpanPreview: ((ClosedRange<Double>) -> Void)? = nil
-    var onSpanClear: (() -> Void)? = nil
     /// Shown after the Follow / Translation controls (Express puts its Add button here).
     var accessory: AnyView? = nil
     /// A row pinned under the words (the range review puts Add / Clear / Reset here).
@@ -326,7 +325,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
 
     private func previewAtPointer() {
         guard isEnabled, let pointer,
-              let id = TranscriptQATrim.word(at: pointer, frames: frames), id != lastPreviewedWord,
+              let id = TranscriptQATrim.nearestWord(at: pointer, frames: frames), id != lastPreviewedWord,
               transcript.words.indices.contains(id) else { return }
         if let spanAnchor, transcript.words.indices.contains(spanAnchor) {
             lastPreviewedWord = id
@@ -347,7 +346,9 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
             .onChanged { value in
                 guard isEnabled, canTrim, spanSelection else { return }
                 if spanAnchor == nil {
-                    guard dragging == nil, let id = TranscriptQATrim.word(at: value.startLocation, frames: frames) else { return }
+                    guard dragging == nil,
+                          let id = TranscriptQATrim.nearestWord(at: value.startLocation, frames: frames)
+                            ?? TranscriptQATrim.nearestWord(at: value.location, frames: frames) else { return }
                     spanAnchor = id
                     spanMoved = false
                     lastPreviewedWord = nil
@@ -366,9 +367,9 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                 let word = transcript.words[anchor]
                 if moved {
                     onCommit()
-                } else if TranscriptQATrim.contains(word, in: range) {
-                    onSpanClear?()
                 } else {
+                    // A click, inside or outside the current selection, drops
+                    // it and starts a new one at this word; Clear empties it.
                     onSpanPreview?(Self.span(from: word, to: word))
                     onCommit()
                 }
@@ -594,7 +595,7 @@ private struct TranscriptQALineView: View, Equatable {
         .disabled(!canTrim)
         // In span mode the drag gesture on the content owns the pointer.
         .allowsHitTesting(!spanSelection)
-        .help(spanSelection ? (inside ? "Click to clear the selection, or drag to select" : "Press and drag to select")
+        .help(spanSelection ? "Click a word to start a selection there, or press and drag to select a passage"
               : "Move the \(startEdgeWordIDs.contains(word.id) ? "start" : "end") to this word")
         .accessibilityLabel("\(word.text), \(word.start.timecode)")
         .accessibilityAddTraits(inside ? .isSelected : [])
