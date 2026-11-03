@@ -27,7 +27,7 @@ struct RangeReviewView<Footer: View>: View {
     var onMove: (([Int64]) -> Void)? = nil
     /// Delete from the row's context menu or the Delete key.
     var onDelete: ((RangeReviewItem) -> Void)? = nil
-    /// A Remove All button beside the list title, shown while the list has items.
+    /// A Remove All button in the list's footer toolbar, shown while the list has items.
     var onDeleteAll: (() -> Void)? = nil
     /// Split the selected saved item in two at a source time (the playhead).
     var onSplit: ((RangeReviewItem, Double) -> Void)? = nil
@@ -352,7 +352,7 @@ struct RangeReviewView<Footer: View>: View {
             selectedID = nil
             userCleared = true
         } label: {
-            Text("Clear").lineLimit(1).fixedSize()
+            Text("Clear Selection").lineLimit(1).fixedSize()
         }
         .controlSize(.small)
         .disabled(!isEnabled || inactive)
@@ -375,38 +375,16 @@ struct RangeReviewView<Footer: View>: View {
     private var itemList: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let kept {
+                // The kept count titles the list; Select All sits in the footer toolbar.
                 let ids = Set(items.map { $0.id.ownerID })
                 let count = kept.wrappedValue.intersection(ids).count
-                VStack(alignment: .leading, spacing: Theme.spaceXS) {
-                    Button(RangeReviewItem.allKept(kept.wrappedValue, items: items) ? "Deselect All" : "Select All") {
-                        kept.wrappedValue = RangeReviewItem.togglingAll(kept.wrappedValue, items: items)
-                    }
-                    .controlSize(.small).lineLimit(1).fixedSize()
-                    FormCaption("\(count) of \(items.count) kept")
-                        .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-                }
-                .padding(Theme.spaceS)
-                Divider()
+                SectionLabel("\(count) of \(items.count) kept")
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(Theme.spaceS)
             } else if let listTitle {
-                HStack(spacing: Theme.spaceS) {
-                    SectionLabel(listTitle)
-                    Spacer(minLength: 0)
-                    if let onDeleteAll, items.contains(where: { !$0.isDraft }) {
-                        Button("Remove All", role: .destructive) { confirmingDeleteAll = true }
-                            .controlSize(.small).lineLimit(1).fixedSize()
-                            .disabled(!isEnabled)
-                            .help("Remove every item from the list")
-                            .confirmationDialog("Remove all \(items.filter { !$0.isDraft }.count) items?",
-                                                isPresented: $confirmingDeleteAll) {
-                                Button("Remove All", role: .destructive, action: onDeleteAll)
-                                Button("Cancel", role: .cancel) {}
-                            } message: {
-                                Text("The list empties; the footage itself is untouched and can be added again.")
-                            }
-                    }
-                }
-                .padding(Theme.spaceS)
-                Divider()
+                SectionLabel(listTitle)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(Theme.spaceS)
             }
             // Selection is explicit so the sibling checkbox never selects a row.
             // Rows live in a plain stack so a row can be dragged to a new place
@@ -457,33 +435,58 @@ struct RangeReviewView<Footer: View>: View {
                 default: break
                 }
             }
-            if playAll {
-                Divider()
+            // The list's toolbar: Play All at the leading edge, Select All or
+            // Remove All at the trailing edge, level with the transcript's footer.
+            if playAll || onDeleteAll != nil || kept != nil {
                 HStack(spacing: Theme.spaceS) {
-                    let playsCuts = RangeReviewPlayAll.playsCuts(items: items, selectedOwnerID: selectedID?.ownerID)
-                    Button(playingAll ? "Stop" : "Play All",
-                           systemImage: playingAll ? "stop.fill" : "play.fill") {
-                        if playingAll { stopPlayAll() } else { startPlayAll() }
-                    }
-                    .lineLimit(1).fixedSize()
-                    .disabled(!isEnabled || playableItems.isEmpty)
-                    .help(playingAll ? "Stop playing"
-                          : playsCuts ? "Play this reel's cuts back to back, as the video will be stitched"
-                          : "Play every item in order")
-                    if playsCuts, !playingAll {
-                        Text("Plays the selected reel's cuts in order")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .lineLimit(1).truncationMode(.tail)
+                    if playAll {
+                        let playsCuts = RangeReviewPlayAll.playsCuts(items: items, selectedOwnerID: selectedID?.ownerID)
+                        let playsSelected = selected.map { !$0.isDraft } ?? false
+                        Button(playingAll ? "Stop" : "Play",
+                               systemImage: playingAll ? "stop.fill" : "play.fill") {
+                            if playingAll { stopPlayAll() } else { startPlayAll() }
+                        }
+                        .labelStyle(.iconOnly).fixedSize()
+                        .disabled(!isEnabled || playableItems.isEmpty)
+                        .help(playingAll ? "Stop playing"
+                              : playsCuts ? "Play this reel's cuts back to back, as the video will be stitched"
+                              : playsSelected ? "Play the selected item"
+                              : kept != nil ? "Play the kept items in order, or every item when none is kept"
+                              : "Play every item in order")
+                        .accessibilityLabel(playingAll ? "Stop" : playsSelected ? "Play the selection" : "Play all")
                     }
                     Spacer(minLength: 0)
+                    if let kept {
+                        let allKept = RangeReviewItem.allKept(kept.wrappedValue, items: items)
+                        Button(allKept ? "Deselect All" : "Select All") {
+                            kept.wrappedValue = RangeReviewItem.togglingAll(kept.wrappedValue, items: items)
+                        }
+                        .lineLimit(1).fixedSize()
+                        .disabled(!isEnabled || items.isEmpty)
+                        .help(allKept ? "Keep none of the items" : "Keep every item")
+                    }
+                    if let onDeleteAll, items.contains(where: { !$0.isDraft }) {
+                        Button("Remove All", systemImage: "trash", role: .destructive) { confirmingDeleteAll = true }
+                            .labelStyle(.iconOnly).fixedSize()
+                            .disabled(!isEnabled)
+                            .help("Remove every item from the list")
+                            .confirmationDialog("Remove all \(items.filter { !$0.isDraft }.count) items?",
+                                                isPresented: $confirmingDeleteAll) {
+                                Button("Remove All", role: .destructive, action: onDeleteAll)
+                                Button("Cancel", role: .cancel) {}
+                            } message: {
+                                Text("The list empties; the footage itself is untouched and can be added again.")
+                            }
+                    }
                 }
+                .controlSize(.small)
                 .padding(Theme.spaceS)
             }
         }
     }
 
     private var playableItems: [RangeReviewItem] {
-        RangeReviewPlayAll.sequence(items: items, selectedOwnerID: selectedID?.ownerID)
+        RangeReviewPlayAll.sequence(items: items, selectedOwnerID: selectedID?.ownerID, kept: kept?.wrappedValue)
     }
 
     private func startPlayAll() {
@@ -690,16 +693,10 @@ struct RangeReviewView<Footer: View>: View {
                 filmstrip(video: item.video)
                     .id(item.id)
                     .disabled(!canTrim)
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: Theme.spaceS) {
-                        playButton
-                        rangeLabel
-                        Spacer(minLength: 0)
-                    }
-                    VStack(alignment: .leading, spacing: Theme.spaceS) {
-                        playButton
-                        rangeLabel
-                    }
+                HStack(spacing: Theme.spaceS) {
+                    playButton
+                    Spacer(minLength: Theme.spaceS)
+                    rangeLabel
                 }
                 if canTrim, !isEmptyRange, policy != .wizard, !visibleTranscript.words.isEmpty {
                     wordStepControls
@@ -767,44 +764,50 @@ struct RangeReviewView<Footer: View>: View {
     /// nudges at either edge, the pause after the last word, silence at both
     /// ends, split at the playhead, and repeat the last one. Each button
     /// disables when the transcript or the limits offer no such move.
-    /// Columns per kind of move, − shrinks the selection and + grows it, one
-    /// row per edge; the whole-range actions sit underneath.
+    /// One row per kind of move with a Start and an End pair, − shrinks the
+    /// selection and + grows it. Rows, not columns, so the block fits the
+    /// narrowest player column instead of being clipped; the whole-range
+    /// actions wrap underneath.
     private var wordStepControls: some View {
-        VStack(alignment: .leading, spacing: Theme.spaceXS) {
+        VStack(alignment: .leading, spacing: Theme.spaceS) {
             Grid(alignment: .center, horizontalSpacing: Theme.spaceM, verticalSpacing: Theme.spaceXS) {
                 GridRow {
                     Color.clear.frame(width: 1, height: 1).gridCellUnsizedAxes([.horizontal, .vertical])
-                    columnLabel("Word")
-                    columnLabel("Sentence")
-                    columnLabel("Speaker")
-                    columnLabel("Nudge 0.1 s")
+                    columnLabel("Start")
+                    columnLabel("End")
                 }
                 GridRow {
-                    rowLabel("Start")
+                    rowLabel("Word")
                     pair(minus: (.step(.dropFirstWord), "Drop the first word (⇧⌥→)"),
                          plus: (.step(.wordBefore), "Add the word before (⇧⌥←)"))
-                    pair(minus: (.step(.dropFirstSentence), "Forward to the next sentence start"),
-                         plus: (.step(.sentenceBefore), "Back to the start of the sentence"))
-                    pair(minus: (.turn(.start, grow: false), "Forward to the next speaker change"),
-                         plus: (.turn(.start, grow: true), "Back to the start of the speaker's turn"))
-                    pair(minus: (.nudge(.start, 0.1), "Start 0.1 s later (⌥.  ⇧ for 1 s)"),
-                         plus: (.nudge(.start, -0.1), "Start 0.1 s earlier (⌥,  ⇧ for 1 s)"))
-                }
-                GridRow {
-                    rowLabel("End")
                     pair(minus: (.step(.dropLastWord), "Drop the last word (⌥←)"),
                          plus: (.step(.wordAfter), "Add the next word (⌥→)"))
+                }
+                GridRow {
+                    rowLabel("Sentence")
+                    pair(minus: (.step(.dropFirstSentence), "Forward to the next sentence start"),
+                         plus: (.step(.sentenceBefore), "Back to the start of the sentence"))
                     pair(minus: (.step(.dropLastSentence), "Back to the previous sentence end"),
                          plus: (.step(.sentenceAfter), "On to the end of the sentence"))
+                }
+                GridRow {
+                    rowLabel("Speaker")
+                    pair(minus: (.turn(.start, grow: false), "Forward to the next speaker change"),
+                         plus: (.turn(.start, grow: true), "Back to the start of the speaker's turn"))
                     pair(minus: (.turn(.end, grow: false), "Back to the previous speaker change"),
                          plus: (.turn(.end, grow: true), "On to the end of the speaker's turn"))
+                }
+                GridRow {
+                    rowLabel("Nudge 0.1 s")
+                    pair(minus: (.nudge(.start, 0.1), "Start 0.1 s later (⌥.  ⇧ for 1 s)"),
+                         plus: (.nudge(.start, -0.1), "Start 0.1 s earlier (⌥,  ⇧ for 1 s)"))
                     pair(minus: (.nudge(.end, -0.1), "End 0.1 s earlier (,  ⇧ for 1 s)"),
                          plus: (.nudge(.end, 0.1), "End 0.1 s later (.  ⇧ for 1 s)"))
                 }
             }
-            HStack(spacing: Theme.spaceS) {
-                adjustmentButton(.step(.pauseAfter), "Keep Pause After Last Word",
-                                 help: "Extend the end through the silence after the last word, up to the next word")
+            FlowLayout(spacing: Theme.spaceS) {
+                adjustmentButton(.step(.pauseAfter), "Keep Pause",
+                                 help: "Keep the pause after the last word: extend the end through the silence, up to the next word")
                 adjustmentButton(.trimSilence, "Trim Silence", help: "Start at the first word and end at the last word")
                 if onSplit != nil {
                     Button(action: splitAtPlayhead) { Text("Split at Playhead").lineLimit(1).fixedSize() }
@@ -818,7 +821,6 @@ struct RangeReviewView<Footer: View>: View {
                 }
                 .disabled(lastAdjustment.flatMap { adjusted($0) } == nil)
                 .help(lastAdjustment.map { "Repeat: \($0.label)" } ?? "Repeat the last adjustment on this selection")
-                Spacer(minLength: 0)
             }
         }
         .controlSize(.small)

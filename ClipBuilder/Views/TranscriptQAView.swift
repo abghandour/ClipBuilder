@@ -9,11 +9,13 @@ struct TranscriptQAView: View {
     var speakerSpans: [TranscriptQATrim.SpeakerSpan] = []
     var kept: Binding<Set<Int64>>? = nil
     var preferredTranslationLanguage: String? = nil
+    /// A Play button in the list's footer toolbar.
+    var playAll = false
     let onSave: (SceneRecord, Double, Double) -> Void
 
     var body: some View {
         RangeReviewView(items: items, rows: rows, labels: labels, speakerSpans: speakerSpans, kept: kept,
-                        preferredTranslationLanguage: preferredTranslationLanguage, autoplay: false,
+                        preferredTranslationLanguage: preferredTranslationLanguage, autoplay: false, playAll: playAll,
                         onSave: { item, start, end in
                             guard let section = sections.first(where: { $0.id == item.id.ownerID }) else { return }
                             onSave(section.scene, start, end)

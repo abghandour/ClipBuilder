@@ -16,7 +16,7 @@ struct MiniHighlightReviewTests {
         return MiniWizardCandidate(selection: selection, take: take, kept: kept, note: "Keep the answer")
     }
 
-    @Test func playAllWalksTheSelectedReelsCutsOrEveryReel() {
+    @Test func playWalksTheSelectionThenTheKeptItemsThenEveryReel() {
         let twoCuts = candidate(id: 1, clips: [Fixtures.planClip(start: 2, end: 4), Fixtures.planClip(start: 4, end: 6)])
         let oneCut = candidate(id: 2)
         let items = MiniHighlightReview.items(candidates: [twoCuts, oneCut], video: Fixtures.video(), scenes: [Fixtures.scene()])
@@ -24,11 +24,17 @@ struct MiniHighlightReviewTests {
         let cuts = RangeReviewPlayAll.sequence(items: items, selectedOwnerID: 1)
         #expect(cuts.map(\.id.cutIndex) == [0, 1] && cuts.map(\.range) == [2...4, 4...6])
         #expect(RangeReviewPlayAll.playsCuts(items: items, selectedOwnerID: 1))
-        // A single-cut reel or nothing selected: every reel, top level only.
-        for owner in [Int64(2), nil, 99] {
+        // A single-cut reel selected: just that reel.
+        #expect(RangeReviewPlayAll.sequence(items: items, selectedOwnerID: 2).map(\.id.ownerID) == [2])
+        // Nothing (or something unknown) selected: every reel, top level only.
+        for owner in [nil, Int64(99)] {
             #expect(RangeReviewPlayAll.sequence(items: items, selectedOwnerID: owner).map(\.id.ownerID) == [1, 2])
             #expect(!RangeReviewPlayAll.playsCuts(items: items, selectedOwnerID: owner))
         }
+        // Nothing selected but some kept: the kept ones; none kept: every reel.
+        #expect(RangeReviewPlayAll.sequence(items: items, selectedOwnerID: nil, kept: [2]).map(\.id.ownerID) == [2])
+        #expect(RangeReviewPlayAll.sequence(items: items, selectedOwnerID: nil, kept: []).map(\.id.ownerID) == [1, 2])
+        #expect(RangeReviewPlayAll.sequence(items: items, selectedOwnerID: nil, kept: [99]).map(\.id.ownerID) == [1, 2])
         // Missing footage drops out of the walk.
         let missing = MiniHighlightReview.items(candidates: [twoCuts], video: Fixtures.video(), scenes: [])
         #expect(RangeReviewPlayAll.sequence(items: missing, selectedOwnerID: 1).isEmpty)

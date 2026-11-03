@@ -241,6 +241,13 @@ final class AppStore {
 
     var videos: [VideoRecord] = [] { didSet { videosVersion &+= 1 } }
     private(set) var videosVersion = 0
+    /// Sources whose file is on this Mac: every list but Sources shows these.
+    var localVideos: [VideoRecord] { videos.filter(\.isLocal) }
+    /// Analyze batches of footage on this Mac, for the same lists.
+    var localAnalysisRuns: [AnalysisRun] { analysisRuns.filter(\.isLocal) }
+    /// Scene counts per source over every scene in the project, including
+    /// those of footage not on this Mac, for the Sources table.
+    var allSceneCountsByVideo: [Int64: Int] = [:]
     @ObservationIgnored var rebuildSceneIndexAfterWrite = true
     var historyScenes: [SceneRecord] = [] { didSet { scenesVersion &+= 1 } }
     var referencedScenes: [SceneRecord] = []
@@ -1510,8 +1517,15 @@ final class AppStore {
         if fightResearch != research { fightResearch = research }
         if fightEvents != events { fightEvents = events }
         if videos != snapshot.videos { videos = snapshot.videos }
-        if scenes != snapshot.scenes { scenes = snapshot.scenes }
-        if historyScenes != snapshot.historyScenes { historyScenes = snapshot.historyScenes }
+        // Only footage on this Mac is listed outside Sources: scenes of a
+        // Drive-only or missing source stay in the database and come back
+        // once the file is downloaded. Sources keeps the full counts.
+        let localScenes = snapshot.scenes.filter(\.isLocal)
+        let counts = snapshot.scenes.reduce(into: [Int64: Int]()) { $0[$1.videoID, default: 0] += 1 }
+        if allSceneCountsByVideo != counts { allSceneCountsByVideo = counts }
+        if scenes != localScenes { scenes = localScenes }
+        let localHistory = snapshot.historyScenes.filter(\.isLocal)
+        if historyScenes != localHistory { historyScenes = localHistory }
         if referencedScenes != snapshot.referencedScenes { referencedScenes = snapshot.referencedScenes }
         sceneReferences = snapshot.sceneReferences
         // Published Library lists can refresh while an open script retains its

@@ -102,7 +102,7 @@ struct AvatarPickerSheet: View {
         let personScenes = store.scenes.filter { !$0.ignored && $0.tags.contains(person.tag) }
         var frames: [(videoID: Int64, url: URL, time: Double)] = []
         var perVideo: [Int64: Int] = [:]
-        for video in store.videos where personScenes.contains(where: { $0.videoID == video.id }) {
+        for video in store.localVideos where personScenes.contains(where: { $0.videoID == video.id }) {
             let roster = await store.videoPeople(for: video.id)
             if let entry = roster.first(where: { $0.personID == person.id }) {
                 frames.append((video.id, video.url, entry.portraitAt))

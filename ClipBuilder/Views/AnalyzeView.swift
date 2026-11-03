@@ -213,7 +213,7 @@ struct AnalyzeView: View {
                                          onRunSteps: { runSteps($0, video: video) })
                             .frame(maxHeight: .infinity)
                     } else {
-                        SourcesPanePlaceholder(videoCount: store.videos.count, selectionCount: selection.count)
+                        SourcesPanePlaceholder(videoCount: store.videos.filter(\.isReachable).count, selectionCount: selection.count)
                             .frame(maxHeight: .infinity)
                     }
                     Divider()
@@ -304,7 +304,7 @@ struct AnalyzeView: View {
                      + "Its scenes, transcripts and analyze batches are kept, so adding the same file again needs no new analysis. Files in the profile's source folder move to the Trash.")
             }
         }
-        .screenTitle("Sources", subtitle: "\(store.videos.count) source videos")
+        .screenTitle("Sources", subtitle: "\(store.videos.filter(\.isReachable).count) source videos")
         .askAI(SourcesAssistant(), pageState: assistantState)
         .onAssistantCommand("sources.") { runAssistantCommand($0) }
         .toolbar {
@@ -950,7 +950,7 @@ struct AnalyzeView: View {
 
     private func computeTableSummary() -> TableSummary {
         // One pass over scenes/batches instead of an O(n) filter per table row.
-        let sceneCounts = store.sceneIndex.countsByVideo
+        let sceneCounts = store.allSceneCountsByVideo
         let batchCounts = store.analysisRuns.reduce(into: [Int64: Int]()) { $0[$1.videoID, default: 0] += 1 }
         let transcriptCounts = store.transcriptCounts
         let scenesByVideo = Dictionary(grouping: store.scenes, by: \.videoID)
@@ -972,7 +972,9 @@ struct AnalyzeView: View {
         for (video, roster) in store.videoPeopleCounts where roster > (peopleCounts[video] ?? 0) {
             peopleCounts[video] = roster
         }
-        let rows = store.videos.map { SourceRow(video: $0) }
+        // A source that is neither on this Mac nor on Drive has nothing to
+        // show or download, so the table leaves it out.
+        let rows = store.videos.filter(\.isReachable).map { SourceRow(video: $0) }
         return TableSummary(videos: rows.sorted(using: sortOrder), sceneCounts: sceneCounts,
                             batchCounts: batchCounts, transcriptCounts: transcriptCounts,
                             peopleCounts: peopleCounts, qaCounts: store.sceneIndex.qaCountsByVideo,
@@ -1068,7 +1070,7 @@ struct AnalyzeView: View {
                     Text(video.filename)
                         .lineLimit(1)
                         .help("Double-click to rename")
-                    if !video.isPresent {
+                    if !video.isLocal {
                         Label("Not on this Mac", systemImage: "externaldrive.badge.questionmark")
                             .font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
                     }
@@ -1903,8 +1905,9 @@ private struct VideoPreviewPane: View {
             await Task.yield()
             // A file that is not on this Mac is reported, not spun on; a
             // download the user already started is joined and shown as such.
-            // Selecting a row never starts a download by itself.
-            if !video.isPresent {
+            // Selecting a row never starts a download by itself, Drive copy
+            // or not: the Download button under the message does.
+            if !video.isLocal {
                 let fetching = video.driveFileID != nil
                     && store.googleDrive.activeFetchJob(for: video.driveMedia, profile: store.activeProfile.profileName) != nil
                 guard fetching, video.path != nil else { availability = .unavailable; return }

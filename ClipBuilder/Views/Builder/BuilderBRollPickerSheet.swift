@@ -139,8 +139,7 @@ struct BuilderBRollPickerSheet: View {
                    posterTime: (scene.startTime + scene.endTime) / 2)
         }
         let sceneVideos = Set(store.scenes.map(\.videoID))
-        for video in store.videos where !sceneVideos.contains(video.id) && video.duration > 0 {
-            guard video.isPresent else { continue }
+        for video in store.localVideos where !sceneVideos.contains(video.id) && video.duration > 0 {
             items.append(Source(id: "file:\(video.id)",
                                 source: .file(url: video.url, duration: video.duration),
                                 photoPath: nil, isBRoll: false, favorite: false, reason: nil,

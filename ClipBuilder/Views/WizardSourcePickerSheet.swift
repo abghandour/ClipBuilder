@@ -63,7 +63,7 @@ struct WizardSourcePickerSheet: View {
     /// Batches matching the filter, newest first.
     private var filteredRuns: [AnalysisRun] {
         let needle = batchFilter.trimmingCharacters(in: .whitespacesAndNewlines)
-        let runs = store.analysisRuns
+        let runs = store.localAnalysisRuns
         guard !needle.isEmpty else { return runs }
         return runs.filter {
             $0.name.localizedCaseInsensitiveContains(needle)

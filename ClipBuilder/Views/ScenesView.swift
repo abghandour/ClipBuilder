@@ -72,7 +72,7 @@ struct ScenesView: View {
     /// Fights) match on: when they were analyzed and their video's type.
     private var filterRuns: [SceneBatchFilter.Run] {
         let types = Dictionary(store.videos.map { ($0.id, $0.type) }, uniquingKeysWith: { first, _ in first })
-        return store.analysisRuns.map { run in
+        return store.localAnalysisRuns.map { run in
             SceneBatchFilter.Run(id: run.id, analyzedAt: Database.parseSQLiteDate(run.createdAt),
                                  videoType: types[run.videoID] ?? nil)
         }
@@ -81,7 +81,7 @@ struct ScenesView: View {
     /// Scene count of the batches a built-in row matches.
     private func sceneCount(for filter: SceneBatchFilter) -> Int {
         let ids = SceneBatchFilter.runIDs(for: [filter.id], runs: filterRuns, now: Date())
-        return store.analysisRuns.reduce(0) { $0 + (ids.contains($1.id) ? $1.sceneCount : 0) }
+        return store.localAnalysisRuns.reduce(0) { $0 + (ids.contains($1.id) ? $1.sceneCount : 0) }
     }
 
     private var selectedRuns: [AnalysisRun] {
@@ -539,8 +539,8 @@ struct ScenesView: View {
     /// Batches matching the name filter; every batch when it is empty.
     private var filteredRuns: [AnalysisRun] {
         let query = batchNameQuery.trimmingCharacters(in: .whitespacesAndNewlines)
-        guard !query.isEmpty else { return store.analysisRuns }
-        return store.analysisRuns.filter { run in
+        guard !query.isEmpty else { return store.localAnalysisRuns }
+        return store.localAnalysisRuns.filter { run in
             run.name.localizedStandardContains(query)
                 || run.videoURL.lastPathComponent.localizedStandardContains(query)
         }
@@ -552,7 +552,7 @@ struct ScenesView: View {
                 HStack {
                     Image(systemName: "square.grid.3x3")
                         .frame(width: 20)
-                    Text("All batches (\(store.analysisRuns.count))")
+                    Text("All batches (\(store.localAnalysisRuns.count))")
                     Spacer()
                     Text("\(store.historyScenes.count)")
                         .foregroundStyle(.secondary)

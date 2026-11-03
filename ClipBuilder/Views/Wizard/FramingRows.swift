@@ -345,7 +345,7 @@ struct FramingRows: View {
         }
         return SettingsRow(role.label) {
             SourcePickerButton(
-                title: role.label, choices: store.videos.map(SourceChoice.init),
+                title: role.label, choices: store.localVideos.map(SourceChoice.init),
                 selection: store.videos.first { $0.url.path == path }.map(SourceChoice.init),
                 placeholder: "Main recording", placeholderImage: "video",
                 caption: "Choose the recording that carries the \(role.label.lowercased()).",

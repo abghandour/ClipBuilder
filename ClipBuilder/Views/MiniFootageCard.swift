@@ -20,7 +20,8 @@ struct MiniFootageCard: View {
     }
 
     var body: some View {
-        FormCaption(run.summary)
+        // Every review lists its own count in the list header; the summary
+        // stays on the collapsed card.
         if run.footageKind == .qa {
             qaReview
         } else if run.footageKind == .transcript {
@@ -114,7 +115,8 @@ struct MiniFootageCard: View {
                 speakerSpans: qa.speakerSpans,
                 kept: Binding(
                     get: { store.miniRun?.batchID == run.batchID ? store.miniRun?.qa?.kept ?? [] : [] },
-                    set: { kept in store.setMiniQAKept(kept, batchID: run.batchID) }), preferredTranslationLanguage: store.activeProfile.captionLanguages.first) { scene, start, end in
+                    set: { kept in store.setMiniQAKept(kept, batchID: run.batchID) }),
+                preferredTranslationLanguage: store.activeProfile.captionLanguages.first, playAll: true) { scene, start, end in
                         store.setSceneEditRange(scene, start: start, end: end)
                     }
             resizable(review)

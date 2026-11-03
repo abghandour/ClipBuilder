@@ -32,8 +32,8 @@ struct LooksView: View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
             VStack(alignment: .leading, spacing: Theme.spaceS) {
                 EffectSampleMenu(title: "Sample", accessibilityTitle: "Sample video",
-                                 sources: EffectSamplePicker.sources(from: store.videos),
-                                 projectHasSources: !store.videos.isEmpty, selectedURL: samples.videoA,
+                                 sources: EffectSamplePicker.sources(from: store.localVideos),
+                                 projectHasSources: !store.localVideos.isEmpty, selectedURL: samples.videoA,
                                  select: changeSample, otherFile: { pickingSample = true })
                 Text("Shared with Transitions Video A")
                     .font(.caption)

@@ -63,6 +63,13 @@ nonisolated struct VideoRecord: Identifiable, Sendable, Hashable {
     var sourceAvailable: Bool? = nil
     var locallyDownloaded: Bool? = nil
     var isPresent: Bool { path != nil && (sourceAvailable ?? (driveFileID != nil || FootageAvailability.isPresent(path: path))) }
+    /// The file is on this Mac. `isPresent` also admits a Drive copy that
+    /// media actions fetch on demand; lists outside Sources show only this.
+    var isLocal: Bool { path != nil && (locallyDownloaded ?? FootageAvailability.isLocal(path: path)) }
+    /// On Drive but not on this Mac: Sources lists it with a Download action.
+    var isDriveOnly: Bool { !isLocal && driveFileID != nil }
+    /// Neither here nor on Drive: nothing can show or use it.
+    var isReachable: Bool { isLocal || driveFileID != nil }
 
     static let notPresentReason = "Not on this Mac"
 
@@ -518,6 +525,8 @@ nonisolated struct AnalysisRun: Identifiable, Sendable, Hashable {
 
     var sourceAvailable: Bool? = nil
     var isPresent: Bool { sourceAvailable ?? FootageAvailability.isPresent(path: videoPath) }
+    /// The source file is on this Mac; lists outside Sources show only these.
+    var isLocal: Bool { FootageAvailability.isLocal(path: videoPath) }
     var videoURL: URL { URL(fileURLWithPath: videoPath.isEmpty ? "/.clipbuilder-unavailable/\(videoID)" : videoPath) }
 
     /// Who analyzed this batch.
@@ -587,6 +596,8 @@ nonisolated struct SceneRecord: Identifiable, Sendable, Hashable {
     var isBRoll: Bool { tags.contains("b-roll") }
     var sourceAvailable: Bool? = nil
     var isPresent: Bool { sourceAvailable ?? FootageAvailability.isPresent(path: videoPath) }
+    /// The source file is on this Mac; lists outside Sources show only these.
+    var isLocal: Bool { FootageAvailability.isLocal(path: videoPath) }
     var videoURL: URL { URL(fileURLWithPath: videoPath.isEmpty ? "/.clipbuilder-unavailable/\(videoID)" : videoPath) }
 
     /// Who selected this favorite, when it was proposed by AI.

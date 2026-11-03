@@ -128,7 +128,7 @@ struct ClipBrowserPane: View {
 
     /// Analyze batches that actually hold scenes, newest first.
     private var batches: [AnalyzeBatchFilterList.Batch] {
-        store.analysisRuns
+        store.localAnalysisRuns
             .filter { $0.sceneCount > 0 }
             .sorted { $0.id > $1.id }
             .map { .init(id: $0.id, name: $0.name, count: $0.sceneCount) }
@@ -172,7 +172,7 @@ struct ClipBrowserPane: View {
     private var analyzedVideos: [VideoRecord] {
         let needle = fileSearch.trimmingCharacters(in: .whitespacesAndNewlines)
         let analyzed = Set(store.analysisRuns.map(\.videoID)).union(store.scenes.map(\.videoID))
-        return store.videos
+        return store.localVideos
             .filter { analyzed.contains($0.id) && $0.duration > 0 }
             .filter { needle.isEmpty || $0.filename.localizedCaseInsensitiveContains(needle) }
             .sorted { $0.filename.localizedCaseInsensitiveCompare($1.filename) == .orderedAscending }

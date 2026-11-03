@@ -158,7 +158,7 @@ struct TextLooksStage: View {
             HStack(spacing: Theme.spaceS) {
                 Text("Source").lineLimit(1).fixedSize()
                 SourcePickerButton(
-                    title: "Source", choices: store.videos.map(SourceChoice.init),
+                    title: "Source", choices: store.localVideos.map(SourceChoice.init),
                     selection: store.videos.first { $0.url.path == backdropVideoPath }.map(SourceChoice.init)
                         ?? (backdropVideoPath.isEmpty ? nil : SourceChoice(otherFile: URL(fileURLWithPath: backdropVideoPath))),
                     placeholder: "Choose a source", caption: "Choose a source frame to judge the look against.",

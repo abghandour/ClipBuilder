@@ -112,7 +112,6 @@ struct MiniFightPickView: View {
             gridRow(time: "Time", fighter: "Fighter", action: "Action", header: true)
                 .padding(.horizontal, Theme.spaceS)
                 .padding(.vertical, Theme.spaceXS)
-            Divider()
             ScrollViewReader { proxy in
                 ScrollView(.vertical) {
                     LazyVStack(alignment: .leading, spacing: 0) {
@@ -146,7 +145,6 @@ struct MiniFightPickView: View {
                     if let target { proxy.scrollTo(target) }
                 }
             }
-            Divider()
             FormCaption(chosen.isEmpty
                 ? "\(actions.count) scored actions. Click to select; ⇧ and ⌘ extend the selection."
                 : "\(chosen.count) selected")

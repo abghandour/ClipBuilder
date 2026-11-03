@@ -16,9 +16,11 @@ struct BuilderPrerequisitesTests {
         init() async throws { temp = try await TempDatabase() }
         var database: Database { temp.database }
         func video() async throws -> Int64 {
-            try await database.registerVideo(hash: UUID().uuidString, filename: "test.mp4",
-                path: temp.directory.url.appendingPathComponent("test.mp4").path,
-                duration: 10, width: 100, height: 100, wide: false)
+            // The file exists: footage that is not on this Mac is not listed.
+            let url = temp.directory.url.appendingPathComponent("test.mp4")
+            if !FileManager.default.fileExists(atPath: url.path) { try Data("x".utf8).write(to: url) }
+            return try await database.registerVideo(hash: UUID().uuidString, filename: "test.mp4",
+                path: url.path, duration: 10, width: 100, height: 100, wide: false)
         }
         func adapters() -> BuilderPrerequisites {
             BuilderPrerequisites { [self] in

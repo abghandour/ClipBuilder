@@ -397,12 +397,12 @@ struct WizardView: View {
     }
 
     var podcastHighlightVideos: [VideoRecord] {
-        WizardFormPlan.podcastHighlightVideos(videos: store.videos, scenes: store.scenes)
+        WizardFormPlan.podcastHighlightVideos(videos: store.localVideos, scenes: store.scenes)
     }
 
     var readiness: [WizardFormPlan.Readiness] {
         formPlan.readiness(pool: capabilities.sources == .podcastRecording ? store.scenes : sourcePool,
-                           videos: store.videos, transcripts: transcriptVideoIDs,
+                           videos: store.localVideos, transcripts: transcriptVideoIDs,
                            selectedVideoPath: highlightVideoPath, limitToSelection: limitToSelection,
                            selectedRunIDs: selectedRunIDs, favoritesOnly: favoritesOnly,
                            providerIssue: capabilities.sources == .scenes && primaryProviderUnavailable
@@ -787,7 +787,7 @@ struct WizardView: View {
     /// Videos with at least one Analyze batch, in library order.
     var analyzedVideos: [VideoRecord] {
         let ids = Set(store.analysisRuns.map(\.videoID))
-        return store.videos.filter { ids.contains($0.id) }
+        return store.localVideos.filter { ids.contains($0.id) }
     }
 
     private func runs(of video: VideoRecord) -> [AnalysisRun] {

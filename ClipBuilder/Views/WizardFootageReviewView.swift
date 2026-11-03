@@ -19,7 +19,7 @@ struct WizardFootageReviewView: View {
     }
 
     private var items: [RangeReviewItem] {
-        WizardFootageReview.items(selections: selections, scenes: scenes, videos: store.videos)
+        WizardFootageReview.items(selections: selections, scenes: scenes, videos: store.localVideos)
     }
 
     private var videoIDs: [Int64] {

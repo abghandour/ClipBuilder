@@ -280,7 +280,7 @@ struct TransitionsView: View {
     // MARK: - Samples and playback
 
     private var sampleRow: some View {
-        let sources = EffectSamplePicker.sources(from: store.videos)
+        let sources = EffectSamplePicker.sources(from: store.localVideos)
         return VStack(alignment: .leading, spacing: Theme.spaceS) {
             ViewThatFits(in: .horizontal) {
                 HStack(spacing: Theme.spaceM) {
@@ -303,7 +303,7 @@ struct TransitionsView: View {
     private func sampleMenu(slot: EffectSamplePicker.Slot, title: String, url: URL?,
                             sources: [EffectSamplePicker.Source]) -> some View {
         EffectSampleMenu(title: title, accessibilityTitle: title, sources: sources,
-                         projectHasSources: !store.videos.isEmpty, selectedURL: url,
+                         projectHasSources: !store.localVideos.isEmpty, selectedURL: url,
                          select: { changeSample(to: $0, slot: slot) }, otherFile: {
                              pickingSample = slot
                              showingSampleImporter = true

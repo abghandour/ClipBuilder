@@ -86,15 +86,22 @@ nonisolated struct RangeReviewItem: Identifiable, Sendable {
     }
 }
 
-/// What Play All walks. A reel is a list of cuts, so when the selected item
-/// is a reel with cuts (or one of its cuts) Play All plays those cuts back to
-/// back; otherwise it plays every top-level item in order.
+/// What the list's Play button walks: the selected item (a reel's cuts back
+/// to back when it is a reel with cuts), else the kept items in order, else
+/// every top-level item.
 nonisolated enum RangeReviewPlayAll {
-    static func sequence(items: [RangeReviewItem], selectedOwnerID: Int64?) -> [RangeReviewItem] {
-        if let reel = items.first(where: { $0.id.ownerID == selectedOwnerID }), !reel.children.isEmpty {
-            return reel.children.filter(playable)
+    static func sequence(items: [RangeReviewItem], selectedOwnerID: Int64?,
+                         kept: Set<Int64>? = nil) -> [RangeReviewItem] {
+        if let selected = items.first(where: { $0.id.ownerID == selectedOwnerID }) {
+            if !selected.children.isEmpty { return selected.children.filter(playable) }
+            if !selected.isDraft, playable(selected) { return [selected] }
         }
-        return items.filter { !$0.isDraft && $0.id.cutIndex == nil && playable($0) }
+        let all = items.filter { !$0.isDraft && $0.id.cutIndex == nil && playable($0) }
+        if let kept, !kept.isEmpty {
+            let chosen = all.filter { kept.contains($0.id.ownerID) }
+            if !chosen.isEmpty { return chosen }
+        }
+        return all
     }
 
     /// True when `sequence` walks one reel's cuts rather than the list.

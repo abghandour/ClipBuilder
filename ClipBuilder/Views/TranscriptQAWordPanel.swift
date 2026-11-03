@@ -114,7 +114,6 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
             }
             .lineLimit(1).fixedSize(horizontal: false, vertical: true)
             .padding(Theme.spaceS)
-            Divider()
             if transcript.lines.isEmpty {
                 FormCaption("No transcript for this recording. Use the filmstrip handles to adjust the exchange.")
                     .padding(Theme.spaceM)
@@ -123,7 +122,6 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                 transcriptScroll(spokenWordID: spokenWordID, currentLine: currentLine, actions: actions)
             }
             if let footer {
-                Divider()
                 footer
                     .lineLimit(1).fixedSize(horizontal: false, vertical: true)
                     .padding(Theme.spaceS)

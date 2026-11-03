@@ -298,8 +298,9 @@ struct MiniWizardView: View {
                             } else {
                                 footageControls.disabled(store.isWizardRunning)
                                 if let run = currentRun {
-                                    Divider()
+                                    // Space, not a rule, parts the controls from the review.
                                     MiniFootageCard(run: run, pageHeight: page.size.height)
+                                        .padding(.top, Theme.spaceS)
                                 }
                             }
                         }
@@ -351,6 +352,8 @@ struct MiniWizardView: View {
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
             }
         }
+        // Express cards part their rows with space, not rules.
+        .environment(\.settingsRowDividers, false)
     }
 
     // MARK: - Highlight history
@@ -602,8 +605,9 @@ struct MiniWizardView: View {
             // Analyzed sources offer every footage kind; a source that was only
             // transcribed still offers Transcript picks, so it is listed too.
             sceneVideoIDs = analyzedIDs.filter { id in fetchedVideos.contains { $0.id == id && $0.analyzedAt != nil } }
-            videos = fetchedVideos.filter { sceneVideoIDs.contains($0.id) || transcribedIDs.contains($0.id) }
-            projectHasVideos = !fetchedVideos.isEmpty
+            // Footage that is not on this Mac is left to Sources (download it there).
+            videos = fetchedVideos.filter { $0.isLocal && (sceneVideoIDs.contains($0.id) || transcribedIDs.contains($0.id)) }
+            projectHasVideos = fetchedVideos.contains(where: \.isLocal)
             let validated = MiniWizardMemory.validatedVideoPath(videoPath, videos: videos)
             if validated != videoPath {
                 store.resetMiniFootage()

@@ -33,7 +33,7 @@ struct FightStorySheet: View {
     @State private var loadingClaims = true
 
     private var fightVideos: [VideoRecord] {
-        store.videos.filter { video in
+        store.localVideos.filter { video in
             guard let type = video.type else { return false }
             return type.supportsFightFeatures || type == .training
         }

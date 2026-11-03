@@ -5,6 +5,8 @@ import Synchronization
 /// clips saved before a teammate's footage arrived on this Mac.
 nonisolated enum FootageAvailability {
     private static let snapshot = Mutex<[String: Bool]>([:])
+    /// Whether the file itself is on this Mac, as of the last hydration.
+    private static let local = Mutex<[String: Bool]>([:])
 
     /// UI reads never stat files. Unknown paths are admitted until hydration or
     /// the media resolver checks them; nil paths are never admitted.
@@ -13,11 +15,22 @@ nonisolated enum FootageAvailability {
         return snapshot.withLock { $0[path] ?? true }
     }
 
+    /// The file is on this Mac (a Drive copy that was never downloaded, or
+    /// was offloaded, is not). Only the Sources screen lists footage that
+    /// fails this; everywhere else such footage is hidden. Unknown paths are
+    /// admitted until hydration, like `isPresent`.
+    static func isLocal(path: String?) -> Bool {
+        guard let path, !path.isEmpty, !path.hasPrefix("/.clipbuilder-unavailable/") else { return false }
+        return local.withLock { $0[path] ?? true }
+    }
+
     @discardableResult
     static func refresh(path: String?, driveFileID: String?) -> Bool {
         guard let path, !path.isEmpty else { return false }
-        let available = isDownloaded(path: path) || !(driveFileID ?? "").isEmpty
+        let downloaded = isDownloaded(path: path)
+        let available = downloaded || !(driveFileID ?? "").isEmpty
         snapshot.withLock { $0[path] = available }
+        local.withLock { $0[path] = downloaded }
         return available
     }
 
