@@ -5,12 +5,13 @@ import Foundation
 /// they speak through a Shortcuts shortcut (an Apple-signed binary) that
 /// writes the audio file; see `SiriDubSynthesizer`.
 nonisolated enum DubVoiceEngine: String, Codable, Sendable, CaseIterable {
-    case mac, siri
+    case mac, siri, elevenLabs
 
     var title: String {
         switch self {
         case .mac: "Mac voices"
         case .siri: "Siri voices"
+        case .elevenLabs: "ElevenLabs voices"
         }
     }
 }

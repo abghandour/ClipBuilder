@@ -32,6 +32,17 @@ nonisolated enum TranscriptQAColumns {
         return (list * share, transcript * share)
     }
 
+    /// Columns as fixed shares of the page (the Full wizard's footage review:
+    /// list, transcript and player as 1 : 2 : 1). The shares are normalized
+    /// with the player's, so (1, 2, 1) and (0.25, 0.5, 0.25) are the same.
+    static func proportional(available: CGFloat, list: CGFloat, transcript: CGFloat,
+                             player: CGFloat) -> (list: CGFloat, transcript: CGFloat) {
+        let total = list + transcript + player
+        guard total > 0 else { return widths(available: available) }
+        let whole = max(0, available - 2 * dividerWidth)
+        return (whole * list / total, whole * transcript / total)
+    }
+
     /// The opposite column stays put during a drag. If even this column's
     /// minimum cannot fit, leave its preference intact and use display scaling.
     static func resizedWidth(_ proposed: CGFloat, column: Column,

@@ -250,20 +250,16 @@ extension WizardView {
     @ViewBuilder var settingsTabs: some View {
         let tabs = WizardSettingsTab.available(audio: true)
         let current = (WizardSettingsTab(rawValue: settingsTabRaw) ?? .picture).effective(in: tabs)
-        Picker("Settings", selection: Binding(get: { current }, set: { settingsTabRaw = $0.rawValue })) {
-            ForEach(tabs, id: \.self) { tab in
-                Text(tab.label).lineLimit(1).fixedSize().tag(tab)
+        PageTabs(tabs: tabs, selection: Binding(get: { current }, set: { settingsTabRaw = $0.rawValue }),
+                 label: \.label, rowSpacing: Theme.spaceM) { tab in
+            switch tab {
+            case .picture: pictureFields
+            case .audio: audioFields
+            case .overlays: overlaysFields
+            case .package: packageFields
             }
         }
-        .pickerStyle(.segmented)
-        .labelsHidden()
         .accessibilityLabel("Settings")
-        switch current {
-        case .picture: pictureFields
-        case .audio: audioFields
-        case .overlays: overlaysFields
-        case .package: packageFields
-        }
         aiModelFields
     }
 

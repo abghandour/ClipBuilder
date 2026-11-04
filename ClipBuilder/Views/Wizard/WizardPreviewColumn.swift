@@ -26,6 +26,9 @@ struct WizardPreviewColumn: View {
     /// Pinned under the preview: Express puts its run summary and Generate here.
     /// It must scroll on its own; the column only gives it the pane.
     var footer: AnyView? = nil
+    /// Sits in the top-right corner of the header, after the chrome picker:
+    /// Express puts Start Over here.
+    var headerAccessory: AnyView? = nil
     /// Called when the user drops a dragged element; the owner stores the
     /// position in its settings and the preview re-renders from them.
     var onMove: ((PreviewElement, CustomPosition) -> Void)? = nil
@@ -38,6 +41,10 @@ struct WizardPreviewColumn: View {
     var onPlaceFocusFrame: ((FreeCropRect?) -> Void)? = nil
     /// Shown instead of a frame when there is no scene to preview.
     var emptyMessage = "Choose a video to preview"
+    /// When set, the column is only the still of this clip at this moment,
+    /// filling its frame: no title, stepper, scrubber or caption. The rough
+    /// cut sheet draws it over a player whose settings have changed.
+    var pinned: WizardPreviewMoment? = nil
     @State private var model: WizardPreviewModel
     @State private var reloadID = 0
     @State private var loadedContentKey: ContentKey?
@@ -51,18 +58,20 @@ struct WizardPreviewColumn: View {
     @State private var markerRevealID = 0
 
     init(scenes: [SceneRecord], clips: [WizardPreviewClip] = [], options: WizardOptions, profile: BrandProfile,
-         thumbnails: ThumbnailService, footer: AnyView? = nil, captionOrdinals: [String: Int]? = nil,
+         thumbnails: ThumbnailService, footer: AnyView? = nil, headerAccessory: AnyView? = nil, captionOrdinals: [String: Int]? = nil,
          onMove: ((PreviewElement, CustomPosition) -> Void)? = nil,
          onPlaceOverlay: ((OverlayComponent, CGRect) -> Void)? = nil,
          onPlaceFocusFrame: ((FreeCropRect?) -> Void)? = nil,
-         emptyMessage: String = "Choose a video to preview") {
+         emptyMessage: String = "Choose a video to preview", pinned: WizardPreviewMoment? = nil) {
         self.emptyMessage = emptyMessage
+        self.pinned = pinned
         self.scenes = scenes
         self.clips = clips
         self.options = options
         self.profile = profile
         self.captionOrdinals = captionOrdinals
         self.footer = footer
+        self.headerAccessory = headerAccessory
         self.onMove = onMove
         self.onPlaceOverlay = onPlaceOverlay
         self.onPlaceFocusFrame = onPlaceFocusFrame
@@ -70,7 +79,8 @@ struct WizardPreviewColumn: View {
     }
 
     private var currentClip: WizardPreviewClip? {
-        clips.isEmpty ? nil : clips[min(clipIndex, clips.count - 1)]
+        if let pinned { return clips.first { $0.id == pinned.clipID } }
+        return clips.isEmpty ? nil : clips[min(clipIndex, clips.count - 1)]
     }
 
     /// The scene the still is read from: the kept clip's, else the stepper's.
@@ -78,7 +88,7 @@ struct WizardPreviewColumn: View {
 
     private var previewTime: Double? {
         guard let clip = currentClip else { return nil }
-        return min(clip.end, max(clip.start, scrubTime ?? (clip.start + clip.end) / 2))
+        return min(clip.end, max(clip.start, pinned?.time ?? scrubTime ?? (clip.start + clip.end) / 2))
     }
 
     private struct ContentKey: Equatable {
@@ -95,6 +105,7 @@ struct WizardPreviewColumn: View {
         var canvasAspect: Double
         var clipID: String?
         var brollCuts: [BRollCut]?
+        var chosenSubject: Framing.Subject?
         /// The kept range the framing is planned over (a trim changes it, not the id).
         var rangeStart: Double?
         var rangeEnd: Double?
@@ -116,7 +127,8 @@ struct WizardPreviewColumn: View {
             framing: WizardPreviewFraming.planningFraming(options.requestedFraming,
                 videoType: store.videos.first { $0.id == previewRecord?.videoID }?.type),
             canvasAspect: options.renderSettings.aspectRatio,
-            clipID: currentClip?.id, brollCuts: currentClip?.brollCuts, rangeStart: currentClip?.start, rangeEnd: currentClip?.end,
+            clipID: currentClip?.id, brollCuts: currentClip?.brollCuts, chosenSubject: currentClip?.chosenSubject,
+            rangeStart: currentClip?.start, rangeEnd: currentClip?.end,
             time: previewTime.map { ($0 * 20).rounded() / 20 })
     }
 
@@ -124,12 +136,15 @@ struct WizardPreviewColumn: View {
         guard let record = previewRecord else { return nil }
         return PreviewKey(options: options, scene: record, profile: profile,
                           contentRevision: model.contentRevision, overlayTexts: overlayTexts, time: previewTime,
-                          shownSpeakers: effectiveShownSpeakers, captionOrdinals: captionOrdinals)
+                          shownSpeakers: effectiveShownSpeakers, captionOrdinals: captionOrdinals,
+                          chosenSubject: currentClip?.chosenSubject)
     }
 
     var body: some View {
         Group {
-            if let footer {
+            if pinned != nil {
+                preview
+            } else if let footer {
                 // The divider between the preview and the footer is draggable,
                 // so the preview can take the height it needs. The footer owns
                 // its scrolling so it can keep its action pinned when squeezed.
@@ -168,7 +183,8 @@ struct WizardPreviewColumn: View {
             }
             await model.loadScene(previewRecord, database: store.database, people: store.people,
                                   language: options.effectiveCaptionLanguage, tagStyleID: options.nameTagStyleID, profile: profile, options: options,
-                                  range: currentClip?.range, time: previewTime, snapshotKey: snapshotKey, reviewedBRoll: currentClip?.brollCuts)
+                                  range: currentClip?.range, time: previewTime, snapshotKey: snapshotKey,
+                                  reviewedBRoll: currentClip?.brollCuts, chosenSubject: currentClip?.chosenSubject)
             if !Task.isCancelled, model.isSceneCurrent {
                 loadedContentKey = requestedContent
             }
@@ -195,12 +211,14 @@ struct WizardPreviewColumn: View {
                     Spacer(minLength: 0)
                     stepper
                     chromePicker
+                    headerAccessory
                 }
                 VStack(alignment: .leading, spacing: Theme.spaceS) {
                     HStack {
                         title
                         Spacer(minLength: 0)
                         chromePicker
+                        headerAccessory
                     }
                     stepper
                 }
@@ -288,23 +306,21 @@ struct WizardPreviewColumn: View {
     }
 
     private var speakerChips: some View {
-        ScrollView(.horizontal) {
-            HStack(spacing: Theme.spaceS) {
-                ForEach(speakerKeys, id: \.self) { key in
-                    let selected = effectiveShownSpeakers.contains(key)
-                    Button { toggleSpeaker(key) } label: {
-                        Label(model.scene?.roster[key] ?? key, systemImage: selected ? "checkmark.circle.fill" : "circle")
-                            .font(.caption).lineLimit(1).fixedSize()
-                    }
-                    .buttonStyle(.bordered).controlSize(.small)
-                    .tint(selected ? Color.accentColor : Color.secondary)
-                    .help(key == talkingSpeaker ? "Talking at this moment. Show or hide this speaker's caption in the preview."
-                        : "Show or hide this speaker's caption in the preview")
-                    .accessibilityValue(selected ? "Shown" : "Hidden")
+        FlowLayout(spacing: Theme.spaceS) {
+            ForEach(speakerKeys, id: \.self) { key in
+                let selected = effectiveShownSpeakers.contains(key)
+                Button { toggleSpeaker(key) } label: {
+                    Label(model.scene?.roster[key] ?? key, systemImage: selected ? "checkmark.circle.fill" : "circle")
+                        .font(.caption).lineLimit(1).fixedSize()
                 }
+                .buttonStyle(.bordered).controlSize(.small)
+                .tint(selected ? Color.accentColor : Color.secondary)
+                .help(key == talkingSpeaker ? "Talking at this moment. Show or hide this speaker's caption in the preview."
+                    : "Show or hide this speaker's caption in the preview")
+                .accessibilityValue(selected ? "Shown" : "Hidden")
             }
         }
-        .scrollIndicators(.hidden)
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     private var title: some View {

@@ -80,9 +80,12 @@ extension AppStore {
                                     cameraFocus: cameraFocus, gatherTakes: gatherTakes, combine: combine)
             return
         case .roughCut:
+            // Preview opens the sheet with the cuts prepared, not rendered;
+            // Play in the sheet renders them.
             renderWizardBatchRoughCut(database: database, projectID: projectID, options: options, oneReel: oneReel,
                                       cameraFocus: cameraFocus, gatherTakes: gatherTakes, combine: combine,
-                                      namespace: source == .express ? WizardAssistant.expressNamespace : WizardAssistant.fullNamespace)
+                                      namespace: source == .express ? WizardAssistant.expressNamespace : WizardAssistant.fullNamespace,
+                                      renderCuts: false)
             return
         case .render:
             break
@@ -246,7 +249,7 @@ extension AppStore {
     private func pruneRoughCuts(keeping current: URL) {
         let live = Set(jobs.items.flatMap { job -> [URL] in
             guard case .roughCut(let review)? = job.result else { return [] }
-            return review.cuts.map { $0.url.deletingLastPathComponent() }
+            return review.cuts.compactMap { $0.url?.deletingLastPathComponent() }
         }).union([current])
         let root = current.deletingLastPathComponent()
         guard let folders = try? FileManager.default.contentsOfDirectory(at: root, includingPropertiesForKeys: nil) else { return }
@@ -261,19 +264,23 @@ extension AppStore {
     /// rendered small through the exact-preview path. Nothing is saved to
     /// the library; the files sit in the cache until the next rough cut of
     /// the project. The result opens a player sheet with Generate.
+    /// `renderCuts: false` stops after the documents are built: the review
+    /// carries unrendered cuts and their preview clips, and the sheet's Play
+    /// starts the render (`rerunRoughCut`).
     @discardableResult
     private func renderWizardBatchRoughCut(database: Database, projectID: Int64, options: WizardOptions,
                                            oneReel: Bool, cameraFocus: Bool,
                                            gatherTakes: @escaping @Sendable (Database) async throws -> [WizardSelectionTake],
                                            combine: @escaping @Sendable (Database, [WizardSelectionTake]) async throws -> WizardSelectionTake,
-                                           namespace: String, requestID: UUID = UUID()) -> UUID? {
+                                           namespace: String, requestID: UUID = UUID(),
+                                           extras: RoughCutExtras = RoughCutExtras(), renderCuts: Bool = true) -> UUID? {
         guard !isWizardBatchJobRunning(projectID: projectID) else { return nil }
         let profile = activeProfile
         let generation = profileGeneration
         let wizard = wizard
         let renderer = multitrackRenderer
         let project = projects.first { $0.id == projectID } ?? activeProject
-        let roughOptions = WizardRoughCut.options(options)
+        let roughOptions = WizardRoughCut.options(options, extras: extras)
         let jobID = UUID()
         let directory = Self.roughCutDirectory(database: database, jobID: jobID)
         // The request outlives the job so the review sheet can run it again
@@ -287,7 +294,7 @@ extension AppStore {
             cameraFocus: cameraFocus, gatherTakes: gatherTakes, combine: combine, namespace: namespace)
         let framing = options.requestedFraming
         let canvasAspect = options.renderSettings.aspectRatio
-        return jobs.start(.roughCut, title: "Rough cut — \(project?.name ?? "Project")", project: project,
+        return jobs.start(.roughCut, title: "\(renderCuts ? "Rough cut" : "Rough cut preview") — \(project?.name ?? "Project")", project: project,
                    profileGeneration: generation, subjectID: "wizard-rough-\(projectID)") { [weak self] log in
             guard let self else { return nil }
             func checkContext() throws {
@@ -304,18 +311,23 @@ extension AppStore {
             // the job is known to be current.
             try checkContext()
             let count = prepared.takes.count
-            self.pruneRoughCuts(keeping: directory)
-            try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            if renderCuts {
+                self.pruneRoughCuts(keeping: directory)
+                try FileManager.default.createDirectory(at: directory, withIntermediateDirectories: true)
+            }
             // The folder belongs to the review once the job returns it; until
             // then a failure or Stop takes it away.
             var handedOver = false
-            defer { if !handedOver { try? FileManager.default.removeItem(at: directory) } }
+            defer { if renderCuts, !handedOver { try? FileManager.default.removeItem(at: directory) } }
             var cuts: [RoughCut] = []
             var failures: [String] = []
+            var previewClips: [WizardPreviewClip] = []
+            let editing = profile.editing ?? ProfileEditingDefaults(seedingFrom: SettingsStore.loadSettings())
             for (index, take) in prepared.takes.enumerated() {
                 try checkContext()
                 log("PROGRESS:\(Double(index) / Double(max(1, count)))")
-                log(count == 1 ? "Rendering the rough cut…" : "Rendering rough cut \(index + 1) of \(count)…")
+                log(renderCuts ? (count == 1 ? "Rendering the rough cut…" : "Rendering rough cut \(index + 1) of \(count)…")
+                    : (count == 1 ? "Preparing the rough cut…" : "Preparing rough cut \(index + 1) of \(count)…"))
                 let selectionName = try? await database.wizardSelection(id: take.selectionID)?.name
                 try checkContext()
                 let base = selectionName?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
@@ -323,11 +335,19 @@ extension AppStore {
                 do {
                     let document = WizardRoughCut.strip(try await wizard.editorDocument(take: take, options: prepared.options,
                         profile: profile, database: database, tagTextPrepared: true,
-                        preparedTagFields: prepared.tagFields, emit: log))
+                        preparedTagFields: prepared.tagFields, emit: log), extras: extras)
                     try checkContext()
                     let sceneIDs = Set(take.sceneIDs).union(document.videoTrack.compactMap(\.sceneID))
                     let scenes = try await database.fetchScenes(ids: sceneIDs)
                     try checkContext()
+                    let takeClips = WizardPreviewClips.rendered(document, take: take, name: name, scenes: scenes,
+                                                                xfadeDuration: editing.transitions.xfadeDuration)
+                    guard renderCuts else {
+                        cuts.append(RoughCut(url: nil, name: name, duration: RoughCut.plannedDuration(of: takeClips),
+                                             takeID: take.id))
+                        previewClips += takeClips
+                        continue
+                    }
                     let result = try await renderer.render(document: document, scenes: scenes, profile: profile,
                                                            database: database, preview: true, emit: log)
                     // The exact-preview path leaves its file to the caller.
@@ -335,7 +355,8 @@ extension AppStore {
                     try checkContext()
                     let destination = directory.appendingPathComponent("rough-\(index + 1).mp4")
                     try FileManager.default.copyItemReplacing(at: result.url, to: destination)
-                    cuts.append(RoughCut(url: destination, name: name, duration: result.duration))
+                    cuts.append(RoughCut(url: destination, name: name, duration: result.duration, takeID: take.id))
+                    previewClips += takeClips
                 } catch {
                     if error is CancellationError || Task.isCancelled { throw CancellationError() }
                     try checkContext()
@@ -348,26 +369,32 @@ extension AppStore {
             let failureNote = failures.isEmpty ? ""
                 : " Failed: \(failures.map { "\"\($0)\"" }.joined(separator: ", "))."
             guard !cuts.isEmpty else {
-                throw AppJobEmptyResult(message: count == 1 ? "Could not render the rough cut.\(failureNote)"
-                                        : "Could not render any of the \(count) rough cuts.\(failureNote)")
+                let verb = renderCuts ? "render" : "prepare"
+                throw AppJobEmptyResult(message: count == 1 ? "Could not \(verb) the rough cut.\(failureNote)"
+                                        : "Could not \(verb) any of the \(count) rough cuts.\(failureNote)")
             }
-            log((cuts.count == 1 ? "Rough cut ready (\(cuts[0].duration.timecode))."
-                : "\(cuts.count) rough cuts ready.") + failureNote)
+            log((renderCuts ? (cuts.count == 1 ? "Rough cut ready (\(cuts[0].duration.timecode))." : "\(cuts.count) rough cuts ready.")
+                : (cuts.count == 1 ? "Rough cut prepared; press play to render it." : "\(cuts.count) rough cuts prepared; press play to render them."))
+                + failureNote)
             handedOver = true
             // What the sheet's framing rows need: the recordings behind the
             // takes and their footage type.
-            let videoIDs = Array(Set(try await database.fetchScenes(ids: Set(prepared.takes.flatMap(\.sceneIDs))).map(\.videoID))).sorted()
+            let takeScenes = try await database.fetchScenes(ids: Set(prepared.takes.flatMap { take in
+                take.sceneIDs + take.plan.clips.map(\.sceneID) }))
+            let videoIDs = Array(Set(takeScenes.map(\.videoID))).sorted()
             let sourceType = videoIDs.lazy.compactMap { id in self.videos.first { $0.id == id }?.type }.first ?? .other
             return .roughCut(RoughCutReview(projectID: projectID, cuts: cuts, namespace: namespace, requestID: requestID,
-                framing: framing, sourceType: sourceType, videoIDs: videoIDs, canvasAspect: canvasAspect))
+                framing: framing, sourceType: sourceType, videoIDs: videoIDs, canvasAspect: canvasAspect,
+                extras: extras, previewClips: previewClips))
         }
     }
 
     /// The review sheet's "Regenerate": the same takes, page and options
-    /// as the stored request, with the sheet's framing. A new job; the open
-    /// sheet watches it by the returned id and swaps in its cuts.
+    /// as the stored request, with the sheet's framing, effect and
+    /// transition. A new job; the open sheet watches it by the returned id
+    /// and swaps in its cuts.
     @discardableResult
-    func rerunRoughCut(requestID: UUID, framing: Framing) -> UUID? {
+    func rerunRoughCut(requestID: UUID, framing: Framing, extras: RoughCutExtras = RoughCutExtras()) -> UUID? {
         guard let database, let request = roughCutRequests[requestID] else {
             presentNotice("Rough cut", "That rough cut's request is gone. Start a new one from the page.")
             return nil
@@ -382,7 +409,7 @@ extension AppStore {
         return renderWizardBatchRoughCut(database: database, projectID: request.projectID, options: options,
                                          oneReel: request.oneReel, cameraFocus: request.cameraFocus,
                                          gatherTakes: request.gatherTakes, combine: request.combine,
-                                         namespace: request.namespace, requestID: requestID)
+                                         namespace: request.namespace, requestID: requestID, extras: extras)
     }
 
     /// Open in Editor: the batch's shared preparation, then each reel's take

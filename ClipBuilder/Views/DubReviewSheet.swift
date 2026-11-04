@@ -11,6 +11,7 @@ struct DubReviewSheet: View {
     @State private var voices: [DubSynthesizer.Voice] = []
     @State private var playback = DubReviewPlayback()
     @State private var continuing = false
+    @State private var subscription: ElevenLabsSubscription?
     /// Play hears the phrase alone unless the source video is expanded.
     @AppStorage("dubReview.showVideo") private var showVideo = false
 
@@ -56,6 +57,9 @@ struct DubReviewSheet: View {
             Text("Pick one voice per speaker. Correct who says a line with its speaker menu, edit the text, then Update lines prepares the changed lines in a background job. Play hears the phrase; expand Source video to hear it over the clip.")
                 .font(.caption).foregroundStyle(.secondary)
             voicesSection
+            if review.prepared.settings.engine == .elevenLabs {
+                creditsCaption
+            }
             DisclosureGroup("Source video", isExpanded: $showVideo) {
                 if showVideo, let player = playback.player {
                     VideoPlayer(player: player).frame(height: 200)
@@ -106,12 +110,38 @@ struct DubReviewSheet: View {
         .padding(Theme.spaceL).frame(minWidth: 680, idealWidth: 780, minHeight: 460, idealHeight: 650)
         .modalCloseButton(action: cancel)
         .task {
-            let installed = await DubLanguageChoices.voices(engine: review.prepared.settings.engine)
+            let installed = await DubLanguageChoices.voices(engine: review.prepared.settings.engine,
+                                                           language: review.prepared.settings.language)
             voices = installed.filter { DubLanguageChoices.matches($0.language, requested: review.prepared.settings.language) }
         }
+        .task { await loadSubscription() }
         .onDisappear {
             playback.stop()
             if !continuing { store.cancelDubReview(review) }
+        }
+    }
+
+    private var creditsCaption: some View {
+        let characters = ElevenLabsDubUsage.pendingCharacters(lines: lines, cachedLines: review.prepared.lines,
+                                                              voices: settings.voices)
+        return HStack(spacing: Theme.spaceM) {
+            Text("≈ \(characters.formatted()) characters")
+            if let subscription {
+                Text("\((subscription.characterLimit - subscription.characterCount).formatted()) credits left this month")
+            }
+        }
+        .font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+    }
+
+    private func loadSubscription() async {
+        guard review.prepared.settings.engine == .elevenLabs else { return }
+        subscription = await ElevenLabsSubscriptionCache.shared.lastSuccessful()
+        do {
+            let refreshed = try await ElevenLabsSubscriptionCache.shared.refresh()
+            try Task.checkCancellation()
+            subscription = refreshed
+        } catch {
+            subscription = nil
         }
     }
 

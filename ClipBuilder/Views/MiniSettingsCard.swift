@@ -25,20 +25,16 @@ struct MiniSettingsCard: View {
         let current = flow.effectiveSettingsTab(tab)
         // No rules between rows: the gap alone separates them.
         VStack(alignment: .leading, spacing: SettingsRowMetrics.plainRowSpacing) {
-            Picker("Settings", selection: Binding(get: { current }, set: { tab = $0 })) {
-                ForEach(tabs, id: \.self) { tab in
-                    Text(tab.label).lineLimit(1).fixedSize().tag(tab)
+            PageTabs(tabs: tabs, selection: Binding(get: { current }, set: { tab = $0 }),
+                     label: \.label, rowSpacing: SettingsRowMetrics.plainRowSpacing) { tab in
+                switch tab {
+                case .picture: pictureRows
+                case .audio: audioRows
+                case .overlays: overlaysRows
+                case .package: packageRows
                 }
             }
-            .pickerStyle(.segmented)
-            .labelsHidden()
             .accessibilityLabel("Settings")
-            switch current {
-            case .picture: pictureRows
-            case .audio: audioRows
-            case .overlays: overlaysRows
-            case .package: packageRows
-            }
         }
         .environment(\.formCaptionIndent, SettingsRowMetrics.labelWidth + Theme.spaceM)
         .environment(\.settingsRowDividers, false)

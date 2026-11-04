@@ -3,9 +3,12 @@ import Foundation
 nonisolated enum DubLanguageChoices {
     static let defaultLanguage = "pt-BR"
 
-    static func languages(voices: [DubSynthesizer.Voice], selected: String? = nil) -> [String] {
+    static func languages(voices: [DubSynthesizer.Voice], selected: String? = nil,
+                          engine: DubVoiceEngine? = nil) -> [String] {
         let first = ["pt-BR", "en-US"]
-        var codes = Set(voices.map(\.language))
+        let elevenLabs = engine == .elevenLabs
+            || (engine == nil && voices.contains { ElevenLabsVoices.isElevenLabs($0.identifier) })
+        var codes = Set(elevenLabs ? ElevenLabsVoices.supportedLanguages : voices.map(\.language))
         if let selected, !selected.isEmpty { codes.insert(selected) }
         return first + codes.subtracting(first).sorted { name($0).localizedStandardCompare(name($1)) == .orderedAscending }
     }
@@ -29,7 +32,14 @@ nonisolated enum DubLanguageChoices {
         return Locale.current.localizedString(forLanguageCode: language) ?? code
     }
 
-    @concurrent static func voices(engine: DubVoiceEngine? = nil) async -> [DubSynthesizer.Voice] {
-        engine == .siri ? await SiriDubVoices.readyVoices() : DubSynthesizer.installedVoices()
+    @concurrent static func voices(engine: DubVoiceEngine? = nil,
+                                   language: String = defaultLanguage,
+                                   cache: ElevenLabsVoiceCache = .shared) async -> [DubSynthesizer.Voice] {
+        switch engine ?? .mac {
+        case .mac: DubSynthesizer.installedVoices()
+        case .siri: await SiriDubVoices.readyVoices()
+        case .elevenLabs:
+            ElevenLabsVoices.voices(from: (try? await cache.voices()) ?? [], language: language)
+        }
     }
 }

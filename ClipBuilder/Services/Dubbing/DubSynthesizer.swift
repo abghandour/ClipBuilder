@@ -29,7 +29,8 @@ actor DubSynthesizer {
         }
 
         var qualityLabel: String? {
-            SiriDubVoices.isSiri(identifier) ? "Siri" : ["Eloquence", nil, "Enhanced", "Premium"][min(3, max(0, quality))]
+            if ElevenLabsVoices.isElevenLabs(identifier) { return "ElevenLabs" }
+            return SiriDubVoices.isSiri(identifier) ? "Siri" : ["Eloquence", nil, "Enhanced", "Premium"][min(3, max(0, quality))]
         }
     }
 
@@ -65,14 +66,19 @@ actor DubSynthesizer {
     }
 
     nonisolated let directory: URL
+    private let elevenLabs: ElevenLabsDubSynthesizer
     private var active: [UUID: (AVSpeechSynthesizer, DubSpeechBufferWriter)] = [:]
 
-    init(directory: URL = DubSynthesizer.cacheDirectory) {
+    init(directory: URL = DubSynthesizer.cacheDirectory, elevenLabs: ElevenLabsDubSynthesizer = .shared) {
         self.directory = directory
+        self.elevenLabs = elevenLabs
     }
 
     func synthesize(text: String, voice: String, rate: Double) async throws -> URL {
         try Task.checkCancellation()
+        if ElevenLabsVoices.isElevenLabs(voice) {
+            return try await elevenLabs.synthesize(text: text, voice: voice, rate: rate, directory: directory)
+        }
         if SiriDubVoices.isSiri(voice) {
             return try await SiriDubSynthesizer.synthesize(text: text, voice: voice, rate: rate, directory: directory)
         }

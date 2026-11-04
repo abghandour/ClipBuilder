@@ -234,6 +234,8 @@ nonisolated struct AIConfig: Codable, Sendable {
     /// Minutes a provider is skipped by automatic dispatch after it fails
     /// (sign-in, quota, unavailable, CLI error). 0 disables.
     var providerCooldownMinutes: Int = 15
+    /// Non-secret, Mac-local speech settings. The API key lives only in the keychain.
+    var elevenLabs: ElevenLabsSettings?
 
     init() {}
 
@@ -247,6 +249,7 @@ nonisolated struct AIConfig: Codable, Sendable {
         providers = try container.decodeIfPresent([String: AIProviderSettings].self, forKey: .providers) ?? [:]
         mutedDispatchPlans = try container.decodeIfPresent([String].self, forKey: .mutedDispatchPlans) ?? []
         providerCooldownMinutes = try container.decodeIfPresent(Int.self, forKey: .providerCooldownMinutes) ?? 15
+        elevenLabs = try container.decodeIfPresent(ElevenLabsSettings.self, forKey: .elevenLabs)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -257,7 +260,15 @@ nonisolated struct AIConfig: Codable, Sendable {
         case onDeviceOverrides = "on_device_overrides"
         case taskModels = "task_models"
         case mutedDispatchPlans = "muted_dispatch_plans"
+        case elevenLabs = "eleven_labs"
     }
+}
+
+nonisolated struct ElevenLabsSettings: Codable, Sendable, Equatable {
+    var model = "eleven_multilingual_v2"
+    var stability = 0.5
+    var similarity = 0.75
+    var concurrency = 2
 }
 
 nonisolated struct AIProviderSettings: Codable, Sendable, Equatable {

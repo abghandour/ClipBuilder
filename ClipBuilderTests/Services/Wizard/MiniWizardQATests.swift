@@ -198,6 +198,19 @@ struct MiniWizardQATests {
         #expect(restored.list == 420 && restored.transcript == 820)
     }
 
+    @Test func proportionalColumnsSplitThePageByShare() {
+        for width: CGFloat in [640, 1000, 1400] {
+            let columns = TranscriptQAColumns.proportional(available: width, list: 1, transcript: 2, player: 1)
+            let whole = width - 16
+            #expect(abs(columns.list - whole / 4) < 0.001)
+            #expect(abs(columns.transcript - whole / 2) < 0.001)
+        }
+        let percent = TranscriptQAColumns.proportional(available: 1016, list: 0.25, transcript: 0.5, player: 0.25)
+        #expect(percent.list == 250 && percent.transcript == 500)
+        let fallback = TranscriptQAColumns.proportional(available: 1000, list: 0, transcript: 0, player: 0)
+        #expect(fallback.list == 220 && fallback.transcript == 360)
+    }
+
     @Test func qaColumnPreferencesAndDragsAreClamped() {
         let small = TranscriptQAView.columnWidths(available: 1600, list: 1, transcript: 1)
         #expect(small.list == 160 && small.transcript == 260)

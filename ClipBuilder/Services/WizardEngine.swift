@@ -4228,7 +4228,7 @@ actor WizardEngine {
             }
             let engine = profile.editing?.footage.dubEngine.flatMap(DubVoiceEngine.init(rawValue:))
             let settings = DubSettings(language: language, voices: profile.editing?.dubVoices ?? [:],
-                                       engine: engine == .siri ? .siri : nil)
+                                       engine: engine == .mac ? nil : engine)
             emit(engine == .siri ? "Preparing dub with Siri voices…" : "Preparing dub…")
             let prepared = try await DubPreparation.prepare(document: speechDocument, scenes: Array(sceneMap.values),
                 settings: settings, database: database, ai: ai, speech: .forEngine(settings.engine),

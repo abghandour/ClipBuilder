@@ -49,11 +49,15 @@ struct WizardFootageReviewView: View {
                         preferredTranslationLanguage: store.activeProfile.captionLanguages.first,
                         selection: selection, emptyTitle: "Select a take",
                         emptyMessage: "Choose a take to watch it and adjust its cuts.",
-                        resetTitle: "Reset to Suggested", playAll: true, onSave: save) { item in
+                        resetTitle: "Reset to Suggested", columnShares: (1, 2, 1), playAll: true,
+                        onSave: save) { item in
             if let (summary, take) = WizardFootageReview.take(item.id, in: selections) {
                 footer(summary, take: take, available: item.isAvailable)
             }
         }
+        // The step's label column does not apply inside the review columns:
+        // list captions sit under their title, not 172 pt to the right.
+        .environment(\.formCaptionIndent, 0)
         .task(id: videoIDs) { await loadTranscript() }
     }
 

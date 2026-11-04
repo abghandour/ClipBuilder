@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 import Testing
 @testable import Clip_Builder
 
@@ -133,6 +134,71 @@ struct DubPreparationTests {
 }
 
 extension DubPreparationTests {
+    private actor ConcurrentSpeechStub {
+        private var active = 0
+        private(set) var peak = 0
+
+        func synthesize(_ text: String) async throws -> URL {
+            active += 1
+            peak = max(peak, active)
+            defer { active -= 1 }
+            // Different completion order exercises both ordered results and
+            // progress by completion, rather than by the input line's index.
+            try await Task.sleep(for: .milliseconds(text == "0" ? 80 : 20))
+            return URL(fileURLWithPath: "/tmp/\(text).caf")
+        }
+    }
+
+    @Test(arguments: [0, 1, 2, 3])
+    func boundedSpeechPreservesLineOrderAndMonotonicProgress(limit: Int) async throws {
+        let stub = ConcurrentSpeechStub()
+        let voice = "elevenlabs:fixture"
+        let speech = DubPreparation.Speech(voices: { _ in [] }, synthesize: { text, _, _ in
+            try await stub.synthesize(text)
+        }, duration: { _ in 1 })
+        var lines: [DubLine] = []
+        for index in 0..<6 {
+            let at = Double(index * 2)
+            lines.append(DubLine(clipUID: UUID(), speakerKey: "host", voice: "", text: String(index),
+                sourceStart: at, sourceEnd: at + 2, start: at, duration: 2))
+        }
+        let messages = Mutex<[String]>([])
+        let fitted = try await DubPreparation.fitLines(lines,
+            settings: .init(language: "en", voices: ["host": voice], engine: .elevenLabs),
+            slots: Dictionary(uniqueKeysWithValues: lines.map { ($0.id, 2.0) }), overlaps: [],
+            speech: speech, limit: limit, log: { message in messages.withLock { $0.append(message) } })
+        #expect(await stub.peak == max(1, limit))
+        let fittedIDs: [UUID] = fitted.map { $0.id }
+        let lineIDs: [UUID] = lines.map { $0.id }
+        #expect(fittedIDs == lineIDs)
+        let audio: [String?] = fitted.map { $0.audio }
+        let expectedAudio: [String?] = (0..<6).map { "\($0).caf" }
+        #expect(audio == expectedAudio)
+        #expect(fitted.allSatisfy { $0.voice == voice && $0.duration == 1 })
+        let progress = messages.withLock { $0 }.filter { $0.hasPrefix("PROGRESS: ") }
+        #expect(progress == (1...6).map { "PROGRESS: \(Double($0) / 6)" })
+    }
+
+    @Test func elevenLabsPreparationKeepsSpeechInjectableAndLogsUsage() async throws {
+        let clip = Fixtures.timelineClip(sourceStart: 0, duration: 2)
+        let row = TranscriptRow(id: 1, videoID: 1, language: "pt-BR", isTranslation: true,
+            startTime: 0, endTime: 2, text: "Olá", originalText: nil, wordsJSON: nil, provider: nil, model: nil)
+        let voice = "elevenlabs:fixture"
+        let speech = DubPreparation.Speech(voices: { _ in [.init(identifier: voice, language: "pt-BR", name: "Fixture")] },
+            synthesize: { text, _, _ in
+                ElevenLabsDubUsage.current?.request(characters: text.count)
+                return URL(fileURLWithPath: "/tmp/fixture.caf")
+            }, duration: { _ in 1 })
+        let messages = Mutex<[String]>([])
+        let result = try await DubPreparation.synthesize(document: Fixtures.timelineDocument(clips: [clip]),
+            rows: [clip.uid: [row]], turns: [:], settings: .init(language: "pt-BR", engine: .elevenLabs),
+            speech: speech, log: { message in messages.withLock { $0.append(message) } })
+        #expect(result.lines.first?.voice == voice)
+        #expect(result.lines.first?.audio == "fixture.caf")
+        #expect(messages.withLock { $0 }.filter { $0.hasPrefix("ElevenLabs") }
+            == ["ElevenLabs request: 3 characters", "ElevenLabs: 3 characters"])
+    }
+
     @Test func cropBoundariesDoNotShortenSpeechSourceRange() {
         let clip = Fixtures.timelineClip(sourceStart: 10, duration: 4)
         var document = Fixtures.timelineDocument(clips: [clip])

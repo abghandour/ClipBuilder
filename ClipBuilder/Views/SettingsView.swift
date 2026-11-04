@@ -823,6 +823,14 @@ private struct GeneralSettingsTab: View {
 private struct AISettingsTab: View {
     @State private var showingLearned = false
     @Environment(AppStore.self) private var store
+    @State private var elevenLabsKey = ""
+    @State private var elevenLabsResult: String?
+    @State private var elevenLabsBusy = false
+    @State private var elevenLabsAction: ElevenLabsAction?
+
+    private enum ElevenLabsAction: Equatable {
+        case save(UUID), check(UUID), remove(UUID)
+    }
 
     // Optimistic until the async CLI check lands, mirroring the plan sheet.
     @State private var availableProviders = Set(AICatalog.providers.map(\.key))
@@ -871,6 +879,38 @@ private struct AISettingsTab: View {
         Form {
             Section("Critic Brief") { CriticBriefControls(showsUsePicker: true) }
             OnDeviceSettingsSection()
+            Section("ElevenLabs") {
+                // A bare field, as the Instagram token: inside MiniRow the
+                // grouped form draws a SecureField with no visible box.
+                SecureField("API key", text: $elevenLabsKey, prompt: Text("ElevenLabs API key"))
+                    .onSubmit { elevenLabsAction = .save(UUID()) }
+                    .disabled(elevenLabsBusy)
+                LabeledContent("Connection") {
+                    HStack(spacing: 8) {
+                        Button(elevenLabsBusy ? "Checking…" : "Check") { elevenLabsAction = .check(UUID()) }
+                            .lineLimit(1).fixedSize()
+                        Button("Remove key") { elevenLabsAction = .remove(UUID()) }
+                            .lineLimit(1).fixedSize()
+                    }
+                    .disabled(elevenLabsBusy)
+                }
+                FormCaption(elevenLabsResult ?? "Press Return to save your key securely on this Mac.")
+                LabeledContent("Model") {
+                    Picker("ElevenLabs model", selection: Binding(
+                        get: { (store.settings.ai.elevenLabs ?? ElevenLabsSettings()).model },
+                        set: {
+                            var settings = store.settings.ai.elevenLabs ?? ElevenLabsSettings()
+                            settings.model = $0
+                            store.settings.ai.elevenLabs = settings
+                        }
+                    )) {
+                        Text("Multilingual v2").lineLimit(1).fixedSize().tag("eleven_multilingual_v2")
+                        Text("Flash v2.5").lineLimit(1).fixedSize().tag("eleven_flash_v2_5")
+                        Text("Turbo v2.5").lineLimit(1).fixedSize().tag("eleven_turbo_v2_5")
+                    }
+                    .labelsHidden()
+                }
+            }
             Section {
                 ForEach(AICatalog.tasks, id: \.self) { task in
                     HStack {
@@ -961,13 +1001,56 @@ private struct AISettingsTab: View {
 
         }
         .formStyle(.grouped)
+        .task(id: elevenLabsAction) { await updateElevenLabs() }
         .task {
+            do {
+                elevenLabsKey = try ElevenLabsKeychain().read() ?? ""
+            } catch {
+                elevenLabsResult = error.localizedDescription
+            }
             availableProviders = await ModelPicker.probeAvailability(ai: store.ai)
         }
         // A just-installed CLI should show up in the routing pickers too.
         .onChange(of: store.installingProviderCLIs) { _, installing in
             guard installing.isEmpty else { return }
             Task { availableProviders = await ModelPicker.probeAvailability(ai: store.ai) }
+        }
+    }
+
+    private func updateElevenLabs() async {
+        guard let action = elevenLabsAction else { return }
+        elevenLabsBusy = true
+        defer {
+            elevenLabsBusy = false
+            if elevenLabsAction == action { elevenLabsAction = nil }
+            NotificationCenter.default.post(name: ElevenLabsVoices.settingsChanged, object: nil)
+        }
+        do {
+            let keychain = ElevenLabsKeychain()
+            switch action {
+            case .remove:
+                try keychain.write(nil)
+                elevenLabsKey = ""
+                elevenLabsResult = "Add your ElevenLabs key in Settings > AI"
+                await ElevenLabsVoiceCache.shared.invalidate()
+            case .save, .check:
+                let key = elevenLabsKey.trimmingCharacters(in: .whitespacesAndNewlines)
+                try keychain.write(key.isEmpty ? nil : key)
+                elevenLabsKey = key
+                elevenLabsResult = key.isEmpty ? "Add your ElevenLabs key in Settings > AI" : "Key saved securely on this Mac."
+                await ElevenLabsVoiceCache.shared.invalidate()
+                try Task.checkCancellation()
+                if case .check = action {
+                    let subscription = try await ElevenLabsSubscriptionCache.shared.refresh()
+                    try Task.checkCancellation()
+                    elevenLabsResult = "Connected: \(subscription.tier), \(subscription.characterCount)/\(subscription.characterLimit) credits this month"
+                    // Also refresh account voices, including clones added since launch.
+                    try await ElevenLabsVoiceCache.shared.refresh()
+                }
+            }
+        } catch {
+            guard !Task.isCancelled else { return }
+            elevenLabsResult = (error as? ElevenLabsError)?.userMessage ?? error.localizedDescription
         }
     }
 }

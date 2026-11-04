@@ -97,6 +97,20 @@ struct MiniHighlightReviewTests {
         }
     }
 
+    @Test func transcriptPaintsSelectedElseKeptElseAll() {
+        let candidates = [candidate(id: 1), candidate(id: 2, kept: false), candidate(id: 3, kept: false)]
+        let items = MiniHighlightReview.items(candidates: candidates, video: Fixtures.video(), scenes: [Fixtures.scene()])
+        // A selected item paints itself only.
+        #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: 2, kept: [1]).isEmpty)
+        #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: 2, kept: nil).isEmpty)
+        // Nothing selected: the kept ones, ignoring IDs not on the list.
+        #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: nil, kept: [1, 3, 999]) == [1, 3])
+        // Nothing kept, or no Keep boxes: every item.
+        #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: nil, kept: []) == [1, 2, 3])
+        #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: nil, kept: [999]) == [1, 2, 3])
+        #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: nil, kept: nil) == [1, 2, 3])
+    }
+
     @Test func selectAllCountsCandidatesRatherThanCutsAndIgnoresUnknownIDs() {
         let candidates = [candidate(id: 1, clips: [Fixtures.planClip(), Fixtures.planClip()]),
                           candidate(id: 2, kept: false)]

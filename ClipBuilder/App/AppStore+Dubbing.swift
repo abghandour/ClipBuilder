@@ -24,7 +24,7 @@ extension AppStore {
         let generation = profileGeneration
         let settings = DubSettings(language: language, voices: editingDefaults.dubVoices ?? [:],
                                    originalLevel: originalLevel, replaceOriginal: replaceOriginal,
-                                   engine: dubEngine == .siri ? .siri : nil)
+                                   engine: dubEngine == .mac ? nil : dubEngine)
         let database = database, ai = ai
         let scenes = builder.scenes
         return jobs.start(.dub, title: "Dub timeline", project: activeProject, profileGeneration: generation,
@@ -72,21 +72,25 @@ extension AppStore {
                                                               genders: review.prepared.speakerGenders)
             updated.prepared.settings = settings
             let previous = Dictionary(uniqueKeysWithValues: review.prepared.lines.map { ($0.id, $0) })
-            var result: [DubLine] = []
-            for (index, var line) in lines.enumerated() {
-                try Task.checkCancellation()
-                line.voice = settings.voices[line.speakerKey] ?? line.voice
-                if let old = previous[line.id], old.text == line.text, old.voice == line.voice, old.audio != nil {
-                    line = old; line.speakerKey = lines[index].speakerKey
-                } else {
-                    log("Dub line \(index + 1) of \(lines.count)")
-                    line = try await DubPreparation.fit(line, slot: updated.prepared.slots[line.id] ?? 0,
-                        overlapping: updated.prepared.overlaps.contains(line.id), speech: speech)
+            let slots = updated.prepared.slots, overlaps = updated.prepared.overlaps
+            updated.prepared.lines = try await ElevenLabsDubUsage.withLogging(
+                enabled: settings.engine == .elevenLabs, log: log) {
+                var result: [DubLine] = []
+                for (index, var line) in lines.enumerated() {
+                    try Task.checkCancellation()
+                    line.voice = settings.voices[line.speakerKey] ?? line.voice
+                    if let old = previous[line.id], old.text == line.text, old.voice == line.voice, old.audio != nil {
+                        line = old; line.speakerKey = lines[index].speakerKey
+                    } else {
+                        log("Dub line \(index + 1) of \(lines.count)")
+                        line = try await DubPreparation.fit(line, slot: slots[line.id] ?? 0,
+                            overlapping: overlaps.contains(line.id), speech: speech)
+                    }
+                    result.append(line)
+                    log("PROGRESS: \(Double(index + 1) / Double(lines.count))")
                 }
-                result.append(line)
-                log("PROGRESS: \(Double(index + 1) / Double(lines.count))")
+                return result
             }
-            updated.prepared.lines = result
             try Task.checkCancellation()
             if case .render(let id) = review.target, !self.dubReviews.isPending(id) { throw CancellationError() }
             jobs.markReviewed(jobID)

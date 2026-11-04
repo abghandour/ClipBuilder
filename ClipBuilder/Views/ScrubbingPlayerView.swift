@@ -10,8 +10,13 @@ struct ScrubbingPlayerView<Overlay: View>: View {
     let player: AVPlayer?
     /// Width / height of the picture; the player keeps this shape.
     var aspect: CGFloat = 9 / 16
-    /// Drawn over the picture only, not the transport (platform chrome).
-    @ViewBuilder var pictureOverlay: () -> Overlay
+    /// The picture no longer matches its settings: Play becomes
+    /// `onPlayStale` (render again, then play) and shows that it will.
+    var stale = false
+    var onPlayStale: (() -> Void)? = nil
+    /// Drawn over the picture only, not the transport (platform chrome, a
+    /// still of the pending settings), given the playhead in seconds.
+    @ViewBuilder var pictureOverlay: (Double) -> Overlay
 
     @State private var transport = PlayerTransport()
     @State private var scrubbing: Double?
@@ -24,16 +29,19 @@ struct ScrubbingPlayerView<Overlay: View>: View {
                 .background(.black, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
                 .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
                 .contentShape(Rectangle())
-                .onTapGesture { transport.togglePlay() }
-                .overlay { pictureOverlay() }
+                .onTapGesture { play() }
+                .overlay { pictureOverlay(scrubbing ?? transport.time) }
             HStack(spacing: Theme.spaceS) {
-                Button(transport.isPlaying ? "Pause" : "Play",
-                       systemImage: transport.isPlaying ? "pause.fill" : "play.fill") {
-                    transport.togglePlay()
+                Button(stale ? (player == nil ? "Render and play" : "Regenerate and play") : transport.isPlaying ? "Pause" : "Play",
+                       systemImage: stale ? "arrow.clockwise.circle.fill" : transport.isPlaying ? "pause.fill" : "play.fill") {
+                    play()
                 }
                 .labelStyle(.iconOnly).buttonStyle(.borderless).fixedSize()
-                .disabled(player == nil)
-                .help(transport.isPlaying ? "Pause" : "Play")
+                .tint(stale ? .accentColor : nil)
+                .disabled(player == nil && !stale)
+                .help(stale ? (player == nil ? "Render this cut with the settings on the right, then play it"
+                               : "The settings changed: render this cut again with them, then play it")
+                      : transport.isPlaying ? "Pause" : "Play")
                 Slider(value: Binding(
                     get: { scrubbing ?? min(transport.time, transport.duration) },
                     set: { scrubbing = $0; transport.seek(to: $0) }),
@@ -60,13 +68,25 @@ struct ScrubbingPlayerView<Overlay: View>: View {
         .onAppear { transport.attach(player); player?.setReviewSpeed(speed) }
         .onChange(of: player) { _, player in transport.attach(player); player?.setReviewSpeed(speed) }
         .onChange(of: speed) { _, speed in player?.setReviewSpeed(speed) }
+        .onChange(of: stale, initial: true) { _, stale in if stale { transport.pause() } }
         .onDisappear { transport.attach(nil) }
+    }
+
+    /// Play or pause; a stale picture renders again first, and plays once
+    /// the new one has replaced it.
+    private func play() {
+        if stale, let onPlayStale {
+            transport.pause()
+            onPlayStale()
+        } else {
+            transport.togglePlay()
+        }
     }
 }
 
 extension ScrubbingPlayerView where Overlay == EmptyView {
     init(player: AVPlayer?, aspect: CGFloat = 9 / 16) {
-        self.init(player: player, aspect: aspect, pictureOverlay: { EmptyView() })
+        self.init(player: player, aspect: aspect, pictureOverlay: { _ in EmptyView() })
     }
 }
 
@@ -139,6 +159,11 @@ final class PlayerTransport {
         resumeAfterScrub = false
         seekInFlight = false
         pendingSeek = nil
+    }
+
+    func pause() {
+        resumeAfterScrub = false
+        player?.pause()
     }
 
     func togglePlay() {

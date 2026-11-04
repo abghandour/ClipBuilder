@@ -92,7 +92,8 @@ nonisolated enum WizardPreviewFraming {
                         people: [PersonRecord], layouts: [ScreenCropLayout], time moment: Double? = nil,
                         sceneStart: Double? = nil, contentBox: RenderEngine.ContentBox? = nil,
                         sources: [VideoRecord] = [], scenes: [SceneRecord] = [],
-                        brollCuts: [PodcastHighlightBRollPlanner.Cut] = [], sentenceEnds: [Double] = [])
+                        brollCuts: [PodcastHighlightBRollPlanner.Cut] = [], sentenceEnds: [Double] = [],
+                        chosenSubject: Framing.Subject? = nil)
         -> (framing: WizardPreviewComposite.Framing, warning: String?) {
         let time = min(record.endTime, max(record.startTime, moment ?? (record.startTime + record.endTime) / 2))
         var context = video.map { FramingContext(video: $0, range: record.startTime...record.endTime,
@@ -104,6 +105,7 @@ nonisolated enum WizardPreviewFraming {
         context.scenes = scenes
         context.brollCuts = brollCuts
         context.sentenceEnds = sentenceEnds
+        context.chosenSubject = chosenSubject
         let resolved = FocusFrame.clipped(FramingPlanner.resolve(framing: options.requestedFraming, context: context), contentBox: contentBox)
         let warning = FramingPlanner.warning(framing: options.requestedFraming, context: context)
         let fallback: WizardPreviewComposite.Framing
@@ -157,7 +159,8 @@ nonisolated enum WizardPreviewFraming {
                               time moment: Double? = nil, sceneStart: Double? = nil,
                               contentBox: RenderEngine.ContentBox? = nil,
                               sources: [VideoRecord] = [], scenes: [SceneRecord] = [],
-                              brollCuts: [PodcastHighlightBRollPlanner.Cut] = [], sentenceEnds: [Double] = []) async
+                              brollCuts: [PodcastHighlightBRollPlanner.Cut] = [], sentenceEnds: [Double] = [],
+                              chosenSubject: Framing.Subject? = nil) async
         -> (framing: WizardPreviewComposite.Framing, warning: String?) {
         var roster = roster
         if video?.type == .fight, options.requestedFraming.subject == .vipFocus {
@@ -178,12 +181,12 @@ nonisolated enum WizardPreviewFraming {
         }
         let fallback = resolve(options: options, record: record, video: video, face: face,
             turns: turns, roster: roster, people: people, layouts: layouts, time: moment, sceneStart: sceneStart, contentBox: contentBox,
-            sources: sources, scenes: scenes, brollCuts: brollCuts, sentenceEnds: sentenceEnds)
+            sources: sources, scenes: scenes, brollCuts: brollCuts, sentenceEnds: sentenceEnds, chosenSubject: chosenSubject)
         let centerStage = options.requestedFraming.subject == .centerStage
         if options.requestedFraming.focusFrame != nil || centerStage, options.requestedFraming.subject != .layout,
            case .cells(var cells) = fallback.framing {
             let focusedPlan = video.flatMap { try? Self.composition(options: options, video: $0, record: record,
-                turns: turns, roster: roster, layouts: layouts, contentBox: contentBox) }
+                turns: turns, roster: roster, layouts: layouts, contentBox: contentBox, chosenSubject: chosenSubject) }
             let time = min(record.endTime, max(record.startTime, moment ?? (record.startTime + record.endTime) / 2))
             var warning = fallback.warning
             for index in cells.indices {
@@ -273,10 +276,12 @@ nonisolated enum WizardPreviewFraming {
 
     static func composition(options: WizardOptions, video: VideoRecord, record: SceneRecord,
                             turns: [SpeakerTurn], roster: [VideoPersonRecord], layouts: [ScreenCropLayout],
-                            contentBox: RenderEngine.ContentBox? = nil) throws -> CropRecipePlanner.Plan? {
+                            contentBox: RenderEngine.ContentBox? = nil,
+                            chosenSubject: Framing.Subject? = nil) throws -> CropRecipePlanner.Plan? {
         let context = FramingContext(video: video, range: record.startTime...record.endTime,
             canvasAspect: options.renderSettings.aspectRatio, roster: roster, turns: turns,
-            storedPath: record.centerStagePath, layouts: layouts, hasBRoll: options.requestsBRollBreaks)
+            storedPath: record.centerStagePath, layouts: layouts, hasBRoll: options.requestsBRollBreaks,
+            chosenSubject: chosenSubject)
         return try FramingPlanner.composition(plan: FocusFrame.clipped(
             FramingPlanner.resolve(framing: options.requestedFraming, context: context), contentBox: contentBox), context: context)
     }

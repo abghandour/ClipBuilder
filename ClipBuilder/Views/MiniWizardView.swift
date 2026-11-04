@@ -109,6 +109,7 @@ struct MiniWizardView: View {
                         .previewOptions(profile: store.activeProfile),
                     profile: store.activeProfile, thumbnails: store.thumbnails,
                     footer: generateFooter,
+                    headerAccessory: AnyView(MiniStartOverButton(hasChanges: hasChangesToReset, startOver: startOver)),
                     onMove: { element, position in
                         switch element {
                         case .caption(let slot):
@@ -241,8 +242,7 @@ struct MiniWizardView: View {
     /// collapsible cards, so a collapsed Settings card never hides the button.
     private var generateFooter: AnyView? {
         guard let run = currentRun, flow.canExpand(.settings), settingsProfile == profileName else { return nil }
-        return AnyView(MiniGeneratePanel(settings: $miniSettings, flow: flow, run: run,
-                                         hasChanges: hasChangesToReset, startOver: startOver))
+        return AnyView(MiniGeneratePanel(settings: $miniSettings, flow: flow, run: run))
     }
 
     /// Anything a fresh page would not have: a source, a run, a loaded

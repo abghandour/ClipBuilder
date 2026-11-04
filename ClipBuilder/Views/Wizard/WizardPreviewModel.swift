@@ -26,10 +26,13 @@ nonisolated struct PreviewKey: Hashable, Sendable {
     var captionOrdinals: [String: Int]?
     var look: String
     var lookIntensity: Double?
+    var chosenSubject: Framing.Subject?
 
     init(options: WizardOptions, scene: SceneRecord, profile: BrandProfile,
          contentRevision: Int, overlayTexts: [String], time: Double? = nil,
-         shownSpeakers: Set<String> = [], captionOrdinals: [String: Int]? = nil) {
+         shownSpeakers: Set<String> = [], captionOrdinals: [String: Int]? = nil,
+         chosenSubject: Framing.Subject? = nil) {
+        self.chosenSubject = chosenSubject
         var visual = MiniWizardSettings()
         visual.preset = options.renderSettings.preset
         visual.captions = options.addCaptions
@@ -176,7 +179,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
     func loadScene(_ record: SceneRecord?, database: Database?, people: [PersonRecord],
                    language: String?, tagStyleID: String?, profile: BrandProfile, options: WizardOptions,
                    range: ClosedRange<Double>? = nil, time moment: Double? = nil, snapshotKey: String? = nil,
-                   reviewedBRoll: [BRollCut]? = nil) async {
+                   reviewedBRoll: [BRollCut]? = nil, chosenSubject: Framing.Subject? = nil) async {
         let id = UUID()
         sceneRequestID = id
         cancel()
@@ -324,7 +327,8 @@ nonisolated struct PreviewKey: Hashable, Sendable {
                 sceneStart: original.startTime, contentBox: scene.contentBox,
                 sources: snapshotForWorker?.layoutSources ?? [], scenes: snapshotForWorker?.layoutScenes ?? [], brollCuts: brollCuts,
                 sentenceEnds: options.requestedFraming.vipSentences == true
-                    ? VIPFocusPlanning.sentenceEnds(segments: snapshotForWorker?.segments ?? []) : [])
+                    ? VIPFocusPlanning.sentenceEnds(segments: snapshotForWorker?.segments ?? []) : [],
+                chosenSubject: chosenSubject)
             scene.framing = framing.framing
             scene.framingWarning = framing.warning
             let templates = OverlayTemplateStore.list()

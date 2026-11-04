@@ -13,8 +13,10 @@ nonisolated enum WizardRoughCut {
     static let leftOut = "captions, name tags, overlays, watermark, cards, bumpers, music, dub, speech polish, looks, B-roll and transitions"
 
     /// Everything that is not framing turned off, before the document is
-    /// built, so the engine also skips the AI work those layers need.
-    static func options(_ options: WizardOptions) -> WizardOptions {
+    /// built, so the engine also skips the AI work those layers need. The
+    /// effect and transition the user added in the review sheet (none by
+    /// default) are the one exception.
+    static func options(_ options: WizardOptions, extras: RoughCutExtras = RoughCutExtras()) -> WizardOptions {
         var rough = options
         let width = options.renderSettings.width
         let height = options.renderSettings.height
@@ -51,11 +53,15 @@ nonisolated enum WizardRoughCut {
         rough.strikeSpeedCallouts = false
         rough.strikeGrapplingCard = false
         rough.strikeRoundCard = false
-        rough.lookPreset = nil
-        rough.lookIntensity = nil
+        rough.lookPreset = extras.look
+        rough.lookIntensity = extras.look == nil ? nil : options.lookIntensity
         rough.useBRoll = false
-        rough.transitionChoice = nil
-        rough.allowedTransitions = ["cut"]
+        rough.transitionChoice = extras.transition
+        // Random draws from the page's allowed set; a named effect needs
+        // only itself; none keeps every boundary a hard cut.
+        rough.allowedTransitions = extras.transition == nil ? ["cut"]
+            : extras.transition == WizardPlanRules.randomTransitionChoice ? options.allowedTransitions
+            : [extras.transition!]
         return rough
     }
 
@@ -67,8 +73,9 @@ nonisolated enum WizardRoughCut {
     /// What the engine adds regardless of options, removed from the built
     /// document: overlay items and blocks, brand layers, sound, dub, clip
     /// effects, transitions, cutaways and generated cards; every clip's
-    /// captions off. Removing a leading card closes the gap it left.
-    static func strip(_ document: TimelineDocument) -> TimelineDocument {
+    /// captions off. Removing a leading card closes the gap it left. A
+    /// chosen effect or transition stays on the clips.
+    static func strip(_ document: TimelineDocument, extras: RoughCutExtras = RoughCutExtras()) -> TimelineDocument {
         var rough = document
         rough.textOverlays = []
         rough.imageOverlays = []
@@ -83,9 +90,11 @@ nonisolated enum WizardRoughCut {
         }
         for index in rough.videoTrack.indices {
             rough.videoTrack[index].captions = "none"
-            rough.videoTrack[index].effect = nil
-            rough.videoTrack[index].transIn = nil
-            rough.videoTrack[index].transOut = nil
+            if extras.look == nil { rough.videoTrack[index].effect = nil }
+            if extras.transition == nil {
+                rough.videoTrack[index].transIn = nil
+                rough.videoTrack[index].transOut = nil
+            }
         }
         if let first = rough.videoTrack.map(\.startTime).min(), first > 0 {
             for index in rough.videoTrack.indices { rough.videoTrack[index].startTime -= first }
@@ -99,12 +108,31 @@ nonisolated enum WizardRoughCut {
     }
 }
 
+/// The two finishing touches a rough cut may carry: an Effect preset and a
+/// transition at every cut, both none unless the review sheet chose them.
+nonisolated struct RoughCutExtras: Equatable, Hashable, Sendable {
+    /// `EffectCatalog` preset id; nil is none.
+    var look: String? = nil
+    /// A `TransitionCatalog` name, `WizardPlanRules.randomTransitionChoice`, or nil for hard cuts.
+    var transition: String? = nil
+}
+
 /// One rendered rough cut, kept in the cache until the next one.
 nonisolated struct RoughCut: Equatable, Sendable, Identifiable {
-    var url: URL
+    /// The rendered file; nil until Play renders it (Preview opens the
+    /// sheet with the cuts prepared but not rendered).
+    var url: URL?
     var name: String
     var duration: Double
-    var id: String { url.path }
+    /// The take it was cut from: its `previewClips` carry this id.
+    var takeID: Int64? = nil
+    var id: String { url?.path ?? "unrendered-\(takeID.map(String.init) ?? name)" }
+    var isRendered: Bool { url != nil }
+
+    /// The length an unrendered cut will have: the end of its last preview clip.
+    static func plannedDuration(of clips: [WizardPreviewClip]) -> Double {
+        clips.map { ($0.outputStart ?? 0) + ($0.outputDuration ?? $0.duration) }.max() ?? 0
+    }
 }
 
 /// A finished rough cut job: the cuts to play, the framing they were cut
@@ -123,11 +151,24 @@ nonisolated struct RoughCutReview: Equatable, Sendable {
     var sourceType: VideoType
     var videoIDs: [Int64]
     var canvasAspect: Double
+    /// The effect and transition the cuts were made with.
+    var extras: RoughCutExtras = RoughCutExtras()
+    /// The takes' footage (ids `take-<takeID>-<index>`), for the still the
+    /// sheet draws over a cut once its settings have changed.
+    var previewClips: [WizardPreviewClip] = []
+
+    /// False while the sheet shows prepared cuts that Play has yet to render.
+    var isRendered: Bool { cuts.allSatisfy(\.isRendered) }
+
+    /// Failed takes are absent from the results; positions do not survive a rerun.
+    func cut(forTake takeID: Int64) -> RoughCut? {
+        cuts.first { $0.takeID == takeID }
+    }
 }
 
 /// Everything a rough cut job was started with, kept on the store so the
-/// review sheet can run it again with different framing. Only the framing
-/// changes between runs; the takes, page and options stay as they were.
+/// review sheet can run it again with different framing, effect or
+/// transition. The takes, page and other options stay as they were.
 struct RoughCutRequest {
     var projectID: Int64
     var options: WizardOptions

@@ -3,36 +3,55 @@ import SwiftUI
 
 /// The rough cut job's result: a player per cut, so framing and focus can be
 /// checked in motion, beside the framing controls the cut was made with.
-/// Regenerate re-runs the same takes with the edited framing and swaps the
-/// new cuts into this same sheet; Apply hands the framing to the page it came
+/// Preview opens it with the cuts prepared but not rendered: a still of the
+/// settings covers each picture and Play renders. Likewise
+/// once a setting changes, a still with the new settings covers the picture
+/// at the playhead and Play renders the same takes again with the edited
+/// framing, effect and transition, swaps the new cuts into this same sheet
+/// and plays the one asked for. Apply hands the framing to the page it came
 /// from, Discard changes nothing. The cuts are small and plain by design
 /// (docs/Rough-Cut-Plan.md); nothing is saved.
 struct RoughCutReviewSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
 
-    /// The job whose result is on screen; Regenerate moves it to the new job.
+    /// The job whose result is on screen; a render from Play moves it to the new job.
     @State private var jobID: UUID
     @State private var review: RoughCutReview
     @State private var framing: Framing
+    /// Effect and transition for the next render; none unless chosen here.
+    @State private var extras: RoughCutExtras
+    /// Effect presets the local ffmpeg can render; every preset until probed.
+    @State private var availableLookIDs: Set<String>?
     @State private var players: [String: AVPlayer] = [:]
     @State private var aspects: [String: CGFloat] = [:]
-    /// Playback rate for every player, so a setting can be judged quickly or slowly.
-    @State private var speed: Float = 1
-    /// The Regenerate job this sheet is waiting for.
+    @State private var loadingTask: Task<Void, Never>?
+    @State private var posterTasks: [Task<Void, Never>] = []
+    @State private var isVisible = false
+    /// The render job this sheet is waiting for, started by Play on a stale cut.
     @State private var pendingJobID: UUID?
+    /// Which take Play asked for; a failed take must not play its neighbour.
+    @State private var playAfterRender: Int64?
 
-    static let speeds: [Float] = [0.5, 1, 1.5, 2]
     /// Wide enough for the framing rows' label column, a segmented picker
     /// and a short detail; the rows never spill past the sheet.
     private static let controlsWidth: CGFloat = 480
-    /// Under each player: its caption and the grid's spacing.
-    private static let playerChromeHeight: CGFloat = 44
+    /// Under each player: its transport and speed rows, its caption and the grid's spacing.
+    private static let playerChromeHeight: CGFloat = 100
 
     init(jobID: UUID, review: RoughCutReview) {
         _jobID = State(initialValue: jobID)
         _review = State(initialValue: review)
         _framing = State(initialValue: review.framing)
+        _extras = State(initialValue: review.extras)
+    }
+
+    /// The request's options as the rough cut renders them, with the
+    /// sheet's framing and effect: what the still over a stale cut shows.
+    private var previewOptions: WizardOptions? {
+        guard var options = store.roughCutRequests[review.requestID]?.options else { return nil }
+        options.framing = framing
+        return WizardRoughCut.options(options, extras: extras)
     }
 
     private var idealSize: CGSize {
@@ -41,7 +60,9 @@ struct RoughCutReviewSheet: View {
             screen: NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900))
         return CGSize(width: players.width + Self.controlsWidth, height: players.height)
     }
-    private var framingChanged: Bool { framing != review.framing }
+    private var framingChanged: Bool { framing != review.framing || extras != review.extras }
+    /// The picture does not show the settings: not rendered yet, or rendered with other settings.
+    private var stale: Bool { framingChanged || !review.isRendered }
     private var busy: Bool { store.isWizardRunning || store.isWizardBatchJobRunning(projectID: review.projectID) }
     private var pendingJob: AppJob? {
         guard let pendingJobID else { return nil }
@@ -54,7 +75,7 @@ struct RoughCutReviewSheet: View {
                 Text(review.cuts.count == 1 ? "Rough cut" : "\(review.cuts.count) rough cuts")
                     .font(.headline)
                     .lineLimit(1).fixedSize()
-                Text("Framing and focus only, small and plain. Left out: \(WizardRoughCut.leftOut). Change the framing and regenerate; Apply puts it on the page.")
+                Text("Framing and focus only, small and plain. Left out: \(WizardRoughCut.leftOut). Change the settings and press play to see them in motion; Apply puts the framing on the page.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -72,9 +93,10 @@ struct RoughCutReviewSheet: View {
                             ForEach(review.cuts) { cut in
                                 let size = WizardResultsLayout.playerSize(in: grid, aspect: aspects[cut.id] ?? 9 / 16)
                                 VStack(spacing: 6) {
-                                    PlayerView(player: players[cut.id])
-                                        .frame(width: size.width, height: size.height)
-                                        .background(Color.black, in: RoundedRectangle(cornerRadius: 8))
+                                    ScrubbingPlayerView(player: players[cut.id], aspect: size.width / max(1, size.height),
+                                                        stale: stale, onPlayStale: { render(thenPlay: cut.takeID) },
+                                                        pictureOverlay: { time in still(for: cut, at: time) })
+                                        .frame(width: size.width)
                                     HStack(spacing: 6) {
                                         Text(cut.name).lineLimit(1).truncationMode(.middle)
                                         Text(cut.duration.timecode).monospacedDigit().foregroundStyle(.secondary)
@@ -93,33 +115,27 @@ struct RoughCutReviewSheet: View {
 
             HStack {
                 if pendingJob != nil {
-                    Text("Rendering the rough cut again with the framing on the right.")
+                    Text("Rendering the rough cut again with the settings on the right.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.tail)
+                } else if !review.isRendered {
+                    Text("Press play to render the rough cut with the settings on the right; Apply keeps the framing.")
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.tail)
                 } else if framingChanged {
-                    Text("Framing changed. Regenerate to see it, Apply to keep it.")
+                    Text("Settings changed. Press play to render a cut with them; Apply keeps the framing.")
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.tail)
                 }
                 Spacer()
-                // Regenerate only once the preview is stale: the framing on
-                // the right differs from what the players show.
-                Button("Regenerate") {
-                    pendingJobID = store.rerunRoughCut(requestID: review.requestID, framing: framing)
-                }
-                .disabled(busy || !framingChanged)
-                .help(busy ? "The Wizard is already working on this project."
-                      : framingChanged ? "Render the rough cut again with the framing above; the new cut replaces this one here"
-                      : "The preview already shows this framing")
                 Button("Discard") { finish() }
                     .keyboardShortcut(.cancelAction)
                     .help("Close without changing the page's framing")
                 Button("Apply") {
                     send(WizardAssistant.applyFramingAction)
                 }
-                .buttonStyle(.borderedProminent)
                 .keyboardShortcut(.defaultAction)
-                .help("Make the framing above the page's framing")
+                .help("Make the framing on the right the page's framing")
             }
             .padding()
         }
@@ -127,31 +143,59 @@ struct RoughCutReviewSheet: View {
                minHeight: 480, idealHeight: idealSize.height, maxHeight: .infinity)
         .presentationSizing(.fitted)
         .modalCloseButton { finish() }
-        .task { await loadPlayers() }
-        .onChange(of: speed) { _, rate in
-            for player in players.values {
-                player.defaultRate = rate
-                if player.rate != 0 { player.rate = rate }
-            }
+        .onAppear {
+            isVisible = true
+            loadingTask = Task { await loadPlayers() }
         }
         .onChange(of: pendingJob) { _, job in
+            guard isVisible else { return }
             // Gone from the list (an empty result is removed at once) or finished.
-            guard let job else { pendingJobID = nil; return }
+            guard let job else { pendingJobID = nil; playAfterRender = nil; return }
             guard job.status != .running else { return }
             pendingJobID = nil
             // A failed or stopped run reports through the status bar; the
             // sheet keeps the cuts it has.
-            guard job.status == .done, case .roughCut(let next)? = job.result else { return }
+            guard job.status == .done, case .roughCut(let next)? = job.result else { playAfterRender = nil; return }
             adopt(next, from: job.id)
         }
         .onDisappear {
-            for player in players.values { player.pause() }
-            players = [:]
+            isVisible = false
+            stopPlayers()
         }
         .onChange(of: store.profileGeneration) { _, _ in finish() }
     }
 
-    /// Over the players while Regenerate renders: progress, the job's
+    /// Play on a stale cut: render every cut again with the settings on
+    /// the right, then play the one asked for. The job reports through the
+    /// status bar as well; a second press while it runs changes nothing.
+    private func render(thenPlay takeID: Int64?) {
+        guard pendingJobID == nil else { return }
+        guard !busy else {
+            store.presentNotice("Rough cut", "The Wizard is already working on this project.")
+            return
+        }
+        for player in players.values { player.pause() }
+        playAfterRender = takeID
+        pendingJobID = store.rerunRoughCut(requestID: review.requestID, framing: framing, extras: extras)
+        if pendingJobID == nil { playAfterRender = nil }
+    }
+
+    /// Over a stale cut's picture: the kept footage at the playhead with the
+    /// settings on the right, so a change shows before the cut is rendered.
+    @ViewBuilder
+    private func still(for cut: RoughCut, at time: Double) -> some View {
+        if stale, let previewOptions, let takeID = cut.takeID,
+           let moment = WizardPreviewClips.moment(in: WizardPreviewClips.clips(review.previewClips, ofTake: takeID), at: time) {
+            WizardPreviewColumn(scenes: review.previewClips.map(\.scene), clips: review.previewClips,
+                                options: previewOptions, profile: store.activeProfile,
+                                thumbnails: store.thumbnails, pinned: moment)
+                .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
+                .allowsHitTesting(false)
+                .accessibilityLabel("Preview of the changed settings at this moment")
+        }
+    }
+
+    /// Over the players while Play renders: progress, the job's
     /// last line and Stop, the same as its status-bar row.
     private func rendering(_ job: AppJob) -> some View {
         VStack(spacing: Theme.spaceM) {
@@ -175,45 +219,60 @@ struct RoughCutReviewSheet: View {
     /// closed out (its files go with the next prune), the new job becomes
     /// the one this sheet closes, and its players load.
     private func adopt(_ next: RoughCutReview, from newJobID: UUID) {
-        for player in players.values { player.pause() }
-        players = [:]
-        aspects = [:]
+        stopPlayers()
         store.jobs.markReviewed(jobID)
         jobID = newJobID
         review = next
-        Task { await loadPlayers() }
+        let playTakeID = framingChanged ? nil : playAfterRender
+        playAfterRender = nil
+        loadingTask = Task { await loadPlayers(playTakeID: playTakeID) }
     }
 
-    private func loadPlayers() async {
+    private func stopPlayers() {
+        loadingTask?.cancel()
+        loadingTask = nil
+        for task in posterTasks { task.cancel() }
+        posterTasks = []
+        for player in players.values { player.pause() }
+        players = [:]
+        aspects = [:]
+    }
+
+    private func loadPlayers(playTakeID: Int64? = nil) async {
         let cuts = review.cuts
+        let playCut = playTakeID.flatMap { review.cut(forTake: $0) }
         for cut in cuts {
-            let asset = AVURLAsset(url: cut.url)
+            guard !Task.isCancelled, isVisible, review.cuts == cuts else { return }
+            guard let url = cut.url else { continue }
+            let asset = AVURLAsset(url: url)
+            let aspect = try? await Self.aspect(of: asset)
+            guard !Task.isCancelled, isVisible, review.cuts == cuts else { return }
             let item = AVPlayerItem(asset: asset)
             let player = AVPlayer(playerItem: item)
-            player.defaultRate = speed
+            player.setReviewSpeed(PlaybackSpeed.stored())
             players[cut.id] = player
-            if let aspect = try? await Self.aspect(of: asset), review.cuts == cuts { aspects[cut.id] = aspect }
-            // A paused player that never played shows nothing; once the item
-            // is ready, a muted play-and-pause puts the first frame on screen.
-            Task { await Self.showPoster(of: player, item: item) }
+            if let aspect { aspects[cut.id] = aspect }
+            if cut.id == playCut?.id, !framingChanged {
+                // Play on a stale cut: the new cut plays as soon as it can.
+                player.play()
+            } else {
+                // A paused player that never played shows nothing; once the item
+                // is ready, a muted play-and-pause puts the first frame on screen.
+                posterTasks.append(Task { await showPoster(of: player, item: item, cuts: cuts) })
+            }
         }
     }
 
-    /// The page's framing rows, bound to the sheet's own copy, and the
-    /// playback speed.
+    /// The page's framing rows bound to the sheet's own copy, and the
+    /// effect and transition for the next render.
     private var controls: some View {
         ScrollView {
             VStack(alignment: .leading, spacing: Theme.spaceM) {
-                SettingsRow("Speed", detail: "Playback speed of the rough cuts above.") {
-                    Picker("Speed", selection: $speed) {
-                        ForEach(Self.speeds, id: \.self) { rate in
-                            Text(rate == 1 ? "1×" : rate.formatted(.number.precision(.fractionLength(0...1))) + "×")
-                                .lineLimit(1).fixedSize().tag(rate)
-                        }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .accessibilityLabel("Playback speed")
+                SettingsRow("Effect", detail: "A look over the picture; none unless chosen. The still shows it at once, the cut once it plays again.") {
+                    lookPicker
+                }
+                SettingsRow("Transition", detail: "At every cut in the rough cut; hard cuts unless chosen. Shown once the cut plays again.") {
+                    transitionPicker
                 }
                 FramingRows(framing: $framing, type: review.sourceType, videoIDs: review.videoIDs,
                             canvasAspect: review.canvasAspect)
@@ -222,6 +281,54 @@ struct RoughCutReviewSheet: View {
         }
         .environment(\.settingsDetailBelow, true)
         .environment(\.settingsRowDividers, false)
+        .task { availableLookIDs = await EffectControls.availablePresetIDs() }
+    }
+
+    /// None, then the Looks and film-stock presets the local ffmpeg can render.
+    private var lookPicker: some View {
+        let available = EffectCatalog.presets.filter { preset in
+            preset.id != "none" && (availableLookIDs?.contains(preset.id) ?? true)
+        }
+        let groups: [(title: String, presets: [EffectCatalog.Preset])] = [
+            ("Effects", available.filter { $0.group == "looks" }),
+            ("Film stocks", available.filter { $0.group == "film" }),
+        ].filter { !$0.presets.isEmpty }
+        return Picker("Effect", selection: Binding(get: { extras.look ?? "" },
+                                                   set: { extras.look = $0.isEmpty ? nil : $0 })) {
+            Text("None").lineLimit(1).fixedSize().tag("")
+            ForEach(groups, id: \.title) { group in
+                Section(group.title) {
+                    ForEach(group.presets, id: \.id) { preset in
+                        Text(preset.name).lineLimit(1).fixedSize().tag(preset.id)
+                    }
+                }
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .accessibilityLabel("Effect")
+    }
+
+    /// None (hard cuts), Random, then every transition grouped by family.
+    private var transitionPicker: some View {
+        let groups: [(title: String, effects: [TransitionEffect])] = TransitionEffect.Category.allCases
+            .filter { $0 != .cut }
+            .map { category in (category.title, TransitionCatalog.all.filter { $0.category == category }) }
+        return Picker("Transition", selection: Binding(get: { extras.transition ?? "" },
+                                                       set: { extras.transition = $0.isEmpty ? nil : $0 })) {
+            Text("None").lineLimit(1).fixedSize().tag("")
+            Text("Random").lineLimit(1).fixedSize().tag(WizardPlanRules.randomTransitionChoice)
+            ForEach(groups, id: \.title) { group in
+                Section(group.title) {
+                    ForEach(group.effects) { effect in
+                        Text(effect.title).lineLimit(1).fixedSize().tag(effect.name)
+                    }
+                }
+            }
+        }
+        .pickerStyle(.menu)
+        .labelsHidden()
+        .accessibilityLabel("Transition")
     }
 
     /// The command is consumed by the page that made the cut, so bring that
@@ -245,19 +352,25 @@ struct RoughCutReviewSheet: View {
     /// play: AVPlayerView renders nothing for a player that never ran, and
     /// a seek alone does not wake it. A muted play until the first frame
     /// lands, then pause. Does nothing if the user already played.
-    private static func showPoster(of player: AVPlayer, item: AVPlayerItem) async {
+    private func showPoster(of player: AVPlayer, item: AVPlayerItem, cuts: [RoughCut]) async {
         for _ in 0..<100 where item.status == .unknown {
-            try? await Task.sleep(for: .milliseconds(50))
+            do { try await Task.sleep(for: .milliseconds(50)) } catch { return }
+            guard !Task.isCancelled, isVisible, review.cuts == cuts else { return }
         }
-        guard item.status == .readyToPlay, player.rate == 0, item.currentTime() == .zero else { return }
+        guard !Task.isCancelled, isVisible, review.cuts == cuts,
+              item.status == .readyToPlay, player.rate == 0, item.currentTime() == .zero else { return }
         let muted = player.isMuted
+        defer {
+            if Task.isCancelled || !isVisible || review.cuts != cuts { player.pause() }
+            player.isMuted = muted
+        }
         player.isMuted = true
         player.play()
         for _ in 0..<40 where item.currentTime().seconds < 0.03 {
-            try? await Task.sleep(for: .milliseconds(25))
+            do { try await Task.sleep(for: .milliseconds(25)) } catch { return }
+            guard !Task.isCancelled, isVisible, review.cuts == cuts else { return }
         }
         if player.currentItem === item, item.currentTime().seconds < 0.5 { player.pause() }
-        player.isMuted = muted
     }
 
     nonisolated private static func aspect(of asset: AVAsset) async throws -> CGFloat? {

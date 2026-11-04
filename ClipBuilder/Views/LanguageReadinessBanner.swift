@@ -4,7 +4,9 @@ import Translation
 struct LanguageReadinessBanner: View {
     @Environment(AppStore.self) private var store
     @Environment(\.openURL) private var openURL
+    @Environment(\.openSettings) private var openSettings
     @Environment(\.workspacePageVisible) private var pageVisible
+    @AppStorage("settings.selectedTab") private var settingsTab = "profile"
     @State private var mounted = false
     @State private var configuration: TranslationSession.Configuration?
     @State private var installing: LanguageAsset?
@@ -39,6 +41,9 @@ struct LanguageReadinessBanner: View {
             }
             .onChange(of: store.activeProjectID) { _, _ in cancel(requeue: false) }
             .onChange(of: store.profileGeneration) { _, _ in cancel(requeue: false) }
+            .onReceive(NotificationCenter.default.publisher(for: ElevenLabsVoices.settingsChanged)) { _ in
+                Task { await store.refreshLanguageReadiness() }
+            }
             .translationTask(configuration) { session in
                 guard let asset = installing, let capturedRequest = requestID else { return }
                 let capturedGeneration = generation
@@ -78,7 +83,16 @@ struct LanguageReadinessBanner: View {
                     .disabled(installing != nil || store.jobs.running.contains { $0.kind == .languageAssets })
             }
             Button("Languages…") { store.languageEditorProject = project }
-            if store.languageAssets.contains(where: { $0.state == .unsupported || ($0.kind == .dubVoice && $0.state != .installed) }) {
+            if store.languageAssets.contains(where: { $0.kind == .dubVoice && $0.dubEngine == .elevenLabs && $0.state != .installed }) {
+                Button("Open Settings…") {
+                    settingsTab = "ai"
+                    openSettings()
+                }
+                .help("Check your ElevenLabs key and account voices in Settings > AI.")
+            }
+            if store.languageAssets.contains(where: {
+                $0.dubEngine != .elevenLabs && ($0.state == .unsupported || ($0.kind == .dubVoice && $0.state != .installed))
+            }) {
                 Button("Open System Settings") { openURL(SiriDubVoices.spokenContentSettingsURL) }
                     .help("Download voices in Spoken Content. Siri voices also need a Clip Builder Dub shortcut. Unsupported recognizers require choosing another spoken language.")
             }

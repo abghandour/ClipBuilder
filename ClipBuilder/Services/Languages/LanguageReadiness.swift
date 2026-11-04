@@ -8,6 +8,8 @@ nonisolated struct LanguageAsset: Hashable, Sendable, Identifiable {
     var kind: Kind
     var language: String
     var state: State
+    var dubEngine: DubVoiceEngine? = nil
+    var missingElevenLabsKey = false
     var id: String { "\(kind.rawValue):\(language)" }
     var installable: Bool { state == .downloadable && kind != .dubVoice }
     var title: String {
@@ -15,7 +17,8 @@ nonisolated struct LanguageAsset: Hashable, Sendable, Identifiable {
         case .recognizer: "\(DubLanguageChoices.name(language)) recognizer"
         case .translation:
             language.components(separatedBy: "→").map(DubLanguageChoices.languageName).joined(separator: " → ") + " translation"
-        case .dubVoice: "\(DubLanguageChoices.name(language)) dub voice"
+        case .dubVoice:
+            missingElevenLabsKey ? "ElevenLabs key" : "\(DubLanguageChoices.name(language)) dub voice"
         }
     }
 }
@@ -24,6 +27,20 @@ nonisolated struct LanguageProbe: Sendable {
     var recognizer: @Sendable (String) async -> LanguageAsset.State
     var translation: @Sendable (String, String) async -> LanguageAsset.State
     var dubVoice: @Sendable (String, DubVoiceEngine?) async -> LanguageAsset.State
+    var elevenLabsKey: @Sendable () throws -> String? = { try ElevenLabsKeychain().read() }
+
+    static func dubVoiceState(language: String, engine: DubVoiceEngine?,
+                              key: @Sendable () throws -> String? = { try ElevenLabsKeychain().read() },
+                              cache: ElevenLabsVoiceCache = .shared) async -> LanguageAsset.State {
+        if engine == .elevenLabs {
+            guard let key = try? key(), !key.isEmpty else { return .missing }
+            guard ElevenLabsVoices.supportedLanguages.contains(ProjectLanguageResolver.languageCode(language)) else {
+                return .unsupported
+            }
+        }
+        let voices = await DubLanguageChoices.voices(engine: engine, language: language, cache: cache)
+        return voices.contains { DubLanguageChoices.matches($0.language, requested: language) } ? .installed : .missing
+    }
 
     static let live = LanguageProbe(
         recognizer: { identifier in
@@ -41,8 +58,7 @@ nonisolated struct LanguageProbe: Sendable {
             }
         },
         dubVoice: { language, engine in
-            let voices = await DubLanguageChoices.voices(engine: engine)
-            return voices.contains { DubLanguageChoices.matches($0.language, requested: language) } ? .installed : .missing
+            await dubVoiceState(language: language, engine: engine)
         })
 }
 
@@ -60,7 +76,11 @@ nonisolated enum LanguageReadiness {
             }
         }
         for locale in ProjectLanguageResolver.unique(languages.dub) {
-            result.append(LanguageAsset(kind: .dubVoice, language: locale, state: await probe.dubVoice(locale, dubEngine)))
+            let state = await probe.dubVoice(locale, dubEngine)
+            let missingKey = dubEngine == .elevenLabs && state == .missing
+                && ((try? probe.elevenLabsKey())?.isEmpty != false)
+            result.append(LanguageAsset(kind: .dubVoice, language: locale, state: state,
+                                        dubEngine: dubEngine, missingElevenLabsKey: missingKey))
         }
         return result
     }

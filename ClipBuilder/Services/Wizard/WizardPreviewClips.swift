@@ -9,9 +9,19 @@ nonisolated struct WizardPreviewClip: Identifiable, Sendable, Hashable {
     var start: Double
     var end: Double
     var brollCuts: [BRollCut]? = nil
+    /// The rendered clock, after pacing, speed and transition overlaps.
+    var outputStart: Double? = nil
+    var outputDuration: Double? = nil
+    var chosenSubject: Framing.Subject? = nil
 
     var range: ClosedRange<Double> { start...max(start, end) }
     var duration: Double { max(0, end - start) }
+}
+
+/// One moment of a kept clip, in source time, for a still pinned to it.
+nonisolated struct WizardPreviewMoment: Equatable, Hashable, Sendable {
+    var clipID: String
+    var time: Double
 }
 
 /// The kept footage of an Express run as preview clips, in output order.
@@ -51,12 +61,80 @@ nonisolated enum WizardPreviewClips {
                     let title = candidate.take.plan.clips.count > 1
                         ? "\(candidate.selection.name) · \(index + 1)" : candidate.selection.name
                     result.append(.init(id: "take-\(candidate.id)-\(index)", title: title,
-                                        scene: scene, start: clip.start, end: clip.end, brollCuts: clip.brollCuts))
+                                        scene: scene, start: clip.start, end: clip.end, brollCuts: clip.brollCuts,
+                                        chosenSubject: candidate.take.plan.framing))
                 }
             }
             return result
         }
         return result
+    }
+
+    /// The kept takes of a batch (the Full wizard's and a rough cut's) as
+    /// preview clips, in output order, titled by their selection.
+    static func takes(_ takes: [WizardSelectionTake], names: [Int64: String],
+                      scenes: [SceneRecord]) -> [WizardPreviewClip] {
+        let byID = Dictionary(scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        var result: [WizardPreviewClip] = []
+        for take in takes {
+            let name = names[take.selectionID]?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+            let base = name.isEmpty ? "Take \(take.ordinal)" : name
+            for (index, clip) in take.plan.clips.enumerated() where clip.end > clip.start {
+                guard let scene = byID[clip.sceneID] else { continue }
+                let title = take.plan.clips.count > 1 ? "\(base) · \(index + 1)" : base
+                result.append(.init(id: "take-\(take.id)-\(index)", title: title,
+                                    scene: scene, start: clip.start, end: clip.end, brollCuts: clip.brollCuts,
+                                    chosenSubject: take.plan.framing))
+            }
+        }
+        return result
+    }
+
+    /// The stripped document the renderer used, rather than the take's plan
+    /// before pacing. Each take starts its own output clock at zero.
+    static func rendered(_ document: TimelineDocument, take: WizardSelectionTake, name: String,
+                         scenes: [SceneRecord], xfadeDuration: Double) -> [WizardPreviewClip] {
+        let byID = Dictionary(scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let clips = document.videoTrack.filter { !$0.isCutaway }.sorted { $0.startTime < $1.startTime }
+        var cursor = 0.0
+        var result: [WizardPreviewClip] = []
+        for (index, clip) in clips.enumerated() {
+            if index > 0 { cursor -= RenderEngine.consumedOverlap(clip.transIn, xfadeDuration: xfadeDuration) }
+            let start = cursor
+            cursor += clip.duration
+            guard let sceneID = clip.sceneID, let scene = byID[sceneID], clip.duration > 0 else { continue }
+            let sourceStart = clip.sourceStart ?? scene.startTime
+            let sourceEnd = clip.sourceEnd ?? (sourceStart + clip.duration * (clip.speed ?? 1))
+            guard sourceEnd > sourceStart else { continue }
+            let title = clips.count > 1 ? "\(name) · \(index + 1)" : name
+            result.append(.init(id: "take-\(take.id)-\(index)", title: title, scene: scene,
+                                start: sourceStart, end: sourceEnd,
+                                outputStart: start, outputDuration: clip.duration, chosenSubject: take.plan.framing))
+        }
+        return result
+    }
+
+    /// The moment of kept footage at the rendered playhead. In an overlap
+    /// the incoming clip supplies the still. Untimed clips play back to back;
+    /// past the end stays on the last clip's last moment.
+    static func moment(in clips: [WizardPreviewClip], at time: Double) -> WizardPreviewMoment? {
+        let time = max(0, time.isFinite ? time : 0)
+        var cursor = 0.0
+        var moment: WizardPreviewMoment?
+        for clip in clips {
+            let start = clip.outputStart ?? cursor
+            let duration = clip.outputDuration ?? clip.duration
+            if start > time, moment != nil { break }
+            let fraction = duration > 0 ? min(1, max(0, (time - start) / duration)) : 0
+            moment = WizardPreviewMoment(clipID: clip.id, time: clip.start + fraction * clip.duration)
+            cursor = start + duration
+        }
+        return moment
+    }
+
+    /// The preview clips cut from one take, in output order.
+    static func clips(_ clips: [WizardPreviewClip], ofTake takeID: Int64) -> [WizardPreviewClip] {
+        clips.filter { $0.id.hasPrefix("take-\(takeID)-") }
     }
 
     private static func pickClips(run: MiniWizardRun, scenes: [SceneRecord], byID: [Int64: SceneRecord]) -> [WizardPreviewClip] {

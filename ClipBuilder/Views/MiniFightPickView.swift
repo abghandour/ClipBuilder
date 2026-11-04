@@ -68,7 +68,7 @@ struct MiniFightPickView: View {
                             selection: $selectedOwner,
                             emptyTitle: "Pick an action",
                             emptyMessage: "Select actions in the grid, adjust the stretch, then press Add.",
-                            resetTitle: "Reset to Added", autoplay: false, transcriptLeading: true,
+                            resetTitle: "Reset to Added", autoplay: false,
                             listTitle: picks.isEmpty ? "Picks" : (picks.count == 1 ? "1 pick" : "\(picks.count) picks"),
                             onMove: { store.reorderMiniFightPicks($0) },
                             onDelete: { item in store.deleteMiniFightPick(item.id.ownerID) },

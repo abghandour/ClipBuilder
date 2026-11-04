@@ -4,6 +4,8 @@ Date: November 2, 2026. Status: implemented November 2, 2026 (Claude), verified 
 
 Phase 2 (controls in the window, playback speed, Apply and Discard, Steady camera): implemented November 2, 2026 (Claude); see "Phase 2" below for status.
 
+November 4, 2026 (user request): Preview no longer renders on press. The job stops after the documents are built (`renderCuts: false`), the sheet opens with unrendered cuts (`RoughCut.url` nil, `RoughCutReview.isRendered` false) showing the settings still over each picture, and Play renders through `rerunRoughCut` as a stale cut does.
+
 ## Why
 
 The Wizard preview is a still. It renders one exact frame at the scrubbed
@@ -142,3 +144,64 @@ and pans while the guest sits still).
   problem.
 - Steady does not change Fighter focus.
 
+
+## Phase 3: live still preview, effect and transition
+
+Date: November 3, 2026. Status: implemented (Claude), build and the
+WizardRoughCutTests suite pass; not driven live.
+
+The user wants the framing change seen at once, without re-rendering the
+cuts, and the option to try an Effect and a transition on the rough cut.
+Both default to none; the page's own Effect and transition choices are
+not carried into the rough cut.
+
+- **Still preview in the sheet.** `RoughCutReview` carries the takes'
+  footage as `WizardPreviewClip`s (`WizardPreviewClips.takes`). The sheet
+  shows the shared `WizardPreviewColumn` above the framing rows, fed the
+  request's options as `WizardRoughCut.options` renders them with the
+  sheet's framing and effect, so the still follows every change at once
+  (framing, pull back, focus frame, effect). The cuts re-render only on
+  Regenerate.
+- **Effect and transition.** `RoughCutExtras` (look, transition; both nil)
+  travels with the request, the review and `rerunRoughCut`.
+  `WizardRoughCut.options(_:extras:)` keeps the chosen look and its
+  intensity and sets the transition (a named effect, Random over the page's
+  allowed set, or hard cuts); `strip(_:extras:)` leaves the matching clip
+  effect and transitions in the document. Two menus under the preview, the
+  wizard's own Effect and Transition lists.
+- **Regenerate** is the prominent button and enables when framing, effect
+  or transition differ from what the cuts show; Apply still hands only the
+  framing to the page (effect and transition belong to the rough cut).
+
+### Revision, November 3, 2026: one player, the still over it
+
+The user did not want a second preview. Implemented (Claude), build and
+WizardRoughCutTests (6) pass; not driven live.
+
+- Each cut plays in `ScrubbingPlayerView`, the results sheet's player:
+  AVKit's own controls are off; play, scrubber, time and the shared
+  playback speed menu sit under the picture. The sheet's Speed row and
+  the Regenerate button are gone.
+- Once a setting differs from what the cut shows (`framingChanged`), a
+  still of the kept footage at the playhead covers the picture:
+  `WizardPreviewColumn` with `pinned: WizardPreviewMoment` draws only the
+  still, with the sheet's framing and effect. `RoughCut.takeID` picks the
+  take's preview clips (`WizardPreviewClips.clips(_:ofTake:)`) and
+  `WizardPreviewClips.moment(in:at:)` walks the cut's clips back to back
+  to the source moment under the playhead.
+- The play button then shows a regenerate icon (`stale` on
+  `ScrubbingPlayerView`, `onPlayStale`): pressing it or the picture
+  renders every cut again with the settings on the right
+  (`rerunRoughCut`) and, when the new cuts arrive, plays the one pressed
+  (`playAfterRender` by position; a failed or stopped job clears it).
+
+Review round, November 3, 2026 (Codex read-only review, Codex fixes,
+Claude verified; build and WizardRoughCutTests 9 pass): the player pauses
+when its picture goes stale; the pressed cut autoplays only if the
+settings are still the ones it was rendered with, found by take id
+(`RoughCutReview.cut(forTake:)`) so a failed take plays nothing; preview
+clips come from the stripped document that was rendered
+(`WizardPreviewClips.rendered`, output clock with pacing, speed and
+transition overlaps) and carry the take's chosen subject into the
+still's framing context and cache keys; player loading and poster tasks
+are owned by the sheet and cancelled on dismiss or adoption.

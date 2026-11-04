@@ -17,10 +17,8 @@ struct RangeReviewView<Footer: View>: View {
     var resetTitle = "Reset to Original"
     /// Start playing when an item is shown or selected. Explicit word clicks always play.
     var autoplay = true
-    /// The transcript column stays up with nothing selected, so a drag can
-    /// start on a word and mark the draft (Transcript and Fight picks). Same
-    /// column order as the default: list, words, player.
-    var transcriptLeading = false
+    /// Fixed list : transcript : player shares instead of the dragged widths.
+    var columnShares: (list: CGFloat, transcript: CGFloat, player: CGFloat)? = nil
     /// Heading above the list when there is no Keep checkbox.
     var listTitle: String? = nil
     /// Drag to reorder: receives every top-level owner ID in its new order.
@@ -127,10 +125,14 @@ struct RangeReviewView<Footer: View>: View {
     }
 
     /// Saved picks of `video` as marked ranges, in the colour of their rows.
+    /// With an item selected only that item paints (through `range`); with
+    /// nothing selected the kept items paint, or every item when none is kept.
     private func markedRanges(excluding selectedID: RangeReviewItem.ID?, video: VideoRecord) -> [RangeReviewMarkedRange] {
-        items.flatMap { owner in
+        let painted = RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: selectedID?.ownerID, kept: kept?.wrappedValue)
+        return items.flatMap { owner in
             (owner.children.isEmpty ? [owner] : owner.children).compactMap { item -> RangeReviewMarkedRange? in
-                guard item.id != selectedID, item.video.id == video.id, let index = paletteIndex(owner) else { return nil }
+                guard painted.contains(owner.id.ownerID), item.id != selectedID, item.video.id == video.id,
+                      let index = paletteIndex(owner) else { return nil }
                 return RangeReviewMarkedRange(range: item.range, paletteIndex: index)
             }
         }
@@ -142,55 +144,42 @@ struct RangeReviewView<Footer: View>: View {
 
     var body: some View {
         GeometryReader { geometry in
-            let widths = Self.columnWidths(available: geometry.size.width,
-                                           list: CGFloat(listWidth), transcript: CGFloat(transcriptWidth))
+            let widths = columnShares.map {
+                TranscriptQAColumns.proportional(available: geometry.size.width,
+                                                 list: $0.list, transcript: $0.transcript, player: $0.player)
+            } ?? Self.columnWidths(available: geometry.size.width,
+                                   list: CGFloat(listWidth), transcript: CGFloat(transcriptWidth))
             let playerWidth = max(0, geometry.size.width - widths.list - widths.transcript
                                   - 2 * TranscriptQAColumns.dividerWidth)
             HStack(spacing: 0) {
-                if transcriptLeading {
-                    itemList.frame(width: widths.list, alignment: .leading).clipped()
-                    columnDivider(.list, width: widths.list, otherWidth: widths.transcript,
+                itemList.frame(width: widths.list, alignment: .leading).clipped()
+                columnDivider(.list, width: widths.list, otherWidth: widths.transcript,
+                              available: geometry.size.width)
+                // The word panel is one view whether or not something is
+                // selected, so a drag that starts with nothing selected
+                // keeps its gesture state while it selects the draft, and
+                // the words stay readable with nothing marked.
+                // Words sit next to the list, the player on the right.
+                if let context = selected ?? items.first {
+                    Group {
+                        if let leadingPanel { leadingPanel }
+                        else { wordPanel(selected: context, video: context.video, inactive: selected == nil) }
+                    }
+                    .frame(width: widths.transcript, alignment: .leading).clipped()
+                    columnDivider(.transcript, width: widths.transcript, otherWidth: widths.list,
                                   available: geometry.size.width)
-                    // The word panel is one view whether or not something is
-                    // selected, so a drag that starts with nothing selected
-                    // keeps its gesture state while it selects the draft.
-                    // Words sit next to the list, the player on the right.
-                    if let context = selected ?? items.first {
-                        Group {
-                            if let leadingPanel { leadingPanel }
-                            else { wordPanel(selected: context, video: context.video, inactive: selected == nil) }
-                        }
-                        .frame(width: widths.transcript, alignment: .leading).clipped()
-                        columnDivider(.transcript, width: widths.transcript, otherWidth: widths.list,
-                                      available: geometry.size.width)
-                        if let selected {
-                            trimSurface(item: selected).padding(Theme.spaceS)
-                            .frame(width: playerWidth).frame(maxHeight: .infinity, alignment: .top).clipped()
-                        } else {
-                            ContentUnavailableView(emptyTitle, systemImage: "text.bubble",
-                                                   description: Text(emptyMessage))
-                                .frame(width: playerWidth, alignment: .center).frame(maxHeight: .infinity)
-                        }
+                    if let selected {
+                        trimSurface(item: selected).padding(Theme.spaceS)
+                        .frame(width: playerWidth).frame(maxHeight: .infinity, alignment: .top).clipped()
                     } else {
                         ContentUnavailableView(emptyTitle, systemImage: "text.bubble",
                                                description: Text(emptyMessage))
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
+                            .frame(width: playerWidth, alignment: .center).frame(maxHeight: .infinity)
                     }
                 } else {
-                    itemList.frame(width: widths.list, alignment: .leading).clipped()
-                    columnDivider(.list, width: widths.list, otherWidth: widths.transcript,
-                                  available: geometry.size.width)
-                    if let selected, let video {
-                        wordPanel(selected: selected, video: video).frame(width: widths.transcript, alignment: .leading).clipped()
-                        columnDivider(.transcript, width: widths.transcript, otherWidth: widths.list,
-                                      available: geometry.size.width)
-                        trimSurface(item: selected).padding(Theme.spaceS)
-                            .frame(width: playerWidth).frame(maxHeight: .infinity, alignment: .top).clipped()
-                    } else {
-                        ContentUnavailableView(emptyTitle, systemImage: "text.bubble",
-                                               description: Text(emptyMessage))
-                            .frame(maxWidth: .infinity, maxHeight: .infinity)
-                    }
+                    ContentUnavailableView(emptyTitle, systemImage: "text.bubble",
+                                           description: Text(emptyMessage))
+                        .frame(maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
             .coordinateSpace(name: "transcriptQA.columns")
@@ -299,8 +288,15 @@ struct RangeReviewView<Footer: View>: View {
     private func wordPanel(selected: RangeReviewItem, video: VideoRecord, inactive: Bool = false) -> some View {
         let emptyRange = selected.range.lowerBound...selected.range.lowerBound
         let contextCanTrim = inactive ? selected.isAvailable : canTrim
-        func activate() {
-            selectedID = selected.id
+        func activate(at word: TranscriptQATrim.Word? = nil) {
+            // A saved item under the word wins; pick drafts fall back to `selected`.
+            let under = word.flatMap { word in
+                items.first { item in
+                    !item.isDraft && item.video.id == video.id
+                        && (item.children.isEmpty ? [item] : item.children).contains { TranscriptQATrim.contains(word, in: $0.range) }
+                }
+            }
+            selectedID = under?.id ?? selected.id
             userCleared = false
         }
         return TranscriptQAWordPanel(transcript: visibleTranscript, videoID: video.id,
@@ -311,8 +307,8 @@ struct RangeReviewView<Footer: View>: View {
                               range: inactive ? emptyRange : editRange,
                               otherRanges: markedRanges(excluding: inactive ? nil : selected.id, video: video),
                               playback: playback, canTrim: contextCanTrim,
-                              onSelect: inactive ? { _ in activate() } : selectWord,
-                              onPreview: inactive ? { _, _ in activate() } : previewWord,
+                              onSelect: inactive ? { activate(at: $0) } : selectWord,
+                              onPreview: inactive ? { _, word in activate(at: word) } : previewWord,
                               onCommit: { if inactive { pendingCommit = pendingDraft != nil } else { commitDraft(snap: false) } },
                               onCancel: { draft = nil; anchorDrag = nil },
                               spanSelection: spanSelection && selected.isDraft,
@@ -359,8 +355,14 @@ struct RangeReviewView<Footer: View>: View {
         .help("Clear the marked passage and deselect")
     }
 
+    @ViewBuilder
     private func columnDivider(_ column: TranscriptQAColumns.Column, width: CGFloat,
                                otherWidth: CGFloat, available: CGFloat) -> some View {
+        if columnShares != nil {
+            // Fixed shares: the divider is a line, not a drag handle.
+            Rectangle().fill(Color(nsColor: .separatorColor)).frame(width: 1)
+                .frame(width: TranscriptQAColumns.dividerWidth)
+        } else {
         TranscriptQAColumnDivider(column: column, width: width, onResize: { proposed in
             guard let updated = TranscriptQAColumns.resizedWidth(proposed, column: column,
                 available: available, otherWidth: otherWidth) else { return }
@@ -370,6 +372,7 @@ struct RangeReviewView<Footer: View>: View {
             if column == .list { listWidth = Double(column.defaultWidth) }
             else { transcriptWidth = Double(column.defaultWidth) }
         }, isLeading: true) // Both resized columns sit left of their divider.
+        }
     }
 
     private var itemList: some View {
@@ -608,7 +611,7 @@ struct RangeReviewView<Footer: View>: View {
                     Text(item.title)
                         .font(.callout.weight(.medium)).italic(item.isDraft)
                         .foregroundStyle(item.isDraft ? Color.secondary : Color.primary)
-                        .lineLimit(item.titleLines).truncationMode(.tail)
+                        .lineLimit(item.titleLines == 0 ? nil : item.titleLines).truncationMode(.tail)
                         .fixedSize(horizontal: false, vertical: true)
                         .help(item.titleHelp)
                     ForEach(item.captions.indices, id: \.self) { index in

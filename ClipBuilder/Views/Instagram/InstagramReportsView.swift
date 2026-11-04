@@ -44,14 +44,7 @@ struct InstagramReportsView: View {
     var body: some View {
         Group {
             if let account = selectedAccount {
-                VStack(spacing: 0) {
-                    Picker("Page", selection: $page) {
-                        ForEach(Page.allCases) { Text($0.rawValue).tag($0) }
-                    }
-                    .pickerStyle(.segmented)
-                    .labelsHidden()
-                    .lineLimit(1).fixedSize()
-                    .padding(Theme.spaceM)
+                PageTabs(tabs: Page.allCases, selection: $page, label: \.rawValue, fills: true, padding: 0) { page in
                     if page == .aiReports {
                         SavedAIReportsView(accountID: account.id)
                             .id("\(store.profileGeneration):\(account.id)")
@@ -65,6 +58,8 @@ struct InstagramReportsView: View {
                         noData(account)
                     }
                 }
+                .padding(Theme.spaceS)
+                .accessibilityLabel("Page")
             } else {
                 ContentUnavailableView("No Account", systemImage: "chart.bar.xaxis",
                                        description: Text("Pick an account from the Accounts menu."))

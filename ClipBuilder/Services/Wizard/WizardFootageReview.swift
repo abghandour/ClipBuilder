@@ -57,6 +57,7 @@ nonisolated enum WizardFootageReview {
         let label = "Take \(take.ordinal)"
         item.title = summary.takes.count > 1 ? "\(summary.selection.name) · \(label)" : summary.selection.name
         item.titleHelp = item.title
+        item.titleLines = 0
         item.keepLabel = "Use \(label) of \(summary.selection.name)"
         var captions: [RangeReviewItem.Caption] = [
             .init(text: "\(WizardSelectionRules.duration(take.plan).formatted(.number.precision(.fractionLength(1)))) s · "

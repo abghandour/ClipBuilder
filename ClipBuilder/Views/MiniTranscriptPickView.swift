@@ -61,7 +61,7 @@ struct MiniTranscriptPickView: View {
                         preferredTranslationLanguage: store.activeProfile.captionLanguages.first,
                         emptyTitle: "Pick a passage",
                         emptyMessage: "Select New pick, press a word in the transcript and drag, then press Add.",
-                        resetTitle: "Reset to Added", autoplay: false, transcriptLeading: true,
+                        resetTitle: "Reset to Added", autoplay: false,
                         listTitle: picks.isEmpty ? "Picks" : (picks.count == 1 ? "1 pick" : "\(picks.count) picks"),
                         onMove: { store.reorderMiniTranscriptPicks($0) },
                         onDelete: { item in store.deleteMiniTranscriptPick(item.id.ownerID) },

@@ -66,7 +66,7 @@ nonisolated struct RangeReviewItem: Identifiable, Sendable {
     var children: [RangeReviewItem] = []
     /// The span being composed (Transcript picks): not movable or deletable, shown apart.
     var isDraft = false
-    /// Rows show this many lines of the title.
+    /// Rows show this many lines of the title; 0 wraps the whole title.
     var titleLines = 1
 
     var isTrimmed: Bool {
@@ -83,6 +83,17 @@ nonisolated struct RangeReviewItem: Identifiable, Sendable {
 
     static func togglingAll(_ kept: Set<Int64>, items: [RangeReviewItem]) -> Set<Int64> {
         allKept(kept, items: items) ? [] : Set(items.map { $0.id.ownerID })
+    }
+
+    /// Which owners paint their bar and background in the transcript: none
+    /// besides the selected item while one is selected (it paints itself),
+    /// else the kept ones when any is kept, else every item. `kept` is nil
+    /// for lists without Keep boxes.
+    static func paintedOwnerIDs(items: [RangeReviewItem], selectedOwnerID: Int64?, kept: Set<Int64>?) -> Set<Int64> {
+        if selectedOwnerID != nil { return [] }
+        let all = Set(items.map { $0.id.ownerID })
+        if let kept, !kept.intersection(all).isEmpty { return kept.intersection(all) }
+        return all
     }
 }
 

@@ -194,7 +194,7 @@ struct WizardResultsSheet: View {
         let isBest = bestCritiquedIDs.contains(video.id)
         return VStack(alignment: .leading, spacing: Theme.spaceS) {
             ScrubbingPlayerView(player: players[video.id], aspect: playerSize.width / max(1, playerSize.height),
-                                pictureOverlay: {
+                                pictureOverlay: { _ in
                 PlatformChromeLayer(size: playerSize,
                                     safeAreaSettings: store.activeProfile.defaultRenderSettings.platformSafeArea)
             })

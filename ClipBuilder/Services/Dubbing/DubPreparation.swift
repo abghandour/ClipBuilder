@@ -1,4 +1,5 @@
 import Foundation
+import Synchronization
 
 /// The same strict translation, voice and measured-fit pipeline for every entry point.
 nonisolated enum DubPreparation {
@@ -17,7 +18,17 @@ nonisolated enum DubPreparation {
         static let siri = Speech(voices: { await SiriDubVoices.readyVoices(language: $0) },
             synthesize: mac.synthesize, duration: mac.duration)
 
-        static func forEngine(_ engine: DubVoiceEngine?) -> Speech { engine == .siri ? siri : mac }
+        static let elevenLabs = Speech(voices: {
+            await DubLanguageChoices.voices(engine: .elevenLabs, language: $0)
+        }, synthesize: mac.synthesize, duration: mac.duration)
+
+        static func forEngine(_ engine: DubVoiceEngine?) -> Speech {
+            switch engine ?? .mac {
+            case .mac: mac
+            case .siri: siri
+            case .elevenLabs: elevenLabs
+            }
+        }
     }
 
     struct Prepared: Equatable, Sendable {
@@ -152,15 +163,36 @@ nonisolated enum DubPreparation {
             (lines[index].id, DubPlanning.slot(for: lines[index], next: lines[safe: index + 1]))
         })
         let overlaps = Set(lines.filter(\.tight).map(\.id))
-        for index in lines.indices {
-            try Task.checkCancellation()
-            log("Dub line \(index + 1) of \(lines.count)")
-            lines[index].voice = settings.voices[lines[index].speakerKey] ?? ""
-            lines[index] = try await fit(lines[index], slot: slots[lines[index].id] ?? 0,
-                                         overlapping: overlaps.contains(lines[index].id), speech: speech)
-            log("PROGRESS: \(Double(index + 1) / Double(lines.count))")
+        let planned = lines
+        lines = try await ElevenLabsDubUsage.withLogging(enabled: settings.engine == .elevenLabs, log: log) {
+            let limit = settings.engine == .elevenLabs
+                ? (SettingsStore.loadSettings().ai.elevenLabs ?? ElevenLabsSettings()).concurrency : 1
+            return try await fitLines(planned, settings: settings, slots: slots, overlaps: overlaps,
+                                      speech: speech, limit: limit, log: log)
         }
         return Prepared(document: document, settings: settings, lines: lines, slots: slots, overlaps: overlaps)
+    }
+
+    /// BoundedConcurrency preserves input order; progress counts completions,
+    /// since remote requests can finish in a different order from the lines.
+    @concurrent
+    static func fitLines(_ lines: [DubLine], settings: DubSettings, slots: [UUID: Double], overlaps: Set<UUID>,
+                         speech: Speech, limit: Int,
+                         log: @escaping @Sendable (String) -> Void) async throws -> [DubLine] {
+        let completed = Mutex(0)
+        return try await BoundedConcurrency.map(lines, limit: limit) { index, line in
+            try Task.checkCancellation()
+            log("Dub line \(index + 1) of \(lines.count)")
+            var line = line
+            line.voice = settings.voices[line.speakerKey] ?? ""
+            let fitted = try await fit(line, slot: slots[line.id] ?? 0,
+                                       overlapping: overlaps.contains(line.id), speech: speech)
+            completed.withLock { count in
+                count += 1
+                log("PROGRESS: \(Double(count) / Double(lines.count))")
+            }
+            return fitted
+        }
     }
 
     @concurrent
