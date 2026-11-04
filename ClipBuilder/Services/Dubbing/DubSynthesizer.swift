@@ -103,6 +103,9 @@ actor DubSynthesizer {
         let utterance = AVSpeechUtterance(string: text)
         utterance.voice = installed
         utterance.rate = AVSpeechUtteranceDefaultSpeechRate * Float(rate)
+        // macOS 27.3 stopped sending the zero-length terminal buffer; the
+        // delegate's didFinish still fires after the last buffer.
+        synthesizer.delegate = writer.finishDelegate
         // A missing terminal callback must not strand the job indefinitely.
         let timeout = Task {
             try await Task.sleep(for: .seconds(120))
@@ -178,8 +181,28 @@ private nonisolated final class DubSpeechBufferWriter: Sendable {
 
     private let state = Mutex(State())
     private let url: URL
+    /// Ends the line when the synthesizer reports it finished or was
+    /// cancelled, for voices that send no terminal buffer. Kept here because
+    /// `AVSpeechSynthesizer.delegate` is weak.
+    let finishDelegate: DubSpeechFinishDelegate
 
-    init(url: URL) { self.url = url }
+    init(url: URL) {
+        self.url = url
+        finishDelegate = DubSpeechFinishDelegate()
+        finishDelegate.onFinish = { [weak self] cancelled in
+            guard let self else { return }
+            if cancelled {
+                self.finish(.failure(CancellationError()))
+            } else {
+                // Buffers for the tail can still be in flight behind the
+                // delegate call; the terminal buffer, when sent, wins earlier.
+                Task {
+                    try? await Task.sleep(for: .milliseconds(250))
+                    self.finish(.success(()))
+                }
+            }
+        }
+    }
 
     func begin(_ continuation: CheckedContinuation<Void, Error>) {
         state.withLock { $0.continuation = continuation }
@@ -218,5 +241,18 @@ private nonisolated final class DubSpeechBufferWriter: Sendable {
             return continuation
         }
         continuation?.resume(with: result)
+    }
+}
+
+/// `AVSpeechSynthesizer`'s finish and cancel reports as one callback.
+nonisolated final class DubSpeechFinishDelegate: NSObject, AVSpeechSynthesizerDelegate, @unchecked Sendable {
+    var onFinish: (@Sendable (_ cancelled: Bool) -> Void)?
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didFinish utterance: AVSpeechUtterance) {
+        onFinish?(false)
+    }
+
+    func speechSynthesizer(_ synthesizer: AVSpeechSynthesizer, didCancel utterance: AVSpeechUtterance) {
+        onFinish?(true)
     }
 }
