@@ -515,7 +515,15 @@ extension Database {
                         let predicate = table.naturalKey.map { "\"\($0)\" IS ?" }.joined(separator: " AND ") + homeGuard
                         if let old = try connection.query("SELECT sync_id FROM \(table.name) WHERE \(predicate)",
                                                            table.naturalKey.map { local[$0] ?? .null }).first?["sync_id"]?.stringValue, old != id {
-                            try rekeySyncRow(table: table, old: old, new: id)
+                            // Two local rows can share a natural key (NULL run_id scenes
+                            // before schema 45). When one already carries this identity
+                            // the upsert below lands on it; re-keying the other would
+                            // collide and abort the whole pull.
+                            if try connection.query("SELECT 1 FROM \(table.name) WHERE sync_id = ?", [.text(id)]).isEmpty {
+                                try rekeySyncRow(table: table, old: old, new: id)
+                            } else {
+                                NSLog("Team Sync: %@ already holds %@; leaving %@ as a local duplicate", table.name, id, old)
+                            }
                         }
                     }
                 }

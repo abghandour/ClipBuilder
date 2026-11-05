@@ -24,6 +24,39 @@ nonisolated enum SceneReferences {
         return result
     }
 
+    /// The same JSON with every scene reference in `map` replaced; nil when
+    /// nothing referenced a mapped id. Re-serialised by JSONSerialization,
+    /// so key order may change; the Codable readers do not care.
+    static func remapping(_ json: String, map: [Int64: Int64]) -> String? {
+        guard !map.isEmpty, let value = try? JSONSerialization.jsonObject(with: Data(json.utf8)) else { return nil }
+        var changed = false
+        let result = remapping(value, map: map, changed: &changed)
+        guard changed, let data = try? JSONSerialization.data(withJSONObject: result) else { return nil }
+        return String(decoding: data, as: UTF8.self)
+    }
+
+    private static func remapping(_ value: Any, map: [Int64: Int64], changed: inout Bool) -> Any {
+        if let rows = value as? [Any] { return rows.map { remapping($0, map: map, changed: &changed) } }
+        guard var row = value as? [String: Any] else { return value }
+        func mapped(_ number: NSNumber) -> NSNumber {
+            guard let target = map[number.int64Value] else { return number }
+            changed = true
+            return NSNumber(value: target)
+        }
+        for (key, value) in row {
+            if key == "id", row["type"] as? String == "clip", let number = value as? NSNumber {
+                row[key] = mapped(number)
+            } else if key == "scene_id" || key == "sceneID", let number = value as? NSNumber {
+                row[key] = mapped(number)
+            } else if key == "scene_ids" || key == "sceneIDs", let numbers = value as? [NSNumber] {
+                row[key] = numbers.map(mapped)
+            } else {
+                row[key] = remapping(value, map: map, changed: &changed)
+            }
+        }
+        return row
+    }
+
     static func ids(in plan: WizardPlan) -> Set<Int64> {
         Set(plan.clips.flatMap { [$0.sceneID] + $0.areaClips.map(\.sceneID) + ($0.brollCuts ?? []).map(\.sceneID) })
     }

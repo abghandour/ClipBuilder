@@ -120,13 +120,7 @@ extension Database {
                 .sorted { ($0.position, $0.id) < ($1.position, $1.id) }
             for (index, pick) in ordered.enumerated() {
                 guard pick.start.isFinite, pick.end.isFinite, pick.end > pick.start else { continue }
-                guard let sceneID = try connection.query("""
-                    INSERT INTO scenes (video_id, run_id, start_time, end_time)
-                    VALUES (?, ?, ?, ?)
-                    ON CONFLICT(video_id, run_id, start_time, end_time) DO UPDATE SET video_id = video_id
-                    RETURNING id
-                    """, [.integer(videoID), runID.map(SQLValue.integer) ?? .null, .real(pick.start), .real(pick.end)]
-                ).first?["id"]?.intValue else { continue }
+                let sceneID = try sceneID(videoID: videoID, runID: runID, start: pick.start, end: pick.end)
                 try connection.execute("INSERT OR IGNORE INTO scene_tags (scene_id, tag) VALUES (?, ?)",
                                        [.integer(sceneID), .text(Self.transcriptPickTag)])
                 if conversational {

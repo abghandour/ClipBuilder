@@ -22,16 +22,8 @@ extension Database {
                     tag: String = Database.fightStoryTag) throws -> SceneRecord? {
         guard start.isFinite, end.isFinite, end > start else { return nil }
         let runID = try activeAnalysisRun(videoID: videoID).run?.id
-        let runValue = runID.map(SQLValue.integer) ?? .null
         let id: Int64? = try connection.transaction {
-            if let existing = try connection.query("""
-                SELECT id FROM scenes WHERE video_id = ? AND run_id IS ? AND start_time = ? AND end_time = ? LIMIT 1
-                """, [.integer(videoID), runValue, .real(start), .real(end)]).first?["id"]?.intValue {
-                return existing
-            }
-            try connection.execute("INSERT INTO scenes (video_id, run_id, start_time, end_time) VALUES (?, ?, ?, ?)",
-                                   [.integer(videoID), runValue, .real(start), .real(end)])
-            let created = connection.lastInsertRowID
+            let created = try sceneID(videoID: videoID, runID: runID, start: start, end: end)
             try connection.execute("INSERT OR IGNORE INTO scene_tags (scene_id, tag) VALUES (?, ?)",
                                    [.integer(created), .text(tag)])
             return created

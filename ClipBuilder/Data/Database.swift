@@ -914,6 +914,9 @@ actor Database {
                 }
                 try Self.migrateBrandSync(connection)
                 if stamped < 28 { try Self.seedFootageSync(connection) }
+                // Schema 45: one scene per range on videos without a run (see
+                // Database+SceneIdentity). Needs the sync triggers above.
+                if stamped < 45 { try Self.mergeDuplicateScenes(connection) }
                 // Schema 41: projects and highlight history join team sync.
                 if stamped < 41 { try Self.seedFootageSync(connection, tables: SyncTable.history) }
                 // Legacy orphan data must not prevent opening the profile.
@@ -937,7 +940,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 44
+    static let schemaVersion: Int64 = 45
 
     nonisolated static func migrateTranscriptEditedWords(_ db: SQLiteConnection) throws {
         if try !db.columnNames(of: "transcripts").contains("original_words") {
