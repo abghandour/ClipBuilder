@@ -9,6 +9,8 @@ struct TextLooksList: View {
         var fontFamily: String?
         var base: String
         var runs: Int = 0
+        var captionStyle: CaptionStyle?
+        var captionFamily: CaptionPresets.Family?
     }
     let entries: [Entry]
     let presets: [Entry]
@@ -25,15 +27,18 @@ struct TextLooksList: View {
                 Section("Profile") {
                     ForEach(entries) { entry in row(entry).tag(entry.id) }
                 }
-                if !presets.isEmpty {
-                    Section("Presets") {
-                        ForEach(presets) { entry in
-                            VStack(alignment: .leading, spacing: 4) {
-                                row(entry)
-                                Button("Add", systemImage: "plus") { addPreset(entry.id) }
-                                    .lineLimit(1).fixedSize().help("Add an editable copy of \(entry.name)")
-                            }
+                ForEach(CaptionPresets.Family.allCases) { family in
+                    let members = presets.filter { $0.captionFamily == family }
+                    if !members.isEmpty {
+                        Section(family.rawValue) {
+                            ForEach(members) { presetRow($0) }
                         }
+                    }
+                }
+                let otherPresets = presets.filter { $0.captionFamily == nil }
+                if !otherPresets.isEmpty {
+                    Section("Presets") {
+                        ForEach(otherPresets) { presetRow($0) }
                     }
                 }
             }
@@ -50,10 +55,22 @@ struct TextLooksList: View {
         }
     }
 
+    private func presetRow(_ entry: Entry) -> some View {
+        VStack(alignment: .leading, spacing: 4) {
+            row(entry)
+            Button("Add", systemImage: "plus") { addPreset(entry.id) }
+                .lineLimit(1).fixedSize().help("Add an editable copy of \(entry.name)")
+        }
+    }
+
     private func row(_ entry: Entry) -> some View {
         VStack(alignment: .leading, spacing: 4) {
             HStack {
-                LookCard(name: entry.name, decor: entry.decor, fontFamily: entry.fontFamily, showsName: false)
+                if let style = entry.captionStyle {
+                    CaptionPresetThumbnail(style: style)
+                } else {
+                    LookCard(name: entry.name, decor: entry.decor, fontFamily: entry.fontFamily, showsName: false)
+                }
                 Spacer(minLength: 0)
                 Text("\(entry.runs)").font(.caption.monospacedDigit()).lineLimit(1).fixedSize()
                     .padding(4).background(.quaternary, in: .capsule)

@@ -32,7 +32,7 @@ actor CaptionPNGCache {
             + [renderer.style.pageDecor], style: renderer.style)
         if let hit = cache[key] { return hit }
         let rendered = try renderer.render(text: raster.text, activeIndex: raster.activeIndex,
-                                          emphasis: raster.emphasis, textColor: raster.textColor,
+                                          emphasis: raster.emphasis, textColor: raster.textColor, highlightColor: raster.highlightColor,
                                           frame: raster.frame, to: directory)
         cache[key] = rendered
         return rendered

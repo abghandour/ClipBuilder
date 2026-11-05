@@ -3,7 +3,7 @@ import Testing
 
 struct CaptionAnimationTests {
     @Test func framesAreMonotonicAndEndAtIdentity() {
-        for style in ["pop", "slide-up", "fade"] {
+        for style in ["pop", "bounce", "slide-up", "fade"] {
             for duration in [0.001, 0.08, 0.16, 0.18] {
                 let frames = CaptionAnimation.frames(for: style, duration: duration)
                 #expect(frames.first?.at == 0 && frames.last?.at == duration)

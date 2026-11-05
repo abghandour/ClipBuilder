@@ -279,7 +279,7 @@ nonisolated enum WizardPreviewComposite {
                         ?? plan.overlays.first {
                         let raster = overlay.raster
                         let caption = try renderer.render(text: raster.text, activeIndex: raster.activeIndex,
-                            emphasis: raster.emphasis, textColor: raster.textColor, frame: raster.frame, to: scratch)
+                            emphasis: raster.emphasis, textColor: raster.textColor, highlightColor: raster.highlightColor, frame: raster.frame, to: scratch)
                         let origin = renderer.position(for: caption, positionOverride: position)
                         layout.captions.append(CaptionBox(
                             rect: CGRect(x: origin.x, y: origin.y, width: caption.width, height: caption.height),

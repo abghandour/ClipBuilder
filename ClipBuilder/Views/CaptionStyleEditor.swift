@@ -94,6 +94,7 @@ struct CaptionStyleEditor: View {
                 Picker("Page entrance", selection: setting(\.animation, default: "none")) {
                     Text("None").tag("none")
                     Text("Pop").tag("pop")
+                    Text("Bounce").lineLimit(1).fixedSize().tag("bounce")
                     Text("Slide up").tag("slide-up")
                     Text("Fade").tag("fade")
                 }

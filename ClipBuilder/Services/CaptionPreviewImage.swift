@@ -54,7 +54,9 @@ nonisolated struct CaptionPreviewImage: Sendable {
     }
 
     static func render(style: CaptionStyle, text: String? = nil) throws -> Self {
-        try frames(style: style, text: text)[0]
+        let frames = try frames(style: style, text: text)
+        // Show the settled entrance, not the transparent first frame of a fade.
+        return frames.first { $0.start <= 0.3 && $0.end > 0.3 } ?? frames[0]
     }
 
     static func frames(style: CaptionStyle, text custom: String? = nil) throws -> [Self] {
@@ -79,7 +81,7 @@ nonisolated struct CaptionPreviewImage: Sendable {
             }
             let raster = overlay.raster
             let caption = try renderer.render(text: raster.text, activeIndex: raster.activeIndex,
-                emphasis: raster.emphasis, textColor: raster.textColor, frame: raster.frame, to: scratch)
+                emphasis: raster.emphasis, textColor: raster.textColor, highlightColor: raster.highlightColor, frame: raster.frame, to: scratch)
             let position = renderer.position(for: caption)
             let image = Self(data: try Data(contentsOf: caption.pngURL),
                              size: CGSize(width: caption.width, height: caption.height),

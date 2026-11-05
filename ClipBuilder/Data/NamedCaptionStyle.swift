@@ -4,6 +4,7 @@ nonisolated struct NamedCaptionStyle: Codable, Identifiable, Sendable, Hashable 
     var id: UUID = UUID()
     var name: String
     var style: CaptionStyle
+    var family: CaptionPresets.Family?
 }
 
 nonisolated extension BrandProfile {

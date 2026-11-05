@@ -47,6 +47,7 @@ nonisolated struct CaptionRenderer: Sendable {
         // the render frame small (each `style.x` copies the style in Debug).
         var highlight: String
         var highlightColor: String
+        var cyclesHighlight: Bool
         var highlightFont: String
         var emphasis: String
         var emphasisColor: String
@@ -63,7 +64,8 @@ nonisolated struct CaptionRenderer: Sendable {
             }
             page = style.pageDecor
             highlight = style.resolvedHighlight
-            highlightColor = style.resolvedHighlightColor
+            highlightColor = CaptionRenderer.highlightColor(forPage: 0, style: style)
+            cyclesHighlight = style.highlightColors?.isEmpty == false
             highlightFont = style.resolvedHighlightFont
             emphasis = style.resolvedEmphasis
             emphasisColor = style.resolvedEmphasisColor
@@ -78,6 +80,12 @@ nonisolated struct CaptionRenderer: Sendable {
     private func wordDecor(_ state: CaptionStyle.WordState) -> CaptionWordDecor { resolved.word[state] ?? CaptionWordDecor() }
 
     // MARK: - Color / font resolution
+
+    /// A page keeps one highlight colour through all of its word and animation frames.
+    static func highlightColor(forPage index: Int, style: CaptionStyle) -> String {
+        guard let colors = style.highlightColors, !colors.isEmpty else { return style.resolvedHighlightColor }
+        return colors[max(0, index) % colors.count]
+    }
 
     static func parseHexColor(_ string: String, fallback: (CGFloat, CGFloat, CGFloat)) -> (CGFloat, CGFloat, CGFloat) {
         var hex = string.trimmingCharacters(in: .whitespaces).lowercased()
@@ -273,9 +281,9 @@ nonisolated struct CaptionRenderer: Sendable {
     private var maxTextWidth: CGFloat {
         let padding = CGFloat(max(18, videoWidth / 60) * 2)
         let outerWidth = CGFloat(videoWidth) * (safeArea?.rect.width ?? 1)
-        // Reserve pop's overshoot inside the available width, including the
-        // fixed raster envelope and rounding at both edges.
-        let contentWidth = resolved.animation == "pop" ? (outerWidth - 2) / 1.08 : outerWidth
+        // Reserve the entrance overshoot inside the fixed raster envelope.
+        let scale = CaptionAnimation.maximumScale(for: resolved.animation)
+        let contentWidth = scale > 1 ? (outerWidth - 2) / scale : outerWidth
         return min(CGFloat(videoWidth) * (textDecor(.text).maxWidthFrac ?? 0.86), contentWidth - padding)
     }
 
@@ -304,8 +312,9 @@ nonisolated struct CaptionRenderer: Sendable {
         let contentHeight = Int(ceil(Self.maxAscent(fonts) + Self.maxDescent(fonts))) * 2
             + max(4, Int(size) / 6) + max(10, Int(size) / 4) * 2
         let contentWidth = Int(maxTextWidth) + max(18, videoWidth / 60) * 2
-        let motionX = resolved.animation == "pop" ? Int(ceil(Double(contentWidth) * 0.04)) : 0
-        let motionY = resolved.animation == "pop" ? Int(ceil(Double(contentHeight) * 0.04))
+        let overshoot = (CaptionAnimation.maximumScale(for: resolved.animation) - 1) / 2
+        let motionX = Int(ceil(Double(contentWidth) * overshoot))
+        let motionY = overshoot > 0 ? Int(ceil(Double(contentHeight) * overshoot))
             : (resolved.animation == "slide-up" ? Int(ceil(24 * Double(videoWidth) / 1080)) : 0)
         let box = RenderedCaption(pngURL: URL(fileURLWithPath: "/"),
                                   width: contentWidth + motionX * 2, height: contentHeight + motionY * 2)
@@ -318,8 +327,9 @@ nonisolated struct CaptionRenderer: Sendable {
     /// Render one caption to a PNG in `directory`. Font size defaults to
     /// max(36, videoW / 22); explicit `fontSize` overrides (text overlays).
     func render(text: String, activeIndex: Int? = nil, emphasis: [Int] = [],
-                textColor: String? = nil, frame: CaptionAnimation.Frame = .init(), to directory: URL,
+                textColor: String? = nil, highlightColor: String? = nil, frame: CaptionAnimation.Frame = .init(), to directory: URL,
                 fontSize explicitSize: CGFloat? = nil) throws -> RenderedCaption {
+        let pageHighlightColor = highlightColor ?? resolved.highlightColor
         var fontSize = explicitSize ?? baseSize
         let initialFonts = measureFonts(size: fontSize)
         let longest = text.split(whereSeparator: \.isWhitespace)
@@ -347,8 +357,9 @@ nonisolated struct CaptionRenderer: Sendable {
         let contentWidth = min(videoWidth, Int(maxLineWidth.rounded(.up)) + padX * 2)
         let contentHeight = textHeight + padY * 2
         // A fixed envelope for every frame, including the steady image.
-        let motionX = resolved.animation == "pop" ? Int(ceil(Double(contentWidth) * 0.04)) : 0
-        let motionY = resolved.animation == "pop" ? Int(ceil(Double(contentHeight) * 0.04))
+        let overshoot = (CaptionAnimation.maximumScale(for: resolved.animation) - 1) / 2
+        let motionX = Int(ceil(Double(contentWidth) * overshoot))
+        let motionY = overshoot > 0 ? Int(ceil(Double(contentHeight) * overshoot))
             : (resolved.animation == "slide-up" ? Int(ceil(24 * Double(videoWidth) / 1080)) : 0)
         let effects = CaptionStyle.WordState.allCases.map { textDecor($0) } + [resolved.page]
         let effectFontSize = fonts.map { CTFontGetSize($0.font) }.max() ?? fontSize
@@ -422,12 +433,16 @@ nonisolated struct CaptionRenderer: Sendable {
                 let tokenX = cursor + (reserved - bounds.width) / 2 - bounds.minX
                 var fill = textColor ?? style.color
                 if emphasised && ["color", "both"].contains(resolved.emphasis) { fill = resolved.emphasisColor }
-                if active && resolved.highlight == "color" { fill = resolved.highlightColor }
+                if active && resolved.highlight == "color" { fill = pageHighlightColor }
                 let box = state == .highlight && resolved.highlight == "box"
-                if box { fill = resolved.highlightColor }
+                if box { fill = pageHighlightColor }
                 var paint = textDecor(state)
                 if !resolved.hasTextDecor { paint.color = fill }
                 else if let textColor, state == .text { paint.color = textColor }
+                if state == .highlight && resolved.highlight == "color",
+                   highlightColor != nil || resolved.cyclesHighlight {
+                    paint.color = pageHighlightColor
+                }
                 var backgroundRect: CGRect?
                 var radius: CGFloat?
                 if !resolved.hasTextDecor {
@@ -435,9 +450,9 @@ nonisolated struct CaptionRenderer: Sendable {
                     paint.shadowBlur = 4 / CTFontGetSize(drawFont)
                 }
                 if box && decor.bgColor == nil && (state == .highlight ? style.highlightDecor?.decor?.bgColor : nil) == nil {
-                    paint.bgColor = resolved.highlightColor
+                    paint.bgColor = pageHighlightColor
                     paint.bgOpacity = 1
-                    let (r, g, b) = Self.parseHexColor(resolved.highlightColor, fallback: (1, 0.84, 0))
+                    let (r, g, b) = Self.parseHexColor(pageHighlightColor, fallback: (1, 0.84, 0))
                     paint.color = 0.2126 * r + 0.7152 * g + 0.0722 * b > 0.55 ? "#000000" : "#ffffff"
                 } else if !resolved.hasTextDecor { paint.bgColor = decor.bgColor ?? fill }
                 if usesLegacyDecorations && box {

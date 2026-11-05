@@ -361,6 +361,7 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
     var wordsPerPage: Int?
     var highlight: String?
     var highlightColor: String?
+    var highlightColors: [String]?
     var emphasis: String?
     var emphasisColor: String?
     var uppercase: Bool?
@@ -426,7 +427,7 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
     var resolvedStrokeWidth: Double { min(6, max(0, strokeWidth ?? 1)) }
     var resolvedShadow: Bool { shadow ?? false }
     var resolvedLetterSpacing: Double { min(6, max(-2, letterSpacing ?? 0)) }
-    var resolvedAnimation: String { ["pop", "slide-up", "fade"].contains(animation ?? "") ? animation! : "none" }
+    var resolvedAnimation: String { ["pop", "bounce", "slide-up", "fade"].contains(animation ?? "") ? animation! : "none" }
     var resolvedReveal: String { reveal == "word" ? "word" : "none" }
     var resolvedRevealMotion: Bool { revealMotion ?? false }
     var resolvedEmoji: Bool { emoji ?? false }
@@ -444,6 +445,7 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
         case reveal
         case revealMotion = "reveal_motion"
         case highlightColor = "highlight_color"
+        case highlightColors = "highlight_colors"
         case emphasisColor = "emphasis_color"
         case strokeWidth = "stroke_width"
         case letterSpacing = "letter_spacing"
@@ -474,6 +476,7 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
         wordsPerPage = try container.decodeIfPresent(Int.self, forKey: .wordsPerPage)
         highlight = try container.decodeIfPresent(String.self, forKey: .highlight)
         highlightColor = try container.decodeIfPresent(String.self, forKey: .highlightColor)
+        highlightColors = try container.decodeIfPresent([String].self, forKey: .highlightColors)
         emphasis = try container.decodeIfPresent(String.self, forKey: .emphasis)
         emphasisColor = try container.decodeIfPresent(String.self, forKey: .emphasisColor)
         uppercase = try container.decodeIfPresent(Bool.self, forKey: .uppercase)

@@ -165,7 +165,7 @@ extension CaptionRendererTests {
             try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
             defer { try? FileManager.default.removeItem(at: folder) }
             let safe = try #require(PlatformSafeArea.resolve(platforms: SocialPlatform.allCases, aspectRatio: 9.0 / 16))
-            for motion in ["pop", "slide-up", "fade"] {
+            for motion in ["pop", "bounce", "slide-up", "fade"] {
                 var style = CaptionStyle()
                 style.animation = motion
                 style.highlight = "scale"

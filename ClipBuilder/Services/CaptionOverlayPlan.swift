@@ -13,6 +13,7 @@ nonisolated enum CaptionOverlayPlan {
         var position: String
         var language: String = ""
         var textColor: String?
+        var highlightColor: String?
         var streamID: String = ""
         var windowStart: Double?
         var windowEnd: Double?
@@ -24,6 +25,7 @@ nonisolated enum CaptionOverlayPlan {
         var activeIndex: Int?
         var emphasis: [Int] = []
         var textColor: String?
+        var highlightColor: String?
         var frame = CaptionAnimation.Frame()
         var styleID: String?
     }
@@ -77,13 +79,27 @@ nonisolated enum CaptionOverlayPlan {
     }
 
     static func plan(pages: [Page], style: CaptionStyle, styles: [String: CaptionStyle] = [:], limit: Int = inputLimit) throws -> Plan {
+        // Number pages within each independent caption stream, never per word/frame.
+        // Carry the resolved colour in the raster key so repeated text cannot reuse
+        // the previous page's PNG. Static fallback retains its first page's colour.
+        var pageCounts: [String: Int] = [:]
+        let pages = pages.map { item in
+            var item = item
+            let index = pageCounts[item.streamID, default: 0]
+            pageCounts[item.streamID] = index + 1
+            let pageStyle = item.styleID.flatMap { styles[$0] } ?? style
+            if pageStyle.highlightColors?.isEmpty == false {
+                item.highlightColor = CaptionRenderer.highlightColor(forPage: index, style: pageStyle)
+            }
+            return item
+        }
         func raster(for item: Page, activeIndex: Int? = nil) -> Raster {
             let style = item.styleID.flatMap { styles[$0] } ?? style
             let emphasis = style.resolvedEmphasis == "none" ? []
                 : CaptionEmphasis.indices(for: item.caption, language: item.language)
             let emoji = style.resolvedEmoji ? CaptionEmphasis.emoji(for: item.caption, language: item.language) : nil
             return Raster(text: item.caption.text + (emoji.map { " " + $0 } ?? ""),
-                          activeIndex: activeIndex, emphasis: emphasis, textColor: item.textColor, styleID: item.styleID)
+                          activeIndex: activeIndex, emphasis: emphasis, textColor: item.textColor, highlightColor: item.highlightColor, styleID: item.styleID)
         }
         func clipped(_ overlay: Overlay, to item: Page) -> Overlay? {
             var overlay = overlay

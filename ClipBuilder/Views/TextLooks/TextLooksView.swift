@@ -261,11 +261,13 @@ struct TextLooksView: View {
         guard let id else { return "Default look" }
         return store.activeProfile.textStyles?.first { $0.id.uuidString == id }?.name ?? "Unavailable style"
     }
-    private func captionEntry(_ id: String, _ name: String, _ style: CaptionStyle) -> TextLooksList.Entry {
+    private func captionEntry(_ id: String, _ name: String, _ style: CaptionStyle,
+                              family: CaptionPresets.Family? = nil) -> TextLooksList.Entry {
         let resolved = style.applyingSharedStyle(store.activeProfile.textStyles ?? [])
         return .init(
             id: id, name: name, decor: resolved.resolvedTextDecor(for: .text), fontFamily: resolved.fontOverride ?? resolved.font,
-            base: baseName(style.sharedStyleID), runs: counts.captions[id] ?? 0)
+            base: baseName(style.sharedStyleID), runs: counts.captions[id] ?? 0,
+            captionStyle: resolved, captionFamily: family)
     }
     private func tagEntry(_ id: String, _ name: String, _ style: TagStyle) -> TextLooksList.Entry {
         let resolved = style.applyingSharedStyle(store.activeProfile.textStyles ?? [])
@@ -317,14 +319,14 @@ struct TextLooksView: View {
     }
     private var presets: [TextLooksList.Entry] {
         switch tab {
-        case .captions: CaptionPresets.styles.map { captionEntry($0.name, $0.name, $0.style) }
+        case .captions: CaptionPresets.styles.map { captionEntry($0.name, $0.name, $0.style, family: $0.family) }
         case .tags: TextLookPresets.tags.map { tagEntry($0.name, $0.name, $0.style) }
         default: []
         }
     }
     private func addPreset(_ id: String) {
         if tab == .captions, let preset = CaptionPresets.styles.first(where: { $0.name == id }) {
-            let copy = NamedCaptionStyle(name: preset.name, style: preset.style)
+            let copy = NamedCaptionStyle(name: preset.name, style: preset.style, family: preset.family)
             store.activeProfile.captionStyles = (store.activeProfile.captionStyles ?? []) + [copy]
             selection = copy.id.uuidString
         } else if tab == .tags, let preset = TextLookPresets.tags.first(where: { $0.name == id }) {
@@ -338,7 +340,9 @@ struct TextLooksView: View {
         let label = duplicate ? name.wrappedValue + " Copy" : "New Style"
         switch tab {
         case .captions:
-            let copy = NamedCaptionStyle(name: label, style: duplicate ? caption.wrappedValue : store.activeProfile.captions)
+            let source = captionIndex.flatMap { store.activeProfile.captionStyles?[$0] }
+            let copy = NamedCaptionStyle(name: label, style: duplicate ? caption.wrappedValue : store.activeProfile.captions,
+                                         family: duplicate ? source.flatMap { CaptionPresets.family(for: $0) } : nil)
             store.activeProfile.captionStyles = (store.activeProfile.captionStyles ?? []) + [copy]
             selection = copy.id.uuidString
         case .tags:
