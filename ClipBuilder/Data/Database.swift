@@ -110,7 +110,8 @@ actor Database {
         original_end REAL NOT NULL,
         scene_id INTEGER REFERENCES scenes(id) ON DELETE SET NULL,
         created_at TEXT DEFAULT (datetime('now')),
-        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE
+        project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
+        kept INTEGER NOT NULL DEFAULT 1
     );
 
     CREATE TABLE IF NOT EXISTS fight_picks (
@@ -917,6 +918,11 @@ actor Database {
                 // Schema 45: one scene per range on videos without a run (see
                 // Database+SceneIdentity). Needs the sync triggers above.
                 if stamped < 45 { try Self.mergeDuplicateScenes(connection) }
+                // Schema 46: a transcript pick can be unchecked (kept in the
+                // list, left out of the footage).
+                if stamped < 46, try !connection.columnNames(of: "transcript_picks").contains("kept") {
+                    try connection.execute("ALTER TABLE transcript_picks ADD COLUMN kept INTEGER NOT NULL DEFAULT 1")
+                }
                 // Schema 41: projects and highlight history join team sync.
                 if stamped < 41 { try Self.seedFootageSync(connection, tables: SyncTable.history) }
                 // Legacy orphan data must not prevent opening the profile.
@@ -940,7 +946,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 45
+    static let schemaVersion: Int64 = 46
 
     nonisolated static func migrateTranscriptEditedWords(_ db: SQLiteConnection) throws {
         if try !db.columnNames(of: "transcripts").contains("original_words") {

@@ -2,7 +2,8 @@ import SwiftUI
 
 /// Express Transcript mode: picks on the left, the player in the middle, words on
 /// the right. A "New pick" row holds the span being composed; Add (in the transcript
-/// column's footer) stores it and clears the selection for the next one.
+/// column's footer) stores it and clears the selection for the next one. Each pick
+/// has a Keep box: only checked picks become footage.
 struct MiniTranscriptPickView: View {
     @Environment(AppStore.self) private var store
     let run: MiniWizardRun
@@ -33,6 +34,12 @@ struct MiniTranscriptPickView: View {
         return at...at
     }
 
+    /// Checked picks become footage; the draft row has no box.
+    private var kept: Binding<Set<Int64>> {
+        Binding(get: { Set(picks.filter(\.kept).map(\.id)) },
+                set: { store.setMiniTranscriptPicksKept($0) })
+    }
+
     private var items: [RangeReviewItem] {
         let empty = draft.upperBound <= draft.lowerBound
         let draftItem = RangeReviewItem(id: .init(ownerID: Self.draftOwnerID), title: "New pick",
@@ -56,12 +63,11 @@ struct MiniTranscriptPickView: View {
 
     var body: some View {
         RangeReviewView(items: items, rows: rows, labels: transcript?.labels ?? [:],
-                        speakerSpans: transcript?.speakerSpans ?? [],
+                        speakerSpans: transcript?.speakerSpans ?? [], kept: kept,
                         preferredTranslationLanguage: store.activeProfile.captionLanguages.first,
                         emptyTitle: "Pick a passage",
                         emptyMessage: "Select New pick, press a word in the transcript and drag, then press Add.",
                         resetTitle: "Reset to Added", autoplay: false,
-                        listTitle: picks.isEmpty ? "Picks" : (picks.count == 1 ? "1 pick" : "\(picks.count) picks"),
                         onMove: { store.reorderMiniTranscriptPicks($0) },
                         onDelete: { item in store.deleteMiniTranscriptPick(item.id.ownerID) },
                         onDeleteAll: { store.deleteAllMiniTranscriptPicks() },

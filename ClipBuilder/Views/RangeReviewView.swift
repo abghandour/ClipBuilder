@@ -404,9 +404,9 @@ struct RangeReviewView<Footer: View>: View {
         VStack(alignment: .leading, spacing: 0) {
             if let kept {
                 // The kept count titles the list; Select All sits in the footer toolbar.
-                let ids = Set(items.map { $0.id.ownerID })
+                let ids = RangeReviewItem.keepableOwnerIDs(items)
                 let count = kept.wrappedValue.intersection(ids).count
-                SectionLabel("\(count) of \(items.count) kept")
+                SectionLabel("\(count) of \(ids.count) kept")
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(Theme.spaceS)
             } else if let listTitle {
@@ -490,7 +490,7 @@ struct RangeReviewView<Footer: View>: View {
                             kept.wrappedValue = RangeReviewItem.togglingAll(kept.wrappedValue, items: items)
                         }
                         .lineLimit(1).fixedSize()
-                        .disabled(!isEnabled || items.isEmpty)
+                        .disabled(!isEnabled || items.allSatisfy(\.isDraft))
                         .help(allKept ? "Keep none of the items" : "Keep every item")
                     }
                     if let onDeleteAll, items.contains(where: { !$0.isDraft }) {
@@ -675,7 +675,7 @@ struct RangeReviewView<Footer: View>: View {
                     .padding(.vertical, Theme.spaceS)
                     .padding(.trailing, Theme.spaceXS)
             }
-            if let kept, !isChild {
+            if let kept, !isChild, !item.isDraft {
                 Toggle(item.keepLabel, isOn: Binding(
                     get: { kept.wrappedValue.contains(item.id.ownerID) },
                     set: { keep in

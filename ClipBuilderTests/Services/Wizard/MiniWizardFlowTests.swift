@@ -105,7 +105,7 @@ struct MiniWizardFlowTests {
         #expect(!flow.showsLength)
         #expect(flow.footageKinds.last == .highlights, "Highlights sits after Q&A and Transcript")
         #expect(MiniWizardFlow(video: video, hasTranscript: false, footageKind: .transcript).effectiveFootageKind == .highlights)
-        #expect(MiniWizardFlow.footageSummary(kind: .transcript, count: 3, keptCount: 3) == "3 picks")
+        #expect(MiniWizardFlow.footageSummary(kind: .transcript, count: 3, keptCount: 2) == "3 picks · 2 kept")
     }
 
     @Test("Lengths are 10, 15, 30 seconds or Auto")

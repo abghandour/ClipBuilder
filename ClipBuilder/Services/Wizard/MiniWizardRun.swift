@@ -29,7 +29,7 @@ nonisolated struct MiniWizardRun: Sendable {
             guard let qa else { return 0 }
             return qa.kept.intersection(Set(qa.sections.map(\.id))).count
         case .transcript:
-            return transcript?.picks.count ?? 0
+            return transcript?.picks.filter(\.kept).count ?? 0
         case .fightMetrics:
             return fight?.picks.count ?? 0
         case .highlights:

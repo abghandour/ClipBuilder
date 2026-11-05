@@ -29,18 +29,19 @@ extension Database {
         try adoptLegacyTranscriptPicks(projectID: projectID, videoID: videoID)
     }
 
-    /// Appends at the end of the list.
-    func addTranscriptPick(projectID: Int64, videoID: Int64, start: Double, end: Double) throws -> TranscriptPick {
+    /// Appends at the end of the list. `kept` is false for the half of a split
+    /// unchecked pick.
+    func addTranscriptPick(projectID: Int64, videoID: Int64, start: Double, end: Double, kept: Bool = true) throws -> TranscriptPick {
         try connection.transaction {
             try adoptLegacyTranscriptPicks(projectID: projectID, videoID: videoID)
             let position = (try connection.query(
                 "SELECT MAX(position) AS n FROM transcript_picks WHERE video_id = ? AND project_id = ?",
                 [.integer(videoID), .integer(projectID)]).first?["n"]?.intValue ?? -1) + 1
             try connection.execute("""
-                INSERT INTO transcript_picks (video_id, project_id, position, start_time, end_time, original_start, original_end)
-                VALUES (?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO transcript_picks (video_id, project_id, position, start_time, end_time, original_start, original_end, kept)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
                 """, [.integer(videoID), .integer(projectID), .integer(position), .real(start), .real(end),
-                      .real(start), .real(end)])
+                      .real(start), .real(end), .integer(kept ? 1 : 0)])
             let id = connection.lastInsertRowID
             guard let pick = try transcriptPick(id: id) else { throw WizardSelectionError.missingSelection }
             return pick
@@ -57,6 +58,15 @@ extension Database {
             // Ownership guard: a stale caller never edits another project's pick.
             try connection.execute("UPDATE transcript_picks SET start_time = ?, end_time = ? WHERE id = ? AND (project_id = ? OR project_id IS NULL)",
                                    [.real(start), .real(end), .integer(id), .integer(projectID)])
+        }
+    }
+
+    /// Checked picks become footage; unchecked ones stay in the list.
+    func setTranscriptPickKept(projectID: Int64, id: Int64, kept: Bool) throws {
+        try connection.transaction {
+            try adoptLegacyTranscriptPicks(projectID: projectID, pickID: id)
+            try connection.execute("UPDATE transcript_picks SET kept = ? WHERE id = ? AND (project_id = ? OR project_id IS NULL)",
+                                   [.integer(kept ? 1 : 0), .integer(id), .integer(projectID)])
         }
     }
 
@@ -87,8 +97,9 @@ extension Database {
         }
     }
 
-    /// Each pick becomes a scene on the video's active run plus one selection with
-    /// one take, in list order. Earlier selections of this Mini batch are replaced.
+    /// Each checked pick becomes a scene on the video's active run plus one
+    /// selection with one take, in list order; unchecked picks are skipped.
+    /// Earlier selections of this Mini batch are replaced.
     func replaceMiniTranscriptSelections(projectID: Int64, videoID: Int64, miniBatch: String,
                                          picks: [TranscriptPick], rows: [TranscriptRow],
                                          options: WizardStep1Options,
@@ -116,7 +127,7 @@ extension Database {
             // Only picks this project owns (after legacy adoption); a stale
             // caller's pick from another project is skipped.
             let owned = Set(try fetchTranscriptPicks(projectID: projectID, videoID: videoID).map(\.id))
-            let ordered = picks.filter { $0.videoID == videoID && owned.contains($0.id) }
+            let ordered = picks.filter { $0.kept && $0.videoID == videoID && owned.contains($0.id) }
                 .sorted { ($0.position, $0.id) < ($1.position, $1.id) }
             for (index, pick) in ordered.enumerated() {
                 guard pick.start.isFinite, pick.end.isFinite, pick.end > pick.start else { continue }
@@ -159,6 +170,7 @@ extension Database {
                        originalStart: row["original_start"]?.doubleValue ?? 0,
                        originalEnd: row["original_end"]?.doubleValue ?? 0,
                        sceneID: row["scene_id"]?.intValue,
-                       projectID: row["project_id"]?.intValue)
+                       projectID: row["project_id"]?.intValue,
+                       kept: (row["kept"]?.intValue ?? 1) != 0)
     }
 }

@@ -24,7 +24,7 @@ extension AppStore {
         let hash = run.video.hash
         switch run.footageKind {
         case .transcript:
-            result.picks = run.transcript?.picks.map {
+            result.picks = run.transcript?.picks.filter(\.kept).map {
                 HighlightPickSnapshot(kind: .transcript, videoHash: hash, start: $0.start, end: $0.end,
                                       position: $0.position, eventTimes: nil)
             }

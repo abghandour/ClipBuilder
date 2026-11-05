@@ -129,7 +129,8 @@ nonisolated struct MiniWizardFlow: Sendable {
         switch kind {
         case .qa: "\(count) exchanges · \(keptCount) kept"
         case .highlights: "\(count) candidates · \(keptCount) kept"
-        case .transcript, .fightMetrics: count == 1 ? "1 pick" : "\(count) picks"
+        case .transcript: "\(count) picks · \(keptCount) kept"
+        case .fightMetrics: count == 1 ? "1 pick" : "\(count) picks"
         }
     }
 

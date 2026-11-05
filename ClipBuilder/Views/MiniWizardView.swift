@@ -505,7 +505,7 @@ struct MiniWizardView: View {
             let caption: String = switch kind {
                 case .qa: "Q&A lists the question-and-answer exchanges found when this video was analyzed. No AI model runs for this step."
                 case .fightMetrics: "Fight metrics lists every scored action in time order. Select actions and add them as separate picks or as one stretch. Picks are kept with this video. No AI model runs for this step."
-                default: "Transcript shows every spoken line. Mark a passage and press Add. Picks are kept with this video. No AI model runs for this step."
+                default: "Transcript shows every spoken line. Mark a passage and press Add. Picks are kept with this video; only checked picks become footage. No AI model runs for this step."
             }
             FormCaption(caption)
             if let selectedVideo, !selectedVideo.isPresent {

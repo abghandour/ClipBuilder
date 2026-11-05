@@ -79,12 +79,17 @@ nonisolated struct RangeReviewItem: Identifiable, Sendable {
         "\(range.lowerBound.timecode)–\(range.upperBound.timecode) · \((range.upperBound - range.lowerBound).formatted(.number.precision(.fractionLength(1))))s"
     }
 
+    /// The owners a keep list can check: a draft row has nothing to keep yet.
+    static func keepableOwnerIDs(_ items: [RangeReviewItem]) -> Set<Int64> {
+        Set(items.filter { !$0.isDraft }.map { $0.id.ownerID })
+    }
+
     static func allKept(_ kept: Set<Int64>, items: [RangeReviewItem]) -> Bool {
-        Set(items.map { $0.id.ownerID }).isSubset(of: kept)
+        keepableOwnerIDs(items).isSubset(of: kept)
     }
 
     static func togglingAll(_ kept: Set<Int64>, items: [RangeReviewItem]) -> Set<Int64> {
-        allKept(kept, items: items) ? [] : Set(items.map { $0.id.ownerID })
+        allKept(kept, items: items) ? [] : keepableOwnerIDs(items)
     }
 
     /// Which owners paint their background in the transcript: the kept ones
@@ -96,7 +101,9 @@ nonisolated struct RangeReviewItem: Identifiable, Sendable {
         let all = Set(items.map { $0.id.ownerID })
         // A keep list paints only what is kept: an empty list paints nothing,
         // so the transcript reads as unmarked until the user keeps something.
-        if let kept { return kept.intersection(all).subtracting(selectedOwnerID.map { [$0] } ?? []) }
+        // A draft has no Keep box and always paints its marked span.
+        let drafts = Set(items.filter { $0.isDraft }.map { $0.id.ownerID })
+        if let kept { return kept.intersection(all).union(drafts).subtracting(selectedOwnerID.map { [$0] } ?? []) }
         return all.subtracting(selectedOwnerID.map { [$0] } ?? [])
     }
 }

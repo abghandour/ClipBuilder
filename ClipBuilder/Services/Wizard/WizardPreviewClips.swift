@@ -149,7 +149,7 @@ nonisolated enum WizardPreviewClips {
                                     scene: section.scene, start: range.lowerBound, end: range.upperBound))
             }
         case .transcript:
-            for pick in run.transcript?.picks ?? [] {
+            for pick in run.transcript?.picks ?? [] where pick.kept {
                 guard let scene = containing(pick.range, id: pick.sceneID, scenes: scenes, byID: byID) else { continue }
                 result.append(.init(id: "pick-\(pick.id)", title: "Passage \(pick.position + 1)",
                                     scene: scene, start: pick.range.lowerBound, end: pick.range.upperBound))

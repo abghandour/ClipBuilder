@@ -122,6 +122,7 @@ extension AppStore {
         let projectID = run.projectID
         let batchID = run.batchID
         let end = pick.end
+        let kept = pick.kept
         var order = picks.map(\.id)
         let previous = transcriptPickSaveTask
         let generation = profileGeneration
@@ -130,7 +131,7 @@ extension AppStore {
             _ = try? await previous?.value
             let added: TranscriptPick
             do {
-                added = try await database.addTranscriptPick(projectID: projectID, videoID: videoID, start: time, end: end)
+                added = try await database.addTranscriptPick(projectID: projectID, videoID: videoID, start: time, end: end, kept: kept)
                 order.insert(added.id, at: min(order.count, index + 1))
                 try await database.reorderTranscriptPicks(projectID: projectID, videoID: videoID, ids: order)
             } catch {
@@ -179,6 +180,25 @@ extension AppStore {
         }
     }
 
+    /// `ids` is the full set of checked picks; the rest are unchecked.
+    func setMiniTranscriptPicksKept(_ ids: Set<Int64>) {
+        guard let run = currentTranscriptRun(), let picks = run.transcript?.picks else { return }
+        let changed = picks.filter { $0.kept != ids.contains($0.id) }
+        guard !changed.isEmpty else { return }
+        miniRuns[.transcript]?.transcript?.picks = picks.map { pick in
+            var pick = pick
+            pick.kept = ids.contains(pick.id)
+            return pick
+        }
+        let projectID = run.projectID
+        let updates = changed.map { ($0.id, ids.contains($0.id)) }
+        enqueueTranscriptPickWrite("Could not save the pick", batchID: run.batchID) { database in
+            for (id, kept) in updates {
+                try await database.setTranscriptPickKept(projectID: projectID, id: id, kept: kept)
+            }
+        }
+    }
+
     func deleteMiniTranscriptPick(_ id: Int64) {
         guard let run = currentTranscriptRun(), run.transcript?.picks.contains(where: { $0.id == id }) == true else { return }
         miniRuns[.transcript]?.transcript?.picks.removeAll { $0.id == id }
@@ -198,10 +218,10 @@ extension AppStore {
         }
     }
 
-    /// Moving to Settings creates one selection per pick, in list order, without rendering.
+    /// Moving to Settings creates one selection per checked pick, in list order, without rendering.
     func recordMiniTranscriptSelections(opening card: MiniWizardFlow.Card = .settings, then: @escaping @MainActor () -> Void = {}) {
         guard let run = currentTranscriptRun(), let transcript = run.transcript,
-              !transcript.picks.isEmpty, let database else { return }
+              transcript.picks.contains(where: \.kept), let database else { return }
         let generation = profileGeneration
         beginWizardSelectionWork(projectID: run.projectID, stage: "Saving transcript picks", options: run.options)
         wizardTask = Task {

@@ -76,7 +76,7 @@ nonisolated enum MiniBRollRules {
             case .transcript:
                 let pickID = run.candidates.first { $0.id == piece.id.selectionID }?
                     .take.plan.clips[piece.id.clipIndex].miniPickID
-                range = run.transcript?.picks.first { $0.id == pickID }?.range
+                range = run.transcript?.picks.first { $0.id == pickID && $0.kept }?.range
             case .highlights, .fightMetrics: range = piece.range
             }
             guard let range else { return nil }

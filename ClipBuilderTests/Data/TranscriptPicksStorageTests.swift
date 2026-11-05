@@ -29,6 +29,34 @@ struct TranscriptPicksStorageTests {
         #expect(try await database.fetchTranscriptPicks(projectID: projectID, videoID: other).isEmpty)
     }
 
+    @Test func uncheckedPicksStayListedButMakeNoSelection() async throws {
+        let temp = try await TempDatabase()
+        let database = temp.database
+        let videoID = try await temp.seedVideo(sceneCount: 1)
+        let projectID = try await database.createProject(profileName: "Test", name: "Picks", videoIDs: [videoID])
+        let rows = try await database.fetchTranscripts(videoID: videoID)
+        let first = try await database.addTranscriptPick(projectID: projectID, videoID: videoID, start: 0, end: 3)
+        let second = try await database.addTranscriptPick(projectID: projectID, videoID: videoID, start: 3, end: 6)
+        #expect(first.kept && second.kept, "new picks are checked")
+        try await database.setTranscriptPickKept(projectID: projectID, id: first.id, kept: false)
+        let picks = try await database.fetchTranscriptPicks(projectID: projectID, videoID: videoID)
+        #expect(picks.map(\.kept) == [false, true])
+        #expect(picks.map(\.id) == [first.id, second.id], "an unchecked pick stays in the list")
+
+        var options = WizardStep1Options()
+        options.formatPreset = "custom"
+        let candidates = try await database.replaceMiniTranscriptSelections(projectID: projectID, videoID: videoID,
+            miniBatch: "batch", picks: picks, rows: rows, options: options)
+        #expect(candidates.count == 1)
+        #expect(candidates.first?.take.plan.clips.map(\.start) == [3], "only the checked pick becomes footage")
+        let after = try await database.fetchTranscriptPicks(projectID: projectID, videoID: videoID)
+        #expect(after.first { $0.id == first.id }?.sceneID == nil, "no scene for the unchecked pick")
+        #expect(after.first { $0.id == second.id }?.sceneID != nil)
+        // A split of an unchecked pick leaves both halves unchecked.
+        let half = try await database.addTranscriptPick(projectID: projectID, videoID: videoID, start: 1, end: 3, kept: false)
+        #expect(half.kept == false)
+    }
+
     @Test func savingPicksMakesScenesAndSelectionsInListOrder() async throws {
         let temp = try await TempDatabase()
         let database = temp.database

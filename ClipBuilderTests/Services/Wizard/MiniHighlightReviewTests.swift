@@ -108,6 +108,16 @@ struct MiniHighlightReviewTests {
         #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: nil, kept: [1, 3, 999]) == [1, 3])
         // Nothing kept: nothing paints. No Keep boxes: every item.
         #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: nil, kept: []).isEmpty)
+        // A draft row (the pick being composed) has no Keep box: it never
+        // counts toward Select All and always paints its marked span.
+        var draft = items[0]
+        draft.id = .init(ownerID: -1)
+        draft.isDraft = true
+        let withDraft = [draft] + items
+        #expect(RangeReviewItem.keepableOwnerIDs(withDraft) == [1, 2, 3])
+        #expect(RangeReviewItem.allKept([1, 2, 3], items: withDraft))
+        #expect(RangeReviewItem.togglingAll([1], items: withDraft) == [1, 2, 3])
+        #expect(RangeReviewItem.paintedOwnerIDs(items: withDraft, selectedOwnerID: nil, kept: [2]) == [-1, 2])
         #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: nil, kept: [999]).isEmpty)
         #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: nil, kept: nil) == [1, 2, 3])
     }

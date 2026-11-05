@@ -13,6 +13,8 @@ nonisolated struct TranscriptPick: Identifiable, Sendable, Equatable {
     var sceneID: Int64?
     /// Owning project; nil for a legacy pick no project has adopted yet.
     var projectID: Int64? = nil
+    /// Unchecked picks stay in the list but are left out of the footage.
+    var kept: Bool = true
 
     var range: ClosedRange<Double> { start...max(start, end) }
     var originalRange: ClosedRange<Double> { originalStart...max(originalStart, originalEnd) }
