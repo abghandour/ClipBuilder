@@ -25,7 +25,10 @@ struct ElevenLabsKeychainTests {
 
     @Test func queriesAlwaysUseDataProtectionAndDeviceOnlyAccessibility() throws {
         let api = KeychainAPI(copyMatching: { query in
-            #expect(query[kSecUseDataProtectionKeychain as String] as? Bool == true)
+            // A miss in the shared keychain looks in the login keychain once,
+            // to adopt an item from before the shared keychain existed.
+            if query[kSecUseDataProtectionKeychain as String] == nil { return (errSecItemNotFound, nil) }
+            #expect(query[kSecAttrAccessGroup as String] as? String == AppKeychain.accessGroup)
             #expect(query[kSecAttrService as String] as? String == "com.clipbuilder.elevenlabs")
             #expect(query[kSecAttrAccount as String] as? String == "api-key")
             #expect(query[kSecReturnData as String] as? Bool == true)

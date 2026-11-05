@@ -41,26 +41,44 @@ nonisolated enum UpdateService {
         Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? "0"
     }
 
-    /// The latest release if it is newer than the running app, nil when up
-    /// to date. Skips drafts/prereleases (the API's `latest` already does).
-    static func checkForUpdate() async throws -> AppUpdate? {
-        var request = URLRequest(url: URL(string: "https://api.github.com/repos/\(repo)/releases/latest")!,
+    /// The newest release of this channel if it is newer than the running
+    /// app, nil when up to date. Stable asks for `latest`, which skips
+    /// prereleases (an unblessed release); the beta lists the newest
+    /// releases and takes the first that is not a draft.
+    static func checkForUpdate(channel: AppChannel = .current) async throws -> AppUpdate? {
+        let path = channel.takesPrereleases ? "releases?per_page=5" : "releases/latest"
+        var request = URLRequest(url: URL(string: "https://api.github.com/repos/\(repo)/\(path)")!,
                                  timeoutInterval: 15)
         request.setValue("application/vnd.github+json", forHTTPHeaderField: "Accept")
         let (data, response) = try await URLSession.shared.data(for: request)
         guard (response as? HTTPURLResponse)?.statusCode == 200 else {
             throw UpdateError.badResponse
         }
-        let release = try JSONDecoder().decode(Release.self, from: data)
+        return try update(from: data, channel: channel, currentVersion: currentVersion)
+    }
+
+    /// The update a feed response offers this channel: `data` is one release
+    /// (stable) or a list (beta).
+    static func update(from data: Data, channel: AppChannel, currentVersion: String) throws -> AppUpdate? {
+        let decoder = JSONDecoder()
+        let releases: [Release]
+        if channel.takesPrereleases {
+            releases = try decoder.decode([Release].self, from: data)
+        } else {
+            releases = [try decoder.decode(Release.self, from: data)]
+        }
+        guard let release = releases.first(where: { !$0.draft && (channel.takesPrereleases || !$0.prerelease) }) else {
+            return nil
+        }
         let version = release.tagName.hasPrefix("v") ? String(release.tagName.dropFirst()) : release.tagName
         guard currentVersion.compare(version, options: .numeric) == .orderedAscending else {
             return nil
         }
-        guard let pkg = release.assets.first(where: { $0.name.hasSuffix(".pkg") }) else {
+        guard let pkg = release.assets.first(where: { channel.isPkgAsset($0.name) }) else {
             throw UpdateError.noInstallerAsset(version: version)
         }
         return AppUpdate(version: version,
-                         releaseName: release.name ?? "Clip Builder \(version)",
+                         releaseName: release.name ?? "\(channel.displayName) \(version)",
                          notes: release.body ?? "",
                          pkgURL: pkg.browserDownloadURL,
                          pkgName: pkg.name)
@@ -105,10 +123,22 @@ nonisolated enum UpdateService {
         let name: String?
         let body: String?
         let assets: [Asset]
+        var draft = false
+        var prerelease = false
 
         enum CodingKeys: String, CodingKey {
             case tagName = "tag_name"
-            case name, body, assets
+            case name, body, assets, draft, prerelease
+        }
+
+        init(from decoder: Decoder) throws {
+            let container = try decoder.container(keyedBy: CodingKeys.self)
+            tagName = try container.decode(String.self, forKey: .tagName)
+            name = try container.decodeIfPresent(String.self, forKey: .name)
+            body = try container.decodeIfPresent(String.self, forKey: .body)
+            assets = try container.decode([Asset].self, forKey: .assets)
+            draft = try container.decodeIfPresent(Bool.self, forKey: .draft) ?? false
+            prerelease = try container.decodeIfPresent(Bool.self, forKey: .prerelease) ?? false
         }
     }
 

@@ -1,17 +1,21 @@
 import Foundation
 import Security
 
-/// Own service/account namespace. Never reads or changes Instagram/Drive items.
+/// Own service/account namespace in the shared keychain (`AppKeychain`), so
+/// the stable and beta apps share one sign-in. Never reads or changes
+/// Instagram/Drive items.
 actor TeamSyncSession {
     private let base: SupabaseClient
     private var session: SupabaseClient.Session?
     private var loaded = false
     private var generation = 0
     private var refresh: Task<SupabaseClient.Session, Error>?
-    private let service = "com.mokotti-solutions.clipbuilder.team-sync"
+    private let item: AppKeychain.Item
 
-    init(url: URL, publishableKey: String) {
+    init(url: URL, publishableKey: String, keychain: KeychainAPI = .system) {
         base = SupabaseClient(baseURL: url, apiKey: publishableKey)
+        item = AppKeychain.Item(service: "com.mokotti-solutions.clipbuilder.team-sync",
+                                account: url.absoluteString, api: keychain)
     }
 
     /// Whether a session is stored for this server, without touching the
@@ -28,20 +32,11 @@ actor TeamSyncSession {
         UserDefaults.standard.set(stored, forKey: Self.markerKey(url: base.baseURL.absoluteString))
     }
 
-    private func query() -> [String: Any] {
-        [kSecClass as String: kSecClassGenericPassword, kSecAttrService as String: service,
-         kSecAttrAccount as String: base.baseURL.absoluteString]
-    }
-
     func restore() throws -> SupabaseClient.Session? {
         if loaded { return session }
-        var query = query()
-        query[kSecReturnData as String] = true
-        query[kSecMatchLimit as String] = kSecMatchLimitOne
-        var result: CFTypeRef?
-        let status = SecItemCopyMatching(query as CFDictionary, &result)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw keychainError(status) }
-        if let data = result as? Data { session = try JSONDecoder().decode(SupabaseClient.Session.self, from: data) }
+        let data: Data?
+        do { data = try item.read() } catch { throw keychainError(error.status) }
+        if let data { session = try JSONDecoder().decode(SupabaseClient.Session.self, from: data) }
         loaded = true
         markStored(session != nil)
         return session
@@ -49,15 +44,7 @@ actor TeamSyncSession {
 
     private func save(_ value: SupabaseClient.Session) throws {
         let data = try JSONEncoder().encode(value)
-        let attributes = [kSecValueData as String: data]
-        var status = SecItemUpdate(query() as CFDictionary, attributes as CFDictionary)
-        if status == errSecItemNotFound {
-            var item = query()
-            item[kSecValueData as String] = data
-            item[kSecAttrAccessible as String] = kSecAttrAccessibleAfterFirstUnlockThisDeviceOnly
-            status = SecItemAdd(item as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else { throw keychainError(status) }
+        do { try item.write(data) } catch { throw keychainError(error.status) }
         session = value
         loaded = true
         markStored(true)
@@ -111,8 +98,7 @@ actor TeamSyncSession {
         generation += 1
         refresh?.cancel()
         refresh = nil
-        let status = SecItemDelete(query() as CFDictionary)
-        guard status == errSecSuccess || status == errSecItemNotFound else { throw keychainError(status) }
+        do { try item.write(nil) } catch { throw keychainError(error.status) }
         session = nil
         loaded = true
         markStored(false)

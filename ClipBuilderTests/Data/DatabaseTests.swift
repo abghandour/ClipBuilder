@@ -1322,4 +1322,54 @@ extension DatabaseTests {
         #expect(files == ["/footage/New name.mp4", "/footage/Another.mp4"])
         #expect(try await db.relinkTimelineVideoFile(from: "/footage/Old name.mp4", to: "/x.mp4") == 0)
     }
+
+    @Test("a library stamped by a newer build is refused and keeps its stamp")
+    func newerLibraryIsRefused() async throws {
+        let temp = try await TempDatabase()
+        let raw = try SQLiteConnection(path: temp.path.path)
+        try raw.execute("PRAGMA user_version = \(Database.schemaVersion + 1)")
+        #expect(throws: Database.NewerLibrary(stamped: Database.schemaVersion + 1,
+                                              supported: Database.schemaVersion)) {
+            try Database(path: temp.path)
+        }
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue
+                == Database.schemaVersion + 1, "the stamp is never lowered")
+        let message = try #require(Database.NewerLibrary(stamped: 45, supported: 44).errorDescription)
+        #expect(message.contains("newer Clip Builder"))
+    }
+
+    @Test("a schema upgrade backs the library up first, with its rows and old stamp")
+    func upgradeBacksUpTheLibrary() async throws {
+        let temp = try await TempDatabase()
+        try await temp.seedVideo()
+        let raw = try SQLiteConnection(path: temp.path.path)
+        try raw.execute("PRAGMA user_version = \(Database.schemaVersion - 1)")
+        let backups = temp.directory.url.appendingPathComponent("backups", isDirectory: true)
+
+        _ = try Database(path: temp.path, backupFolder: backups)
+        let files = try FileManager.default.contentsOfDirectory(atPath: backups.path)
+        let name = try #require(files.first)
+        #expect(files.count == 1)
+        #expect(name.hasPrefix("test "))
+        #expect(name.hasSuffix(" before-v\(Database.schemaVersion).db"))
+        let copy = try SQLiteConnection(path: backups.appendingPathComponent(name).path)
+        #expect(try copy.query("PRAGMA user_version").first?["user_version"]?.intValue
+                == Database.schemaVersion - 1)
+        #expect(try copy.query("SELECT COUNT(*) AS n FROM videos").first?["n"]?.intValue == 1)
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
+
+        // Reopening at the current version makes no second backup.
+        _ = try Database(path: temp.path, backupFolder: backups)
+        #expect(try FileManager.default.contentsOfDirectory(atPath: backups.path).count == 1)
+    }
+
+    @Test("only a library under profiles_db is backed up unasked, beside it")
+    func defaultBackupFolder() {
+        let library = URL(fileURLWithPath: "/data/profiles_db/Peace Grappler.db")
+        #expect(Database.defaultBackupFolder(for: library)?.path == "/data/db-backups")
+        #expect(Database.defaultBackupFolder(for: URL(fileURLWithPath: "/tmp/x/test.db")) == nil)
+        let name = Database.backupName(for: library, at: Date(timeIntervalSince1970: 0))
+        #expect(name.hasPrefix("Peace Grappler "))
+        #expect(name.hasSuffix(" before-v\(Database.schemaVersion).db"))
+    }
 }

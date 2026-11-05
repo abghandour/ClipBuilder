@@ -1,0 +1,19 @@
+<?xml version="1.0" encoding="UTF-8"?>
+<!DOCTYPE plist PUBLIC "-//Apple//DTD PLIST 1.0//EN" "http://www.apple.com/DTDs/PropertyList-1.0.dtd">
+<plist version="1.0">
+<dict>
+	<!-- The shared access group lets the stable and beta apps read each
+	     other's keys (AppKeychain.accessGroup). keychain-access-groups is a
+	     restricted entitlement: a binary carrying it without an embedded
+	     provisioning profile is killed at launch, so only make_pkg.sh applies
+	     this file, together with the Developer ID provisioning profile for
+	     the bundle id. Debug builds have no entitlements and use the login
+	     keychain. -->
+	<key>com.apple.application-identifier</key>
+	<string>$(AppIdentifierPrefix)$(CFBundleIdentifier)</string>
+	<key>keychain-access-groups</key>
+	<array>
+		<string>$(AppIdentifierPrefix)com.mokotti-solutions.clipbuilder.shared</string>
+	</array>
+</dict>
+</plist>

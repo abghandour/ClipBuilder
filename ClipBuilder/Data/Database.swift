@@ -785,7 +785,10 @@ actor Database {
     );
     """
 
-    init(path: URL, creationDates: VideoCreationDates = VideoCreationDates()) throws {
+    /// `backupFolder` receives a copy of the library before a schema upgrade;
+    /// by default `db-backups` beside `profiles_db`.
+    init(path: URL, creationDates: VideoCreationDates = VideoCreationDates(),
+         backupFolder: URL? = nil) throws {
         self.creationDates = creationDates
         self.path = path
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(),
@@ -803,12 +806,21 @@ actor Database {
         // autocommit, which the per-row sync writes paid dearly for.
         try? connection.execute("PRAGMA synchronous=NORMAL")
         try connection.execute("PRAGMA foreign_keys=ON")
-        try connection.executeScript(Self.schema)
         // The lazy column migrations probe every table (a `PRAGMA
         // table_info` each) and can rebuild `scenes` wholesale, all
         // synchronously before the first frame. A database stamped with the
         // current version has already been through them.
         let stamped = try connection.query("PRAGMA user_version").first?.values.first?.intValue ?? 0
+        // A library a newer app (the beta) has upgraded is refused rather
+        // than re-migrated and stamped back down; the stamp never lowers.
+        if stamped > Self.schemaVersion {
+            throw NewerLibrary(stamped: stamped, supported: Self.schemaVersion)
+        }
+        if stamped > 0, stamped < Self.schemaVersion,
+           let folder = backupFolder ?? Self.defaultBackupFolder(for: path) {
+            Self.backUp(connection, path: path, stamped: stamped, folder: folder)
+        }
+        try connection.executeScript(Self.schema)
         if stamped != Self.schemaVersion {
             try Self.migrate(connection)
             try connection.execute("""
@@ -938,6 +950,57 @@ actor Database {
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
     static let schemaVersion: Int64 = 44
+
+    /// The library was last opened by a build with a newer schema.
+    nonisolated struct NewerLibrary: LocalizedError, Equatable {
+        let stamped: Int64
+        let supported: Int64
+        var errorDescription: String? {
+            "This library was last opened by a newer Clip Builder (library version \(stamped); "
+                + "this version reads up to \(supported)). Update Clip Builder, or open the library "
+                + "with the newer app."
+        }
+    }
+
+    /// `data/db-backups`, the folder manual backups already use, for a
+    /// library under `profiles_db`; nil for a library elsewhere (a test
+    /// fixture, a file opened by hand), which is not backed up unasked.
+    nonisolated static func defaultBackupFolder(for path: URL) -> URL? {
+        let parent = path.deletingLastPathComponent()
+        guard parent.lastPathComponent == "profiles_db" else { return nil }
+        return parent.deletingLastPathComponent().appendingPathComponent("db-backups", isDirectory: true)
+    }
+
+    /// The file name a backup of `path` takes before the schema upgrade to
+    /// `schemaVersion`: "<profile> <date> before-v<version>.db".
+    nonisolated static func backupName(for path: URL, at date: Date = Date(),
+                                       reason: String = "before-v\(schemaVersion)") -> String {
+        let formatter = DateFormatter()
+        formatter.locale = Locale(identifier: "en_US_POSIX")
+        formatter.dateFormat = "yyyy-MM-dd HHmmss"
+        let profile = path.deletingPathExtension().lastPathComponent
+        return "\(profile) \(formatter.string(from: date)) \(reason).db"
+    }
+
+    /// Copies the library before `migrate` changes it, with the WAL folded
+    /// in, so a schema upgrade can be undone with a file copy. A failed
+    /// backup is logged, not fatal: refusing to open would lock the user out
+    /// of a library the migrations have handled safely so far.
+    nonisolated private static func backUp(_ connection: SQLiteConnection, path: URL, stamped: Int64,
+                                           folder: URL) {
+        let target = folder.appendingPathComponent(backupName(for: path))
+        do {
+            try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+            if FileManager.default.fileExists(atPath: target.path) {
+                try FileManager.default.removeItem(at: target)
+            }
+            let quoted = target.path.replacingOccurrences(of: "'", with: "''")
+            try connection.execute("VACUUM INTO '\(quoted)'")
+        } catch {
+            NSLog("Library backup before schema v%lld -> v%lld failed: %@", stamped, schemaVersion,
+                  String(describing: error))
+        }
+    }
 
     nonisolated static func migrateTranscriptEditedWords(_ db: SQLiteConnection) throws {
         if try !db.columnNames(of: "transcripts").contains("original_words") {

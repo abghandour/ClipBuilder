@@ -1,6 +1,6 @@
 # Stable and Beta channels
 
-Date: 2026-11-04. Status: draft, not implemented.
+Date: 2026-11-04. Status: in progress. Phase 0 and the code of phase 1 and 4 done 2026-11-04; the Xcode configurations, scheme and provisioning profiles, and phases 2, 3 and 5 are open.
 
 ## Goal
 
@@ -137,11 +137,27 @@ and library from Clip Builder <version>". What it imports:
    Instagram tokens (AI provider keys live in the settings file and come
    with it). Both apps therefore adopt one shared keychain access group
    (`<team id>.com.mokotti-solutions.clipbuilder.shared`) and the four
-   keychain stores read and write in it; the stable app moves its existing
-   items into the group on first launch after that change. **This ships in
-   a stable release before the first beta**, or the beta would still ask for
-   every key once. With the group in place nothing is copied: both apps see
-   the same items, and a key changed in one is changed in the other.
+   keychain stores read and write in it through one `AppKeychain.Item`; an
+   item found only in the login keychain is adopted by the group on first
+   read. **This ships in a stable release before the first beta**, or the
+   beta would still ask for every key once. With the group in place nothing
+   is copied: both apps see the same items, and a key changed in one is
+   changed in the other.
+
+   Measured 2026-11-04 with a signed probe: `keychain-access-groups` is a
+   restricted entitlement on macOS. A binary that carries it without an
+   embedded provisioning profile is killed at launch (exit 137), ad-hoc or
+   Developer ID signed alike, and `com.apple.application-identifier` alone
+   still gets -34018 from the data-protection keychain. So the entitlement
+   (`ClipBuilder/Clip Builder.entitlements`) is applied only by
+   `make_pkg.sh` (`CODE_SIGN_ENTITLEMENTS` plus
+   `PROVISIONING_PROFILE_SPECIFIER` in its signing arguments), never by the
+   Xcode Debug configurations, whose ad-hoc builds keep the login-keychain
+   fallback. Needed once from the developer portal: explicit App IDs for
+   `com.mokotti-solutions.clipbuilder` and `.beta` with Keychain Sharing on
+   the shared group, and a Developer ID (Mac) provisioning profile for
+   each, installed on the build Mac. The profiles embed as
+   `embedded.provisionprofile`; notarization accepts them.
 5. **Not importable.** TCC grants: the beta asks for Documents access (and
    Automation for the dub shortcuts) once on first use. Nothing else.
 
@@ -304,13 +320,21 @@ library's do: stable apps keep pushing the old shape.
 
 ### Xcode
 
-- Two new build configurations, `Debug-Beta` and `Release-Beta`, each an
-  xcconfig (`Configuration/Beta.xcconfig`) over the existing settings:
-  `PRODUCT_NAME`, `PRODUCT_BUNDLE_IDENTIFIER`,
+- Two new build configurations, `Debug-Beta` and `Release-Beta`, based on
+  `Configuration/Beta.xcconfig` (written): `PRODUCT_NAME`,
+  `PRODUCT_MODULE_NAME = Clip_Builder` (so the module and `@testable
+  import` stay the same), `PRODUCT_BUNDLE_IDENTIFIER`,
   `ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon-Beta`,
-  `INFOPLIST_KEY_ClipBuilderChannel = beta`, and
-  `INFOPLIST_KEY_CFBundleDisplayName`. The stable configurations get
-  `INFOPLIST_KEY_ClipBuilderChannel = stable`.
+  `INFOPLIST_KEY_CFBundleDisplayName` and `CLIPBUILDER_CHANNEL = beta`.
+  Custom keys cannot go through `INFOPLIST_KEY_*` (only Apple's known keys
+  are honoured), so every configuration of the app target sets
+  `INFOPLIST_FILE = ClipBuilder/Info.plist` (written; merged into the
+  generated plist, it carries `ClipBuilderChannel = $(CLIPBUILDER_CHANNEL)`)
+  and the stable configurations set `CLIPBUILDER_CHANNEL = stable`.
+  Verified 2026-11-04 by building the stable scheme with those settings
+  overridden on the command line: the beta app launched against a folder
+  holding stable settings and two libraries, imported all of them, and
+  showed the capsule, title, status bar edge and welcome notice.
 - A second scheme `MyApp Beta` that builds those configurations. The test
   target stays on the stable configurations; `scripts/test.sh` is unchanged.
 - `make_pkg.sh` reads `CHANNEL` (`stable` default, `beta`) and derives the
@@ -330,10 +354,21 @@ Two changes the stable app in the wild needs before the first beta exists,
 released as an ordinary stable release:
 
 - The shared keychain access group, with the four stores moving their
-  existing items into it on first launch.
-- The direction-aware database gate and the pre-migration backup.
+  existing items into it on first read (code done 2026-11-04:
+  `Services/AppKeychain.swift`, the entitlements file; the provisioning
+  profiles and the `make_pkg.sh` signing arguments are the developer's).
+- The direction-aware database gate and the pre-migration backup (done
+  2026-11-04: `Database.NewerLibrary`, `db-backups/<profile> <date>
+  before-v<N>.db` by `VACUUM INTO`, for libraries under `profiles_db`).
 
 ### Phase 1. Two apps from one tree
+
+Code done 2026-11-04 (`Services/AppChannel.swift`,
+`Services/ChannelImport.swift`, `App/AppStore+Channel.swift`,
+`Views/BetaBadge.swift`, `scripts/make_beta_icon.swift` and the generated
+`AppIcon-Beta` set, `Configuration/Beta.xcconfig`, `ClipBuilder/Info.plist`,
+tests under `ClipBuilderTests/Services/Channels/`). Open: the
+configurations and the scheme in the project file.
 
 - `AppChannel`, the plist key, `Beta.xcconfig`, the configurations, the
   scheme, the generated `AppIcon-Beta` set, the toolbar capsule with its
@@ -374,6 +409,9 @@ released as an ordinary stable release:
 
 ### Phase 4. Channel-aware updater
 
+Code and tests done 2026-11-04 (`UpdateService.update(from:channel:currentVersion:)`,
+`UpdateServiceTests`); the live check waits for the first prerelease.
+
 - `UpdateService` with the channel feed and asset suffix; `AppStore`
   messages; the Help menu links.
 - Tests: `UpdateServiceTests` over fixture JSON (prerelease skipped for
@@ -394,7 +432,10 @@ released as an ordinary stable release:
 
 ## Open decisions
 
-1. Stable pkg built at bless time (recommended) or at every release.
+None.
+
+Decided 2026-11-04: the stable pkg is built at bless time, from the tagged
+commit in a worktree, not at every release.
 
 Decided 2026-11-04: one data folder with per-channel library and settings
 files (not a separate root, not separate tables in one file). The beta

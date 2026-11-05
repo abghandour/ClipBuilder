@@ -739,6 +739,9 @@ private struct GeneralSettingsTab: View {
                     .lineLimit(1)
             }
 
+            if AppChannel.current == .beta {
+                ChannelSettingsSection()
+            }
             Section("Storage") {
                 HStack {
                     // Edits land in a draft and are validated on commit, so

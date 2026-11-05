@@ -1,0 +1,13 @@
+// Clip Builder Beta: the same tree built as a second app that installs
+// beside the stable one (docs/Stable-Beta-Channels-Plan.md). Base the
+// Debug-Beta and Release-Beta configurations of the MyApp target on this
+// file. Every configuration of the target also needs
+// INFOPLIST_FILE = ClipBuilder/Info.plist (merged into the generated plist),
+// and the stable ones CLIPBUILDER_CHANNEL = stable.
+
+PRODUCT_NAME = Clip Builder Beta
+PRODUCT_BUNDLE_IDENTIFIER = com.mokotti-solutions.clipbuilder.beta
+ASSETCATALOG_COMPILER_APPICON_NAME = AppIcon-Beta
+INFOPLIST_KEY_CFBundleDisplayName = Clip Builder Beta
+CLIPBUILDER_CHANNEL = beta
+PRODUCT_MODULE_NAME = Clip_Builder

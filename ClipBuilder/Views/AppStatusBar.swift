@@ -50,6 +50,13 @@ struct AppStatusBar: View {
             }
         }
         .background(.bar)
+        // The beta's status bar carries the channel blue on its leading
+        // edge, so a screenshot cropped to the content still tells the app.
+        .overlay(alignment: .leading) {
+            if AppChannel.current == .beta {
+                Theme.projectTint.frame(width: 6).allowsHitTesting(false)
+            }
+        }
         .confirmationDialog("Stop publishing this reel?", isPresented: Binding(
             get: { publishToStop != nil }, set: { if !$0 { publishToStop = nil } }
         )) {
@@ -74,6 +81,7 @@ struct AppStatusBar: View {
 
     private var header: some View {
         HStack(spacing: Theme.spaceS) {
+            if AppChannel.current == .beta { Spacer().frame(width: 2) }
             ProviderStatusRow(compact: true)
             Divider().frame(height: 16)
             if let first = activities.first {

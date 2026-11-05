@@ -2,7 +2,8 @@ import Foundation
 import Security
 
 /// Minimal Keychain wrapper for the Instagram Graph API token — secrets never
-/// go in app_settings.json (plaintext, shared with the Python app).
+/// go in app_settings.json (plaintext, shared with the Python app). Items live
+/// in the shared keychain (`AppKeychain`).
 nonisolated enum KeychainStore {
     private static let service = "com.clipbuilder.instagram"
 
@@ -13,45 +14,24 @@ nonisolated enum KeychainStore {
         "instagram_graph_token:\(igUserID)"
     }
 
-    static func save(_ value: String, account: String) throws {
-        let data = Data(value.utf8)
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        var status = SecItemUpdate(query as CFDictionary,
-                                   [kSecValueData as String: data] as CFDictionary)
-        if status == errSecItemNotFound {
-            var add = query
-            add[kSecValueData as String] = data
-            status = SecItemAdd(add as CFDictionary, nil)
-        }
-        guard status == errSecSuccess else {
-            throw InstagramError.fetchFailed("Keychain write failed (OSStatus \(status))")
+    private static func item(_ account: String, api: KeychainAPI) -> AppKeychain.Item {
+        AppKeychain.Item(service: service, account: account, api: api)
+    }
+
+    static func save(_ value: String, account: String, api: KeychainAPI = .system) throws {
+        do {
+            try item(account, api: api).write(Data(value.utf8))
+        } catch {
+            throw InstagramError.fetchFailed("Keychain write failed (OSStatus \(error.status))")
         }
     }
 
-    static func read(account: String) -> String? {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-            kSecReturnData as String: true,
-            kSecMatchLimit as String: kSecMatchLimitOne,
-        ]
-        var result: CFTypeRef?
-        guard SecItemCopyMatching(query as CFDictionary, &result) == errSecSuccess,
-              let data = result as? Data else { return nil }
+    static func read(account: String, api: KeychainAPI = .system) -> String? {
+        guard let data = try? item(account, api: api).read() else { return nil }
         return String(data: data, encoding: .utf8)
     }
 
-    static func delete(account: String) {
-        let query: [String: Any] = [
-            kSecClass as String: kSecClassGenericPassword,
-            kSecAttrService as String: service,
-            kSecAttrAccount as String: account,
-        ]
-        SecItemDelete(query as CFDictionary)
+    static func delete(account: String, api: KeychainAPI = .system) {
+        try? item(account, api: api).write(nil)
     }
 }
