@@ -45,6 +45,8 @@ struct RangeReviewView<Footer: View>: View {
     var emptyDraftHint = "Press a word in the transcript and drag to select a passage."
     /// Replaces the trim hint under the filmstrip (no transcript words to click in Fight metrics).
     var trimHint: String? = nil
+    /// Shown in the player while the selected item cannot be previewed.
+    var unavailableHint = "Footage unavailable: this video is not on this Mac."
     let onSave: (RangeReviewItem, Double, Double) -> Void
     @ViewBuilder var footer: (RangeReviewItem) -> Footer
 
@@ -69,6 +71,9 @@ struct RangeReviewView<Footer: View>: View {
     private static var endingChoices: [Int] { [5, 3, 2, 1] }
     @State private var loadedURL: URL?
     @State private var draft: (start: Double, end: Double)?
+    /// Bumped per commit: a draft whose save never lands is dropped after a moment.
+    @State private var draftGeneration = 0
+    @State private var showingShortcuts = false
     /// The last one-click adjustment, so the next pick can take the same one.
     @State private var lastAdjustment: RangeAdjustment?
     /// The anchor being dragged in the transcript; the player and filmstrip
@@ -104,6 +109,10 @@ struct RangeReviewView<Footer: View>: View {
     private var editRange: ClosedRange<Double> {
         let start = draft?.start ?? range?.lowerBound ?? 0
         let end = draft?.end ?? range?.upperBound ?? start
+        // An unavailable item (its scene is gone, "Footage changed") has no
+        // limits; clamping into 0...0 would hide its passage and park the words
+        // at the top. It still marks its range, it just cannot be trimmed.
+        guard limits.upperBound > limits.lowerBound else { return start...max(start, end) }
         return policy.clamp(start...max(start, end), limits: limits)
     }
     /// Nothing selected yet (pick drafts only).
@@ -124,14 +133,18 @@ struct RangeReviewView<Footer: View>: View {
         return items.filter { !$0.isDraft }.firstIndex { $0.id.ownerID == item.id.ownerID }
     }
 
-    /// Saved picks of `video` as marked ranges, in the colour of their rows.
-    /// With an item selected only that item paints (through `range`); with
-    /// nothing selected the kept items paint, or every item when none is kept.
+    /// Saved picks of `video` as marked ranges, in the colour of their rows:
+    /// the kept items (none when nothing is kept), or every item in a list
+    /// without keep boxes, selection or not. The selected item paints itself
+    /// through `range`; its sibling cuts paint here.
     private func markedRanges(excluding selectedID: RangeReviewItem.ID?, video: VideoRecord) -> [RangeReviewMarkedRange] {
         let painted = RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: selectedID?.ownerID, kept: kept?.wrappedValue)
         return items.flatMap { owner in
             (owner.children.isEmpty ? [owner] : owner.children).compactMap { item -> RangeReviewMarkedRange? in
-                guard painted.contains(owner.id.ownerID), item.id != selectedID, item.video.id == video.id,
+                // The selected cut paints through `range`; its sibling cuts
+                // (the other clips of a multi-cut reel) still mark themselves.
+                let sibling = selectedID != nil && owner.id.ownerID == selectedID?.ownerID
+                guard painted.contains(owner.id.ownerID) || sibling, item.id != selectedID, item.video.id == video.id,
                       let index = paletteIndex(owner) else { return nil }
                 return RangeReviewMarkedRange(range: item.range, paletteIndex: index)
             }
@@ -208,14 +221,7 @@ struct RangeReviewView<Footer: View>: View {
         .onChange(of: selectedID) { _, _ in
             selection?.wrappedValue = selectedID?.ownerID
             selectItem()
-            if let pendingDraft {
-                draft = pendingDraft
-                self.pendingDraft = nil
-                if pendingCommit {
-                    pendingCommit = false
-                    commitDraft(snap: false)
-                }
-            }
+            applyPendingDraft()
             if playingAll {
                 if advancingPlayAll, playback.player != nil, let range, range.upperBound > range.lowerBound {
                     playback.play()
@@ -240,7 +246,11 @@ struct RangeReviewView<Footer: View>: View {
             if ownerID != selectedID?.ownerID { reconcileSelection() }
         }
         .onChange(of: range) { _, range in
-            guard let range, draft == nil else { return }
+            guard let range else { return }
+            if let draft, abs(draft.start - range.lowerBound) < 0.05, abs(draft.end - range.upperBound) < 0.05 {
+                self.draft = nil
+            }
+            guard draft == nil else { return }
             playback.setRange(playable(range))
             if window.needsRecentering(range) { recenter(range) }
         }
@@ -283,20 +293,34 @@ struct RangeReviewView<Footer: View>: View {
     }
 
     /// `inactive` shows the words with nothing marked while no item is
-    /// selected; a word click selects `selected` (the first item, the draft in
-    /// pick lists) and a drag selects it and marks the span in one move.
+    /// selected; a word click selects the item under the word (else `selected`,
+    /// the first item or the draft in pick lists) with just that word as its
+    /// range, and a drag selects it and marks the span in one move.
     private func wordPanel(selected: RangeReviewItem, video: VideoRecord, inactive: Bool = false) -> some View {
-        let emptyRange = selected.range.lowerBound...selected.range.lowerBound
+        // Nothing marked, but the words open on the first painted (kept)
+        // passage so the highlights are in view, else on `selected`.
+        let marked = markedRanges(excluding: inactive ? nil : selected.id, video: video)
+        let anchor = inactive ? marked.map(\.range.lowerBound).min() ?? selected.range.lowerBound : selected.range.lowerBound
+        let emptyRange = anchor...anchor
         let contextCanTrim = inactive ? selected.isAvailable : canTrim
         func activate(at word: TranscriptQATrim.Word? = nil) {
-            // A saved item under the word wins; pick drafts fall back to `selected`.
-            let under = word.flatMap { word in
-                items.first { item in
-                    !item.isDraft && item.video.id == video.id
-                        && (item.children.isEmpty ? [item] : item.children).contains { TranscriptQATrim.contains(word, in: $0.range) }
-                }
+            // The saved cut under the word wins (the cut itself, not its
+            // owner: a multi-cut reel's first cut must not take a word from
+            // its second); pick drafts fall back to `selected`.
+            let under = word.flatMap { itemUnder($0, video: video) }
+            let target = under ?? selected
+            if let word, word.end > word.start, under?.isAvailable ?? contextCanTrim {
+                // With nothing selected a click selects that word alone, not the
+                // saved passage under it; Reset to Original brings the passage back.
+                pendingDraft = (word.start, word.end)
+                pendingCommit = true
             }
-            selectedID = under?.id ?? selected.id
+            if selectedID == target.id {
+                // Already selected: no selection change will apply the draft.
+                applyPendingDraft()
+            } else {
+                selectedID = target.id
+            }
             userCleared = false
         }
         return TranscriptQAWordPanel(transcript: visibleTranscript, videoID: video.id,
@@ -305,13 +329,14 @@ struct RangeReviewView<Footer: View>: View {
                               preferredTranslationLanguage: preferredTranslationLanguage,
                               sectionID: selected.id,
                               range: inactive ? emptyRange : editRange,
-                              otherRanges: markedRanges(excluding: inactive ? nil : selected.id, video: video),
+                              otherRanges: marked,
                               playback: playback, canTrim: contextCanTrim,
                               onSelect: inactive ? { activate(at: $0) } : selectWord,
                               onPreview: inactive ? { _, word in activate(at: word) } : previewWord,
                               onCommit: { if inactive { pendingCommit = pendingDraft != nil } else { commitDraft(snap: false) } },
                               onCancel: { draft = nil; anchorDrag = nil },
-                              spanSelection: spanSelection && selected.isDraft,
+                              spanSelection: spanSelection,
+                              followsEmptyAnchor: inactive,
                               onSpanPreview: { span in
                                   guard isEnabled, contextCanTrim else { return }
                                   if inactive {
@@ -623,7 +648,8 @@ struct RangeReviewView<Footer: View>: View {
                         .lineLimit(caption.lineLimit).help(caption.text)
                     }
                 }
-                .padding(.leading, (isChild ? 42 : kept != nil ? 26 : 0) + (item.isDraft ? 0 : RangeReviewPalette.barWidth + Theme.spaceXS))
+                // A keep box is 18 wide at 8 in; the text starts 5 past it.
+                .padding(.leading, (isChild ? 42 : kept != nil ? 15 : 0) + (item.isDraft ? 0 : RangeReviewPalette.barWidth + Theme.spaceXS))
                 .padding(.trailing, onDelete != nil && !item.isDraft && !isChild ? 30 : 0)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, Theme.spaceS)
@@ -684,7 +710,7 @@ struct RangeReviewView<Footer: View>: View {
                 .overlay {
                     if playback.player == nil {
                         Text(item.isAvailable ? "Loading preview… If unavailable, download this video to this Mac."
-                             : "Footage changed. Regenerate this candidate to preview it.")
+                             : unavailableHint)
                             .font(.caption).foregroundStyle(.white.opacity(0.8))
                             .multilineTextAlignment(.center).padding(Theme.spaceS)
                     }
@@ -702,12 +728,28 @@ struct RangeReviewView<Footer: View>: View {
                     rangeLabel
                 }
                 if canTrim, !isEmptyRange, policy != .wizard, !visibleTranscript.words.isEmpty {
-                    wordStepControls
+                    RangeStepControls(range: editRange, transcript: visibleTranscript,
+                                      spans: speakerSpans.filter { $0.videoID == nil || $0.videoID == contextVideo?.id },
+                                      limits: limits, policy: policy, lastAdjustment: lastAdjustment,
+                                      canSplit: onSplit != nil && !item.isDraft && item.id.cutIndex == nil,
+                                      playback: playback, actions: stepActions.update(apply: apply, split: splitAtPlayhead))
+                        .equatable()
                 }
-                let hint = spanSelection && item.isDraft ? Self.spanHint : (trimHint ?? Self.trimHint)
-                FormCaption(hint)
-                    .lineLimit(3).fixedSize(horizontal: false, vertical: true)
-                    .help(hint)
+                HStack(alignment: .firstTextBaseline, spacing: Theme.spaceS) {
+                    let hint = spanSelection ? Self.spanHint : (trimHint ?? Self.trimHint)
+                    FormCaption(hint)
+                        .lineLimit(2).fixedSize(horizontal: false, vertical: true)
+                        .help(hint)
+                    Spacer(minLength: 0)
+                    if policy != .wizard {
+                        Button("Shortcuts", systemImage: "keyboard") { showingShortcuts.toggle() }
+                            .labelStyle(.iconOnly).controlSize(.small).fixedSize()
+                            .help("Keyboard shortcuts for trimming")
+                            .popover(isPresented: $showingShortcuts, arrowEdge: .bottom) {
+                                RangeReviewShortcutsList().padding(Theme.spaceM)
+                            }
+                    }
+                }
             }
             footer(selectedParent ?? item)
         }
@@ -719,11 +761,11 @@ struct RangeReviewView<Footer: View>: View {
     }
 
     private static var spanHint: String {
-        "Drag the handles or the transcript anchors to adjust · click the selection to clear it · I / O set the start / end at the playhead · ⌥←/→ words at the end (⇧⌥ at the start) · , / . nudge the end 0.1 s (⇧ 1 s, ⌥ the start)"
+        "Press a word and drag to select a passage; drag a handle or a transcript anchor to adjust it."
     }
 
     private static var trimHint: String {
-        "Drag the handles or the transcript anchors, or click a word to move the nearer end to it · I / O set the start / end at the playhead · ⌥←/→ words at the end (⇧⌥ at the start) · , / . nudge the end 0.1 s (⇧ 1 s, ⌥ the start)"
+        "Click a word to select just that word; drag a handle or a transcript anchor to adjust the ends."
     }
 
     private var playButton: some View {
@@ -763,127 +805,17 @@ struct RangeReviewView<Footer: View>: View {
         }
     }
 
-    /// One-click adjustments: words, sentences, speaker turns and tenth-second
-    /// nudges at either edge, the pause after the last word, silence at both
-    /// ends, split at the playhead, and repeat the last one. Each button
-    /// disables when the transcript or the limits offer no such move.
-    /// One row per kind of move with a Start and an End pair, − shrinks the
-    /// selection and + grows it. Rows, not columns, so the block fits the
-    /// narrowest player column instead of being clipped; the whole-range
-    /// actions wrap underneath.
-    private var wordStepControls: some View {
-        VStack(alignment: .leading, spacing: Theme.spaceS) {
-            Grid(alignment: .center, horizontalSpacing: Theme.spaceM, verticalSpacing: Theme.spaceXS) {
-                GridRow {
-                    Color.clear.frame(width: 1, height: 1).gridCellUnsizedAxes([.horizontal, .vertical])
-                    columnLabel("Start")
-                    columnLabel("End")
-                }
-                GridRow {
-                    rowLabel("Word")
-                    pair(minus: (.step(.dropFirstWord), "Drop the first word (⇧⌥→)"),
-                         plus: (.step(.wordBefore), "Add the word before (⇧⌥←)"))
-                    pair(minus: (.step(.dropLastWord), "Drop the last word (⌥←)"),
-                         plus: (.step(.wordAfter), "Add the next word (⌥→)"))
-                }
-                GridRow {
-                    rowLabel("Sentence")
-                    pair(minus: (.step(.dropFirstSentence), "Forward to the next sentence start"),
-                         plus: (.step(.sentenceBefore), "Back to the start of the sentence"))
-                    pair(minus: (.step(.dropLastSentence), "Back to the previous sentence end"),
-                         plus: (.step(.sentenceAfter), "On to the end of the sentence"))
-                }
-                GridRow {
-                    rowLabel("Speaker")
-                    pair(minus: (.turn(.start, grow: false), "Forward to the next speaker change"),
-                         plus: (.turn(.start, grow: true), "Back to the start of the speaker's turn"))
-                    pair(minus: (.turn(.end, grow: false), "Back to the previous speaker change"),
-                         plus: (.turn(.end, grow: true), "On to the end of the speaker's turn"))
-                }
-                GridRow {
-                    rowLabel("Nudge 0.1 s")
-                    pair(minus: (.nudge(.start, 0.1), "Start 0.1 s later (⌥.  ⇧ for 1 s)"),
-                         plus: (.nudge(.start, -0.1), "Start 0.1 s earlier (⌥,  ⇧ for 1 s)"))
-                    pair(minus: (.nudge(.end, -0.1), "End 0.1 s earlier (,  ⇧ for 1 s)"),
-                         plus: (.nudge(.end, 0.1), "End 0.1 s later (.  ⇧ for 1 s)"))
-                }
-            }
-            FlowLayout(spacing: Theme.spaceS) {
-                adjustmentButton(.step(.pauseAfter), "Keep Pause",
-                                 help: "Keep the pause after the last word: extend the end through the silence, up to the next word")
-                adjustmentButton(.trimSilence, "Trim Silence", help: "Start at the first word and end at the last word")
-                if onSplit != nil {
-                    Button(action: splitAtPlayhead) { Text("Split at Playhead").lineLimit(1).fixedSize() }
-                        .disabled(!canSplit)
-                        .help("Split at the playhead: this pick keeps the first half, a new pick takes the rest")
-                }
-                Button {
-                    if let lastAdjustment { apply(lastAdjustment) }
-                } label: {
-                    Text("Repeat Last").lineLimit(1).fixedSize()
-                }
-                .disabled(lastAdjustment.flatMap { adjusted($0) } == nil)
-                .help(lastAdjustment.map { "Repeat: \($0.label)" } ?? "Repeat the last adjustment on this selection")
-            }
-        }
-        .controlSize(.small)
-    }
-
-    private var stepButtonWidth: CGFloat { 30 }
-
-    /// A − / + pair; a missing side keeps its slot so the columns line up.
-    @ViewBuilder
-    private func pair(minus: (RangeAdjustment, String)?, plus: (RangeAdjustment, String)?) -> some View {
-        HStack(spacing: Theme.spaceXS) {
-            slot(minus, "−")
-            slot(plus, "+")
-        }
-    }
-
-    @ViewBuilder
-    private func slot(_ action: (RangeAdjustment, String)?, _ sign: String) -> some View {
-        if let (adjustment, help) = action {
-            Button { apply(adjustment) } label: {
-                Text(sign).monospacedDigit().frame(width: stepButtonWidth)
-            }
-            .disabled(adjusted(adjustment) == nil)
-            .help(help)
-        } else {
-            Color.clear.frame(width: stepButtonWidth + 12, height: 1)
-        }
-    }
-
-    private func columnLabel(_ text: String) -> some View {
-        Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
-    }
-
-    private func rowLabel(_ text: String) -> some View {
-        Text(text).font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
-            .gridColumnAlignment(.trailing)
-    }
-
-    private func adjustmentButton(_ adjustment: RangeAdjustment, _ title: String, help: String) -> some View {
-        Button { apply(adjustment) } label: { Text(title).lineLimit(1).fixedSize() }
-            .disabled(adjusted(adjustment) == nil)
-            .help(help)
-    }
+    /// Stable callbacks for the step controls, so a skipped (equal) subview
+    /// still reaches the current selection.
+    @State private var stepActions = RangeStepActions()
 
     /// The range an adjustment would produce from the current one; nil when
     /// there is no such move.
     private func adjusted(_ adjustment: RangeAdjustment) -> ClosedRange<Double>? {
         guard canTrim, !isEmptyRange, policy != .wizard else { return nil }
-        let words = visibleTranscript.words
-        switch adjustment {
-        case .step(let step):
-            return TranscriptQATrim.stepped(editRange, by: step, words: words, limits: limits)
-        case let .nudge(edge, delta):
-            return TranscriptQATrim.nudged(editRange, edge: edge, by: delta, limits: limits)
-        case let .turn(edge, grow):
-            let spans = speakerSpans.filter { $0.videoID == nil || $0.videoID == contextVideo?.id }
-            return TranscriptQATrim.turned(editRange, edge: edge, grow: grow, spans: spans, limits: limits)
-        case .trimSilence:
-            return TranscriptQATrim.trimmedSilence(editRange, words: words, limits: limits)
-        }
+        let spans = speakerSpans.filter { $0.videoID == nil || $0.videoID == contextVideo?.id }
+        return RangeAdjustment.target(adjustment, range: editRange, words: visibleTranscript.words,
+                                      spans: spans, limits: limits)
     }
 
     private func apply(_ adjustment: RangeAdjustment) {
@@ -950,13 +882,8 @@ struct RangeReviewView<Footer: View>: View {
                         onScrub: { playback.scrub(to: min(editRange.upperBound, max(editRange.lowerBound, $0))) },
                         onDragEnded: { commitDraft(snap: true) })
             .overlay(alignment: .topLeading) {
-                GeometryReader { proxy in
-                    if let x = window.playheadX(at: playback.time, width: Double(proxy.size.width)) {
-                        Rectangle().fill(.white)
-                            .frame(width: 2, height: 48).offset(x: CGFloat(x))
-                    }
-                }
-                .allowsHitTesting(false).accessibilityHidden(true)
+                RangeReviewPlayhead(window: window, playback: playback)
+                    .allowsHitTesting(false).accessibilityHidden(true)
             }
             .help(policy != .wizard ? "Drag a handle and release near an edge to see more. Ends snap to nearby words."
                   : "Drag a handle and release near the edge to see more of this scene")
@@ -1027,32 +954,92 @@ struct RangeReviewView<Footer: View>: View {
         }
     }
 
+    /// A click selects that word alone, wherever it is; the range grows only by
+    /// dragging a marker or with the trim buttons.
     private func selectWord(_ word: TranscriptQATrim.Word) {
-        guard isEnabled, canTrim else { return }
-        let edge = TranscriptQATrim.nearestEdge(for: word, in: editRange)
-        let updated = moving(edge, to: word)
+        guard isEnabled, canTrim, word.end > word.start else { return }
+        guard limits.contains(word.mid) else {
+            // Outside this item's limits the word belongs to another cut:
+            // select that one with just this word, as a click with nothing
+            // selected does. Clamping to this item would collapse the range.
+            guard let video = contextVideo, let under = itemUnder(word, video: video), under.id != selected?.id else { return }
+            pendingDraft = (word.start, word.end)
+            pendingCommit = true
+            selectedID = under.id
+            return
+        }
+        let updated = word.start...max(word.start, word.end)
         commit(updated)
-        playback.seek(to: edge == .start ? updated.lowerBound : max(updated.lowerBound, updated.upperBound - 3))
-        playback.play()
+        playback.seek(to: updated.lowerBound)
     }
 
     private func commit(_ proposed: ClosedRange<Double>) {
         guard isEnabled, canTrim, let selected else { draft = nil; return }
         let updated = policy.clamp(proposed, limits: limits)
-        draft = nil
+        if draft == nil, let range, abs(updated.lowerBound - range.lowerBound) < 0.001,
+           abs(updated.upperBound - range.upperBound) < 0.001 {
+            // Nothing moved (an anchor pressed and released): no save, no
+            // refresh, and no draft to wait on. With a save still pending the
+            // range on screen is not the saved one, so a return to it is saved.
+            return
+        }
+        // The words keep showing the new range until the saved one catches up
+        // (the save is asynchronous); `range`'s observer clears the draft then.
+        // A save the adapter refuses (an empty range, a cut that no longer
+        // resolves) never arrives: the draft is dropped after a moment so the
+        // filmstrip and the words return to the saved range.
+        draft = (updated.lowerBound, updated.upperBound)
+        draftGeneration += 1
+        let generation = draftGeneration
+        let saved = range
+        Task { @MainActor in
+            try? await Task.sleep(for: .seconds(1))
+            // Only the draft this commit made: a span or filmstrip drag that
+            // started since holds a different one and must keep it. The
+            // player returns to the range that was saved when the refused
+            // commit was made; the view's own data may be stale by now.
+            guard generation == draftGeneration, anchorDrag == nil, let current = draft,
+                  abs(current.start - updated.lowerBound) < 0.001, abs(current.end - updated.upperBound) < 0.001 else { return }
+            draft = nil
+            if let saved { playback.setRange(playable(saved)) }
+        }
         onSave(selected, updated.lowerBound, updated.upperBound)
         playback.setRange(playable(updated))
         if window.needsRecentering(updated) { recenter(updated) }
         // Adapters observe saved ranges; their refreshes remain authoritative.
     }
 
+    /// A queued one-word selection or span (made while another item, or
+    /// nothing, was selected) becomes the draft of the now-selected item.
+    private func applyPendingDraft() {
+        guard let pendingDraft else { pendingCommit = false; return }
+        draft = pendingDraft
+        self.pendingDraft = nil
+        if pendingCommit {
+            pendingCommit = false
+            commitDraft(snap: false)
+        }
+    }
+
+    /// The saved cut whose limits hold the word (the cut itself for multi-cut
+    /// reels), else the one whose range does; nil for an unmarked word.
+    private func itemUnder(_ word: TranscriptQATrim.Word, video: VideoRecord) -> RangeReviewItem? {
+        // Each cut has its own recording: a reel's owner carries its first cut's.
+        let cuts = items.filter { !$0.isDraft }
+            .flatMap { $0.children.isEmpty ? [$0] : $0.children }
+            .filter { $0.video.id == video.id }
+        return cuts.first { TranscriptQATrim.contains(word, in: $0.range) }
+            ?? cuts.first { $0.limits.upperBound > $0.limits.lowerBound && $0.limits.contains(word.mid) }
+    }
+
     private func handleKey(_ event: NSEvent) -> Bool {
-        guard isEnabled, range != nil, playback.player != nil else { return false }
+        guard isEnabled, range != nil else { return false }
         if let onDelete, let selected, event.keyCode == 51 || event.keyCode == 117,
            !selected.isDraft, selected.id.cutIndex == nil {
             onDelete(selected)
             return true
         }
+        guard playback.player != nil else { return false }
         let flags = event.modifierFlags.intersection([.option, .shift, .command, .control])
         // ⌥←/→ step words at the end, ⇧⌥ at the start.
         if event.keyCode == 123 || event.keyCode == 124, flags.contains(.option), !flags.contains(.command) {
@@ -1076,7 +1063,8 @@ struct RangeReviewView<Footer: View>: View {
             guard canTrim, !isEmptyRange else { return false }
             let edge: TranscriptQATrim.Edge = event.charactersIgnoringModifiers?.lowercased() == "i" ? .start : .end
             let time = policy != .wizard ? TranscriptQATrim.snap(playback.time, edge: edge, words: visibleTranscript.words) : playback.time
-            commit(policy.setting(edge, at: time, in: editRange, limits: limits))
+            // No minimum: the keys shrink a click-selected range like the buttons do.
+            commit(policy.setting(edge, at: time, in: editRange, limits: limits, minimum: 0))
         default: return false
         }
         return true
@@ -1085,11 +1073,26 @@ struct RangeReviewView<Footer: View>: View {
 
 /// A one-click change to a marked range; the view remembers the last one so
 /// the next pick can take it again.
-nonisolated enum RangeAdjustment: Equatable, Sendable {
+nonisolated enum RangeAdjustment: Hashable, Sendable {
     case step(TranscriptQATrim.Step)
     case nudge(TranscriptQATrim.Edge, Double)
     case turn(TranscriptQATrim.Edge, grow: Bool)
     case trimSilence
+
+    /// The range the adjustment would produce; nil when there is no such move.
+    static func target(_ adjustment: RangeAdjustment, range: ClosedRange<Double>, words: [TranscriptQATrim.Word],
+                       spans: [TranscriptQATrim.SpeakerSpan], limits: ClosedRange<Double>) -> ClosedRange<Double>? {
+        switch adjustment {
+        case .step(let step):
+            TranscriptQATrim.stepped(range, by: step, words: words, limits: limits)
+        case let .nudge(edge, delta):
+            TranscriptQATrim.nudged(range, edge: edge, by: delta, limits: limits)
+        case let .turn(edge, grow):
+            TranscriptQATrim.turned(range, edge: edge, grow: grow, spans: spans, limits: limits)
+        case .trimSilence:
+            TranscriptQATrim.trimmedSilence(range, words: words, limits: limits)
+        }
+    }
 
     var label: String {
         switch self {
@@ -1112,6 +1115,212 @@ nonisolated enum RangeAdjustment: Equatable, Sendable {
             case (.end, false): "back to the previous speaker change"
             }
         case .trimSilence: "trim the silence at both ends"
+        }
+    }
+}
+
+/// Non-observable callback storage for the step controls (see TranscriptQALineActions).
+final class RangeStepActions {
+    var apply: (RangeAdjustment) -> Void = { _ in }
+    var split: () -> Void = {}
+
+    func update(apply: @escaping (RangeAdjustment) -> Void, split: @escaping () -> Void) -> RangeStepActions {
+        self.apply = apply
+        self.split = split
+        return self
+    }
+}
+
+/// The kinds of one-click move; the control shows one at a time.
+nonisolated enum RangeStepKind: String, CaseIterable, Identifiable, Sendable {
+    case word, sentence, speaker, nudge
+    var id: String { rawValue }
+    var label: String {
+        switch self {
+        case .word: "Word"
+        case .sentence: "Sentence"
+        case .speaker: "Speaker"
+        case .nudge: "0.1 s"
+        }
+    }
+}
+
+/// One-click adjustments under the filmstrip: a Step-by picker (word,
+/// sentence, speaker turn, tenth of a second) with a Start and an End pair,
+/// then the whole-range actions. Four buttons instead of twenty; the keys
+/// still reach every move. Equatable and re-rendered only when its inputs
+/// change: the targets scan the whole transcript, and the parent's body
+/// runs on every drag step and playhead tick.
+struct RangeStepControls: View, Equatable {
+    let range: ClosedRange<Double>
+    let transcript: TranscriptQATrim.Transcript
+    let spans: [TranscriptQATrim.SpeakerSpan]
+    let limits: ClosedRange<Double>
+    let policy: RangeReviewItem.TrimPolicy
+    let lastAdjustment: RangeAdjustment?
+    /// The list offers Split for this item; the playhead decides if it is possible now.
+    let canSplit: Bool
+    let playback: PodcastHighlightTrimPlayback
+    let actions: RangeStepActions
+    @AppStorage("rangeReview.stepKind") private var kind = RangeStepKind.word
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.range == rhs.range && lhs.transcript == rhs.transcript && lhs.spans == rhs.spans
+            && lhs.limits == rhs.limits && lhs.policy == rhs.policy && lhs.lastAdjustment == rhs.lastAdjustment
+            && lhs.canSplit == rhs.canSplit
+    }
+
+    private func target(_ adjustment: RangeAdjustment) -> ClosedRange<Double>? {
+        RangeAdjustment.target(adjustment, range: range, words: transcript.words, spans: spans, limits: limits)
+    }
+
+    private var moves: (start: (shrink: RangeAdjustment, grow: RangeAdjustment), end: (shrink: RangeAdjustment, grow: RangeAdjustment)) {
+        switch kind {
+        case .word: ((.step(.dropFirstWord), .step(.wordBefore)), (.step(.dropLastWord), .step(.wordAfter)))
+        case .sentence: ((.step(.dropFirstSentence), .step(.sentenceBefore)), (.step(.dropLastSentence), .step(.sentenceAfter)))
+        case .speaker: ((.turn(.start, grow: false), .turn(.start, grow: true)), (.turn(.end, grow: false), .turn(.end, grow: true)))
+        case .nudge: ((.nudge(.start, 0.1), .nudge(.start, -0.1)), (.nudge(.end, -0.1), .nudge(.end, 0.1)))
+        }
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spaceS) {
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Theme.spaceM) {
+                    stepPicker(.segmented)
+                    edgePairs
+                }
+                VStack(alignment: .leading, spacing: Theme.spaceS) {
+                    stepPicker(.segmented)
+                    edgePairs
+                }
+                // Narrowest column: a menu instead of the four segments.
+                VStack(alignment: .leading, spacing: Theme.spaceS) {
+                    stepPicker(.menu)
+                    edgePairs
+                }
+            }
+            FlowLayout(spacing: Theme.spaceS) {
+                adjustmentButton(.step(.pauseAfter), "Keep Pause",
+                                 help: "Keep the pause after the last word: extend the end through the silence, up to the next word")
+                adjustmentButton(.trimSilence, "Trim Silence", help: "Start at the first word and end at the last word")
+                if canSplit {
+                    SplitButton(range: range, minimum: policy.minimumSpan, playback: playback, split: { actions.split() })
+                }
+                Button {
+                    if let lastAdjustment { actions.apply(lastAdjustment) }
+                } label: {
+                    Text("Repeat Last").lineLimit(1).fixedSize()
+                }
+                .disabled(lastAdjustment.flatMap { target($0) } == nil)
+                .help(lastAdjustment.map { "Repeat: \($0.label)" } ?? "Repeat the last adjustment on this selection")
+            }
+        }
+        .controlSize(.small)
+    }
+
+    private enum PickerKind { case segmented, menu }
+
+    @ViewBuilder
+    private func stepPicker(_ style: PickerKind) -> some View {
+        let picker = Picker("Step by", selection: $kind) {
+            ForEach(RangeStepKind.allCases) { kind in
+                Text(kind.label).lineLimit(1).fixedSize().tag(kind)
+            }
+        }
+        .help("What the Start and End buttons move by")
+        .accessibilityLabel("Step by")
+        switch style {
+        case .segmented: picker.pickerStyle(.segmented).labelsHidden().fixedSize()
+        case .menu: picker.pickerStyle(.menu).fixedSize()
+        }
+    }
+
+    private var edgePairs: some View {
+        HStack(spacing: Theme.spaceM) {
+            edgePair("Start", moves.start.shrink, moves.start.grow)
+            edgePair("End", moves.end.shrink, moves.end.grow)
+        }
+    }
+
+    /// Shrink and grow one edge by the chosen step.
+    private func edgePair(_ title: String, _ shrink: RangeAdjustment, _ grow: RangeAdjustment) -> some View {
+        HStack(spacing: Theme.spaceXS) {
+            Text(title).font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+            Button { actions.apply(shrink) } label: {
+                Image(systemName: title == "Start" ? "arrow.right.to.line" : "arrow.left.to.line")
+            }
+            .disabled(target(shrink) == nil)
+            .help("\(title): \(shrink.label)")
+            .accessibilityLabel("\(title): \(shrink.label)")
+            Button { actions.apply(grow) } label: {
+                Image(systemName: title == "Start" ? "arrow.left.to.line" : "arrow.right.to.line")
+            }
+            .disabled(target(grow) == nil)
+            .help("\(title): \(grow.label)")
+            .accessibilityLabel("\(title): \(grow.label)")
+        }
+    }
+
+    private func adjustmentButton(_ adjustment: RangeAdjustment, _ title: String, help: String) -> some View {
+        Button { actions.apply(adjustment) } label: { Text(title).lineLimit(1).fixedSize() }
+            .disabled(target(adjustment) == nil)
+            .help(help)
+    }
+
+    /// Reads the playhead on its own, so only this button follows the 10 Hz ticks.
+    private struct SplitButton: View {
+        let range: ClosedRange<Double>
+        let minimum: Double
+        let playback: PodcastHighlightTrimPlayback
+        let split: () -> Void
+
+        var body: some View {
+            let time = playback.time
+            Button(action: split) { Text("Split at Playhead").lineLimit(1).fixedSize() }
+                .disabled(!(time - range.lowerBound >= minimum && range.upperBound - time >= minimum))
+                .help("Split at the playhead: this pick keeps the first half, a new pick takes the rest")
+        }
+    }
+}
+
+/// The trim keys, listed once in a popover instead of a three-line caption.
+struct RangeReviewShortcutsList: View {
+    private static let rows: [(keys: String, action: String)] = [
+        ("Space", "Play or pause"),
+        ("I / O", "Set the start / end at the playhead"),
+        ("⌥→ / ⌥←", "Add / drop a word at the end"),
+        ("⇧⌥← / ⇧⌥→", "Add / drop a word at the start"),
+        (", / .", "End 0.1 s earlier / later"),
+        ("⇧, / ⇧.", "End 1 s earlier / later"),
+        ("⌥, / ⌥.", "Start 0.1 s earlier / later"),
+        ("⌫", "Remove the selected item"),
+    ]
+
+    var body: some View {
+        Grid(alignment: .leading, horizontalSpacing: Theme.spaceM, verticalSpacing: Theme.spaceXS) {
+            ForEach(Self.rows, id: \.keys) { row in
+                GridRow {
+                    Text(row.keys).font(.body.monospaced()).lineLimit(1).fixedSize()
+                    Text(row.action).font(.body).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                }
+            }
+        }
+    }
+}
+
+/// The playhead over the filmstrip. Reads the time itself so the review's
+/// body does not re-run on every tick of playback.
+private struct RangeReviewPlayhead: View {
+    let window: ProposedCutTrim.Window
+    let playback: PodcastHighlightTrimPlayback
+
+    var body: some View {
+        GeometryReader { proxy in
+            if let x = window.playheadX(at: playback.time, width: Double(proxy.size.width)) {
+                Rectangle().fill(.white)
+                    .frame(width: 2, height: 48).offset(x: CGFloat(x))
+            }
         }
     }
 }

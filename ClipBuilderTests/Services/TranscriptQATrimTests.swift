@@ -39,6 +39,59 @@ struct TranscriptQATrimTests {
         #expect(TranscriptQATrim.stepped(range, by: .wordAfter, words: words, limits: 0.0...9.5) == 3.0...9.5)
     }
 
+    @Test func stepsAndNudgesShrinkARangeShorterThanTheMinimum() {
+        // A click selects one word, so a range can be well under 1 s. The
+        // shrink moves must shrink it, not pad it back out to a second.
+        let words = [word(9.4, 9.9), word(10.0, 10.3), word(10.35, 10.6), word(10.7, 11.2)]
+        let limits = 0.0...20.0
+        #expect(TranscriptQATrim.stepped(10.0...10.6, by: .dropLastWord, words: words, limits: limits) == 10.0...10.3)
+        #expect(TranscriptQATrim.stepped(10.0...10.6, by: .dropFirstWord, words: words, limits: limits) == 10.35...10.6)
+        #expect(TranscriptQATrim.stepped(10.0...10.3, by: .wordAfter, words: words, limits: limits) == 10.0...10.6)
+        #expect(TranscriptQATrim.stepped(10.0...10.3, by: .wordBefore, words: words, limits: limits) == 9.4...10.3)
+        #expect(TranscriptQATrim.nudged(10.0...10.5, edge: .end, by: -0.1, limits: limits) == 10.0...10.4)
+        #expect(TranscriptQATrim.nudged(10.0...10.5, edge: .start, by: 0.1, limits: limits) == 10.1...10.5)
+        // A nudge can never invert or empty the range.
+        #expect(TranscriptQATrim.nudged(10.0...10.05, edge: .end, by: -0.1, limits: limits) == nil)
+        let spans = [TranscriptQATrim.SpeakerSpan(start: 9, end: 10.5, label: "A"),
+                     TranscriptQATrim.SpeakerSpan(start: 10.5, end: 12, label: "B")]
+        #expect(TranscriptQATrim.turned(10.0...11.2, edge: .end, grow: false, spans: spans, limits: limits) == 10.0...10.5)
+        // Dragged edges keep the minimum; the I / O keys do not.
+        #expect(TranscriptQATrim.setting(.end, at: 10.3, in: 10.0...10.6, limits: limits) == 10.0...11.0)
+        #expect(TranscriptQATrim.setting(.end, at: 10.3, in: 10.0...10.6, limits: limits, minimum: 0) == 10.0...10.3)
+        #expect(TranscriptQATrim.setting(.start, at: 10.9, in: 10.0...10.6, limits: limits, minimum: 0) == 10.6...10.6)
+    }
+
+    @Test func longSpeakerBlocksContinueOnNewLinesAndWordsKnowTheirLine() {
+        let rows = (0..<5).map { index -> TranscriptRow in
+            let text = Array(repeating: "word", count: 25).joined(separator: " ")
+            var row = row(Double(index * 10), Double(index * 10 + 10), text)
+            row.id = Int64(index + 1)
+            return row
+        }
+        let labels = Dictionary(uniqueKeysWithValues: rows.map { ($0.id, "Host") })
+        let transcript = TranscriptQATrim.Transcript(.init(rows: rows, labels: labels, videoID: 1))
+        #expect(transcript.words.count == 125)
+        #expect(transcript.lines.allSatisfy { $0.words.count <= TranscriptQATrim.Transcript.maximumLineWords })
+        #expect(transcript.lines.count == 3)
+        #expect(transcript.lines.map(\.continuesSpeaker) == [false, true, true])
+        #expect(transcript.lines.allSatisfy { $0.speaker == "Host" })
+        #expect(transcript.lineOfWord.count == 125)
+        #expect(transcript.lineOfWord[0] == 0 && transcript.lineOfWord[124] == 2)
+        let changed = TranscriptQATrim.changedFrameLineIDs(lineOfWord: transcript.lineOfWord,
+            before: [3: CGRect(x: 0, y: 0, width: 10, height: 10)],
+            after: [3: CGRect(x: 0, y: 5, width: 10, height: 10), 124: .zero])
+        #expect(changed == [0, 2])
+        // One long row of a single speaker is cut into lines too.
+        var long = row(0, 100, Array(repeating: "word", count: 125).joined(separator: " "))
+        long.id = 9
+        let single = TranscriptQATrim.Transcript(.init(rows: [long], labels: [9: "Host"], videoID: 1))
+        #expect(single.lines.map(\.words.count) == [60, 60, 5])
+        #expect(single.lines.map(\.continuesSpeaker) == [false, true, true])
+        #expect(single.lines.first?.start == 0 && single.lines.last?.end == 100)
+        #expect(single.lines[1].start == single.lines[1].words.first?.start)
+        #expect(single.lineOfWord[60] == 1 && single.lineOfWord[124] == 2)
+    }
+
     @Test func sentenceTurnNudgeAndSilenceSteps() {
         func w(_ id: Int, _ text: String, _ start: Double, _ end: Double) -> TranscriptQATrim.Word {
             TranscriptQATrim.Word(id: id, text: text, start: start, end: end)
@@ -66,7 +119,8 @@ struct TranscriptQATrimTests {
         #expect(TranscriptQATrim.nudged(range, edge: .end, by: 0.1, limits: limits) == 4.0...6.6)
         #expect(TranscriptQATrim.nudged(range, edge: .start, by: -1, limits: limits) == 3.0...6.5)
         #expect(TranscriptQATrim.nudged(0.0...6.5, edge: .start, by: -0.1, limits: limits) == nil)
-        #expect(TranscriptQATrim.nudged(4.0...5.0, edge: .end, by: -0.1, limits: limits) == nil)
+        // No minimum for nudges (a click-selected range is shorter than one), only non-inversion.
+        #expect(TranscriptQATrim.nudged(4.0...5.0, edge: .end, by: -0.1, limits: limits) == 4.0...4.9)
 
         // Speaker turns.
         let spans = [TranscriptQATrim.SpeakerSpan(start: 0, end: 8.5, label: "A"),
@@ -276,6 +330,8 @@ struct TranscriptQATrimTests {
         #expect(TranscriptQATrim.clamped(0...40, limits: 8...30) == 8...30)
         #expect(TranscriptQATrim.clamped(0...1, limits: 0...0) == 0...0)
         #expect(TranscriptQATrim.clamped(0...1, limits: 0...0.4) == 0...0.4)
+        // One word is a valid range: no minimum length is imposed, only the limits.
+        #expect(TranscriptQATrim.clamped(7.32...7.9, limits: 0...30) == 7.32...7.9)
     }
 
     @Test func nearerEdgeUsesWordMidpointAndTiesChooseStart() {
@@ -347,7 +403,8 @@ struct TranscriptQATrimTests {
         #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 41, y: 15), frames: frames) == 1)
         #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 20, y: 30), frames: frames) == 1, "the leading between rows goes to the nearer row")
         #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 20, y: 32), frames: frames) == 3)
-        #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 200, y: 15), frames: frames) == nil, "far from every word is still a miss")
+        #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 200, y: 15), frames: frames) == 2, "the margin past a row's last word reaches that word")
+        #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 200, y: 100), frames: frames) == nil, "off every row is still a miss")
         #expect(TranscriptQATrim.nearestWord(at: .zero, frames: [:]) == nil)
     }
 
@@ -552,5 +609,28 @@ extension TranscriptQATrimTests {
         #expect(TranscriptQATrim.word(at: CGPoint(x: 90, y: 10), frames: visible) == 9)
         #expect(TranscriptQATrim.word(at: CGPoint(x: 101, y: 0), frames: visible) == nil)
         #expect(TranscriptQATrim.offsetFrames([:], by: CGPoint(x: 80, y: -12)).isEmpty)
+    }
+    @Test func turnedShrinkOnOneShortWordHasNoTarget() {
+        // A click selects a single word, which can be shorter than two
+        // tolerances; shrinking to a turn boundary must return nil, not trap
+        // on an inverted range (crash of November 4, 2026).
+        let spans = [TranscriptQATrim.SpeakerSpan(start: 0, end: 42.1, label: "A"),
+                     TranscriptQATrim.SpeakerSpan(start: 42.1, end: 60, label: "B")]
+        let tiny = 42.06...42.12
+        #expect(TranscriptQATrim.turned(tiny, edge: .start, grow: false, spans: spans, limits: 0...60) == nil)
+        #expect(TranscriptQATrim.turned(tiny, edge: .end, grow: false, spans: spans, limits: 0...60) == nil)
+        #expect(TranscriptQATrim.turned(tiny, edge: .start, grow: true, spans: spans, limits: 0...60) == 0...42.12)
+    }
+    @Test func pointerInRowMarginReachesTheRowsNearestWord() {
+        // Row 1: words 1 and 2; row 2: word 3. Past the end of row 1 the
+        // nearest word on that row wins, the speaker line under a row goes to
+        // the nearest row, and far below every row is nil.
+        let frames: [Int: CGRect] = [1: CGRect(x: 0, y: 0, width: 30, height: 14),
+                                     2: CGRect(x: 34, y: 0, width: 30, height: 14),
+                                     3: CGRect(x: 0, y: 20, width: 30, height: 14)]
+        #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 200, y: 7), frames: frames) == 2)
+        #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 200, y: 27), frames: frames) == 3)
+        #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 200, y: 60), frames: frames) == 3)
+        #expect(TranscriptQATrim.nearestWord(at: CGPoint(x: 200, y: 200), frames: frames) == nil)
     }
 }

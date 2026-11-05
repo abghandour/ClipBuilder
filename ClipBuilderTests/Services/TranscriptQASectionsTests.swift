@@ -49,6 +49,14 @@ struct TranscriptQASectionsTests {
         #expect(TranscriptQASections.lines(rows: [], range: 10...20).isEmpty)
     }
 
+    @Test func aSectionShorterThanARowIsNamedByTheRowItOverlaps() {
+        // A click-selected word: no row midpoint falls inside, the row still names it.
+        let result = TranscriptQASections.sections(scenes: [scene(1, 3.0, 3.4)],
+                                                  rows: [row(1, 0, 2, "Earlier"), row(2, 2, 6, "The question?")], labels: [2: "Host"])
+        #expect(result[0].question == "The question?")
+        #expect(result[0].asker == "Host")
+    }
+
     @Test func answererIsTheFirstDifferentSpeaker() {
         let rows = [row(1, 0, 2), row(2, 2, 4), row(3, 4, 6), row(4, 6, 8)]
         let result = TranscriptQASections.sections(scenes: [scene(1, 0, 10)], rows: rows,

@@ -33,10 +33,12 @@ nonisolated struct RangeReviewItem: Identifiable, Sendable {
             }
         }
 
+        /// `minimum` is the shortest span the move may leave (Q&A and picks
+        /// only): the 1 s default for a dragged edge, 0 for keys and buttons.
         func setting(_ edge: TranscriptQATrim.Edge, at time: Double, in range: ClosedRange<Double>,
-                     limits: ClosedRange<Double>) -> ClosedRange<Double> {
+                     limits: ClosedRange<Double>, minimum: Double = TranscriptQATrim.minimumSpan) -> ClosedRange<Double> {
             switch self {
-            case .qa, .pick: TranscriptQATrim.setting(edge, at: time, in: range, limits: limits)
+            case .qa, .pick: TranscriptQATrim.setting(edge, at: time, in: range, limits: limits, minimum: minimum)
             case .wizard:
                 edge == .start ? ProposedCutTrim.settingStart(at: time, in: range, scene: limits)
                     : ProposedCutTrim.settingEnd(at: time, in: range, scene: limits)
@@ -85,15 +87,17 @@ nonisolated struct RangeReviewItem: Identifiable, Sendable {
         allKept(kept, items: items) ? [] : Set(items.map { $0.id.ownerID })
     }
 
-    /// Which owners paint their bar and background in the transcript: none
-    /// besides the selected item while one is selected (it paints itself),
-    /// else the kept ones when any is kept, else every item. `kept` is nil
-    /// for lists without Keep boxes.
+    /// Which owners paint their background in the transcript: the kept ones
+    /// (none when nothing is kept), whether or not one of them is selected
+    /// (the selected item paints itself through its range). `kept` is nil
+    /// for lists without Keep boxes (picks): every item is kept, so every
+    /// item paints, selection or not.
     static func paintedOwnerIDs(items: [RangeReviewItem], selectedOwnerID: Int64?, kept: Set<Int64>?) -> Set<Int64> {
-        if selectedOwnerID != nil { return [] }
         let all = Set(items.map { $0.id.ownerID })
-        if let kept, !kept.intersection(all).isEmpty { return kept.intersection(all) }
-        return all
+        // A keep list paints only what is kept: an empty list paints nothing,
+        // so the transcript reads as unmarked until the user keeps something.
+        if let kept { return kept.intersection(all).subtracting(selectedOwnerID.map { [$0] } ?? []) }
+        return all.subtracting(selectedOwnerID.map { [$0] } ?? [])
     }
 }
 

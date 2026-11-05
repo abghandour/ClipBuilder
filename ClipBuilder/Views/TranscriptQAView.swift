@@ -36,7 +36,8 @@ struct TranscriptQAView: View {
                 titleHelp: section.question, keepLabel: "Keep exchange \(index + 1)", captions: captions,
                 video: video, range: section.range,
                 originalRange: ProposedCutTrim.range(start: section.scene.originalStart, end: section.scene.originalEnd),
-                limits: TranscriptQATrim.limits(for: section, in: sections, duration: video.duration), trimPolicy: .qa)
+                limits: TranscriptQATrim.limits(for: section, in: sections, duration: video.duration), trimPolicy: .qa,
+                titleLines: 3)
         }
     }
 

@@ -350,7 +350,9 @@ struct AnalyzeView: View {
                     .help("Upload the selected videos to Google Drive")
                     DriveMediaMenu(media: selectedVideos.filter { $0.driveFileID != nil }.map(\.driveMedia))
                         .disabled(!selectedVideos.contains { $0.driveFileID != nil })
-
+                    // Last so they overflow first on a narrow window; the banner
+                    // under the toolbar explains what they are for.
+                    LanguageReadinessControls()
                 }
             }
         }

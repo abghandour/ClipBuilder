@@ -100,14 +100,15 @@ struct MiniHighlightReviewTests {
     @Test func transcriptPaintsSelectedElseKeptElseAll() {
         let candidates = [candidate(id: 1), candidate(id: 2, kept: false), candidate(id: 3, kept: false)]
         let items = MiniHighlightReview.items(candidates: candidates, video: Fixtures.video(), scenes: [Fixtures.scene()])
-        // A selected item paints itself only.
-        #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: 2, kept: [1]).isEmpty)
-        #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: 2, kept: nil).isEmpty)
+        // The selection paints itself through its range; kept items keep their bars.
+        #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: 2, kept: [1]) == [1])
+        #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: 2, kept: [1, 2, 3]) == [1, 3])
+        #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: 2, kept: nil) == [1, 3])
         // Nothing selected: the kept ones, ignoring IDs not on the list.
         #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: nil, kept: [1, 3, 999]) == [1, 3])
-        // Nothing kept, or no Keep boxes: every item.
-        #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: nil, kept: []) == [1, 2, 3])
-        #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: nil, kept: [999]) == [1, 2, 3])
+        // Nothing kept: nothing paints. No Keep boxes: every item.
+        #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: nil, kept: []).isEmpty)
+        #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: nil, kept: [999]).isEmpty)
         #expect(RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: nil, kept: nil) == [1, 2, 3])
     }
 
@@ -163,7 +164,7 @@ struct MiniHighlightReviewTests {
         #expect(policy.setting(.start, at: -20, in: 3...5, limits: 2...6) == 2...5)
         #expect(policy.setting(.end, at: 90, in: 3...5, limits: 2...6) == 3...6)
         #expect(policy.clamp(3...5, limits: 2...2.2) == 2...2.2)
-        #expect(RangeReviewItem.TrimPolicy.qa.clamp(3...3.1, limits: 0...10) == 3...4)
+        #expect(RangeReviewItem.TrimPolicy.qa.clamp(3...3.1, limits: 0...10) == 3...3.1)
     }
 
     @Test func changedFootageRemainsListedButCannotSave() throws {

@@ -208,13 +208,8 @@ struct FlowLayout: Layout {
     var onPlace: FlowLayoutPlacementReporter? = nil
     private var rowGap: CGFloat { rowSpacing ?? spacing }
 
-    struct Cache {
-        var frames: [Int: CGRect]? = nil
-    }
 
-    func makeCache(subviews: Subviews) -> Cache { Cache() }
-
-    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) -> CGSize {
+    func sizeThatFits(proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) -> CGSize {
         let width = proposal.width ?? .infinity
         var x: CGFloat = 0, y: CGFloat = 0, rowHeight: CGFloat = 0, maxX: CGFloat = 0
         for subview in subviews {
@@ -231,7 +226,7 @@ struct FlowLayout: Layout {
         return CGSize(width: width == .infinity ? maxX : width, height: y + rowHeight)
     }
 
-    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout Cache) {
+    func placeSubviews(in bounds: CGRect, proposal: ProposedViewSize, subviews: Subviews, cache: inout ()) {
         var x = bounds.minX, y = bounds.minY, rowHeight: CGFloat = 0
         var frames: [Int: CGRect] = [:]
         for subview in subviews {
@@ -248,10 +243,9 @@ struct FlowLayout: Layout {
             x += size.width + spacing
             rowHeight = max(rowHeight, size.height)
         }
-        if let onPlace, cache.frames != frames {
-            cache.frames = frames
-            onPlace.report(frames)
-        }
+        // Every placement is reported, even one equal to the last: a client
+        // whose view SwiftUI re-created would otherwise never hear of it.
+        onPlace?.report(frames)
     }
 }
 

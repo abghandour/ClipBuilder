@@ -21,6 +21,9 @@ nonisolated struct PodcastHighlightTrim: Sendable, Equatable {
         var end: Double
         var speaker: String?
         var words: [Word]
+        /// The same speaker as the line before: a long block split into
+        /// rows, so the name is not repeated on every row.
+        var continuesSpeaker = false
     }
 
     static let minimumSpan = 1.0

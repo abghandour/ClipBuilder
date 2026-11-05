@@ -12,7 +12,6 @@ struct MiniBRollTranscript: View {
     var spokenTime: Double = 0
     let onSelectCut: (UUID, Bool) -> Void
     @State private var frames: [Int: CGRect] = [:]
-    @State private var lineStarts: Set<Int> = []
     @State private var anchor: Int?
     @State private var moved = false
     @State private var pointer: CGPoint?
@@ -63,7 +62,7 @@ struct MiniBRollTranscript: View {
                         })
                 }
                 .coordinateSpace(name: space)
-                .onPreferenceChange(TranscriptQAWordFrames.self) { frames = $0; refreshLineStarts(); if moved { updateSelection() } }
+                .onPreferenceChange(MiniBRollWordFrames.self) { frames = $0; if moved { updateSelection() } }
                 .task(id: scrollDirection) {
                     guard scrollDirection != 0 else { return }
                     while !Task.isCancelled, anchor != nil {
@@ -79,7 +78,6 @@ struct MiniBRollTranscript: View {
             }
         }
         .onChange(of: transcript) { _, _ in selection = nil; anchor = nil; frames = [:] }
-        .onChange(of: pieces) { _, _ in refreshLineStarts() }
         .accessibilityLabel("Kept footage transcript")
     }
 
@@ -94,28 +92,10 @@ struct MiniBRollTranscript: View {
         return nil
     }
 
-    /// The first word on each wrapped line of each B-roll, which carries the
-    /// B-roll's colour bar (the Footage panel's saved-pick style).
-    private func refreshLineStarts() {
-        var result = Set<Int>()
-        for word in transcript.words {
-            guard let frame = frames[word.id], let cut = marked(word)?.0 else { continue }
-            let row = Int((frame.minY * 2).rounded())
-            let earlier = transcript.words.contains { other in
-                other.id != word.id && other.pieceID == word.pieceID
-                    && other.start >= cut.start && other.start < cut.end
-                    && frames[other.id].map { Int(($0.minY * 2).rounded()) == row && $0.minX < frame.minX } == true
-            }
-            if !earlier { result.insert(word.id) }
-        }
-        if result != lineStarts { lineStarts = result }
-    }
-
     private func token(_ word: MiniBRollRules.Word) -> some View {
         let mark = marked(word)
         let draft = selection.map { $0.pieceID == word.pieceID && word.start >= $0.range.lowerBound && word.end <= $0.range.upperBound } ?? false
         let active = draft || mark.map { selectedCuts.contains($0.0.id) } == true
-        let startsLine = mark != nil && lineStarts.contains(word.id)
         let spoken = spokenPiece == word.pieceID && spokenTime >= word.start && spokenTime < word.end
         return Text(word.text)
             .id("word-\(word.id)")
@@ -123,26 +103,21 @@ struct MiniBRollTranscript: View {
             .font(.callout)
             .foregroundStyle(spoken ? Color.black : active || mark != nil ? Color.primary : Color.secondary)
             .padding(.horizontal, 2)
-            .padding(.leading, startsLine ? RangeReviewPalette.barWidth + RangeReviewPalette.barGap : 0)
             .background {
                 if spoken {
                     RoundedRectangle(cornerRadius: 3).fill(Color.yellow)
                 } else if active || mark != nil {
-                    // One opaque block across the gaps, as the Footage panel draws picks.
-                    Rectangle().fill(active ? TranscriptQAWordCursor.selectionColor : RangeReviewPalette.savedBlock)
-                        .overlay(alignment: .leading) {
-                            if startsLine, let mark {
-                                Rectangle().fill(RangeReviewPalette.bar(mark.1))
-                                    .frame(width: RangeReviewPalette.barWidth)
-                            }
-                        }
+                    // One opaque block across the gaps in the B-roll's list
+                    // colour, as the Footage panel draws picks.
+                    Rectangle().fill(active ? TranscriptQAWordCursor.selectionColor
+                                     : mark.map { RangeReviewPalette.block($0.1) } ?? TranscriptQAWordCursor.selectionColor)
                         .padding(.horizontal, -TranscriptQAWordCursor.wordSpacing / 2 - 0.5)
                         .padding(.vertical, -TranscriptQAWordCursor.rowSpacing / 2 - 0.5)
                 }
             }
             .background {
                 GeometryReader { geometry in
-                    Color.clear.preference(key: TranscriptQAWordFrames.self,
+                    Color.clear.preference(key: MiniBRollWordFrames.self,
                         value: [word.id: geometry.frame(in: .named(space))])
                 }
             }
@@ -168,5 +143,15 @@ struct MiniBRollTranscript: View {
     private func updateSelection() {
         guard let anchor, let pointer, let target = TranscriptQATrim.word(at: pointer, frames: frames) else { return }
         selection = MiniBRollRules.selection(anchor: anchor, target: target, transcript: transcript)
+    }
+}
+
+/// Word bounds in the B-roll transcript's named coordinate space, one
+/// GeometryReader per word.
+private struct MiniBRollWordFrames: PreferenceKey {
+    nonisolated static var defaultValue: [Int: CGRect] { [:] }
+
+    nonisolated static func reduce(value: inout [Int: CGRect], nextValue: () -> [Int: CGRect]) {
+        value.merge(nextValue(), uniquingKeysWith: { _, new in new })
     }
 }

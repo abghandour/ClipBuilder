@@ -4,8 +4,8 @@ import SwiftUI
 struct PodcastHighlightScreeningKeys: NSViewRepresentable {
     let isActive: () -> Bool
     let rate: (PodcastHighlightScreeningState.Verdict) -> Void
-    /// Any other unmodified key outside a text field (the trim view's
-    /// Space, I and O). Returns true when it consumed the event.
+    /// Any other key outside a text field without ⌘ or ⌃ (the trim view's
+    /// Space, I and O, ⌥ word steps and nudges). Returns true when it consumed the event.
     var other: ((NSEvent) -> Bool)? = nil
 
     final class Coordinator {
@@ -28,8 +28,10 @@ struct PodcastHighlightScreeningKeys: NSViewRepresentable {
                     if !event.isARepeat { coordinator.owner.rate(verdict) }
                     return true
                 }
+                // ⌥ reaches the handler: the trim views step words with ⌥←/→
+                // and nudge the start with ⌥, / ⌥. (they ignore ⌘ and ⌃ themselves).
                 guard let other = coordinator.owner.other, !editingText, !event.isARepeat,
-                      event.modifierFlags.intersection([.command, .control, .option]).isEmpty else { return false }
+                      event.modifierFlags.intersection([.command, .control]).isEmpty else { return false }
                 return other(event)
             }
             return handled ? nil : event

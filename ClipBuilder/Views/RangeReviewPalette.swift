@@ -2,9 +2,8 @@ import AppKit
 import SwiftUI
 
 /// Distinct colours that tie each saved pick in the list to its words in
-/// the transcript: the list row carries a thick bar of the colour and every
-/// wrapped line of the pick's words starts with the same bar. The words
-/// themselves sit on one subtle block shared by all saved picks.
+/// the transcript: the list row carries a thick bar of the colour and the
+/// pick's words sit on a block of the same colour.
 enum RangeReviewPalette {
     /// Clearly separated hues in list order, cycling past the end: orange,
     /// green, violet, yellow, blue, pink. Saturated enough to tell apart at
@@ -23,16 +22,16 @@ enum RangeReviewPalette {
         Color(nsColor: hues[((index % hues.count) + hues.count) % hues.count])
     }
 
-    /// The block behind every saved pick's words: a faint lift off the window
-    /// background, the same for all picks, opaque so adjoining word
-    /// rectangles join without seams.
-    static let savedBlock = Color(nsColor:
-        NSColor.labelColor.blended(withFraction: 0.9, of: .windowBackgroundColor) ?? .windowBackgroundColor)
+    /// The block behind a saved pick's words: the pick's own hue toned down
+    /// over the window background, the same colour as its list row's bar.
+    /// Opaque, so adjoining word rectangles join without seams.
+    static func block(_ index: Int) -> Color {
+        let hue = hues[((index % hues.count) + hues.count) % hues.count]
+        return Color(nsColor: hue.blended(withFraction: 0.7, of: .windowBackgroundColor) ?? hue.withAlphaComponent(0.3))
+    }
 
-    /// Width of the bar on the list row and at the start of each line of the pick.
+    /// Width of the bar on the list row.
     static let barWidth: CGFloat = 4
-    /// Gap between a line's bar and its first word.
-    static let barGap: CGFloat = 5
 }
 
 /// A saved pick's range with the palette index its list row shows.

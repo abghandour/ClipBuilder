@@ -10,6 +10,9 @@ struct MiniTranscriptPickView: View {
     @State private var draftRange: ClosedRange<Double>?
     /// Where the empty draft sits while the just-added pick is still being written.
     @State private var lastAddedEnd: Double?
+    /// The transcript's words per recording, decoded when the rows change
+    /// rather than on every body run (each run used to decode them twice).
+    @State private var wordsByVideo: [Int64: [TranscriptQATrim.Word]] = [:]
 
     /// The draft's owner ID can never collide with a stored pick.
     private static let draftOwnerID: Int64 = -1
@@ -38,15 +41,11 @@ struct MiniTranscriptPickView: View {
             captions: empty ? [] : [.init(text: RangeReviewItem.rangeCaption(draft), monospaced: true)],
             video: run.video, range: draft, originalRange: draft, limits: limits, trimPolicy: .pick,
             isAvailable: run.video.isPresent, isDraft: true)
-        // Decode the transcript once per rebuild, not twice per pick.
-        let allWords = MiniWizardTranscriptRules.orderedWords(rows: rows)
-        let wordsByVideo = Dictionary(grouping: rows, by: \.videoID).mapValues(MiniWizardTranscriptRules.orderedWords)
         let pickItems = picks.enumerated().map { index, pick in
-            RangeReviewItem(id: .init(ownerID: pick.id),
-                title: "\(index + 1). " + MiniWizardTranscriptRules.title(
-                    text: MiniWizardTranscriptRules.text(for: pick.range, words: wordsByVideo[pick.videoID] ?? []),
-                    number: index + 1, limit: Self.labelLimit),
-                titleHelp: MiniWizardTranscriptRules.text(for: pick.range, words: allWords),
+            let text = MiniWizardTranscriptRules.text(for: pick.range, words: wordsByVideo[pick.videoID] ?? [])
+            return RangeReviewItem(id: .init(ownerID: pick.id),
+                title: "\(index + 1). " + MiniWizardTranscriptRules.title(text: text, number: index + 1, limit: Self.labelLimit),
+                titleHelp: text,
                 keepLabel: "Pick \(index + 1)",
                 captions: [.init(text: RangeReviewItem.rangeCaption(pick.range), monospaced: true)],
                 video: run.video, range: pick.range, originalRange: pick.originalRange, limits: limits,
@@ -75,6 +74,9 @@ struct MiniTranscriptPickView: View {
                         },
                         onSave: save) { _ in EmptyView() }
         .onChange(of: run.batchID) { _, _ in draftRange = nil; lastAddedEnd = nil }
+        .onChange(of: rows, initial: true) { _, rows in
+            wordsByVideo = Dictionary(grouping: rows, by: \.videoID).mapValues(MiniWizardTranscriptRules.orderedWords)
+        }
     }
 
     private func save(_ item: RangeReviewItem, start: Double, end: Double) {

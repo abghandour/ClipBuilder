@@ -3,10 +3,7 @@ import Translation
 
 struct LanguageReadinessBanner: View {
     @Environment(AppStore.self) private var store
-    @Environment(\.openURL) private var openURL
-    @Environment(\.openSettings) private var openSettings
     @Environment(\.workspacePageVisible) private var pageVisible
-    @AppStorage("settings.selectedTab") private var settingsTab = "profile"
     @State private var mounted = false
     @State private var configuration: TranslationSession.Configuration?
     @State private var installing: LanguageAsset?
@@ -16,17 +13,12 @@ struct LanguageReadinessBanner: View {
     @State private var requestID: UUID?
 
     var body: some View {
-        if let project = store.activeProject {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: Theme.spaceM) {
-                    summary
-                    Spacer(minLength: 0)
-                    controls(project)
-                }
-                VStack(alignment: .leading, spacing: Theme.spaceS) {
-                    summary
-                    controls(project)
-                }
+        if store.activeProject != nil {
+            // The buttons live in the Sources toolbar (LanguageReadinessControls);
+            // this row only reports the state.
+            HStack(spacing: Theme.spaceM) {
+                summary
+                Spacer(minLength: 0)
             }
             .font(.caption)
             .padding(Theme.spaceM)
@@ -76,30 +68,6 @@ struct LanguageReadinessBanner: View {
             .lineLimit(1).fixedSize(horizontal: false, vertical: true).help(message)
     }
 
-    private func controls(_ project: ProjectRecord) -> some View {
-        HStack(spacing: Theme.spaceS) {
-            if store.languageAssets.contains(where: \.installable) {
-                Button("Install", systemImage: "arrow.down.circle") { store.installLanguageAssets() }
-                    .disabled(installing != nil || store.jobs.running.contains { $0.kind == .languageAssets })
-            }
-            Button("Languages…") { store.languageEditorProject = project }
-            if store.languageAssets.contains(where: { $0.kind == .dubVoice && $0.dubEngine == .elevenLabs && $0.state != .installed }) {
-                Button("Open Settings…") {
-                    settingsTab = "ai"
-                    openSettings()
-                }
-                .help("Check your ElevenLabs key and account voices in Settings > AI.")
-            }
-            if store.languageAssets.contains(where: {
-                $0.dubEngine != .elevenLabs && ($0.state == .unsupported || ($0.kind == .dubVoice && $0.state != .installed))
-            }) {
-                Button("Open System Settings") { openURL(SiriDubVoices.spokenContentSettingsURL) }
-                    .help("Download voices in Spoken Content. Siri voices also need a Clip Builder Dub shortcut. Unsupported recognizers require choosing another spoken language.")
-            }
-        }
-        .lineLimit(1).fixedSize()
-    }
-
     private func startNext() {
         guard mounted, pageVisible, installing == nil, var work = store.languageTranslationInstall, work.failure == nil,
               work.current == nil, !work.pending.isEmpty,
@@ -126,5 +94,48 @@ struct LanguageReadinessBanner: View {
         installing = nil
         configuration = nil
         workID = nil
+    }
+}
+
+/// The banner's actions as toolbar buttons: install missing assets, edit the
+/// project's languages, and open the settings pane that holds the missing voice.
+struct LanguageReadinessControls: View {
+    @Environment(AppStore.self) private var store
+    @Environment(\.openURL) private var openURL
+    @Environment(\.openSettings) private var openSettings
+    @AppStorage("settings.selectedTab") private var settingsTab = "profile"
+
+    var body: some View {
+        if let project = store.activeProject {
+            if store.languageAssets.contains(where: \.installable) {
+                Button { store.installLanguageAssets() } label: {
+                    ToolbarBubbleLabel(text: "Install", systemImage: "arrow.down.circle")
+                }
+                .disabled(store.languageTranslationInstall?.current != nil
+                          || store.jobs.running.contains { $0.kind == .languageAssets })
+                .help("Download the missing language assets")
+            }
+            Button { store.languageEditorProject = project } label: {
+                ToolbarBubbleLabel(text: "Languages…", systemImage: "globe")
+            }
+            .help("Choose the project's caption, translation and dub languages")
+            if store.languageAssets.contains(where: { $0.kind == .dubVoice && $0.dubEngine == .elevenLabs && $0.state != .installed }) {
+                Button {
+                    settingsTab = "ai"
+                    openSettings()
+                } label: {
+                    ToolbarBubbleLabel(text: "Open Settings…", systemImage: "gearshape")
+                }
+                .help("Check your ElevenLabs key and account voices in Settings > AI.")
+            }
+            if store.languageAssets.contains(where: {
+                $0.dubEngine != .elevenLabs && ($0.state == .unsupported || ($0.kind == .dubVoice && $0.state != .installed))
+            }) {
+                Button { openURL(SiriDubVoices.spokenContentSettingsURL) } label: {
+                    ToolbarBubbleLabel(text: "Open System Settings", systemImage: "gearshape")
+                }
+                .help("Download voices in Spoken Content. Siri voices also need a Clip Builder Dub shortcut. Unsupported recognizers require choosing another spoken language.")
+            }
+        }
     }
 }

@@ -23,6 +23,10 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     /// Press a word and drag to select; a click on the selection clears it.
     /// Word clicks then no longer move the nearer end; the anchors still adjust.
     var spanSelection = false
+    /// With nothing selected `range` is an empty anchor on the first painted
+    /// passage; follow it when it moves. Off while an item is selected: a pick
+    /// click commits an empty range on its way to the word and must not jump.
+    var followsEmptyAnchor = false
     var onSpanPreview: ((ClosedRange<Double>) -> Void)? = nil
     /// Shown after the Follow / Translation controls (Express puts its Add button here).
     var accessory: AnyView? = nil
@@ -32,14 +36,12 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     @State private var followsPlayback = true
     @AppStorage("transcriptQA.showTranslation") private var showTranslation = false
     @State private var selectedTranslationLanguages: [Int64: String] = [:]
-    @State private var frames: [Int: CGRect] = [:]
+    @State private var store = TranscriptQAWordFrames()
+    private var frames: [Int: CGRect] { store.frames }
     @State private var dragging: TranscriptQATrim.Edge?
     /// The word the span drag started on.
     @State private var spanAnchor: Int?
     /// The first word on each wrapped line of each saved pick, from the measured frames.
-    @State private var lineStartsByLine: [Int: Set<Int>] = [:]
-    @State private var pendingLineStartIDs: Set<Int> = []
-    @State private var lineStartRefreshGeneration = 0
     @State private var lineActions = TranscriptQALineActions()
     @State private var spanMoved = false
     @State private var pointer: CGPoint?
@@ -56,33 +58,9 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     }
     private var showsTranslation: Bool { showTranslation && translationLanguage != nil }
 
-    /// Coalesce frame reports until the next main run-loop turn. Each queued
-    /// closure carries the latest inputs; older generations cannot publish.
-    private func refreshLineStarts(for changed: Set<Int>) {
-        guard !changed.isEmpty else { return }
-        pendingLineStartIDs.formUnion(changed)
-        lineStartRefreshGeneration += 1
-        let generation = lineStartRefreshGeneration
-        DispatchQueue.main.async {
-            guard generation == lineStartRefreshGeneration else { return }
-            let changed = pendingLineStartIDs
-            pendingLineStartIDs = []
-            let updated = TranscriptQATrim.updatingLineStarts(lineStartsByLine,
-                lines: transcript.lines, changed: changed, ranges: otherRanges.map(\.range), frames: frames)
-            if updated != lineStartsByLine { lineStartsByLine = updated }
-        }
-    }
-
     private func transcriptChanged() {
         cancelDrag()
-        lineStartRefreshGeneration += 1
-        pendingLineStartIDs = []
-        lineStartsByLine = [:]
-        let wordIDs = Set(transcript.words.map(\.id))
-        frames = frames.filter { wordIDs.contains($0.key) }
-        // Keep still-valid measurements until placement replaces them. An
-        // identical layout need not emit another preference after a text edit.
-        refreshLineStarts(for: TranscriptQATrim.changedFrameLineIDs(lines: transcript.lines, before: [:], after: frames))
+        store.keep(wordIDs: Set(transcript.words.map(\.id)))
     }
 
     var body: some View {
@@ -127,30 +105,14 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                     .padding(Theme.spaceS)
             }
         }
-        .onAppear {
-            refreshLineStarts(for: TranscriptQATrim.changedFrameLineIDs(lines: transcript.lines, before: [:], after: frames))
-        }
         .onChange(of: sectionID) { _, _ in cancelDrag() }
-        .onChange(of: frames) { old, new in
-            refreshLineStarts(for: TranscriptQATrim.changedFrameLineIDs(lines: transcript.lines, before: old, after: new))
-        }
-        .onChange(of: otherRanges) { old, new in
-            // Palette-only changes do not affect starts. Include reordering
-            // because equally tight overlapping picks use the first owner.
-            refreshLineStarts(for: TranscriptQATrim.changedRangeLineIDs(lines: transcript.lines,
-                before: old.map(\.range), after: new.map(\.range)))
-        }
         .onChange(of: isEnabled) { _, enabled in if !enabled { cancelDrag() } }
         .onChange(of: transcript) { _, _ in transcriptChanged() }
-        // Geometry preferences replace frames if translation changes the
+        // The lines report their frames again if translation changes the
         // layout; clearing them would lose anchors when the layout stays equal.
         .onChange(of: showsTranslation) { _, _ in cancelDrag() }
         .onChange(of: translationLanguage) { _, _ in cancelDrag() }
-        .onDisappear {
-            cancelDrag()
-            lineStartRefreshGeneration += 1
-            pendingLineStartIDs = []
-        }
+        .onDisappear { cancelDrag() }
     }
 
     private var transcriptControls: some View {
@@ -213,11 +175,11 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                                     startEdgeWordIDs: spanSelection ? [] : TranscriptQATrim.startEdgeWordIDs(in: line, range: range),
                                     otherRanges: otherRanges.filter { TranscriptQATrim.touches($0.range, line: line) },
                                     spokenWordID: spokenWordID.flatMap { id in line.words.contains { $0.id == id } ? id : nil },
-                                    lineStartWordIDs: lineStartsByLine[line.id] ?? [],
                                     showsTranslation: showsTranslation,
                                     translation: translationLanguage.flatMap { translationsByLanguage[$0]?[line.id] },
                                     canTrim: canTrim,
                                     spanSelection: spanSelection,
+                                    store: store,
                                     onSelect: { actions.onSelect($0) },
                                     onSeek: { actions.onSeek($0) })
                                     .equatable()
@@ -230,19 +192,36 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                         .gesture(spanGesture(viewportHeight: geometry.size.height),
                                  including: spanSelection && canTrim && isEnabled ? .all : .subviews)
                     }
-                    .onPreferenceChange(TranscriptQAWordFrames.self) { updated in
-                        frames = updated
-                        // Scrolling changes the word under a stationary pointer.
-                        previewAtPointer()
-                    }
+                    // Scrolling changes the word under a stationary pointer.
+                    .onChange(of: store.frames) { _, _ in previewAtPointer() }
                     anchor(.start, word: firstWord, viewportHeight: geometry.size.height)
                     anchor(.end, word: lastWord, viewportHeight: geometry.size.height)
+                    TranscriptOverviewMarks(transcript: transcript, range: range, otherRanges: otherRanges)
+                        .frame(width: TranscriptOverviewMarks.width, height: geometry.size.height)
+                        .frame(maxWidth: .infinity, alignment: .trailing)
+                        .allowsHitTesting(false)
+                        .accessibilityHidden(true)
                 }
                 .coordinateSpace(name: Self.scrollSpace)
                 .clipped()
                 .onAppear { scrollToSelection(proxy) }
-                .onChange(of: sectionID) { _, _ in scrollToSelection(proxy) }
-                .onChange(of: transcript) { _, _ in scrollToSelection(proxy) }
+                .onChange(of: sectionID) { _, _ in
+                    // A word click on another item selects it with that word;
+                    // the new range arrives with the next update, so scroll then.
+                    Task { @MainActor in scrollToSelection(proxy) }
+                }
+                .onChange(of: range) { old, new in
+                    // With nothing selected the range is an empty anchor on the
+                    // first painted passage; it moves when the kept items load
+                    // after the words. Edits of a real range never scroll.
+                    if followsEmptyAnchor, new.lowerBound == new.upperBound, old != new { scrollToSelection(proxy) }
+                }
+                .onChange(of: transcript) { _, _ in
+                    // The new lines are not laid out in this update yet, so a
+                    // scroll issued now finds no target and the words stay at
+                    // the top. Scroll once the lazy stack has them.
+                    Task { @MainActor in scrollToSelection(proxy) }
+                }
                 .onChange(of: currentLine) { _, id in
                     guard followsPlayback, playback.isPlaying, dragging == nil, let id else { return }
                     proxy.scrollTo(id, anchor: .center)
@@ -292,7 +271,9 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                         }
                         pointer = value.location
                         scrollDirection = value.location.y < 32 ? -1 : value.location.y > viewportHeight - 32 ? 1 : 0
-                        previewAtPointer()
+                        // The handle is wider than the word's edge: a press
+                        // without movement must not take the neighbouring word.
+                        if abs(value.translation.width) > 3 || abs(value.translation.height) > 3 { previewAtPointer() }
                     }
                     .onEnded { _ in
                         guard dragging != nil else { return }
@@ -302,7 +283,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                     })
                 .help(edge == .start ? "Drag to move the start" : "Drag to move the end")
                 .accessibilityElement()
-                .accessibilityLabel(edge == .start ? "Exchange start" : "Exchange end")
+                .accessibilityLabel(edge == .start ? "Selection start" : "Selection end")
                 .accessibilityValue((edge == .start ? range.lowerBound : range.upperBound).timecode)
                 .accessibilityAdjustableAction { direction in
                     guard isEnabled, canTrim, let word,
@@ -365,11 +346,13 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                 let word = transcript.words[anchor]
                 if moved {
                     onCommit()
-                } else {
+                } else if word.end > word.start {
                     // A click, inside or outside the current selection, drops
                     // it and starts a new one at this word; Clear empties it.
                     onSpanPreview?(Self.span(from: word, to: word))
                     onCommit()
+                } else {
+                    onCancel()
                 }
             }
     }
@@ -391,6 +374,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     }
 
     private func clearDrag() {
+        if dragging != nil { TranscriptQAWordCursor.set(nil) }
         dragging = nil
         spanAnchor = nil
         spanMoved = false
@@ -452,21 +436,19 @@ private struct TranscriptQALineView: View, Equatable {
     let startEdgeWordIDs: Set<Int>
     let otherRanges: [RangeReviewMarkedRange]
     let spokenWordID: Int?
-    let lineStartWordIDs: Set<Int>
     let showsTranslation: Bool
     let translation: String?
     let canTrim: Bool
     let spanSelection: Bool
+    /// Where the words' frames go; a reference, so not part of `==`.
+    let store: TranscriptQAWordFrames
     let onSelect: (TranscriptQATrim.Word) -> Void
     let onSeek: (Double) -> Void
-
-    @State private var localFrames: [Int: CGRect] = [:]
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.line == rhs.line && lhs.columnWidth == rhs.columnWidth
             && lhs.selection == rhs.selection && lhs.startEdgeWordIDs == rhs.startEdgeWordIDs
             && lhs.otherRanges == rhs.otherRanges && lhs.spokenWordID == rhs.spokenWordID
-            && lhs.lineStartWordIDs == rhs.lineStartWordIDs
             && lhs.showsTranslation == rhs.showsTranslation && lhs.translation == rhs.translation
             && lhs.canTrim == rhs.canTrim && lhs.spanSelection == rhs.spanSelection
     }
@@ -476,11 +458,8 @@ private struct TranscriptQALineView: View, Equatable {
     }
 
     private func reportPlacement(_ frames: [Int: CGRect]) {
-        // Layout runs during a view update; publishing state here synchronously
-        // would feed back into that same update. FlowLayout deduplicates reports.
-        DispatchQueue.main.async {
-            if localFrames != frames { localFrames = frames }
-        }
+        // Layout runs during a view update; the store publishes on the next turn.
+        store.place(line: line.id, frames: frames)
     }
 
     var body: some View {
@@ -521,7 +500,7 @@ private struct TranscriptQALineView: View, Equatable {
                 .lineLimit(1).fixedSize()
                 .help("Move the playhead to \(line.start.timecode)")
             VStack(alignment: .leading, spacing: 2) {
-                if let speaker = line.speaker {
+                if let speaker = line.speaker, !line.continuesSpeaker {
                     Text(speaker).font(.caption.weight(.semibold))
                         .foregroundStyle(SpeakerColors.color(for: speaker))
                         .lineLimit(1).help(speaker)
@@ -529,28 +508,50 @@ private struct TranscriptQALineView: View, Equatable {
                 FlowLayout(spacing: TranscriptQAWordCursor.wordSpacing,
                            rowSpacing: TranscriptQAWordCursor.rowSpacing,
                            onPlace: FlowLayoutPlacementReporter(report: reportPlacement)) {
-                    ForEach(line.words) { word in
-                        wordToken(word).layoutValue(key: FlowLayoutItemID.self, value: word.id)
+                    let marks = line.words.map(mark)
+                    ForEach(line.words.indices, id: \.self) { index in
+                        wordToken(line.words[index], mark: marks[index],
+                                  joinsPrevious: joins(marks, index, index - 1), joinsNext: joins(marks, index, index + 1))
+                            .layoutValue(key: FlowLayoutItemID.self, value: line.words[index].id)
                     }
                 }
-                .background {
-                    GeometryReader { geometry in
-                        Color.clear.preference(key: TranscriptQAWordFrames.self,
-                            value: TranscriptQATrim.offsetFrames(localFrames,
-                                by: geometry.frame(in: .named("qaWordViewport")).origin))
-                    }
+                .onGeometryChange(for: CGPoint.self, of: { $0.frame(in: .named("qaWordViewport")).origin }) {
+                    store.move(line: line.id, to: $0)
                 }
+                .onAppear { store.appear(line: line.id) }
+                .onDisappear { store.disappear(line: line.id) }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
-    private func wordToken(_ word: TranscriptQATrim.Word) -> some View {
-        let inside = isSelected(word)
+    /// What paints a word: the selection, or the tightest saved pick holding it.
+    private enum Mark: Equatable {
+        case selection
+        case other(Int)
+    }
+
+    private func mark(_ word: TranscriptQATrim.Word) -> Mark? {
+        if isSelected(word) { return .selection }
         // Nested picks: the tightest range owns the word.
-        let other = otherRanges.filter { TranscriptQATrim.contains(word, in: $0.range) }
+        return otherRanges.filter { TranscriptQATrim.contains(word, in: $0.range) }
             .min { ($0.range.upperBound - $0.range.lowerBound) < ($1.range.upperBound - $1.range.lowerBound) }
-        let startsOther = other != nil && lineStartWordIDs.contains(word.id)
+            .map { .other($0.paletteIndex) }
+    }
+
+    private func joins(_ marks: [Mark?], _ index: Int, _ neighbour: Int) -> Bool {
+        guard let mark = marks[index], marks.indices.contains(neighbour) else { return false }
+        return marks[neighbour] == mark
+    }
+
+    /// A painted word's block reaches over the whole gap to a neighbour in the
+    /// same mark (plus a point, so rounding on a 1x display leaves no seam)
+    /// and only a little past a neighbour that is not.
+    private func wordToken(_ word: TranscriptQATrim.Word, mark: Mark?, joinsPrevious: Bool, joinsNext: Bool) -> some View {
+        let inside = mark == .selection
+        let other: Int? = if case .other(let index) = mark { index } else { nil }
+        let reach = TranscriptQAWordCursor.wordSpacing + 1
+        let edge: CGFloat = 1
         // The spoken word is marked only while playing; a parked playhead would
         // otherwise sit yellow inside the selection being made. The weight never
         // changes: a bold word is wider and rewraps the line under Follow.
@@ -560,8 +561,6 @@ private struct TranscriptQALineView: View, Equatable {
                 .font(.callout)
                 .foregroundStyle(spoken ? Color.black : inside || other != nil ? Color.primary : Color.secondary)
                 .padding(.horizontal, 2)
-                // Room for the line's bar and a gap before the first word.
-                .padding(.leading, startsOther ? RangeReviewPalette.barWidth + RangeReviewPalette.barGap : 0)
                 .background {
                     if spoken {
                         RoundedRectangle(cornerRadius: 3).fill(Color.yellow)
@@ -571,20 +570,16 @@ private struct TranscriptQALineView: View, Equatable {
                         // included. The fill is opaque: translucent rectangles
                         // would show their overlaps as darker seams.
                         Rectangle().fill(TranscriptQAWordCursor.selectionColor)
-                            .padding(.horizontal, -TranscriptQAWordCursor.wordSpacing / 2 - 0.5)
-                            .padding(.vertical, -TranscriptQAWordCursor.rowSpacing / 2 - 0.5)
+                            .padding(.leading, joinsPrevious ? -reach : -edge)
+                            .padding(.trailing, joinsNext ? -reach : -edge)
+                            .padding(.vertical, -TranscriptQAWordCursor.rowSpacing - 1)
                     } else if let other {
-                        // Saved picks share one subtle block; each wrapped line
-                        // starts with the bar in the pick's list colour.
-                        Rectangle().fill(RangeReviewPalette.savedBlock)
-                            .overlay(alignment: .leading) {
-                                if startsOther {
-                                    Rectangle().fill(RangeReviewPalette.bar(other.paletteIndex))
-                                        .frame(width: RangeReviewPalette.barWidth)
-                                }
-                            }
-                            .padding(.horizontal, -TranscriptQAWordCursor.wordSpacing / 2 - 0.5)
-                            .padding(.vertical, -TranscriptQAWordCursor.rowSpacing / 2 - 0.5)
+                        // A saved pick's words sit on a block in the colour
+                        // of its list row's bar.
+                        Rectangle().fill(RangeReviewPalette.block(other))
+                            .padding(.leading, joinsPrevious ? -reach : -edge)
+                            .padding(.trailing, joinsNext ? -reach : -edge)
+                            .padding(.vertical, -TranscriptQAWordCursor.rowSpacing - 1)
                     }
                 }
                 .contentShape(Rectangle())
@@ -594,8 +589,55 @@ private struct TranscriptQALineView: View, Equatable {
         // In span mode the drag gesture on the content owns the pointer.
         .allowsHitTesting(!spanSelection)
         .help(spanSelection ? "Click a word to start a selection there, or press and drag to select a passage"
-              : "Move the \(startEdgeWordIDs.contains(word.id) ? "start" : "end") to this word")
+              : "Click to select just this word; drag an anchor or use the Start / End buttons to extend")
         .accessibilityLabel("\(word.text), \(word.start.timecode)")
         .accessibilityAddTraits(inside ? .isSelected : [])
+    }
+}
+
+/// Marks in the transcript's scroller track for every painted passage and
+/// the selection, like an editor's overview ruler: each sits at the
+/// passage's share of the words, so the eye finds the picks in a long
+/// recording without scrolling. Not clickable; the scroller stays on top.
+struct TranscriptOverviewMarks: View {
+    let transcript: TranscriptQATrim.Transcript
+    let range: ClosedRange<Double>
+    let otherRanges: [RangeReviewMarkedRange]
+    static let width: CGFloat = 6
+    private static let minimumHeight: CGFloat = 3
+
+    /// The share of the words (a proxy for the laid-out height) before the
+    /// first word of the range and after its last; nil for a range without words.
+    nonisolated static func span(of range: ClosedRange<Double>, words: [TranscriptQATrim.Word]) -> ClosedRange<CGFloat>? {
+        guard range.upperBound > range.lowerBound, !words.isEmpty,
+              let first = words.firstIndex(where: { TranscriptQATrim.contains($0, in: range) }),
+              let last = words.lastIndex(where: { TranscriptQATrim.contains($0, in: range) }) else { return nil }
+        let count = CGFloat(words.count)
+        return (CGFloat(first) / count)...(CGFloat(last + 1) / count)
+    }
+
+    var body: some View {
+        GeometryReader { geometry in
+            let height = geometry.size.height
+            ZStack(alignment: .topLeading) {
+                ForEach(otherRanges.indices, id: \.self) { index in
+                    if let span = Self.span(of: otherRanges[index].range, words: transcript.words) {
+                        mark(span, color: RangeReviewPalette.bar(otherRanges[index].paletteIndex), height: height)
+                    }
+                }
+                if let span = Self.span(of: range, words: transcript.words) {
+                    mark(span, color: Color.accentColor, height: height)
+                }
+            }
+        }
+        .padding(.vertical, 2)
+    }
+
+    private func mark(_ span: ClosedRange<CGFloat>, color: Color, height: CGFloat) -> some View {
+        let top = span.lowerBound * height
+        let size = max(Self.minimumHeight, (span.upperBound - span.lowerBound) * height)
+        return RoundedRectangle(cornerRadius: 1.5).fill(color)
+            .frame(width: Self.width, height: min(size, height - top))
+            .offset(y: top)
     }
 }

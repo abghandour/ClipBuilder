@@ -31,6 +31,12 @@ nonisolated enum TranscriptQATrim {
     struct Transcript: Equatable, Sendable {
         var lines: [Line] = []
         var words: [Word] = []
+        /// The line each word (by ID, which is its index) belongs to.
+        var lineOfWord: [Int] = []
+        /// A speaker block longer than this continues on a new line: one
+        /// lazy row per monologue would hold thousands of word views and
+        /// stop the edge auto-scroll from reaching into it.
+        static let maximumLineWords = 60
 
         init() {}
 
@@ -48,15 +54,37 @@ nonisolated enum TranscriptQATrim {
                 guard !tokens.isEmpty else { continue }
                 for run in TranscriptQATrim.speakerRuns(row: row, words: tokens, label: input.labels[row.id],
                                                         spans: spans) {
-                    if let index = lines.indices.last, let label = run.label, label == lines[index].speaker {
-                        lines[index].end = max(lines[index].end, run.end)
-                        lines[index].words.append(contentsOf: run.words)
-                    } else {
-                        lines.append(Line(id: lines.count, start: run.start, end: run.end,
-                                          speaker: run.label, words: run.words))
+                    // A run longer than a line (one long untimed row) is cut
+                    // into lines itself, not only kept from merging.
+                    for (offset, chunk) in Self.chunks(run.words).enumerated() {
+                        let start = offset == 0 ? run.start : chunk.first?.start ?? run.start
+                        let end = chunk.last.map { max($0.end, start) } ?? run.end
+                        let last = chunk.last == run.words.last
+                        let runEnd = last ? max(run.end, end) : end
+                        if let index = lines.indices.last, let label = run.label, label == lines[index].speaker,
+                           lines[index].words.count + chunk.count <= Self.maximumLineWords {
+                            lines[index].end = max(lines[index].end, runEnd)
+                            lines[index].words.append(contentsOf: chunk)
+                        } else {
+                            let continues = lines.last.map { $0.speaker != nil && $0.speaker == run.label } ?? false
+                            lines.append(Line(id: lines.count, start: start, end: runEnd,
+                                              speaker: run.label, words: chunk, continuesSpeaker: continues))
+                        }
                     }
                 }
                 words.append(contentsOf: tokens)
+            }
+            lineOfWord = Array(repeating: 0, count: words.count)
+            for line in lines {
+                for word in line.words where lineOfWord.indices.contains(word.id) { lineOfWord[word.id] = line.id }
+            }
+        }
+
+        /// Pieces of at most `maximumLineWords` words, in order.
+        static func chunks(_ words: [Word]) -> [[Word]] {
+            guard words.count > maximumLineWords else { return [words] }
+            return stride(from: 0, to: words.count, by: maximumLineWords).map {
+                Array(words[$0..<min($0 + maximumLineWords, words.count)])
             }
         }
 
@@ -95,6 +123,17 @@ nonisolated enum TranscriptQATrim {
         Set(lines.filter { line in
             line.words.contains { before[$0.id] != after[$0.id] }
         }.map(\.id))
+    }
+
+    /// The same, over the measured words only: every scroll tick re-reports
+    /// the visible frames, so the cost must follow the viewport, not the
+    /// recording. `lineOfWord` is the transcript's word-to-line map.
+    static func changedFrameLineIDs(lineOfWord: [Int], before: [Int: CGRect], after: [Int: CGRect]) -> Set<Int> {
+        var changed = Set<Int>()
+        for id in Set(before.keys).union(after.keys) where before[id] != after[id] {
+            if lineOfWord.indices.contains(id) { changed.insert(lineOfWord[id]) }
+        }
+        return changed
     }
 
     /// Preserve order: equally tight overlapping picks use the first owner.
@@ -247,16 +286,23 @@ nonisolated enum TranscriptQATrim {
         return 0...total
     }
 
+    /// Inside the limits and never inverted. No minimum length: a single word
+    /// is a valid range (a click selects one); `setting` keeps the minimum
+    /// while an edge is dragged so a drag cannot collapse the range.
     static func clamped(_ range: ClosedRange<Double>, limits: ClosedRange<Double>) -> ClosedRange<Double> {
-        let minimum = min(minimumSpan, limits.upperBound - limits.lowerBound)
-        let lower = min(max(limits.lowerBound, range.lowerBound), limits.upperBound - minimum)
-        return lower...min(limits.upperBound, max(lower + minimum, range.upperBound))
+        let lower = min(max(limits.lowerBound, range.lowerBound), limits.upperBound)
+        return lower...min(limits.upperBound, max(lower, range.upperBound))
     }
 
+    /// Move one edge to `time`. `minimum` is the shortest span the move may
+    /// leave: the 1 s minimum for a dragged edge (a drag cannot collapse the
+    /// range), 0 for the step and nudge buttons and the I / O keys, which act
+    /// on click-selected ranges shorter than that and must shrink them, not
+    /// pad them back out to a second.
     static func setting(_ edge: Edge, at time: Double, in range: ClosedRange<Double>,
-                        limits: ClosedRange<Double>) -> ClosedRange<Double> {
+                        limits: ClosedRange<Double>, minimum: Double = minimumSpan) -> ClosedRange<Double> {
         let range = clamped(range, limits: limits)
-        let minimum = min(minimumSpan, limits.upperBound - limits.lowerBound)
+        let minimum = min(minimum, limits.upperBound - limits.lowerBound)
         switch edge {
         case .start: return max(limits.lowerBound, min(time, range.upperBound - minimum))...range.upperBound
         case .end: return range.lowerBound...min(limits.upperBound, max(time, range.lowerBound + minimum))
@@ -329,7 +375,18 @@ nonisolated enum TranscriptQATrim {
             let dy = max(0, max(frame.minY - point.y, point.y - frame.maxY))
             return dx * dx + dy * dy
         }
-        return candidates.min { a, b in
+        if let near = candidates.min(by: { a, b in
+            let da = distance(a.value), db = distance(b.value)
+            return da == db ? a.key < b.key : da < db
+        }) { return near.key }
+        // In a margin (past a row's last word, or in the speaker line between
+        // rows): the nearest row's horizontally nearest word, so a drag that
+        // leaves the words keeps moving the edge instead of stalling. Further
+        // than a speaker line from any row is still a miss.
+        func rowDistance(_ frame: CGRect) -> CGFloat { max(0, max(frame.minY - point.y, point.y - frame.maxY)) }
+        guard let nearestRow = frames.values.map(rowDistance).min(), nearestRow <= 40 else { return nil }
+        let row = frames.filter { rowDistance($0.value) <= nearestRow + 0.5 }
+        return row.min { a, b in
             let da = distance(a.value), db = distance(b.value)
             return da == db ? a.key < b.key : da < db
         }?.key
@@ -364,11 +421,16 @@ nonisolated enum TranscriptQATrim {
 
     static func stepped(_ range: ClosedRange<Double>, by step: Step, words: [Word],
                         limits: ClosedRange<Double>, tolerance: Double = 0.05) -> ClosedRange<Double>? {
-        let inside = words.filter { $0.start >= range.lowerBound - tolerance && $0.end <= range.upperBound + tolerance }
-        let before = words.filter { $0.end <= range.lowerBound + tolerance && $0.start < range.lowerBound - tolerance }
-            .sorted { $0.start < $1.start }
-        let after = words.filter { $0.start >= range.upperBound - tolerance && $0.end > range.upperBound + tolerance }
-            .sorted { $0.start < $1.start }
+        // One pass over the words: the trim column asks for every button's
+        // target on each change, and a long recording has thousands of words.
+        var inside: [Word] = [], before: [Word] = [], after: [Word] = []
+        for word in words {
+            if word.start >= range.lowerBound - tolerance && word.end <= range.upperBound + tolerance { inside.append(word) }
+            if word.end <= range.lowerBound + tolerance && word.start < range.lowerBound - tolerance { before.append(word) }
+            if word.start >= range.upperBound - tolerance && word.end > range.upperBound + tolerance { after.append(word) }
+        }
+        before.sort { $0.start < $1.start }
+        after.sort { $0.start < $1.start }
         let target: Double?
         switch step {
         case .wordBefore:
@@ -409,7 +471,8 @@ nonisolated enum TranscriptQATrim {
             target = after.first(where: { endsSentence($0.text) })?.end
         }
         guard let target else { return nil }
-        return moved(setting(step.edge, at: target, in: range, limits: limits), from: range, edge: step.edge, tolerance: tolerance)
+        return moved(setting(step.edge, at: target, in: range, limits: limits, minimum: 0),
+                     from: range, edge: step.edge, tolerance: tolerance)
     }
 
     /// Start at the first word's start and end at the last word's end,
@@ -428,7 +491,7 @@ nonisolated enum TranscriptQATrim {
     static func nudged(_ range: ClosedRange<Double>, edge: Edge, by delta: Double,
                        limits: ClosedRange<Double>) -> ClosedRange<Double>? {
         let time = (edge == .start ? range.lowerBound : range.upperBound) + delta
-        return moved(setting(edge, at: time, in: range, limits: limits), from: range, edge: edge, tolerance: 0.001)
+        return moved(setting(edge, at: time, in: range, limits: limits, minimum: 0), from: range, edge: edge, tolerance: 0.001)
     }
 
     /// Move one edge to a speaker-turn boundary: growing, to the boundary
@@ -446,13 +509,16 @@ nonisolated enum TranscriptQATrim {
                 : covering.max(by: { $0.end < $1.end })
             target = turn.map { edge == .start ? $0.start : $0.end }
         } else {
+            // A range shorter than two tolerances (a single short word) has no
+            // inside to shrink to; building the open range would invert it.
+            guard range.upperBound - range.lowerBound > 2 * tolerance else { return nil }
             let open = (range.lowerBound + tolerance)..<(range.upperBound - tolerance)
             target = edge == .start
                 ? spans.map(\.start).filter { open.contains($0) }.min()
                 : spans.map(\.end).filter { open.contains($0) }.max()
         }
         guard let target else { return nil }
-        return moved(setting(edge, at: target, in: range, limits: limits), from: range, edge: edge, tolerance: tolerance)
+        return moved(setting(edge, at: target, in: range, limits: limits, minimum: 0), from: range, edge: edge, tolerance: tolerance)
     }
 
     /// Ends with . ? ! or … after closing quotes and brackets.
@@ -466,6 +532,9 @@ nonisolated enum TranscriptQATrim {
     private static func moved(_ updated: ClosedRange<Double>, from range: ClosedRange<Double>, edge: Edge,
                               tolerance: Double) -> ClosedRange<Double>? {
         let delta = edge == .start ? abs(updated.lowerBound - range.lowerBound) : abs(updated.upperBound - range.upperBound)
+        // Without a minimum span a move could meet the other edge; an empty
+        // range is "nothing selected", not a trim.
+        guard updated.upperBound > updated.lowerBound else { return nil }
         return delta > tolerance / 2 ? updated : nil
     }
 

@@ -30,7 +30,12 @@ nonisolated enum TranscriptQASections {
             .sorted { $0.startTime == $1.startTime ? $0.id < $1.id : $0.startTime < $1.startTime }
             .map { scene in
                 let range = ProposedCutTrim.range(start: scene.startTime, end: scene.endTime)
-                let lines = ordered.filter { $0.videoID == scene.videoID && contains($0, in: range) }
+                var lines = ordered.filter { $0.videoID == scene.videoID && contains($0, in: range) }
+                if lines.isEmpty {
+                    // A range shorter than a row (a click-selected word) holds
+                    // no row midpoint; the row it overlaps still names it.
+                    lines = ordered.filter { $0.videoID == scene.videoID && overlaps($0, range) }
+                }
                 let asker = lines.first.flatMap { labels[$0.id] }
                 let answerer = asker.flatMap { asker in
                     lines.dropFirst().compactMap { labels[$0.id] }.first { $0 != asker }
@@ -38,6 +43,11 @@ nonisolated enum TranscriptQASections {
                 return Section(scene: scene, question: lines.first?.text ?? "No transcript lines in this section",
                                asker: asker, answerer: answerer)
             }
+    }
+
+    /// A row sharing any time with the range, for sections too short to hold a midpoint.
+    static func overlaps(_ row: TranscriptRow, _ range: ClosedRange<Double>) -> Bool {
+        row.startTime < range.upperBound && row.endTime > range.lowerBound
     }
 
     /// Use the same midpoint rule as the transcript's scene tags.
