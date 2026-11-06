@@ -216,22 +216,40 @@ extension Database {
         }
     }
 
-    /// One toggle's change to the kept list: inserts the newly kept scenes at
-    /// their list positions and deletes only the unticked ones, so a kept
-    /// exchange another Mac synced in meanwhile is never wiped by a rewrite.
-    func applyQAPickDelta(projectID: Int64, videoID: Int64, inserted: [(sceneID: Int64, position: Int)],
-                          deleted: [Int64]) throws {
+    /// One toggle's change to the kept list: appends the newly kept scenes
+    /// after the stored positions (so the list order survives a reload) and
+    /// deletes only the unticked ones, so a kept exchange another Mac synced
+    /// in meanwhile is never wiped by a rewrite.
+    func applyQAPickDelta(projectID: Int64, videoID: Int64, inserted: [Int64], deleted: [Int64]) throws {
         try connection.transaction {
             for sceneID in Set(deleted) {
                 try connection.execute("DELETE FROM qa_picks WHERE project_id = ? AND video_id = ? AND scene_id = ?",
                                        [.integer(projectID), .integer(videoID), .integer(sceneID)])
             }
-            for (sceneID, position) in inserted {
+            let next = (try connection.query("SELECT MAX(position) AS n FROM qa_picks WHERE project_id = ? AND video_id = ?",
+                                             [.integer(projectID), .integer(videoID)]).first?["n"]?.intValue ?? -1) + 1
+            for (offset, sceneID) in inserted.enumerated() {
+                let position = Int(next) + offset
                 try connection.execute("""
                     INSERT OR IGNORE INTO qa_picks (project_id, video_id, scene_id, position)
                     SELECT ?, ?, id, ? FROM scenes WHERE id = ? AND video_id = ?
                     """, [.integer(projectID), .integer(videoID), .integer(Int64(position)),
                           .integer(sceneID), .integer(videoID)])
+            }
+        }
+    }
+
+    /// Rewrites positions in the given order; kept scenes not listed (a
+    /// teammate's pull that landed meanwhile) keep their place after them.
+    /// Nothing is deleted.
+    func reorderQAPicks(projectID: Int64, videoID: Int64, sceneIDs: [Int64]) throws {
+        try connection.transaction {
+            let current = try fetchQAPicks(projectID: projectID, videoID: videoID)
+            var seen = Set<Int64>()
+            let ordered = (sceneIDs.filter { current.contains($0) } + current).filter { seen.insert($0).inserted }
+            for (position, sceneID) in ordered.enumerated() {
+                try connection.execute("UPDATE qa_picks SET position = ? WHERE project_id = ? AND video_id = ? AND scene_id = ?",
+                                       [.integer(Int64(position)), .integer(projectID), .integer(videoID), .integer(sceneID)])
             }
         }
     }

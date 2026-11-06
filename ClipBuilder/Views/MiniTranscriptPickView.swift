@@ -11,6 +11,8 @@ struct MiniTranscriptPickView: View {
     @State private var draftRange: ClosedRange<Double>?
     /// Where the empty draft sits while the just-added pick is still being written.
     @State private var lastAddedEnd: Double?
+    /// The selected pick (the reel's Select sets it).
+    @State private var selectedOwner: Int64?
     /// The transcript's words per recording, decoded when the rows change
     /// rather than on every body run (each run used to decode them twice).
     @State private var wordsByVideo: [Int64: [TranscriptQATrim.Word]] = [:]
@@ -65,6 +67,7 @@ struct MiniTranscriptPickView: View {
         RangeReviewView(items: items, rows: rows, labels: transcript?.labels ?? [:],
                         speakerSpans: transcript?.speakerSpans ?? [], kept: kept,
                         preferredTranslationLanguage: store.activeProfile.captionLanguages.first,
+                        selection: $selectedOwner,
                         emptyTitle: "Pick a passage",
                         emptyMessage: "Select New pick, press a word in the transcript and drag, then press Add.",
                         resetTitle: "Reset to Added", autoplay: false,
@@ -80,6 +83,11 @@ struct MiniTranscriptPickView: View {
                         },
                         onSave: save) { _ in EmptyView() }
         .onChange(of: run.batchID) { _, _ in draftRange = nil; lastAddedEnd = nil }
+        .onChange(of: store.miniReelReveal, initial: true) { _, reveal in
+            guard let reveal, reveal.kind == .transcript, picks.contains(where: { $0.id == reveal.itemID }) else { return }
+            selectedOwner = reveal.itemID
+            store.miniReelReveal = nil
+        }
         .onChange(of: rows, initial: true) { _, rows in
             wordsByVideo = Dictionary(grouping: rows, by: \.videoID).mapValues(MiniWizardTranscriptRules.orderedWords)
         }

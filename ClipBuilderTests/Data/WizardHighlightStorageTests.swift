@@ -112,6 +112,24 @@ struct WizardHighlightStorageTests {
         #expect(try await db.fetchQAPicks(projectID: b, videoID: videoID).isEmpty)
     }
 
+    @Test func qaPickReorderKeepsUnlistedAndTicksAppend() async throws {
+        let temp = try await TempDatabase()
+        let db = temp.database
+        let videoID = try await temp.seedVideo(sceneCount: 4)
+        let a = try await db.createProject(profileName: "Test", name: "A", videoIDs: [videoID])
+        let ids = try await db.fetchScenes(videoID: videoID).sorted { $0.startTime < $1.startTime }.map(\.id)
+        try await db.replaceQAPicks(projectID: a, videoID: videoID, sceneIDs: [ids[0], ids[1], ids[2]])
+        // A reorder names only what the list showed; a pick synced in
+        // meanwhile (ids[3]) keeps its place after them and is not deleted.
+        try await db.applyQAPickDelta(projectID: a, videoID: videoID, inserted: [ids[3]], deleted: [])
+        try await db.reorderQAPicks(projectID: a, videoID: videoID, sceneIDs: [ids[2], ids[0], ids[1]])
+        #expect(try await db.fetchQAPicks(projectID: a, videoID: videoID) == [ids[2], ids[0], ids[1], ids[3]])
+        // Unkeep two, keep one again: it lands at the end, after a reload too.
+        try await db.applyQAPickDelta(projectID: a, videoID: videoID, inserted: [], deleted: [ids[0], ids[1]])
+        try await db.applyQAPickDelta(projectID: a, videoID: videoID, inserted: [ids[0]], deleted: [])
+        #expect(try await db.fetchQAPicks(projectID: a, videoID: videoID) == [ids[2], ids[3], ids[0]])
+    }
+
     @Test func picksAreProjectScopedAndLegacyRowsAreAdoptedOnFirstWrite() async throws {
         let temp = try await TempDatabase()
         let db = temp.database

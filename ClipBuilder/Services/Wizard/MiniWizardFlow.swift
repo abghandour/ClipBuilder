@@ -147,15 +147,20 @@ nonisolated struct MiniWizardFlow: Sendable {
     }
 
     /// A short preview of the next render, based on the currently kept items and visible settings.
-    func runSummary(candidates: [MiniWizardCandidate], exchangeCount: Int, settings: MiniWizardSettings) -> String {
+    /// With `reelCount` (the Express reel across every section) the source
+    /// is that many clips, whatever section is open.
+    func runSummary(candidates: [MiniWizardCandidate], exchangeCount: Int, settings: MiniWizardSettings,
+                    reelCount: Int? = nil) -> String {
         let kept = candidates.filter { $0.kept && !$0.take.plan.clips.isEmpty }
         let qa = effectiveFootageKind == .qa
         let picks = (effectiveFootageKind == .transcript || effectiveFootageKind == .fightMetrics) && kept.isEmpty
-        let count = qa || picks ? exchangeCount : kept.count
+        let count = reelCount ?? (qa || picks ? exchangeCount : kept.count)
         guard count > 0 else { return "No kept footage" }
         let output = "One reel"
         let source: String
-        if qa {
+        if let reelCount {
+            source = "\(reelCount) \(reelCount == 1 ? "clip" : "clips")"
+        } else if qa {
             source = "\(count) \(count == 1 ? "exchange" : "exchanges")"
         } else if picks {
             source = "\(count) \(count == 1 ? "pick" : "picks")"
@@ -174,18 +179,20 @@ nonisolated struct MiniWizardFlow: Sendable {
     typealias RunSummary = WizardRunSummary
 
     func runSummaryCard(candidates: [MiniWizardCandidate], exchangeCount: Int, settings: MiniWizardSettings,
-                        profilePlatforms: [SocialPlatform] = SocialPlatform.allCases, brollCount: Int? = nil) -> RunSummary {
+                        profilePlatforms: [SocialPlatform] = SocialPlatform.allCases, brollCount: Int? = nil,
+                        reelCount: Int? = nil) -> RunSummary {
         let kept = candidates.filter { $0.kept && !$0.take.plan.clips.isEmpty }
         let qa = effectiveFootageKind == .qa
         // Picks become selections when Settings opens; until then the kept
         // count is the picks themselves.
         let picks = (effectiveFootageKind == .transcript || effectiveFootageKind == .fightMetrics) && kept.isEmpty
-        let count = qa || picks ? exchangeCount : kept.count
+        let count = reelCount ?? (qa || picks ? exchangeCount : kept.count)
         guard count > 0 else {
             return RunSummary(headline: "No kept footage", length: nil, sections: [], hasFootage: false)
         }
         let output = "One reel"
-        let source = qa ? "\(count) \(count == 1 ? "exchange" : "exchanges")"
+        let source = reelCount != nil ? "\(count) \(count == 1 ? "clip" : "clips")"
+            : qa ? "\(count) \(count == 1 ? "exchange" : "exchanges")"
             : picks ? "\(count) \(count == 1 ? "pick" : "picks")"
             : "\(kept[0].selection.name), Take \(kept[0].take.ordinal)" + (count > 1 ? " + \(count - 1) more" : "")
         var picture = [settings.quality.label, settings.preset.label]

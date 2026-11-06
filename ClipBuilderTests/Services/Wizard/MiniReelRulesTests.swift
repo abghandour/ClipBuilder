@@ -1,0 +1,118 @@
+import Foundation
+import Testing
+@testable import Clip_Builder
+
+@Suite("Express reel rules")
+struct MiniReelRulesTests {
+    private func item(_ kind: MiniWizardFlow.FootageKind, _ id: Int64, start: Double = 0, end: Double = 1,
+                      title: String = "") -> MiniReelItem {
+        MiniReelItem(kind: kind, itemID: id, sceneID: nil, start: start, end: end, title: title)
+    }
+
+    private func candidate(_ id: Int64, name: String, clips: [WizardPlanClip], kept: Bool = true) -> MiniWizardCandidate {
+        let selection = WizardSelectionRecord(id: id, projectID: 1, name: name, recipe: "custom",
+                                               step1Options: WizardStep1Options(), miniBatch: "hl")
+        let take = WizardSelectionTake(id: id, selectionID: id, ordinal: 1,
+                                       plan: Fixtures.plan(clips: clips), sceneIDs: clips.map(\.sceneID))
+        return MiniWizardCandidate(selection: selection, take: take, kept: kept)
+    }
+
+    @Test func reconcileDropsUnkeptAppendsNewAndRefreshesSnapshots() {
+        let reel = [item(.qa, 1, title: "Q1"), item(.transcript, 7, start: 10, end: 20), item(.qa, 2, title: "Q2")]
+        // Q&A now keeps 2 and 3 (1 was unticked); 2's range moved.
+        let kept = [item(.qa, 3, title: "Q3"), item(.qa, 2, start: 5, end: 9, title: "Q2")]
+        let result = MiniReelRules.reconcile(reel, kind: .qa, kept: kept)
+        #expect(result.map(\.key) == [.init(kind: .transcript, itemID: 7), .init(kind: .qa, itemID: 2), .init(kind: .qa, itemID: 3)],
+                "the transcript row keeps its place, 1 leaves, 3 joins at the end")
+        #expect(result[1].range == 5...9)
+        #expect(result.map(\.position) == [0, 1, 2])
+        #expect(MiniReelRules.reconcile(result, kind: .qa, kept: kept) == result, "a second pass changes nothing")
+    }
+
+    @Test func reconcileLeavesOtherSectionsAlone() {
+        let reel = [item(.highlights, 40), item(.fightMetrics, 3)]
+        #expect(MiniReelRules.reconcile(reel, kind: .transcript, kept: []) == MiniReelRules.renumbered(reel))
+    }
+
+    @Test func reorderFollowsClipIDsAndTreatsATakesCutsAsOne() {
+        let reel = [item(.qa, 1), item(.highlights, 40), item(.transcript, 7)]
+        let dropped = MiniReelRules.reordered(reel, clipIDs: ["take-40-0", "take-40-1", "pick-7", "qa-1"])
+        #expect(dropped.map(\.key) == [.init(kind: .highlights, itemID: 40), .init(kind: .transcript, itemID: 7), .init(kind: .qa, itemID: 1)])
+        #expect(dropped.map(\.position) == [0, 1, 2])
+        let partial = MiniReelRules.reordered(reel, clipIDs: ["pick-7"])
+        #expect(partial.map(\.itemID) == [7, 1, 40], "unnamed items follow in their old order")
+    }
+
+    @Test func removingAndLookupUseTheClipID() {
+        let reel = [item(.qa, 1), item(.highlights, 40), item(.fightMetrics, 3)]
+        #expect(MiniReelRules.item(reel, clipID: "take-40-1")?.kind == .highlights)
+        #expect(MiniReelRules.item(reel, clipID: "scene-1") == nil)
+        #expect(MiniReelRules.removing(reel, clipID: "fight-3").map(\.itemID) == [1, 40])
+        #expect(MiniReelRules.removing(reel, clipID: "fight-99") == MiniReelRules.renumbered(reel))
+        #expect(MiniReelRules.kinds(reel + [item(.qa, 5)]) == [.qa, .highlights, .fightMetrics])
+        #expect(item(.highlights, 40).clipID == "take-40-0")
+    }
+
+    @Test func keptDraftsComeFromEachSection() {
+        let first = Fixtures.scene(id: 1, start: 0, end: 10)
+        let second = Fixtures.scene(id: 2, start: 20, end: 30)
+        let qa = MiniWizardQA(sections: [
+            TranscriptQASections.Section(scene: first, question: "First?"),
+            TranscriptQASections.Section(scene: second, question: "Second?"),
+        ], rows: [], labels: [:], turns: [], kept: [1, 2], keptOrder: [2, 1])
+        let qaRun = MiniWizardRun(projectID: 1, video: Fixtures.video(), footageKind: .qa, length: .automatic,
+                                  batchID: "qa", candidates: [], options: WizardOptions(), qa: qa)
+        #expect(MiniReelRules.kept(run: qaRun).map(\.itemID) == [2, 1], "the Q&A tick order")
+        #expect(MiniReelRules.kept(run: qaRun).first?.title == "Second?")
+
+        let picks = [TranscriptPick(id: 7, videoID: 1, position: 0, start: 1, end: 2, originalStart: 1, originalEnd: 2, sceneID: nil, kept: false),
+                     TranscriptPick(id: 8, videoID: 1, position: 1, start: 3, end: 4, originalStart: 3, originalEnd: 4, sceneID: 1)]
+        let transcriptRun = MiniWizardRun(projectID: 1, video: Fixtures.video(), footageKind: .transcript, length: .automatic,
+                                          batchID: "t", candidates: [], options: WizardOptions(),
+                                          transcript: MiniWizardTranscript(rows: [], labels: [:], picks: picks))
+        let drafts = MiniReelRules.kept(run: transcriptRun)
+        #expect(drafts.map(\.itemID) == [8], "unchecked picks are not in the reel")
+        #expect(drafts[0].sceneID == 1 && drafts[0].range == 3...4)
+
+        let highlights = MiniWizardRun(projectID: 1, video: Fixtures.video(), footageKind: .highlights, length: .automatic,
+            batchID: "hl", candidates: [
+                candidate(40, name: "Skipped", clips: [Fixtures.planClip(sceneID: 1, start: 0, end: 5)], kept: false),
+                candidate(41, name: "Two parts", clips: [Fixtures.planClip(sceneID: 1, start: 1, end: 2),
+                                                         Fixtures.planClip(sceneID: 2, start: 21, end: 22)]),
+            ], options: WizardOptions())
+        let hl = MiniReelRules.kept(run: highlights)
+        #expect(hl.map(\.itemID) == [41] && hl[0].title == "Two parts" && hl[0].range == 1...2)
+    }
+
+    @Test func candidatesFollowTheReelAcrossSections() {
+        var pickClip = Fixtures.planClip(sceneID: 1, start: 3, end: 4)
+        pickClip.miniPickID = 8
+        let transcriptRun = MiniWizardRun(projectID: 1, video: Fixtures.video(), footageKind: .transcript, length: .automatic,
+            batchID: "t", candidates: [candidate(90, name: "Passage 1", clips: [pickClip])], options: WizardOptions(),
+            transcript: MiniWizardTranscript(rows: [], labels: [:], picks: []))
+        let highlights = MiniWizardRun(projectID: 1, video: Fixtures.video(), footageKind: .highlights, length: .automatic,
+            batchID: "hl", candidates: [candidate(41, name: "Hook", clips: [Fixtures.planClip(sceneID: 2, start: 21, end: 22)])],
+            options: WizardOptions())
+        let reel = [item(.highlights, 41), item(.qa, 5), item(.transcript, 8)]
+        let found = MiniReelRules.candidates(items: reel, runs: [.transcript: transcriptRun, .highlights: highlights])
+        #expect(found.map(\.id) == [41, 90], "reel order; the Q&A item has no loaded section")
+    }
+
+    @Test func reelClipsUseLiveRangesAndFallBackToSnapshots() {
+        let first = Fixtures.scene(id: 1, start: 0, end: 50)
+        let second = Fixtures.scene(id: 2, start: 50, end: 120)
+        let picks = [TranscriptPick(id: 7, videoID: 1, position: 0, start: 60, end: 80, originalStart: 60, originalEnd: 80, sceneID: nil)]
+        let transcriptRun = MiniWizardRun(projectID: 1, video: Fixtures.video(), footageKind: .transcript, length: .automatic,
+            batchID: "t", candidates: [], options: WizardOptions(),
+            transcript: MiniWizardTranscript(rows: [], labels: [:], picks: picks))
+        let reel = [
+            MiniReelItem(kind: .highlights, itemID: 41, position: 0, sceneID: 1, start: 5, end: 9, title: "Hook"),
+            MiniReelItem(kind: .transcript, itemID: 7, position: 1, sceneID: nil, start: 0, end: 1, title: "stale"),
+            MiniReelItem(kind: .qa, itemID: 99, position: 2, sceneID: 99, start: 900, end: 901, title: "gone"),
+        ]
+        let clips = WizardPreviewClips.reel(items: reel, runs: [.transcript: transcriptRun], videoID: 1, scenes: [first, second])
+        #expect(clips.map(\.id) == ["take-41-0", "pick-7"], "the snapshot draws Highlights; a range outside every scene is skipped")
+        #expect(clips[0].range == 5...9 && clips[0].scene.id == 1)
+        #expect(clips[1].range == 60...80 && clips[1].scene.id == 2, "the loaded section's range wins over the snapshot")
+    }
+}

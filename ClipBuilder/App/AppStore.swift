@@ -436,7 +436,19 @@ final class AppStore {
     var podcastResultsAfterDismissal: WizardRunResults?
     var pendingWizardSelectionReview: WizardSelectionReviewRequest?
     var wizardSelections: [WizardSelectionSummary] = []
-    var miniRuns: [MiniWizardFlow.FootageKind: MiniWizardRun] = [:]
+    var miniRuns: [MiniWizardFlow.FootageKind: MiniWizardRun] = [:] { didSet { reconcileMiniReel() } }
+    /// The Express reel for the chosen source: the items selected across the
+    /// Footage sections, in reel order (docs/Express-Reel-List-Plan.md).
+    var miniReelItems: [MiniReelItem] = []
+    @ObservationIgnored var miniReelKey: MiniReelKey?
+    /// False until the reel for `miniReelKey` has been read; reconciling
+    /// against the loaded sections waits for it.
+    @ObservationIgnored var miniReelLoaded = false
+    /// Select on a List row: the Footage section to open and the item to
+    /// select there; the section's review clears it once it has selected.
+    var miniReelReveal: MiniReelRules.Key?
+    @ObservationIgnored var miniReelSaveTask: Task<Void, Error>?
+    @ObservationIgnored var miniReelGenerateTask: Task<Void, Never>?
     /// Rough cut requests by id, so the review sheet can re-run one with
     /// edited framing (docs/Rough-Cut-Plan.md). Pruned when a new one starts.
     var roughCutRequests: [UUID: RoughCutRequest] = [:]

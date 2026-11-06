@@ -44,6 +44,10 @@ nonisolated enum MiniWizardMemory {
         else { defaults.set(kept.sorted().map(String.init).joined(separator: ","), forKey: key) }
     }
 
+    /// The Highlights candidates' list order for a batch (selection ids),
+    /// stored next to `mini.kept.<batch>`.
+    static func highlightOrderKey(_ batchID: String) -> String { "mini.order.\(batchID)" }
+
     /// Call only after loading the current project's eligible sources successfully.
     /// An absent or no-longer-analyzed video clears the answer; never choose a replacement.
     static func validatedVideoPath(_ path: String, videos: [VideoRecord]) -> String {

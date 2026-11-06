@@ -417,10 +417,12 @@ struct RangeReviewView<Footer: View>: View {
             // Selection is explicit so the sibling checkbox never selects a row.
             // Rows live in a plain stack so a row can be dragged to a new place
             // with a marker showing where it lands.
+            ScrollViewReader { scroller in
             ScrollView {
                 VStack(alignment: .leading, spacing: 0) {
                     ForEach(visibleItems) { item in
                         itemRow(item)
+                            .id(item.id)
                             .background(item.id == selectedID ? Color.accentColor.opacity(0.16) : Color.clear,
                                         in: RoundedRectangle(cornerRadius: 6))
                             .padding(.horizontal, Theme.spaceXS)
@@ -451,6 +453,12 @@ struct RangeReviewView<Footer: View>: View {
                             .accessibilityHidden(true)
                     }
                 }
+            }
+            // A selection made elsewhere (the reel's Select) scrolls into view.
+            .onChange(of: selection?.wrappedValue) { _, ownerID in
+                guard let ownerID, let item = visibleItems.first(where: { $0.id.ownerID == ownerID }) else { return }
+                withAnimation { scroller.scrollTo(item.id, anchor: .center) }
+            }
             }
             .focusable()
             .focusEffectDisabled()

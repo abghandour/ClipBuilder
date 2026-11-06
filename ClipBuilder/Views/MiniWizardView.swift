@@ -73,6 +73,21 @@ struct MiniWizardView: View {
         return run
     }
 
+    /// The List tab: drops reorder the reel, Delete takes a clip out of it.
+    private var previewListConfig: WizardPreviewListConfig {
+        WizardPreviewListConfig(onReorder: { store.reorderMiniReel($0) },
+                                canReorder: !store.isWizardRunning,
+                                onDelete: { store.removeMiniReelItem(clipID: $0) },
+                                onDeleteAll: { store.removeAllMiniReelItems() },
+                                onSelect: { store.revealMiniReelItem(clipID: $0) },
+                                summary: generateSummary)
+    }
+
+    /// The reel as preview clips: every selected item across the sections.
+    private func reelClips(videoID: Int64) -> [WizardPreviewClip] {
+        WizardPreviewClips.reel(items: store.miniReelItems, runs: store.miniRuns, videoID: videoID, scenes: store.scenes)
+    }
+
     private var flow: MiniWizardFlow {
         MiniWizardFlow(video: selectedVideo,
                        hasPodcastExchangeScenes: selectedVideo.map { podcastVideoIDs.contains($0.id) } ?? false,
@@ -80,8 +95,8 @@ struct MiniWizardView: View {
                        hasScenes: selectedVideo.map { sceneVideoIDs.contains($0.id) } ?? true,
                        footageKind: footageKind, length: length,
                        captionsEnabled: miniSettings.captions, transcriptLanguage: transcriptLanguage,
-                       hasFootage: currentRun?.hasFootage == true,
-                       hasKeptFootage: (currentRun?.keptCount ?? 0) > 0,
+                       hasFootage: currentRun?.hasFootage == true || !store.miniReelItems.isEmpty,
+                       hasKeptFootage: (currentRun?.keptCount ?? 0) > 0 || !store.miniReelItems.isEmpty,
                        requestedCard: currentRun?.requestedCard ?? pendingCard, collapsedCard: collapsedCard,
                        outputMode: miniSettings.outputMode)
     }
@@ -102,7 +117,7 @@ struct MiniWizardView: View {
             settingsColumn.frame(minWidth: 480, maxWidth: .infinity)
             if let video = selectedVideo {
                 WizardPreviewColumn(scenes: store.scenes.filter { $0.videoID == video.id },
-                    clips: currentRun.map { WizardPreviewClips.kept(run: $0, scenes: store.scenes) } ?? [],
+                    clips: reelClips(videoID: video.id),
                     options: miniSettings.effective(for: flow,
                         introAvailable: store.bumpers.contains { $0.placements.contains(.intro) },
                         outroAvailable: store.bumpers.contains { $0.placements.contains(.outro) })
@@ -128,7 +143,8 @@ struct MiniWizardView: View {
                         && !store.isWizardRunning && flow.effectiveSettingsTab(settingsTab) == .picture
                         ? { miniSettings.framing.focusFrame = $0 } : nil,
                     emptyMessage: sceneVideoIDs.contains(video.id) ? "Choose a video to preview"
-                        : "No scenes to preview yet. Run Analyze on this source in Sources to see it here.")
+                        : "No scenes to preview yet. Run Analyze on this source in Sources to see it here.",
+                    list: previewListConfig)
                     .id("\(store.profileGeneration):\(store.activeProjectID ?? 0):\(video.id)")
                     .rememberedPaneWidth("pane.express.preview", min: 240, initial: 320, max: 900)
             }
@@ -226,6 +242,14 @@ struct MiniWizardView: View {
             videoPath = path
             open(.footage)
         }
+        // Select on a List row: show that item's section; the section's
+        // review selects the item and clears the request.
+        .onChange(of: store.miniReelReveal, initial: true) { _, reveal in
+            guard let reveal, pageVisible else { return }
+            instructionsFocused = false
+            if flow.footageKinds.contains(reveal.kind) { footageKind = reveal.kind }
+            open(.footage)
+        }
         .onChange(of: autoLoadKey, initial: true) { _, key in autoLoad(key) }
         // A load skipped while another run was busy, or while sources were
         // still loading, happens once that finishes.
@@ -241,8 +265,14 @@ struct MiniWizardView: View {
     /// The run summary and Generate sit under the preview, outside the
     /// collapsible cards, so a collapsed Settings card never hides the button.
     private var generateFooter: AnyView? {
+        guard let projectID = store.activeProjectID, flow.canExpand(.settings), settingsProfile == profileName else { return nil }
+        return AnyView(MiniGeneratePanel(settings: $miniSettings, flow: flow, projectID: projectID))
+    }
+
+    /// The preview column's Summary tab, under the same condition as the footer.
+    private var generateSummary: AnyView? {
         guard let run = currentRun, flow.canExpand(.settings), settingsProfile == profileName else { return nil }
-        return AnyView(MiniGeneratePanel(settings: $miniSettings, flow: flow, run: run))
+        return AnyView(MiniGenerateSummary(settings: miniSettings, flow: flow, run: run))
     }
 
     /// Anything a fresh page would not have: a source, a run, a loaded
@@ -397,10 +427,8 @@ struct MiniWizardView: View {
     private func openHighlight(_ id: Int64, thenRender: Bool = false) {
         guard let scope = historyScope, let video = selectedVideo else { return }
         Task {
-            let batch: String
-            if thenRender, let existing = store.openedExpressBatch(for: id) {
-                batch = existing
-            } else {
+            // Re-render of the run on screen needs no Open.
+            if !thenRender || store.openedExpressBatch(for: id) == nil {
                 guard let opened = await store.openExpressHighlight(id: id, scope: scope, video: video),
                       selectedVideo?.id == video.id else { return }
                 instructionsFocused = false
@@ -409,14 +437,15 @@ struct MiniWizardView: View {
                 if let mini = opened.mini { miniSettings = mini }
                 if let mode = opened.outputMode { miniSettings.outputMode = mode }
                 collapsedCard = nil
-                batch = opened.batchID
             }
             guard thenRender else { return }
             var renderFlow = flow
             renderFlow.footageKind = .highlights
             renderFlow.length = store.miniRuns[.highlights]?.length ?? length
             renderFlow.outputMode = miniSettings.outputMode
-            store.generateMiniVideos(settings: miniSettings, flow: renderFlow, batchID: batch)
+            // The reel now holds the opened candidates (the run change
+            // reconciled it); Re-render makes the reel as it stands.
+            store.generateMiniReel(settings: miniSettings, flow: renderFlow)
         }
     }
 
@@ -705,8 +734,8 @@ struct MiniWizardView: View {
     /// The Generate footer's own condition (`generateFooter` plus the
     /// panel's disabled state).
     private var canGenerateKept: Bool {
-        guard let run = currentRun, flow.canExpand(.settings), settingsProfile == profileName else { return false }
-        return run.keptCount > 0 && !store.isWizardRunning && !store.isWizardBatchJobRunning(projectID: run.projectID)
+        guard let projectID = store.activeProjectID, flow.canExpand(.settings), settingsProfile == profileName else { return false }
+        return !store.miniReelItems.isEmpty && !store.isWizardRunning && !store.isWizardBatchJobRunning(projectID: projectID)
     }
 
     /// The Highlights candidate selected in Footage, when the run on screen has one.
@@ -801,12 +830,12 @@ struct MiniWizardView: View {
         case WizardAssistant.applyFramingAction:
             break
         case "wizard.generate", WizardAssistant.generateWithFramingAction, "wizard.openInEditor", "wizard.roughCut":
-            guard canGenerateKept, let run = currentRun else {
+            guard canGenerateKept else {
                 store.presentNotice("Ask AI", store.isWizardRunning ? "The Wizard is already working."
                                     : "Keep footage in 2 Footage first, then Generate.")
                 return
             }
-            store.generateMiniVideosRecordingPicks(settings: miniSettings, flow: flow, batchID: run.batchID,
+            store.generateMiniReel(settings: miniSettings, flow: flow,
                 mode: id == "wizard.openInEditor" ? .openInEditor : id == "wizard.roughCut" ? .roughCut : .render)
         default:
             break

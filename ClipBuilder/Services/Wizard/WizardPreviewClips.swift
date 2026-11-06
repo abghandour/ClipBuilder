@@ -70,6 +70,72 @@ nonisolated enum WizardPreviewClips {
         return result
     }
 
+    /// The Express reel as preview clips, in reel order. A loaded section
+    /// supplies the live range (and every cut of a Highlights candidate);
+    /// otherwise the item's snapshot stands in.
+    static func reel(items: [MiniReelItem], runs: [MiniWizardFlow.FootageKind: MiniWizardRun],
+                     videoID: Int64, scenes: [SceneRecord]) -> [WizardPreviewClip] {
+        let scenes = scenes.filter { $0.videoID == videoID }
+        let byID = Dictionary(scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        let runs = runs.filter { $0.value.video.id == videoID }
+        var result: [WizardPreviewClip] = []
+        for item in items.sorted(by: { $0.position < $1.position }) {
+            if let run = runs[item.kind] {
+                result += liveClips(item, run: run, scenes: scenes, byID: byID)
+            } else if let scene = containing(item.range, id: item.sceneID, scenes: scenes, byID: byID) {
+                result.append(.init(id: item.clipID, title: item.title, scene: scene,
+                                    start: item.range.lowerBound, end: item.range.upperBound))
+            }
+        }
+        // Reviewed B-roll cuts live on the recorded takes.
+        let saved = runs.values.flatMap { $0.candidates.flatMap { $0.take.plan.clips } }
+        for index in result.indices where result[index].brollCuts == nil {
+            let piece = result[index]
+            let exact = saved.first { clip in
+                if let pickID = clip.miniPickID {
+                    return piece.id == "pick-\(pickID)" || piece.id == "fight-\(pickID)"
+                }
+                return clip.sceneID == piece.scene.id && abs(clip.start - piece.start) < 0.001 && abs(clip.end - piece.end) < 0.001
+            }
+            result[index].brollCuts = exact?.brollCuts
+        }
+        return result
+    }
+
+    private static func liveClips(_ item: MiniReelItem, run: MiniWizardRun, scenes: [SceneRecord],
+                                  byID: [Int64: SceneRecord]) -> [WizardPreviewClip] {
+        switch item.kind {
+        case .qa:
+            guard let qa = run.qa, qa.kept.contains(item.itemID),
+                  let section = qa.sections.first(where: { $0.id == item.itemID }),
+                  section.range.upperBound > section.range.lowerBound else { return [] }
+            return [.init(id: item.clipID, title: section.question, scene: section.scene,
+                          start: section.range.lowerBound, end: section.range.upperBound)]
+        case .transcript:
+            guard let pick = run.transcript?.picks.first(where: { $0.id == item.itemID }), pick.kept,
+                  let scene = containing(pick.range, id: pick.sceneID, scenes: scenes, byID: byID) else { return [] }
+            return [.init(id: item.clipID, title: item.title, scene: scene,
+                          start: pick.range.lowerBound, end: pick.range.upperBound)]
+        case .fightMetrics:
+            guard let pick = run.fight?.picks.first(where: { $0.id == item.itemID }),
+                  let scene = containing(pick.range, id: pick.sceneID, scenes: scenes, byID: byID) else { return [] }
+            return [.init(id: item.clipID, title: "Stretch \(pick.position + 1)", scene: scene,
+                          start: pick.range.lowerBound, end: pick.range.upperBound)]
+        case .highlights:
+            guard let candidate = run.candidates.first(where: { $0.id == item.itemID }), candidate.kept else { return [] }
+            var result: [WizardPreviewClip] = []
+            for (index, clip) in candidate.take.plan.clips.enumerated() where clip.end > clip.start {
+                guard let scene = byID[clip.sceneID] else { continue }
+                let title = candidate.take.plan.clips.count > 1
+                    ? "\(candidate.selection.name) · \(index + 1)" : candidate.selection.name
+                result.append(.init(id: "take-\(candidate.id)-\(index)", title: title, scene: scene,
+                                    start: clip.start, end: clip.end, brollCuts: clip.brollCuts,
+                                    chosenSubject: candidate.take.plan.framing))
+            }
+            return result
+        }
+    }
+
     /// The kept takes of a batch (the Full wizard's and a rough cut's) as
     /// preview clips, in output order, titled by their selection.
     static func takes(_ takes: [WizardSelectionTake], names: [Int64: String],
@@ -142,16 +208,18 @@ nonisolated enum WizardPreviewClips {
         switch run.footageKind {
         case .qa:
             guard let qa = run.qa else { return [] }
-            for section in qa.sections where qa.kept.contains(section.id) && section.scene.videoID == run.video.id {
+            let ordered = MiniWizardQARules.ordering(qa.sections, by: qa.keptOrder)
+            for section in ordered where qa.kept.contains(section.id) && section.scene.videoID == run.video.id {
                 let range = section.range
                 guard range.upperBound > range.lowerBound else { continue }
                 result.append(.init(id: "qa-\(section.id)", title: section.question,
                                     scene: section.scene, start: range.lowerBound, end: range.upperBound))
             }
         case .transcript:
-            for pick in run.transcript?.picks ?? [] where pick.kept {
+            // Numbered over the kept picks: the list and the reel count only those.
+            for (index, pick) in (run.transcript?.picks ?? []).filter(\.kept).enumerated() {
                 guard let scene = containing(pick.range, id: pick.sceneID, scenes: scenes, byID: byID) else { continue }
-                result.append(.init(id: "pick-\(pick.id)", title: "Passage \(pick.position + 1)",
+                result.append(.init(id: "pick-\(pick.id)", title: "Passage \(index + 1)",
                                     scene: scene, start: pick.range.lowerBound, end: pick.range.upperBound))
             }
         case .fightMetrics:

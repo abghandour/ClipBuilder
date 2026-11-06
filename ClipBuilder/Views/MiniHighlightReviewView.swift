@@ -22,9 +22,7 @@ struct MiniHighlightReviewView: View {
             guard let current = store.miniRun, current.batchID == run.batchID else { return [] }
             return MiniHighlightReview.keptIDs(current.candidates)
         }, set: { kept in
-            guard let current = store.miniRun, current.batchID == run.batchID, !store.isWizardRunning else { return }
-            store.miniRun?.candidates = MiniHighlightReview.settingKept(kept, in: current.candidates)
-            UserDefaults.standard.set(kept.sorted().map(String.init), forKey: "mini.kept.\(run.batchID)")
+            store.setMiniHighlightsKept(kept, batchID: run.batchID)
         })
     }
 
@@ -50,6 +48,11 @@ struct MiniHighlightReviewView: View {
             }
         }
         .task(id: videoIDs) { await loadTranscript() }
+        .onChange(of: store.miniReelReveal, initial: true) { _, reveal in
+            guard let reveal, reveal.kind == .highlights, run.candidates.contains(where: { $0.id == reveal.itemID }) else { return }
+            selection.wrappedValue = reveal.itemID
+            store.miniReelReveal = nil
+        }
     }
 
     private func save(_ item: RangeReviewItem, start: Double, end: Double) {

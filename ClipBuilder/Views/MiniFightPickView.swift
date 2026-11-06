@@ -85,6 +85,11 @@ struct MiniFightPickView: View {
                 }
             }
             .onChange(of: run.batchID) { _, _ in chosen = []; draftRange = nil }
+            .onChange(of: store.miniReelReveal, initial: true) { _, reveal in
+                guard let reveal, reveal.kind == .fightMetrics, picks.contains(where: { $0.id == reveal.itemID }) else { return }
+                selectedOwner = reveal.itemID
+                store.miniReelReveal = nil
+            }
             .onChange(of: chosen) { _, _ in
                 draftRange = nil
                 if !chosen.isEmpty { selectedOwner = Self.draftOwnerID }

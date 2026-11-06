@@ -61,7 +61,7 @@ extension AppStore {
     }
 
     private func currentTranscriptRun() -> MiniWizardRun? {
-        guard let run = miniRun, run.footageKind == .transcript, run.projectID == activeProjectID,
+        guard let run = miniRuns[.transcript], run.projectID == activeProjectID,
               run.transcript != nil, !isWizardRunning else { return nil }
         return run
     }
@@ -229,7 +229,7 @@ extension AppStore {
             defer {
                 finishWizardSelectionWork(generation: generation)
                 if saved, !Task.isCancelled, generation == profileGeneration,
-                   activeProjectID == run.projectID, miniRun?.batchID == run.batchID { then() }
+                   activeProjectID == run.projectID, miniRuns[.transcript]?.batchID == run.batchID { then() }
             }
             do {
                 _ = try? await transcriptPickSaveTask?.value
@@ -237,7 +237,7 @@ extension AppStore {
                 try await wizardSelectionSaveTask?.value
                 try Task.checkCancellation()
                 guard generation == profileGeneration, activeProjectID == run.projectID,
-                      miniRun?.batchID == run.batchID, let picks = miniRun?.transcript?.picks else { return }
+                      miniRuns[.transcript]?.batchID == run.batchID, let picks = miniRuns[.transcript]?.transcript?.picks else { return }
                 let reviewedByPick = Dictionary(run.candidates.flatMap { $0.take.plan.clips }.compactMap { clip in
                     clip.miniPickID.map { ($0, clip.brollCuts ?? []) }
                 }, uniquingKeysWith: { first, _ in first })
@@ -246,11 +246,11 @@ extension AppStore {
                     options: run.options.step1, reviewedCutsByPick: reviewedByPick)
                 let updatedPicks = try await database.fetchTranscriptPicks(projectID: run.projectID, videoID: run.video.id)
                 guard generation == profileGeneration, activeProjectID == run.projectID,
-                      miniRun?.batchID == run.batchID else { return }
-                miniRun?.transcript?.picks = updatedPicks
-                miniRun?.candidates = candidates
-                miniRun?.selectedSelectionID = candidates.first?.id
-                miniRun?.requestedCard = candidates.isEmpty ? .footage : card
+                      miniRuns[.transcript]?.batchID == run.batchID else { return }
+                miniRuns[.transcript]?.transcript?.picks = updatedPicks
+                miniRuns[.transcript]?.candidates = candidates
+                miniRuns[.transcript]?.selectedSelectionID = candidates.first?.id
+                miniRuns[.transcript]?.requestedCard = candidates.isEmpty ? .footage : card
                 saved = !candidates.isEmpty
                 appendLog(\.wizardLog, ["Express: saved \(candidates.count) transcript picks as selections."])
                 // The picks' scenes are new library rows.

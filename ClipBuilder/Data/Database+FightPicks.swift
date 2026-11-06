@@ -114,7 +114,9 @@ extension Database {
                 try connection.execute("UPDATE fight_picks SET scene_id = ? WHERE id = ? AND project_id = ?",
                                        [.integer(sceneID), .integer(pick.id), .integer(projectID)])
                 let name = MiniWizardFightRules.title(for: pick, actions: actions, names: names, number: index + 1)
-                let plan = MiniWizardFightRules.plan(for: pick, sceneID: sceneID, name: name)
+                var plan = MiniWizardFightRules.plan(for: pick, sceneID: sceneID, name: name)
+                // The reel and the preview find a pick's take by this id.
+                for index in plan.clips.indices { plan.clips[index].miniPickID = pick.id }
                 let id = try insertWizardSelection(projectID: projectID, name: name,
                     recipe: options.formatPreset ?? "custom", step1Options: step1, miniBatch: miniBatch)
                 let take = try insertWizardSelectionTake(selectionID: id, plan: plan)

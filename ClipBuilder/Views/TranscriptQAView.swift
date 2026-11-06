@@ -8,6 +8,8 @@ struct TranscriptQAView: View {
     let labels: [Int64: String]
     var speakerSpans: [TranscriptQATrim.SpeakerSpan] = []
     var kept: Binding<Set<Int64>>? = nil
+    /// The selected exchange's scene id, for an owner that selects from outside.
+    var selection: Binding<Int64?>? = nil
     var preferredTranslationLanguage: String? = nil
     /// A Play button in the list's footer toolbar.
     var playAll = false
@@ -15,7 +17,8 @@ struct TranscriptQAView: View {
 
     var body: some View {
         RangeReviewView(items: items, rows: rows, labels: labels, speakerSpans: speakerSpans, kept: kept,
-                        preferredTranslationLanguage: preferredTranslationLanguage, autoplay: false, playAll: playAll,
+                        preferredTranslationLanguage: preferredTranslationLanguage, selection: selection,
+                        autoplay: false, playAll: playAll,
                         onSave: { item, start, end in
                             guard let section = sections.first(where: { $0.id == item.id.ownerID }) else { return }
                             onSave(section.scene, start, end)

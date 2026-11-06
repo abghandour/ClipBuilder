@@ -11,6 +11,8 @@ struct MiniFootageCard: View {
     /// 0 means fit the page. Shared by Q&A, Transcript, Fight and Highlights.
     @AppStorage("mini.footageHeight") private var storedHeight = 0.0
     @State private var resizeStart: CGFloat?
+    /// The Q&A exchange selected in the review (the reel's Select sets it).
+    @State private var qaSelection: Int64?
 
     static let minimumHeight: CGFloat = 320
 
@@ -116,10 +118,16 @@ struct MiniFootageCard: View {
                 kept: Binding(
                     get: { store.miniRun?.batchID == run.batchID ? store.miniRun?.qa?.kept ?? [] : [] },
                     set: { kept in store.setMiniQAKept(kept, batchID: run.batchID) }),
+                selection: $qaSelection,
                 preferredTranslationLanguage: store.activeProfile.captionLanguages.first, playAll: true) { scene, start, end in
                         store.setSceneEditRange(scene, start: start, end: end)
                     }
             resizable(review)
+                .onChange(of: store.miniReelReveal, initial: true) { _, reveal in
+                    guard let reveal, reveal.kind == .qa, qa.sections.contains(where: { $0.id == reveal.itemID }) else { return }
+                    qaSelection = reveal.itemID
+                    store.miniReelReveal = nil
+                }
         } else {
             FormCaption("No Q&A found in this video")
             Button { showTranscript = true } label: {

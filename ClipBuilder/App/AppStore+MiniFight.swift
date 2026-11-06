@@ -42,7 +42,7 @@ extension AppStore {
     }
 
     private func currentFightRun() -> MiniWizardRun? {
-        guard let run = miniRun, run.footageKind == .fightMetrics, run.projectID == activeProjectID,
+        guard let run = miniRuns[.fightMetrics], run.projectID == activeProjectID,
               run.fight != nil, !isWizardRunning else { return nil }
         return run
     }
@@ -151,21 +151,21 @@ extension AppStore {
             defer {
                 finishWizardSelectionWork(generation: generation)
                 if saved, !Task.isCancelled, generation == profileGeneration,
-                   activeProjectID == run.projectID, miniRun?.batchID == run.batchID { then() }
+                   activeProjectID == run.projectID, miniRuns[.fightMetrics]?.batchID == run.batchID { then() }
             }
             do {
                 _ = try? await fightPickSaveTask?.value
                 try Task.checkCancellation()
                 guard generation == profileGeneration, activeProjectID == run.projectID,
-                      miniRun?.batchID == run.batchID, let picks = miniRun?.fight?.picks else { return }
+                      miniRuns[.fightMetrics]?.batchID == run.batchID, let picks = miniRuns[.fightMetrics]?.fight?.picks else { return }
                 let candidates = try await database.replaceMiniFightSelections(projectID: run.projectID,
                     videoID: run.video.id, miniBatch: run.batchID, picks: picks, actions: fight.actions,
                     names: fight.names, options: run.options.step1)
                 guard generation == profileGeneration, activeProjectID == run.projectID,
-                      miniRun?.batchID == run.batchID else { return }
-                miniRun?.candidates = candidates
-                miniRun?.selectedSelectionID = candidates.first?.id
-                miniRun?.requestedCard = candidates.isEmpty ? .footage : .settings
+                      miniRuns[.fightMetrics]?.batchID == run.batchID else { return }
+                miniRuns[.fightMetrics]?.candidates = candidates
+                miniRuns[.fightMetrics]?.selectedSelectionID = candidates.first?.id
+                miniRuns[.fightMetrics]?.requestedCard = candidates.isEmpty ? .footage : .settings
                 saved = !candidates.isEmpty
                 appendLog(\.wizardLog, ["Express: saved \(candidates.count) fight picks as selections."])
                 // The picks' scenes are new library rows.

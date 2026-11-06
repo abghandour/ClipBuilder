@@ -47,6 +47,11 @@ extension AppStore {
                 if let kept = UserDefaults.standard.stringArray(forKey: "mini.kept.\(batch)") {
                     candidates = MiniHighlightReview.settingKept(Set(kept.compactMap(Int64.init)), in: candidates)
                 }
+                if let order = UserDefaults.standard.stringArray(forKey: MiniWizardMemory.highlightOrderKey(batch)) {
+                    let ids = WizardPreviewRows.merging(order.compactMap(Int64.init), into: candidates.map(\.id))
+                    let byID = Dictionary(candidates.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+                    candidates = ids.compactMap { byID[$0] }
+                }
                 guard miniFootageLoadID == loadID else { return }
                 miniRuns[.highlights] = MiniWizardRun(projectID: projectID, video: video, footageKind: .highlights,
                     length: flow.length, batchID: batch, candidates: candidates, options: options,

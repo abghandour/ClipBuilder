@@ -41,6 +41,17 @@ struct WizardPreviewColumn: View {
     var onPlaceFocusFrame: ((FreeCropRect?) -> Void)? = nil
     /// Shown instead of a frame when there is no scene to preview.
     var emptyMessage = "Choose a video to preview"
+    /// When set, the header gets List and Video tabs and List shows the kept
+    /// clips as reorderable rows (Express). Nil keeps the video-only column.
+    var list: WizardPreviewListConfig? = nil
+    /// The chosen tab, remembered across launches. List is the default.
+    @AppStorage("preview.express.tab") private var tabRaw = PreviewTab.list.rawValue
+    private enum PreviewTab: String, CaseIterable { case list, video, summary }
+    private var tab: PreviewTab {
+        guard let list else { return .video }
+        let chosen = PreviewTab(rawValue: tabRaw) ?? .list
+        return chosen == .summary && list.summary == nil ? .list : chosen
+    }
     /// When set, the column is only the still of this clip at this moment,
     /// filling its frame: no title, stepper, scrubber or caption. The rough
     /// cut sheet draws it over a player whose settings have changed.
@@ -56,15 +67,19 @@ struct WizardPreviewColumn: View {
     /// Name markers show briefly after a chip changes or while a caption is hovered.
     @State private var markersRevealed = false
     @State private var markerRevealID = 0
+    /// Measured height of the texts under the Video tab's image.
+    @State private var textsHeight: CGFloat = 0
 
     init(scenes: [SceneRecord], clips: [WizardPreviewClip] = [], options: WizardOptions, profile: BrandProfile,
          thumbnails: ThumbnailService, footer: AnyView? = nil, headerAccessory: AnyView? = nil, captionOrdinals: [String: Int]? = nil,
          onMove: ((PreviewElement, CustomPosition) -> Void)? = nil,
          onPlaceOverlay: ((OverlayComponent, CGRect) -> Void)? = nil,
          onPlaceFocusFrame: ((FreeCropRect?) -> Void)? = nil,
-         emptyMessage: String = "Choose a video to preview", pinned: WizardPreviewMoment? = nil) {
+         emptyMessage: String = "Choose a video to preview", pinned: WizardPreviewMoment? = nil,
+         list: WizardPreviewListConfig? = nil) {
         self.emptyMessage = emptyMessage
         self.pinned = pinned
+        self.list = list
         self.scenes = scenes
         self.clips = clips
         self.options = options
@@ -144,6 +159,14 @@ struct WizardPreviewColumn: View {
         Group {
             if pinned != nil {
                 preview
+            } else if let footer, list?.summary != nil {
+                // The summary is a tab, so the footer is only the action row,
+                // pinned under the preview at its own height.
+                VStack(spacing: 0) {
+                    previewArea
+                    Divider()
+                    footer
+                }
             } else if let footer {
                 // The divider between the preview and the footer is draggable,
                 // so the preview can take the height it needs. The footer owns
@@ -205,35 +228,106 @@ struct WizardPreviewColumn: View {
 
     private var previewArea: some View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: Theme.spaceS) {
-                    title
-                    Spacer(minLength: 0)
-                    stepper
-                    chromePicker
-                    headerAccessory
-                }
+            if list != nil {
+                // Two fixed rows: the column is narrow, and a one-line header
+                // clipped the clip stepper.
                 VStack(alignment: .leading, spacing: Theme.spaceS) {
-                    HStack {
+                    HStack(spacing: Theme.spaceS) {
                         title
                         Spacer(minLength: 0)
+                        if tab == .video { chromePicker }
+                        headerAccessory
+                    }
+                    // The stepper drops to a third row when the tabs and
+                    // it do not share one: an overflowing row pushed the
+                    // List segment off the left edge.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: Theme.spaceS) {
+                            tabPicker
+                            Spacer(minLength: 0)
+                            if tab == .video { stepper }
+                        }
+                        VStack(alignment: .leading, spacing: Theme.spaceS) {
+                            tabPicker
+                            if tab == .video { stepper }
+                        }
+                    }
+                }
+            } else {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Theme.spaceS) {
+                        title
+                        Spacer(minLength: 0)
+                        stepper
                         chromePicker
                         headerAccessory
                     }
-                    stepper
+                    VStack(alignment: .leading, spacing: Theme.spaceS) {
+                        HStack {
+                            title
+                            Spacer(minLength: 0)
+                            chromePicker
+                            headerAccessory
+                        }
+                        stepper
+                    }
                 }
             }
-            GeometryReader { available in
-                // Size the image explicitly so the scrubber and captions sit
-                // flush under it; a flexible frame would keep its full height.
-                let aspect = max(0.01, options.renderSettings.aspectRatio)
-                let height = min(max(120, available.size.height - (currentClip == nil ? 88 : 120) - (options.addCaptions && !speakerKeys.isEmpty ? 30 : 0)),
-                                 available.size.width / aspect)
-                VStack(alignment: .leading, spacing: Theme.spaceS) {
-                    preview
-                        .frame(width: height * aspect, height: height)
-                    if let clip = currentClip { scrubber(clip).frame(width: height * aspect) }
-                    if options.addCaptions, !speakerKeys.isEmpty { speakerChips.frame(width: height * aspect) }
+            if let list, tab == .list {
+                WizardPreviewList(clips: clips, selectedIndex: $clipIndex, config: list,
+                                  emptyMessage: clips.isEmpty ? "No kept footage yet. Keep footage in the Footage step to list it here." : "")
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            } else if let summary = list?.summary, tab == .summary {
+                ScrollView { summary.frame(maxWidth: .infinity, alignment: .topLeading) }
+                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+            } else {
+                videoArea
+            }
+        }
+        .padding(Theme.spaceM)
+    }
+
+    @ViewBuilder
+    private var tabPicker: some View {
+        if list != nil {
+            Picker("Preview tab", selection: $tabRaw) {
+                Text("List").tag(PreviewTab.list.rawValue)
+                Text("Video").tag(PreviewTab.video.rawValue)
+                if list?.summary != nil { Text("Summary").tag(PreviewTab.summary.rawValue) }
+            }
+            .pickerStyle(.segmented)
+            .labelsHidden()
+            .controlSize(.small)
+            .fixedSize()
+            .help("List shows the kept clips in order; Video previews one clip with the current settings; Summary shows what Generate will make")
+        }
+    }
+
+    private var videoArea: some View {
+        let aspect = max(0.01, options.renderSettings.aspectRatio)
+        let showsChips = options.addCaptions && !speakerKeys.isEmpty
+        // What sits under the image: the scrubber row, the speaker chips and
+        // the texts, whose height is measured (it wraps with the column).
+        let reserve: CGFloat = (currentClip == nil ? 0 : 28) + (showsChips ? 30 : 0) + textsHeight + Theme.spaceS
+        return GeometryReader { available in
+            // The largest frame that fits: the full column width when the
+            // column is narrow, else the full remaining height. Sized
+            // explicitly so the scrubber and texts sit flush under it.
+            let height = min(max(120, available.size.height - reserve), available.size.width / aspect)
+            VStack(alignment: .leading, spacing: Theme.spaceS) {
+                preview
+                    .frame(width: height * aspect, height: height)
+                if let clip = currentClip { scrubber(clip).frame(width: height * aspect) }
+                if showsChips { speakerChips.frame(width: height * aspect) }
+                videoTexts
+                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { textsHeight = $0 }
+            }
+            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
+        }
+    }
+
+    private var videoTexts: some View {
+        VStack(alignment: .leading, spacing: Theme.spaceS) {
                     if let error = model.error {
                         Text(error).font(.caption).foregroundStyle(.secondary)
                         Button("Retry preview") { reloadID += 1 }
@@ -251,12 +345,7 @@ struct WizardPreviewColumn: View {
                         + (onPlaceFocusFrame == nil ? "" : " Drag the focus frame to move it, or a grip to resize it. Zoom with the slider in Settings, or scroll or pinch over the preview."))
                         .font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
-                    Spacer(minLength: 0)
-                }
-                .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            }
         }
-        .padding(Theme.spaceM)
     }
 
     private var shownSpeakersKey: String {

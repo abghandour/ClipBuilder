@@ -183,13 +183,13 @@ extension Database {
     /// Replace only this run's Q&A selections atomically. Failed writes retain the
     /// previous batch; current saved scene edits are read inside the transaction.
     func replaceMiniQASelections(projectID: Int64, videoID: Int64, miniBatch: String,
-                                 kept: Set<Int64>, rows: [TranscriptRow], labels: [Int64: String],
+                                 kept: Set<Int64>, order: [Int64] = [], rows: [TranscriptRow], labels: [Int64: String],
                                  turns: [SpeakerTurn], options: WizardStep1Options) throws -> [MiniWizardCandidate] {
         try connection.transaction {
             let reviewed = try miniReviewedBRoll(projectID: projectID, miniBatch: miniBatch)
             let scenes = try fetchScenes(projectID: projectID, scope: .history, includeExcluded: true).filter { $0.videoID == videoID }
             let sections = TranscriptQASections.sections(scenes: scenes, rows: rows, labels: labels)
-            let plans = MiniWizardQARules.plans(sections: sections, kept: kept, rows: rows, turns: turns)
+            let plans = MiniWizardQARules.plans(sections: sections, kept: kept, order: order, rows: rows, turns: turns)
             try connection.execute("DELETE FROM wizard_selections WHERE project_id = ? AND mini_batch = ? AND recipe = 'podcast'",
                                    [.integer(projectID), .text(miniBatch)])
             var step1 = options
@@ -214,14 +214,18 @@ extension Database {
     }
 
     /// Save the joined take and its exact selection name together, off the main actor.
-    func recordMiniCombinedTake(projectID: Int64, miniBatch: String, name: String,
+    /// `allowedBatches` widens the check to the other Express sections'
+    /// batches when the reel mixes them; the combined take is filed under
+    /// `miniBatch`.
+    func recordMiniCombinedTake(projectID: Int64, miniBatch: String, allowedBatches: Set<String>? = nil, name: String,
                                 takes: [WizardSelectionTake], options: WizardStep1Options) throws -> WizardSelectionTake {
         try connection.transaction {
             guard !takes.isEmpty else { throw WizardSelectionError.missingTake }
+            let batches = allowedBatches ?? [miniBatch]
             let scenes = try fetchScenes(projectID: projectID, scope: .history, includeExcluded: true)
             let resolved = try takes.map { take in
                 guard let selection = try wizardSelection(id: take.selectionID),
-                      selection.projectID == projectID, selection.miniBatch == miniBatch else {
+                      selection.projectID == projectID, batches.contains(selection.miniBatch ?? "") else {
                     throw WizardSelectionError.wrongSelection
                 }
                 guard let plan = WizardSelectionRules.resolvedPlan(take.plan, scenes: scenes) else {

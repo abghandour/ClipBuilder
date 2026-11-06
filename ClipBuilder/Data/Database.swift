@@ -346,6 +346,23 @@ actor Database {
         UNIQUE(project_id, video_id, scene_id)
     );
 
+    -- Express reel: the items selected across the Footage sections, in reel
+    -- order, per source video per project (docs/Express-Reel-List-Plan.md).
+    CREATE TABLE IF NOT EXISTS express_reel_items (
+        id INTEGER PRIMARY KEY,
+        project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        item_id INTEGER NOT NULL,
+        position INTEGER NOT NULL DEFAULT 0,
+        scene_id INTEGER,
+        start_time REAL NOT NULL DEFAULT 0,
+        end_time REAL NOT NULL DEFAULT 0,
+        title TEXT NOT NULL DEFAULT '',
+        created_at TEXT DEFAULT (datetime('now')),
+        UNIQUE(project_id, video_id, kind, item_id)
+    );
+
     CREATE TABLE IF NOT EXISTS timelines (
         id INTEGER PRIMARY KEY,
         project_id INTEGER NOT NULL REFERENCES projects(id) ON DELETE CASCADE,
@@ -946,7 +963,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 46
+    static let schemaVersion: Int64 = 47
 
     nonisolated static func migrateTranscriptEditedWords(_ db: SQLiteConnection) throws {
         if try !db.columnNames(of: "transcripts").contains("original_words") {
