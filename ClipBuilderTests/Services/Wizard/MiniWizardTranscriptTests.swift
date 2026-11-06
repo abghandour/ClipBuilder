@@ -74,11 +74,11 @@ struct MiniWizardTranscriptTests {
         #expect(!run.hasFootage && run.keptCount == 0)
         run.transcript = MiniWizardTranscript(rows: rows, labels: [:], picks: [])
         #expect(run.hasFootage && run.keptCount == 0)
-        #expect(run.summary == "0 picks")
+        #expect(run.summary == "0 picks · 0 kept")
         run.transcript?.picks = [pick(1, 0, 4)]
-        #expect(run.keptCount == 1 && run.summary == "1 pick")
+        #expect(run.keptCount == 1 && run.summary == "1 pick · 1 kept")
         run.transcript?.picks.append(pick(2, 4, 8, position: 1))
-        #expect(run.summary == "2 picks")
+        #expect(run.summary == "2 picks · 2 kept")
     }
 }
 

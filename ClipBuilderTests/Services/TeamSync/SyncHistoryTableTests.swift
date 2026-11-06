@@ -170,7 +170,7 @@ struct SyncHistoryTableTests {
         let picks = try SyncTable.named("transcript_picks")
         let pick = try SyncMapping.wire(local: ["video_id": .text(videoSyncID), "project_id": .null, "position": .integer(0),
                                                 "start_time": .real(1), "end_time": .real(2), "original_start": .real(1),
-                                                "original_end": .real(2), "scene_id": .null],
+                                                "original_end": .real(2), "scene_id": .null, "kept": .integer(1)],
                                         syncID: UUID().uuidString.lowercased(), scope: scope, table: picks)
         #expect(try await temp.database.applySyncRows([pick], scope: scope, table: picks, advanceCursor: false))
         #expect(try raw.query("SELECT 1 FROM sync_pending_parents").isEmpty)

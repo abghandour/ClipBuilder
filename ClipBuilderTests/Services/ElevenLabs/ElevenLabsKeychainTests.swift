@@ -1,5 +1,6 @@
 import Foundation
 import Security
+import Synchronization
 import Testing
 @testable import Clip_Builder
 
@@ -24,8 +25,12 @@ struct ElevenLabsKeychainTests {
     }
 
     @Test func queriesAlwaysUseDataProtectionAndDeviceOnlyAccessibility() throws {
+        // A not-found read also looks in the login keychain (unentitled builds
+        // store there), so only the first read of each pair is data-protection.
+        let reads = Mutex(0)
         let api = KeychainAPI(copyMatching: { query in
-            #expect(query[kSecUseDataProtectionKeychain as String] as? Bool == true)
+            let first = reads.withLock { count in count += 1; return count % 2 == 1 }
+            #expect((query[kSecUseDataProtectionKeychain as String] as? Bool == true) == first)
             #expect(query[kSecAttrService as String] as? String == "com.clipbuilder.elevenlabs")
             #expect(query[kSecAttrAccount as String] as? String == "api-key")
             #expect(query[kSecReturnData as String] as? Bool == true)

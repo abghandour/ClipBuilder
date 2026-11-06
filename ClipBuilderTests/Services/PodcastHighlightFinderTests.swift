@@ -419,11 +419,13 @@ extension PodcastHighlightFinderTests {
             #expect(found.first?.framing == kind)
             // The stub records the prompt inside a JSON envelope, where "/" is escaped.
             let prompt = try String(contentsOf: stub.prompts, encoding: .utf8).replacingOccurrences(of: "\\/", with: "/")
-            let offered = CropRecipe.Kind.allCases.filter { ($0 != .vip && $0 != .vipBRoll && $0 != .interview) || !vipKeys.isEmpty }
+            // Interview focus is retired from the shots offered (Talker shot clock, cf98eb8).
+            let offered = CropRecipe.Kind.allCases.filter { $0 != .interview && (($0 != .vip && $0 != .vipBRoll) || !vipKeys.isEmpty) }
             let missing = offered.filter { !prompt.contains($0.rawValue + ": " + $0.summary) }
             #expect(missing.isEmpty, "missing \(missing.map(\.rawValue))")
             #expect(vipKeys.isEmpty == !prompt.contains(CropRecipe.Kind.vip.rawValue + ": "))
             #expect(vipKeys.isEmpty == !prompt.contains(CropRecipe.Kind.vipBRoll.rawValue + ": "))
+            #expect(!prompt.contains(CropRecipe.Kind.interview.rawValue + ": "))
         }
         for rapid in [false, true] {
             let raw: [String: Any] = ["first_sentence": 2, "last_sentence": 3, "title": "Choice", "reason": "Hook",

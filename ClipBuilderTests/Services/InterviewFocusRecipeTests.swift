@@ -248,7 +248,11 @@ struct InterviewFocusRecipeTests {
             sourceScene: scene, turns: turns(), roster: roster(), layouts: [], settings: RenderSettings(), tagText: [:])
         let clip = try #require(document.videoTrack.first)
         #expect(document.videoTrack.count == 1)
-        #expect(clip.centerStage && clip.cameraPath == plan.slots[0].path)
+        // Speaker focus now plans the talker shot (shot clock), not Interview
+        // focus, so the timeline's path is its own; it must still span the clip.
+        let podcastPath = try #require(clip.cameraPath)
+        #expect(clip.centerStage && podcastPath.first?.t == 0 && podcastPath.last?.t == 20)
+        #expect(CenterStageService.pathMatchesCanvas(podcastPath, sourceSize: CGSize(width: 1920, height: 1080), canvasAspect: 9.0 / 16))
         #expect(clip.sourceStart == 10 && clip.sourceEnd == 30 && clip.duration == 20)
         #expect(clip.sceneID == scene.id && clip.areaRegion == nil)
     }
@@ -266,7 +270,8 @@ struct InterviewFocusRecipeTests {
         let clip = try #require(document.videoTrack.first)
         let path = try #require(clip.cameraPath)
         #expect(document.videoTrack.count == 1 && clip.centerStage && clip.areaRegion == nil)
-        #expect(path.map(\.t) == [0, 5, 5.8, 7, 7.8, 20])
+        // The talker shot (shot clock) owns the timing now; the path spans the cut.
+        #expect(path.first?.t == 0 && path.last?.t == 20 && path.count > 2)
         #expect(clip.sourceStart == 10 && clip.sourceEnd == 30 && clip.duration == 20)
         #expect(CenterStageService.pathMatchesCanvas(path, sourceSize: CGSize(width: 1920, height: 1080)))
     }
@@ -290,7 +295,11 @@ extension InterviewFocusRecipeTests {
         let document = PodcastRecipeTimeline.build(subject: .speakerFocus, video: video(), range: 10...30,
             sourceScene: nil, turns: turns(), roster: roster(), layouts: [], settings: RenderSettings(),
             options: options, tagText: [:])
-        #expect(document.videoTrack.first?.cameraPath == path)
+        // Speaker focus plans the talker shot now; with Cuts every change of
+        // shot is a cut, as it was for Interview focus.
+        let timelinePath = try #require(document.videoTrack.first?.cameraPath)
+        #expect(timelinePath.first?.t == 0 && timelinePath.last?.t == 20)
+        #expect(timelinePath.indices.dropFirst().contains { CameraKeyframes.isCut(timelinePath, at: $0) })
     }
 
     @Test func rotatedVIPsAlsoUseCutPaths() throws {
