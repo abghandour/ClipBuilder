@@ -11,11 +11,16 @@ nonisolated enum WizardRoughCut {
 
     /// What a rough cut leaves out, for the review sheet and the buttons.
     static let leftOut = "captions, name tags, overlays, watermark, cards, bumpers, music, dub, speech polish, looks, B-roll and transitions"
+    /// The same once the sheet's Overlays tab puts the overlay layers back.
+    static let leftOutWithOverlays = "cards, bumpers, music, dub, speech polish, looks, B-roll and transitions"
+    static func leftOut(overlays: Bool) -> String { overlays ? leftOutWithOverlays : leftOut }
 
     /// Everything that is not framing turned off, before the document is
     /// built, so the engine also skips the AI work those layers need. The
     /// effect and transition the user added in the review sheet (none by
-    /// default) are the one exception.
+    /// default) are the one exception, and with `extras.overlays` the
+    /// sheet's Overlays tab puts captions, name tags, safe area, watermark
+    /// and the overlay design back through Express's own mapping.
     static func options(_ options: WizardOptions, extras: RoughCutExtras = RoughCutExtras()) -> WizardOptions {
         var rough = options
         let width = options.renderSettings.width
@@ -62,6 +67,17 @@ nonisolated enum WizardRoughCut {
         rough.allowedTransitions = extras.transition == nil ? ["cut"]
             : extras.transition == WizardPlanRules.randomTransitionChoice ? options.allowedTransitions
             : [extras.transition!]
+        if let overlays = extras.overlays {
+            // The same round trip Express's previewOptions takes.
+            var step2 = rough.step2
+            overlays.settings.applyOverlayOptions(to: &step2)
+            rough = WizardOptions.merge(step1: rough.step1, step2: step2, base: rough)
+            // A dubbed reel captions in the dub language; the rough cut has
+            // no dub, so the captions follow the same target on their own.
+            if overlays.settings.dub, rough.addCaptions {
+                rough.captionLanguage = overlays.settings.dubLanguage ?? DubLanguageChoices.defaultLanguage
+            }
+        }
         return rough
     }
 
@@ -74,13 +90,17 @@ nonisolated enum WizardRoughCut {
     /// document: overlay items and blocks, brand layers, sound, dub, clip
     /// effects, transitions, cutaways and generated cards; every clip's
     /// captions off. Removing a leading card closes the gap it left. A
-    /// chosen effect or transition stays on the clips.
+    /// chosen effect or transition stays on the clips, and with
+    /// `extras.overlays` so do the overlay items, blocks, brand layers and
+    /// captions the options asked for.
     static func strip(_ document: TimelineDocument, extras: RoughCutExtras = RoughCutExtras()) -> TimelineDocument {
         var rough = document
-        rough.textOverlays = []
-        rough.imageOverlays = []
-        rough.overlayBlocks = []
-        rough.brandLayers = nil
+        if extras.overlays == nil {
+            rough.textOverlays = []
+            rough.imageOverlays = []
+            rough.overlayBlocks = []
+            rough.brandLayers = nil
+        }
         rough.soundTrack = []
         rough.dub = nil
         rough.dubLines = nil
@@ -89,7 +109,7 @@ nonisolated enum WizardRoughCut {
             clip.isCutaway || clip.videoFile.map { cardFileNames.contains(URL(fileURLWithPath: $0).lastPathComponent) } == true
         }
         for index in rough.videoTrack.indices {
-            rough.videoTrack[index].captions = "none"
+            if extras.overlays == nil { rough.videoTrack[index].captions = "none" }
             if extras.look == nil { rough.videoTrack[index].effect = nil }
             if extras.transition == nil {
                 rough.videoTrack[index].transIn = nil
@@ -108,13 +128,27 @@ nonisolated enum WizardRoughCut {
     }
 }
 
-/// The two finishing touches a rough cut may carry: an Effect preset and a
-/// transition at every cut, both none unless the review sheet chose them.
+/// What a rough cut may carry beyond framing: an Effect preset and a
+/// transition at every cut, both none unless the review sheet chose them,
+/// and Express's Overlays tab choices (nil for the full wizard's plain cut).
 nonisolated struct RoughCutExtras: Equatable, Hashable, Sendable {
     /// `EffectCatalog` preset id; nil is none.
     var look: String? = nil
     /// A `TransitionCatalog` name, `WizardPlanRules.randomTransitionChoice`, or nil for hard cuts.
     var transition: String? = nil
+    /// The sheet's Overlays tab: Express's settings copy, started from the
+    /// page's own. Nil keeps every overlay layer off.
+    var overlays: RoughCutOverlays? = nil
+}
+
+/// The Overlays tab of the rough cut sheet: the settings the rows bind to
+/// and the two page facts that decide which rows show.
+nonisolated struct RoughCutOverlays: Equatable, Hashable, Sendable {
+    var settings: MiniWizardSettings
+    /// Podcast and interview footage: the Name tags rows.
+    var showsNameTags = false
+    /// A non-English transcript: the Native / English row once captions are on.
+    var showsCaptionLanguage = false
 }
 
 /// One rendered rough cut, kept in the cache until the next one.

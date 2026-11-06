@@ -13,6 +13,9 @@ nonisolated struct AssistantCommand: Equatable, Sendable {
     /// running `actionID`; `actionID` is "<page>.settings" when there is
     /// no action. Keys and values come from the page's `assistSettings`.
     var settings: [String: String]?
+    /// The rough cut sheet's Apply and Generate: the Overlays tab's choices
+    /// Express adopts along with the framing in `text`.
+    var expressOverlays: MiniWizardSettings?
     /// The view that consumes it, as its handler prefix without the dot
     /// ("express", "full"). Nil: the action id's own prefix decides. The AI
     /// Wizard's `wizard.*` ids name Express or Full here, so a command sent
@@ -572,8 +575,9 @@ final class AssistantModel {
     /// Hand an action to the visible page's view; `namespace` names the
     /// view when the action id's prefix does not (see `AssistantCommand`).
     func sendCommand(_ actionID: String, text: String? = nil, settings: [String: String]? = nil,
-                     namespace: String? = nil) {
-        pendingCommand = AssistantCommand(actionID: actionID, text: text, settings: settings, namespace: namespace)
+                     expressOverlays: MiniWizardSettings? = nil, namespace: String? = nil) {
+        pendingCommand = AssistantCommand(actionID: actionID, text: text, settings: settings,
+                                          expressOverlays: expressOverlays, namespace: namespace)
     }
 
     /// Hand a settings patch to the visible page whose settings live in view

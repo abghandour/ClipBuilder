@@ -71,6 +71,88 @@ struct WizardRoughCutTests {
         #expect(onlyLook.videoTrack[0].effect?.preset == "noir" && onlyLook.videoTrack[0].transIn == nil)
     }
 
+    @Test("Express's Overlays tab puts captions, name tags, safe area, watermark and the overlay back; the rest stays off")
+    func overlaysFromExpressSurviveTheStrip() {
+        var options = WizardOptions()
+        options.renderSettings.preset = .portrait1080
+        options.useMusic = true
+        options.dubLanguage = "pt"
+        options.includeIntroBumper = true
+        options.includeHeadline = true
+        var settings = MiniWizardSettings()
+        settings.captions = true
+        settings.captionPosition = "top"
+        settings.captionStyleID = "bold"
+        settings.englishCaptions = true
+        settings.nameTags = true
+        settings.nameTagPosition = "custom:0.5,0.2"
+        settings.safeAreaOnly = true
+        settings.safeAreaPlatforms = [SocialPlatform.instagram.rawValue]
+        settings.watermark = true
+        settings.watermarkOverlay = "Mark"
+        settings.watermarkOpacity = 0.3
+        settings.overlay = true
+        settings.overlayTemplate = "Lower third"
+        settings.overlayStart = 2
+        settings.overlayTexts = ["Hook"]
+        let rough = WizardRoughCut.options(options, extras: RoughCutExtras(overlays: RoughCutOverlays(settings: settings)))
+        #expect(rough.addCaptions && rough.captionPosition == "top" && rough.captionStyleID == "bold" && rough.captionLanguage == "en")
+        #expect(rough.usesNameTags && rough.nameTagPosition == "custom:0.5,0.2")
+        #expect(rough.safeAreaOnly == true && rough.safeAreaPlatforms == [.instagram])
+        #expect(rough.includeWatermark && rough.watermarkOverlayTemplate == "Mark" && rough.watermarkOpacity == 0.3)
+        #expect(rough.fixedOverlayTemplate == "Lower third" && rough.fixedOverlayStart == 2 && rough.fixedOverlayTexts == ["Hook"])
+        // Still a rough cut: small, no sound, dub, bumpers or cards.
+        #expect(rough.renderSettings.width == 360 && rough.renderSettings.height == 640 && rough.renderSettings.quality == .compact)
+        #expect(!rough.useMusic && rough.dubLanguage == nil && !rough.includeIntroBumper && !rough.includeHeadline)
+        #expect(rough.transitionChoice == nil && rough.allowedTransitions == ["cut"])
+        // The same choices as Generate maps them.
+        var generate = WizardStep2Options()
+        settings.applyOverlayOptions(to: &generate)
+        #expect(generate.addCaptions == true && generate.nameTags == true && generate.fixedOverlayTemplate == "Lower third")
+        #expect(settings.step2Options(base: WizardStep2Options()).fixedOverlayTexts == generate.fixedOverlayTexts)
+
+        // A dubbed page captions the rough cut in the dub language, dub itself stays off.
+        var dubbed = settings
+        dubbed.dub = true
+        dubbed.dubLanguage = "pt"
+        let dubbedCut = WizardRoughCut.options(options, extras: RoughCutExtras(overlays: RoughCutOverlays(settings: dubbed)))
+        #expect(dubbedCut.captionLanguage == "pt" && dubbedCut.dubLanguage == nil)
+
+        // Off in the tab stays off in the cut.
+        var plain = settings
+        plain.captions = false
+        plain.nameTags = false
+        plain.watermark = false
+        plain.overlay = false
+        let off = WizardRoughCut.options(options, extras: RoughCutExtras(overlays: RoughCutOverlays(settings: plain)))
+        #expect(!off.addCaptions && !off.usesNameTags && !off.includeWatermark && off.fixedOverlayTemplate == nil)
+        #expect(off.watermarkOverlayTemplate == nil && off.watermarkOpacity == nil)
+
+        // The built document keeps what the options asked for; sound, dub, cards and cutaways still go.
+        var document = TimelineDocument()
+        var card = TimelineClip()
+        card.videoFile = "/tmp/cards/intro_card.mp4"
+        card.duration = 2
+        var main = TimelineClip()
+        main.sceneID = 7
+        main.startTime = 2
+        main.captions = "top"
+        var cutaway = TimelineClip()
+        cutaway.role = .cutaway
+        cutaway.track = 1
+        document.videoTrack = [card, main, cutaway]
+        document.textOverlays = [TextOverlayItem()]
+        document.overlayBlocks = [OverlayBlockItem()]
+        document.brandLayers = [BrandLayerItem(path: "/tmp/w.png", kind: BrandLayerItem.watermark)]
+        document.soundTrack = [SoundItem()]
+        document.dub = DubSettings(language: "pt")
+        let kept = WizardRoughCut.strip(document, extras: RoughCutExtras(overlays: RoughCutOverlays(settings: settings)))
+        #expect(kept.videoTrack.count == 1 && kept.videoTrack[0].captions == "top" && kept.videoTrack[0].startTime == 0)
+        #expect(kept.textOverlays.count == 1 && kept.overlayBlocks.count == 1 && kept.brandLayers?.count == 1)
+        #expect(kept.soundTrack.isEmpty && kept.dub == nil)
+        #expect(WizardRoughCut.leftOut(overlays: true).hasPrefix("cards") && WizardRoughCut.leftOut(overlays: false) == WizardRoughCut.leftOut)
+    }
+
     @Test("takes become preview clips in output order, titled by selection")
     func previewClipsFromTakes() {
         let scene = Fixtures.scene(id: 7, start: 0, end: 60)

@@ -559,7 +559,7 @@ nonisolated enum WizardPreviewComposite {
             // the single-feed path does, instead of the sample name.
             let person = cell.person ?? (cells.count == 1 || cell.isTalking ? scene.person : nil)
             let key = person?.key ?? "preview"
-            // The person's own corner wins over the run's, as in the export.
+            // The person's own corner wins over the run's corner, as in the export.
             names.append(.init(key: key, name: person?.tagName ?? "Alex Morgan", role: person?.descriptor ?? "Guest",
                                position: person?.tagPosition))
             let source: CGRect

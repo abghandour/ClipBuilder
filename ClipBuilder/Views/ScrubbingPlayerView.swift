@@ -14,6 +14,9 @@ struct ScrubbingPlayerView<Overlay: View>: View {
     /// `onPlayStale` (render again, then play) and shows that it will.
     var stale = false
     var onPlayStale: (() -> Void)? = nil
+    /// The overlay is for a paused picture (a still to edit on): it lifts
+    /// while the player runs so the rendered video shows.
+    var hidesOverlayWhilePlaying = false
     /// Drawn over the picture only, not the transport (platform chrome, a
     /// still of the pending settings), given the playhead in seconds.
     @ViewBuilder var pictureOverlay: (Double) -> Overlay
@@ -30,7 +33,9 @@ struct ScrubbingPlayerView<Overlay: View>: View {
                 .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
                 .contentShape(Rectangle())
                 .onTapGesture { play() }
-                .overlay { pictureOverlay(scrubbing ?? transport.time) }
+                .overlay {
+                    if !(hidesOverlayWhilePlaying && transport.isPlaying) { pictureOverlay(scrubbing ?? transport.time) }
+                }
             HStack(spacing: Theme.spaceS) {
                 Button(stale ? (player == nil ? "Render and play" : "Regenerate and play") : transport.isPlaying ? "Pause" : "Play",
                        systemImage: stale ? "arrow.clockwise.circle.fill" : transport.isPlaying ? "pause.fill" : "play.fill") {

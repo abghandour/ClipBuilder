@@ -817,10 +817,12 @@ struct MiniWizardView: View {
         let id = command.actionID
         // The rough cut sheet's Apply (and its Generate): the sheet's framing
         // becomes the page's before anything runs.
-        if id == WizardAssistant.applyFramingAction || id == WizardAssistant.generateWithFramingAction,
-           let value = Framing.split(command.text) {
+        if id == WizardAssistant.applyFramingAction || id == WizardAssistant.generateWithFramingAction {
             guard settingsProfile == profileName else { return }
-            miniSettings.framing = value
+            if let value = Framing.split(command.text) { miniSettings.framing = value }
+            // The sheet's Overlays tab: its choices replace the page's, the
+            // rest of the settings stay.
+            if let overlays = command.expressOverlays { miniSettings = miniSettings.adoptingOverlays(from: overlays) }
         }
         if id == WizardAssistant.findHighlightsAction {
             // The brief is already in the instructions (from the patch or

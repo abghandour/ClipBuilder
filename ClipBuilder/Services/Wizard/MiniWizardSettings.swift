@@ -228,27 +228,39 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         render.preset = preset
         result.renderSettings = render
         result.framing = framing
-        result.addCaptions = captions
-        result.captionPosition = captionPosition
-        result.speakerCaptionPositions = speakerCaptionPositions
-        result.captionStyleID = captionStyleID
-        result.captionLanguage = englishCaptions ? "en" : nil
         result.dubLanguage = dub ? (dubLanguage ?? DubLanguageChoices.defaultLanguage) : nil
         result.includeIntroBumper = introVideo
         result.includeOutroBumper = outroVideo
         // Library paths resolve to this Mac's files in AppStore.generateMiniVideos.
         result.introBumperPath = nil
         result.outroBumperPath = nil
-        result.includeWatermark = watermark
-        let watermarkName = watermarkOverlay?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
-        result.watermarkOverlayTemplate = watermark && !watermarkName.isEmpty ? watermarkName : nil
-        result.watermarkOpacity = watermark ? watermarkOpacity.map { min(1, max(0, $0)) } : nil
         result.includeHeadline = false
         result.includeOutro = false
         result.useMusic = music
         result.muteSource = muteSourceAudio
         result.musicTrack = music ? musicTrackName : nil
         result.musicFolder = nil
+        result.transitionChoice = transition.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
+            ? WizardPlanRules.randomTransitionChoice : transition
+        result.lookPreset = lookName
+        applyOverlayOptions(to: &result)
+        return result
+    }
+
+    /// The Overlays tab's choices as render options: captions, name tags,
+    /// safe area, watermark and the fixed overlay. Generate maps them here
+    /// and the rough cut sheet's Overlays tab puts them back on a cut that
+    /// `WizardRoughCut.options` stripped, so both render the same picture.
+    func applyOverlayOptions(to result: inout WizardStep2Options) {
+        result.addCaptions = captions
+        result.captionPosition = captionPosition
+        result.speakerCaptionPositions = speakerCaptionPositions
+        result.captionStyleID = captionStyleID
+        result.captionLanguage = englishCaptions ? "en" : nil
+        result.includeWatermark = watermark
+        let watermarkName = watermarkOverlay?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
+        result.watermarkOverlayTemplate = watermark && !watermarkName.isEmpty ? watermarkName : nil
+        result.watermarkOpacity = watermark ? watermarkOpacity.map { min(1, max(0, $0)) } : nil
         result.enableTextOverlays = nameTags
         result.nameTagsOnly = true
         result.nameTags = nameTags
@@ -259,9 +271,6 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.safeAreaOnly = safeAreaOnly
         let platforms = safeAreaPlatforms?.compactMap(SocialPlatform.init(rawValue:))
         result.safeAreaPlatforms = platforms?.isEmpty == false ? platforms : nil
-        result.transitionChoice = transition.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty
-            ? WizardPlanRules.randomTransitionChoice : transition
-        result.lookPreset = lookName
         let overlayName = overlayTemplate?.trimmingCharacters(in: .whitespacesAndNewlines) ?? ""
         result.fixedOverlayTemplate = overlay && !overlayName.isEmpty ? overlayName : nil
         result.fixedOverlayStart = result.fixedOverlayTemplate == nil ? nil : max(0, overlayStart)
@@ -269,6 +278,35 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.fixedOverlayTexts = result.fixedOverlayTemplate == nil || overlayTexts.isEmpty ? nil : overlayTexts
         result.fixedOverlayPosition = result.fixedOverlayTemplate == nil ? nil : overlayPosition.flatMap { CustomPosition.isCustom($0) ? $0 : nil }
         result.fixedOverlayEdits = result.fixedOverlayTemplate == nil ? nil : overlayEdits.trimmed
+    }
+
+    /// These settings with `other`'s Overlays tab choices (captions, name
+    /// tags, safe area, watermark, overlay design and placements); every
+    /// other choice stays. The rough cut sheet's Apply lands here.
+    func adoptingOverlays(from other: Self) -> Self {
+        var result = self
+        result.captions = other.captions
+        result.englishCaptions = other.englishCaptions
+        result.captionPosition = other.captionPosition
+        result.speakerCaptionPositions = other.speakerCaptionPositions
+        result.captionStyleID = other.captionStyleID
+        result.nameTags = other.nameTags
+        result.nameTagContent = other.nameTagContent
+        result.nameTagStyle = other.nameTagStyle
+        result.nameTagStyleID = other.nameTagStyleID
+        result.nameTagPosition = other.nameTagPosition
+        result.safeAreaOnly = other.safeAreaOnly
+        result.safeAreaPlatforms = other.safeAreaPlatforms
+        result.watermark = other.watermark
+        result.watermarkOverlay = other.watermarkOverlay
+        result.watermarkOpacity = other.watermarkOpacity
+        result.overlay = other.overlay
+        result.overlayTemplate = other.overlayTemplate
+        result.overlayStart = other.overlayStart
+        result.overlayDuration = other.overlayDuration
+        result.overlayTexts = other.overlayTexts
+        result.overlayPosition = other.overlayPosition
+        result.overlayEdits = other.overlayEdits
         return result
     }
 

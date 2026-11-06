@@ -538,7 +538,7 @@ extension NameTagPlannerTests {
         #expect(abs(a.rect.midX - 540) <= 1 && abs(a.rect.midY - 960) <= 1, "the first tag sits on the point")
         #expect(!a.rect.intersects(b.rect), "the second stacks away instead of covering it")
         #expect(abs(b.rect.midX - 540) <= 1)
-        // A caption band under the point does not move a dragged tag; a per-person corner still wins.
+        // A caption band under the point does not move a dragged tag; the drag beats a per-person corner.
         var band = NameTagPlanner.Settings(position: custom.string)
         band.captionBand = CGRect(x: 0, y: 900, width: 1080, height: 200)
         let overBand = NameTagPlanner.plan(areas: [area], people: [people[0]], settings: band)
@@ -546,11 +546,30 @@ extension NameTagPlannerTests {
         var own = people
         own[1].position = "bottomLeading"
         let split = NameTagPlanner.plan(areas: [area], people: own, settings: .init(position: custom.string))
-        #expect(split.first { $0.personKey == "bob" }?.corner == .bottomLeading)
+        let bobDragged = try #require(split.first { $0.personKey == "bob" })
+        #expect(abs(bobDragged.rect.midX - 540) <= 1 && bobDragged.corner != .bottomLeading)
+        // Without a drag the person's own corner still wins over the run's.
+        let corners = NameTagPlanner.plan(areas: [area], people: own, settings: .init(position: "topTrailing"))
+        #expect(corners.first { $0.personKey == "bob" }?.corner == .bottomLeading)
+        #expect(corners.first { $0.personKey == "ann" }?.corner == .topTrailing)
         // Dragged to a corner the tag stays inside the area's inset.
         let edge = NameTagPlanner.plan(areas: [area], people: [people[0]], settings: .init(position: CustomPosition(x: 1, y: 1).string))
         let rect = try #require(edge.first?.rect)
         #expect(rect.maxX <= frame.maxX && rect.maxY <= frame.maxY)
+    }
+
+    @Test func draggedPositionIgnoresThePlatformSafeAreaUnlessSafeAreaOnly() throws {
+        // The safe area stops short of the right-hand button column; a drag to the right edge still gets there.
+        let safe = CGRect(x: 0, y: 250, width: 896, height: 1170)
+        let area = NameTagPlanner.Area(rect: frame, spans: [.init(start: 0, end: 5, personKey: "ann")])
+        let edge = CustomPosition(x: 1, y: 0.5).string
+        let free = try #require(NameTagPlanner.plan(areas: [area], people: [people[0]],
+                                                     settings: .init(position: edge, safeRect: safe)).first)
+        #expect(free.rect.maxX > safe.maxX, "a dragged tag is not pushed inside the safe area")
+        #expect(free.rect.maxX <= frame.maxX - frame.width * 0.04 + 0.5, "it keeps the area's inset")
+        let kept = try #require(NameTagPlanner.plan(areas: [area], people: [people[0]],
+                                                     settings: .init(position: edge, safeRect: safe, safeOnly: true)).first)
+        #expect(kept.rect.maxX <= safe.maxX + 0.5, "Safe area only keeps the dragged tag clear of the buttons")
     }
 
     @Test func draggedPositionIsACanvasPointEvenInsideASplitArea() throws {

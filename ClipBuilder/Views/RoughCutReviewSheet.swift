@@ -10,7 +10,11 @@ import SwiftUI
 /// framing, effect and transition, swaps the new cuts into this same sheet
 /// and plays the one asked for. Apply hands the framing to the page it came
 /// from, Discard changes nothing. The cuts are small and plain by design
-/// (docs/Rough-Cut-Plan.md); nothing is saved.
+/// (docs/Rough-Cut-Plan.md); nothing is saved. From Express the controls
+/// have a second tab, Overlays, with the page's own overlay rows bound to
+/// a copy of its settings: the still over each picture shows them, their
+/// handles can be dragged there, Play renders them and Apply hands them to
+/// the page with the framing (docs/Rough-Cut-Overlays-Plan.md).
 struct RoughCutReviewSheet: View {
     @Environment(AppStore.self) private var store
     @Environment(\.dismiss) private var dismiss
@@ -32,10 +36,15 @@ struct RoughCutReviewSheet: View {
     @State private var pendingJobID: UUID?
     /// Which take Play asked for; a failed take must not play its neighbour.
     @State private var playAfterRender: Int64?
+    /// Picture or Overlays, remembered across sheets.
+    @AppStorage("roughCut.settings.tab") private var tabRaw = WizardSettingsTab.picture.rawValue
 
     /// Wide enough for the framing rows' label column, a segmented picker
     /// and a short detail; the rows never spill past the sheet.
     private static let controlsWidth: CGFloat = 480
+    /// The Overlays tab's speaker rows (name, position, style) need more.
+    private static let controlsWidthWithOverlays: CGFloat = 720
+    private var controlsWidth: CGFloat { hasOverlays ? Self.controlsWidthWithOverlays : Self.controlsWidth }
     /// Under each player: its transport and speed rows, its caption and the grid's spacing.
     private static let playerChromeHeight: CGFloat = 100
 
@@ -58,11 +67,22 @@ struct RoughCutReviewSheet: View {
         let players = WizardResultsLayout.idealSize(count: review.cuts.count,
             cardSize: CGSize(width: WizardResultsLayout.minCardWidth, height: 720),
             screen: NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900))
-        return CGSize(width: players.width + Self.controlsWidth, height: players.height)
+        return CGSize(width: players.width + controlsWidth, height: players.height)
     }
     private var framingChanged: Bool { framing != review.framing || extras != review.extras }
     /// The picture does not show the settings: not rendered yet, or rendered with other settings.
     private var stale: Bool { framingChanged || !review.isRendered }
+    /// Express's cut carries its Overlays tab; the full wizard's stays plain.
+    private var hasOverlays: Bool { review.namespace == WizardAssistant.expressNamespace && extras.overlays != nil }
+    private var tabs: [WizardSettingsTab] { hasOverlays ? [.picture, .overlays] : [.picture] }
+    private var tab: WizardSettingsTab { (WizardSettingsTab(rawValue: tabRaw) ?? .picture).effective(in: tabs) }
+    /// The Overlays tab edits in the picture: the still covers the cut and its handles are live.
+    private var editsOverlays: Bool { hasOverlays && tab == .overlays && !busy && pendingJob == nil }
+    /// The Overlays tab's settings; a plain cut never reads this.
+    private var overlaySettings: Binding<MiniWizardSettings> {
+        Binding(get: { extras.overlays?.settings ?? MiniWizardSettings() },
+                set: { extras.overlays?.settings = $0 })
+    }
     private var busy: Bool { store.isWizardRunning || store.isWizardBatchJobRunning(projectID: review.projectID) }
     private var pendingJob: AppJob? {
         guard let pendingJobID else { return nil }
@@ -75,7 +95,9 @@ struct RoughCutReviewSheet: View {
                 Text(review.cuts.count == 1 ? "Rough cut" : "\(review.cuts.count) rough cuts")
                     .font(.headline)
                     .lineLimit(1).fixedSize()
-                Text("Framing and focus only, small and plain. Left out: \(WizardRoughCut.leftOut). Change the settings and press play to see them in motion; Apply puts the framing on the page.")
+                Text(hasOverlays
+                    ? "Framing, focus and overlays, small. Left out: \(WizardRoughCut.leftOut(overlays: true)). Change the settings and press play to see them in motion; Apply puts the framing and the overlays on the page."
+                    : "Framing and focus only, small and plain. Left out: \(WizardRoughCut.leftOut). Change the settings and press play to see them in motion; Apply puts the framing on the page.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                     .multilineTextAlignment(.center)
@@ -95,6 +117,7 @@ struct RoughCutReviewSheet: View {
                                 VStack(spacing: 6) {
                                     ScrubbingPlayerView(player: players[cut.id], aspect: size.width / max(1, size.height),
                                                         stale: stale, onPlayStale: { render(thenPlay: cut.takeID) },
+                                                        hidesOverlayWhilePlaying: true,
                                                         pictureOverlay: { time in still(for: cut, at: time) })
                                         .frame(width: size.width)
                                     HStack(spacing: 6) {
@@ -110,7 +133,7 @@ struct RoughCutReviewSheet: View {
                     .overlay { if let pendingJob { rendering(pendingJob) } }
                 }
                 controls
-                    .frame(width: Self.controlsWidth)
+                    .frame(width: controlsWidth)
             }
 
             HStack {
@@ -119,27 +142,31 @@ struct RoughCutReviewSheet: View {
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.tail)
                 } else if !review.isRendered {
-                    Text("Press play to render the rough cut with the settings on the right; Apply keeps the framing.")
+                    Text("Press play to render the rough cut with the settings on the right; Apply keeps \(kept).")
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.tail)
                 } else if framingChanged {
-                    Text("Settings changed. Press play to render a cut with them; Apply keeps the framing.")
+                    Text("Settings changed. Press play to render a cut with them; Apply keeps \(kept).")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.tail)
+                } else if editsOverlays {
+                    Text("Drag a caption, name tag or overlay item on the picture to place it.")
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.tail)
                 }
                 Spacer()
                 Button("Discard") { finish() }
                     .keyboardShortcut(.cancelAction)
-                    .help("Close without changing the page's framing")
+                    .help(hasOverlays ? "Close without changing the page's framing or overlays" : "Close without changing the page's framing")
                 Button("Apply") {
                     send(WizardAssistant.applyFramingAction)
                 }
                 .keyboardShortcut(.defaultAction)
-                .help("Make the framing on the right the page's framing")
+                .help(hasOverlays ? "Make the framing and overlays on the right the page's" : "Make the framing on the right the page's framing")
             }
             .padding()
         }
-        .frame(minWidth: 420 + Self.controlsWidth, idealWidth: idealSize.width, maxWidth: .infinity,
+        .frame(minWidth: 420 + controlsWidth, idealWidth: idealSize.width, maxWidth: .infinity,
                minHeight: 480, idealHeight: idealSize.height, maxHeight: .infinity)
         .presentationSizing(.fitted)
         .modalCloseButton { finish() }
@@ -182,18 +209,61 @@ struct RoughCutReviewSheet: View {
 
     /// Over a stale cut's picture: the kept footage at the playhead with the
     /// settings on the right, so a change shows before the cut is rendered.
+    /// On the Overlays tab it covers the paused picture whatever the cut's
+    /// state, with the page's drag handles live, so captions, name tags and
+    /// the overlay's items can be placed on the cut itself; it lifts while
+    /// the cut plays.
     @ViewBuilder
     private func still(for cut: RoughCut, at time: Double) -> some View {
-        if stale, let previewOptions, let takeID = cut.takeID,
+        if stale || editsOverlays, let previewOptions, let takeID = cut.takeID,
            let moment = WizardPreviewClips.moment(in: WizardPreviewClips.clips(review.previewClips, ofTake: takeID), at: time) {
-            WizardPreviewColumn(scenes: review.previewClips.map(\.scene), clips: review.previewClips,
-                                options: previewOptions, profile: store.activeProfile,
-                                thumbnails: store.thumbnails, pinned: moment)
-                .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
-                .allowsHitTesting(false)
-                .accessibilityLabel("Preview of the changed settings at this moment")
+            pinnedStill(options: previewOptions, moment: moment)
         }
     }
+
+    private func pinnedStill(options: WizardOptions, moment: WizardPreviewMoment) -> some View {
+        let editing = editsOverlays
+        var onMove: ((PreviewElement, CustomPosition) -> Void)?
+        var onPlaceOverlay: ((OverlayComponent, CGRect) -> Void)?
+        if editing {
+            onMove = { element, position in moveOverlayElement(element, position) }
+            onPlaceOverlay = { component, box in placeOverlayComponent(component, box) }
+        }
+        let label: String = editing ? "Preview of the settings at this moment; drag a caption, name tag or overlay item to place it"
+            : "Preview of the changed settings at this moment"
+        return WizardPreviewColumn(scenes: review.previewClips.map(\.scene), clips: review.previewClips,
+                                   options: options, profile: store.activeProfile,
+                                   thumbnails: store.thumbnails, onMove: onMove, onPlaceOverlay: onPlaceOverlay,
+                                   pinned: moment)
+            .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
+            .allowsHitTesting(editing)
+            .accessibilityLabel(label)
+    }
+
+    /// An overlay text or image moved or resized on the still.
+    private func placeOverlayComponent(_ component: OverlayComponent, _ box: CGRect) {
+        var settings = overlaySettings.wrappedValue
+        settings.overlayEdits.place(component, at: box)
+        overlaySettings.wrappedValue = settings
+    }
+
+    /// A caption or name tag dropped on the still, as on the Express page.
+    private func moveOverlayElement(_ element: PreviewElement, _ position: CustomPosition) {
+        var settings = overlaySettings.wrappedValue
+        switch element {
+        case .caption(let slot):
+            if let slot {
+                var positions = settings.speakerCaptionPositions ?? [:]
+                positions[slot] = position.string
+                settings.speakerCaptionPositions = positions
+            } else { settings.captionPosition = position.string }
+        case .nameTag: settings.nameTagPosition = position.string
+        }
+        overlaySettings.wrappedValue = settings
+    }
+
+    /// What Apply keeps, for the footer.
+    private var kept: String { hasOverlays ? "the framing and overlays" : "the framing" }
 
     /// Over the players while Play renders: progress, the job's
     /// last line and Stop, the same as its status-bar row.
@@ -264,24 +334,50 @@ struct RoughCutReviewSheet: View {
     }
 
     /// The page's framing rows bound to the sheet's own copy, and the
-    /// effect and transition for the next render.
+    /// effect and transition for the next render; from Express, under a
+    /// Picture tab beside the Overlays tab with the page's overlay rows.
     private var controls: some View {
         ScrollView {
-            VStack(alignment: .leading, spacing: Theme.spaceM) {
-                SettingsRow("Effect", detail: "A look over the picture; none unless chosen. The still shows it at once, the cut once it plays again.") {
-                    lookPicker
+            Group {
+                if hasOverlays {
+                    PageTabs(tabs: tabs, selection: Binding(get: { tab }, set: { tabRaw = $0.rawValue }),
+                             label: \.label, rowSpacing: Theme.spaceM) { tab in
+                        switch tab {
+                        case .overlays:
+                            if let overlays = extras.overlays {
+                                MiniOverlayRows(settings: overlaySettings, videoIDs: review.videoIDs,
+                                                showsNameTags: overlays.showsNameTags,
+                                                showsCaptionLanguage: overlays.showsCaptionLanguage)
+                            }
+                        default: pictureRows
+                        }
+                    }
+                } else {
+                    VStack(alignment: .leading, spacing: Theme.spaceM) { pictureRows }
                 }
-                SettingsRow("Transition", detail: "At every cut in the rough cut; hard cuts unless chosen. Shown once the cut plays again.") {
-                    transitionPicker
-                }
-                FramingRows(framing: $framing, type: review.sourceType, videoIDs: review.videoIDs,
-                            canvasAspect: review.canvasAspect)
             }
             .padding()
+            // The rows size to the column, never past it.
+            .frame(width: controlsWidth)
         }
+        .environment(\.formCaptionIndent, SettingsRowMetrics.labelWidth + Theme.spaceM)
         .environment(\.settingsDetailBelow, true)
         .environment(\.settingsRowDividers, false)
+        .disabled(busy || pendingJob != nil)
         .task { availableLookIDs = await EffectControls.availablePresetIDs() }
+    }
+
+    /// Effect, transition and the framing rows.
+    @ViewBuilder
+    private var pictureRows: some View {
+        SettingsRow("Effect", detail: "A look over the picture; none unless chosen. The still shows it at once, the cut once it plays again.") {
+            lookPicker
+        }
+        SettingsRow("Transition", detail: "At every cut in the rough cut; hard cuts unless chosen. Shown once the cut plays again.") {
+            transitionPicker
+        }
+        FramingRows(framing: $framing, type: review.sourceType, videoIDs: review.videoIDs,
+                    canvasAspect: review.canvasAspect)
     }
 
     /// None, then the Looks and film-stock presets the local ffmpeg can render.
@@ -339,7 +435,8 @@ struct RoughCutReviewSheet: View {
         store.isShowingProjectsHome = false
         store.selectedSection = .wizard
         store.wizardMode = review.namespace == WizardAssistant.expressNamespace ? .express : .full
-        store.assistant.sendCommand(actionID, text: framing.joined, namespace: review.namespace)
+        store.assistant.sendCommand(actionID, text: framing.joined, expressOverlays: hasOverlays ? extras.overlays?.settings : nil,
+                                    namespace: review.namespace)
         finish()
     }
 

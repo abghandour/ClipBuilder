@@ -72,6 +72,7 @@ extension AppStore {
                              source: WizardRunResults.Source = .wizard,
                              highlight: WizardHighlightCapture? = nil,
                              mode: WizardBatchMode = .render,
+                             roughCutOverlays: RoughCutOverlays? = nil,
                              onResults: @escaping @MainActor () -> Void = {}) {
         guard let database, !isWizardRunning else { return }
         switch mode {
@@ -82,10 +83,11 @@ extension AppStore {
         case .roughCut:
             // Preview opens the sheet with the cuts prepared, not rendered;
             // Play in the sheet renders them.
+            // Express's sheet starts its Overlays tab from the page's choices.
             renderWizardBatchRoughCut(database: database, projectID: projectID, options: options, oneReel: oneReel,
                                       cameraFocus: cameraFocus, gatherTakes: gatherTakes, combine: combine,
                                       namespace: source == .express ? WizardAssistant.expressNamespace : WizardAssistant.fullNamespace,
-                                      renderCuts: false)
+                                      extras: RoughCutExtras(overlays: roughCutOverlays), renderCuts: false)
             return
         case .render:
             break

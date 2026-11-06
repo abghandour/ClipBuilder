@@ -538,7 +538,10 @@ extension AppStore {
             try await database.recordMiniCombinedTake(projectID: run.projectID, miniBatch: batchID,
                                                       allowedBatches: batchIDs, name: combinedName,
                                                       takes: takes, options: run.options.step1)
-        }, source: .express, highlight: highlight, mode: mode, onResults: { [weak self] in
+        }, source: .express, highlight: highlight, mode: mode,
+           roughCutOverlays: mode == .roughCut ? RoughCutOverlays(settings: chosen, showsNameTags: flow.showsNameTags,
+                                                                  showsCaptionLanguage: flow.offersCaptionLanguage) : nil,
+           onResults: { [weak self] in
             // Results is the root sheet; its dismissal leaves Mini ready for another render.
             guard let self, self.miniRun?.batchID == batchID, footageKind == self.miniRun?.footageKind else { return }
             self.miniRun?.requestedCard = .settings

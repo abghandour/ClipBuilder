@@ -114,6 +114,54 @@ struct MiniWizardSettingsTests {
         #expect(MiniWizardFlow().settingsSummary(settings).contains("overlay Lower third"))
     }
 
+    @Test func adoptingOverlaysCopiesOnlyTheOverlayTabChoices() {
+        var page = MiniWizardSettings()
+        page.quality = .archival
+        page.framing = Framing(subject: .speakerFocus)
+        page.music = true
+        page.look = "vintage"
+        page.transition = "fade"
+        page.outputMode = .oneReel
+        page.dub = true
+        page.captions = false
+        page.watermark = false
+        var sheet = page
+        sheet.quality = .compact
+        sheet.framing = Framing(subject: .layout)
+        sheet.music = false
+        sheet.captions = true
+        sheet.captionPosition = "custom:0.5,0.8"
+        sheet.speakerCaptionPositions = ["a": "top"]
+        sheet.englishCaptions = true
+        sheet.nameTags = true
+        sheet.nameTagPosition = "custom:0.5,0.2"
+        sheet.safeAreaOnly = true
+        sheet.safeAreaPlatforms = ["instagram"]
+        sheet.watermark = true
+        sheet.watermarkOverlay = "Mark"
+        sheet.watermarkOpacity = 0.5
+        sheet.overlay = true
+        sheet.overlayTemplate = "Lower third"
+        sheet.overlayStart = 3
+        sheet.overlayDuration = 4
+        sheet.overlayTexts = ["Hook"]
+        sheet.overlayPosition = "custom:0.1,0.1"
+        sheet.overlayEdits.text(0) { $0.alignment = "left" }
+        let adopted = page.adoptingOverlays(from: sheet)
+        // Picture, audio and package choices are the page's.
+        #expect(adopted.quality == .archival && adopted.framing.subject == .speakerFocus && adopted.music)
+        #expect(adopted.look == "vintage" && adopted.transition == "fade" && adopted.outputMode == .oneReel && adopted.dub)
+        // Every Overlays tab choice is the sheet's.
+        var expected = sheet
+        expected.quality = page.quality
+        expected.framing = page.framing
+        expected.music = page.music
+        #expect(adopted == expected)
+        #expect(adopted.captions && adopted.captionPosition == "custom:0.5,0.8" && adopted.nameTagPosition == "custom:0.5,0.2")
+        #expect(adopted.overlayTemplate == "Lower third" && adopted.overlayEdits.texts.first?.alignment == "left")
+        #expect(page.adoptingOverlays(from: page) == page)
+    }
+
     @Test func watermarkOverlayOnlyMapsWhileTheWatermarkIsOn() {
         var settings = MiniWizardSettings()
         settings.watermark = true

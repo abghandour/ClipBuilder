@@ -42,7 +42,7 @@ struct NameTagControls: View {
             .pickerStyle(.menu)
         }
         FormCaption(CustomPosition.isCustom(position)
-            ? "Placed where you dragged it in the preview. A person's own Name tag position still wins."
+            ? "Placed where you dragged it in the preview, for every person; choose a corner or Auto to let a person's own Name tag position apply again."
             : "Auto keeps clear of the platform buttons. Safe area only also keeps chosen corners clear. Drag a tag in the preview to place it by hand.")
             .onAppear {
                 if position == "auto" { position = nil }

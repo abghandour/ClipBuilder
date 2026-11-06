@@ -49,16 +49,20 @@ nonisolated enum NameTagPlanner {
                      style: TagStyle = TagStyle(), imageAspects: [UUID: CGFloat] = [:]) -> [NameTag] {
         let names = Dictionary(people.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
         let explicitCorner = Corner(rawValue: settings.position ?? "")
-        // Dragged in the preview: every tag without its own corner is centred
-        // on this canvas point (inside its area), never moved for the caption.
+        // Dragged in the preview: every tag is centred on this canvas point
+        // (inside its area), never moved for the caption. The drag is the
+        // later, explicit choice, so it beats a person's own corner too.
         let customAnchor = CustomPosition(settings.position)
+        // A chosen corner or a dragged point is a deliberate placement: the
+        // platform safe area only limits it when Safe area only is on.
+        let keepsSafe = (explicitCorner == nil && customAnchor == nil) || settings.safeOnly
         let frame = CGRect(origin: .zero, size: settings.canvas)
         let renderer = TextOverlayRenderer(videoWidth: Int(settings.canvas.width),
                                            videoHeight: Int(settings.canvas.height), safeArea: nil)
         return areas.flatMap { area -> [NameTag] in
             let inset = min(area.rect.width, area.rect.height) * 0.04
             var allowed = area.rect.insetBy(dx: inset, dy: inset)
-            if (explicitCorner == nil || settings.safeOnly), let safe = settings.safeRect {
+            if keepsSafe, let safe = settings.safeRect {
                 allowed = allowed.intersection(safe)
                 if allowed.isNull || allowed.isEmpty { allowed = safe.intersection(frame) }
             }
@@ -81,7 +85,7 @@ nonisolated enum NameTagPlanner {
                 func rect(_ corner: Corner) -> CGRect {
                     let y = corner == .bottomLeading || corner == .bottomTrailing ? allowed.maxY - height : allowed.minY
                     let verticalBounds = height <= allowed.height ? allowed
-                        : ((explicitCorner == nil || settings.safeOnly) ? settings.safeRect?.intersection(frame) ?? frame : frame)
+                        : (keepsSafe ? settings.safeRect?.intersection(frame) ?? frame : frame)
                     return CGRect(x: corner == .topTrailing || corner == .bottomTrailing ? allowed.maxX - width : allowed.minX,
                                   y: max(verticalBounds.minY, min(y, verticalBounds.maxY - height)),
                                   width: width, height: height)
@@ -104,7 +108,7 @@ nonisolated enum NameTagPlanner {
                 }
                 let personCorner = Corner(rawValue: person.position ?? "")
                 let gap = settings.canvas.height * 0.01
-                if personCorner == nil, let customAnchor {
+                if let customAnchor {
                     // The anchor is a canvas point; the tag is kept inside this area's allowed rect.
                     let center = CGPoint(x: customAnchor.x * settings.canvas.width, y: customAnchor.y * settings.canvas.height)
                     let origin = CustomPosition.origin(center: center, size: CGSize(width: width, height: height), in: allowed)
@@ -126,7 +130,7 @@ nonisolated enum NameTagPlanner {
                     (overlap(rect($0.element)), sidePenalty($0.element), $0.offset)
                         < (overlap(rect($1.element)), sidePenalty($1.element), $1.offset)
                 }!.element
-                let safe = (explicitCorner == nil || settings.safeOnly) ? settings.safeRect : nil
+                let safe = keepsSafe ? settings.safeRect : nil
                 guard let cleared = clearingCaption(rect(corner), corner: corner, area: area.rect,
                     allowed: allowed, frame: frame, safe: safe,
                     band: settings.captionBand, safeOnly: settings.safeOnly, gap: gap) else { continue }

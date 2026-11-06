@@ -90,8 +90,13 @@ nonisolated struct MiniWizardFlow: Sendable {
     func effectiveSettingsTab(_ tab: SettingsTab) -> SettingsTab { tab.effective(in: settingsTabs) }
     var showsNameTags: Bool { isPodcastOrInterview }
 
-    var showsCaptionLanguage: Bool {
-        guard captionsEnabled, let transcriptLanguage else { return false }
+    var showsCaptionLanguage: Bool { captionsEnabled && offersCaptionLanguage }
+
+    /// The transcript is in another language than English, so captions can
+    /// be Native or English once they are on (the rough cut sheet's rows
+    /// turn captions on themselves).
+    var offersCaptionLanguage: Bool {
+        guard let transcriptLanguage else { return false }
         let language = transcriptLanguage.trimmingCharacters(in: .whitespacesAndNewlines).lowercased()
         guard !language.isEmpty, language != "und", language != "unknown" else { return false }
         let base = language.split(whereSeparator: { $0 == "-" || $0 == "_" }).first.map(String.init)
