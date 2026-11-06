@@ -16,7 +16,7 @@ struct MiniFightPickView: View {
     private static let draftOwnerID: Int64 = -1
 
     private var fight: MiniWizardFight? {
-        store.miniRun?.batchID == run.batchID ? store.miniRun?.fight : run.fight
+        store.miniRuns[.fightMetrics]?.batchID == run.batchID ? store.miniRuns[.fightMetrics]?.fight : run.fight
     }
     private var actions: [MiniWizardFightRules.Action] { fight?.actions ?? [] }
     private var picks: [FightPick] { fight?.picks ?? [] }
@@ -85,11 +85,7 @@ struct MiniFightPickView: View {
                 }
             }
             .onChange(of: run.batchID) { _, _ in chosen = []; draftRange = nil }
-            .onChange(of: store.miniReelReveal, initial: true) { _, reveal in
-                guard let reveal, reveal.kind == .fightMetrics, picks.contains(where: { $0.id == reveal.itemID }) else { return }
-                selectedOwner = reveal.itemID
-                store.miniReelReveal = nil
-            }
+            .onMiniReelReveal(.fightMetrics, contains: { id in picks.contains { $0.id == id } }) { selectedOwner = $0 }
             .onChange(of: chosen) { _, _ in
                 draftRange = nil
                 if !chosen.isEmpty { selectedOwner = Self.draftOwnerID }

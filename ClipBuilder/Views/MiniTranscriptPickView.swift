@@ -23,7 +23,7 @@ struct MiniTranscriptPickView: View {
     private static let labelLimit = 90
 
     private var transcript: MiniWizardTranscript? {
-        store.miniRun?.batchID == run.batchID ? store.miniRun?.transcript : run.transcript
+        store.miniRuns[.transcript]?.batchID == run.batchID ? store.miniRuns[.transcript]?.transcript : run.transcript
     }
     private var picks: [TranscriptPick] { transcript?.picks ?? [] }
     private var rows: [TranscriptRow] { transcript?.rows ?? [] }
@@ -83,11 +83,7 @@ struct MiniTranscriptPickView: View {
                         },
                         onSave: save) { _ in EmptyView() }
         .onChange(of: run.batchID) { _, _ in draftRange = nil; lastAddedEnd = nil }
-        .onChange(of: store.miniReelReveal, initial: true) { _, reveal in
-            guard let reveal, reveal.kind == .transcript, picks.contains(where: { $0.id == reveal.itemID }) else { return }
-            selectedOwner = reveal.itemID
-            store.miniReelReveal = nil
-        }
+        .onMiniReelReveal(.transcript, contains: { id in picks.contains { $0.id == id } }) { selectedOwner = $0 }
         .onChange(of: rows, initial: true) { _, rows in
             wordsByVideo = Dictionary(grouping: rows, by: \.videoID).mapValues(MiniWizardTranscriptRules.orderedWords)
         }

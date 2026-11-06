@@ -31,6 +31,9 @@ struct WizardPreviewList: View {
     var emptyMessage = "No kept footage yet"
 
     @State private var lines: [Int64: [WizardPreviewRows.Line]] = [:]
+    /// Bumped when `lines` loads; the rebuild then reads the current clips
+    /// rather than the ones the loading task started with.
+    @State private var linesVersion = 0
     @State private var expanded: Set<String> = []
     @State private var draggingID: String?
     @State private var dragTranslation: CGFloat = 0
@@ -42,7 +45,10 @@ struct WizardPreviewList: View {
     private static let listSpace = "wizardPreview.list"
     private static let collapsedLines = 2
 
-    private var rows: [WizardPreviewRow] { WizardPreviewRows.rows(clips: clips, lines: lines) }
+    /// Built once per change of the clips or the words: the rows are read
+    /// from the header, the list and every row's closures, and building them
+    /// filters each recording's words per clip.
+    @State private var rows: [WizardPreviewRow] = []
     private var videoIDs: [Int64] { Array(Set(clips.map(\.scene.videoID))).sorted() }
     private var canReorder: Bool { config.canReorder && isEnabled && rows.count > 1 }
     private var canDelete: Bool { config.onDelete != nil && isEnabled }
@@ -60,6 +66,8 @@ struct WizardPreviewList: View {
         }
         // Transcript edits and re-transcriptions bump the counts version.
         .task(id: "\(videoIDs) \(store.transcriptCountsVersion)") { await loadLines() }
+        .onChange(of: clips, initial: true) { _, _ in rebuildRows() }
+        .onChange(of: linesVersion) { _, _ in rebuildRows() }
         .onChange(of: rows.map(\.id)) { _, ids in expanded.formIntersection(ids) }
     }
 
@@ -254,6 +262,11 @@ struct WizardPreviewList: View {
 
     // MARK: - Transcript lines
 
+    private func rebuildRows() {
+        let built = WizardPreviewRows.rows(clips: clips, lines: lines)
+        if built != rows { rows = built }
+    }
+
     /// Each recording's rows with their speaker labels, decoded off the main actor.
     private func loadLines() async {
         guard let database = store.database else { return }
@@ -270,7 +283,7 @@ struct WizardPreviewList: View {
                 }
             }.value
         }
-        if !Task.isCancelled { lines = result }
+        if !Task.isCancelled { lines = result; linesVersion += 1 }
     }
 }
 

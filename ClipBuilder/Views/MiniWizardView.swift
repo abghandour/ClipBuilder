@@ -73,6 +73,41 @@ struct MiniWizardView: View {
         return run
     }
 
+    /// Every loaded section for the source, in a fixed order so each keeps
+    /// its view identity across switches.
+    private var mountedRuns: [MiniWizardRun] {
+        guard let video = selectedVideo, let projectID = store.activeProjectID else { return [] }
+        return MiniWizardFlow.FootageKind.allCases.compactMap { kind in
+            guard let run = store.miniRuns[kind], run.projectID == projectID, run.video.id == video.id,
+                  kind != .highlights || run.length == length else { return nil }
+            return run
+        }
+    }
+
+    /// The open section's review, with the other loaded sections kept
+    /// mounted but hidden: switching back costs no rebuild of their word
+    /// layouts and lists, and their scroll and selection state survive.
+    /// Hidden sections take no height, no clicks, no accessibility focus,
+    /// and see the page as hidden so their players pause.
+    private func footageReviews(pageHeight: CGFloat) -> some View {
+        let openKind = currentRun?.footageKind
+        return ZStack(alignment: .top) {
+            ForEach(mountedRuns, id: \.footageKind) { run in
+                let visible = run.footageKind == openKind
+                VStack(alignment: .leading, spacing: Theme.spaceS) {
+                    MiniFootageCard(run: run, pageHeight: pageHeight)
+                }
+                .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(height: visible ? nil : 0, alignment: .top)
+                .clipped()
+                .opacity(visible ? 1 : 0)
+                .allowsHitTesting(visible)
+                .accessibilityHidden(!visible)
+                .environment(\.workspacePageVisible, visible && pageVisible)
+            }
+        }
+    }
+
     /// The List tab: drops reorder the reel, Delete takes a clip out of it.
     private var previewListConfig: WizardPreviewListConfig {
         WizardPreviewListConfig(onReorder: { store.reorderMiniReel($0) },
@@ -327,11 +362,9 @@ struct MiniWizardView: View {
                                 FormCaption("Pick a source in 1 Source first.")
                             } else {
                                 footageControls.disabled(store.isWizardRunning)
-                                if let run = currentRun {
-                                    // Space, not a rule, parts the controls from the review.
-                                    MiniFootageCard(run: run, pageHeight: page.size.height)
-                                        .padding(.top, Theme.spaceS)
-                                }
+                                // Space, not a rule, parts the controls from the review.
+                                footageReviews(pageHeight: page.size.height)
+                                    .padding(.top, Theme.spaceS)
                             }
                         }
                     }

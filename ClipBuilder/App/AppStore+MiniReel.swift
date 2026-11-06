@@ -61,13 +61,18 @@ extension AppStore {
         saveMiniReel()
     }
 
+    /// Writes after a short pause: a trim drag refreshes snapshots on every
+    /// tick, and only the last state needs to reach the table.
     private func saveMiniReel() {
         guard let database, let key = miniReelKey else { return }
         let items = miniReelItems
         let previous = miniReelSaveTask
+        previous?.cancel()
         let generation = profileGeneration
         miniReelSaveTask = Task {
             _ = try? await previous?.value
+            try? await Task.sleep(for: .milliseconds(200))
+            guard !Task.isCancelled else { return }
             do {
                 try await database.replaceExpressReelItems(projectID: key.projectID, videoID: key.videoID, items: items)
             } catch {

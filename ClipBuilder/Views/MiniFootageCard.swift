@@ -116,18 +116,14 @@ struct MiniFootageCard: View {
             let review = TranscriptQAView(video: run.video, sections: qa.sections, rows: qa.rows, labels: qa.labels,
                 speakerSpans: qa.speakerSpans,
                 kept: Binding(
-                    get: { store.miniRun?.batchID == run.batchID ? store.miniRun?.qa?.kept ?? [] : [] },
+                    get: { store.miniRuns[.qa]?.batchID == run.batchID ? store.miniRuns[.qa]?.qa?.kept ?? [] : [] },
                     set: { kept in store.setMiniQAKept(kept, batchID: run.batchID) }),
                 selection: $qaSelection,
                 preferredTranslationLanguage: store.activeProfile.captionLanguages.first, playAll: true) { scene, start, end in
                         store.setSceneEditRange(scene, start: start, end: end)
                     }
             resizable(review)
-                .onChange(of: store.miniReelReveal, initial: true) { _, reveal in
-                    guard let reveal, reveal.kind == .qa, qa.sections.contains(where: { $0.id == reveal.itemID }) else { return }
-                    qaSelection = reveal.itemID
-                    store.miniReelReveal = nil
-                }
+                .onMiniReelReveal(.qa, contains: { id in qa.sections.contains { $0.id == id } }) { qaSelection = $0 }
         } else {
             FormCaption("No Q&A found in this video")
             Button { showTranscript = true } label: {

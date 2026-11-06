@@ -191,6 +191,14 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                         .contentShape(Rectangle())
                         .gesture(spanGesture(viewportHeight: geometry.size.height),
                                  including: spanSelection && canTrim && isEnabled ? .all : .subviews)
+                        // Word clicks outside span mode: the word under the
+                        // pointer, found by its frame (words are not buttons).
+                        .gesture(SpatialTapGesture(coordinateSpace: .named(Self.scrollSpace)).onEnded { value in
+                            guard isEnabled, canTrim, !spanSelection,
+                                  let id = TranscriptQATrim.word(at: value.location, frames: frames),
+                                  transcript.words.indices.contains(id) else { return }
+                            actions.onSelect(transcript.words[id])
+                        }, including: !spanSelection && canTrim && isEnabled ? .all : .subviews)
                     }
                     // Scrolling changes the word under a stationary pointer.
                     .onChange(of: store.frames) { _, _ in previewAtPointer() }
@@ -515,6 +523,10 @@ private struct TranscriptQALineView: View, Equatable {
                             .layoutValue(key: FlowLayoutItemID.self, value: line.words[index].id)
                     }
                 }
+                // One accessibility element per line, not per word.
+                .accessibilityElement(children: .combine)
+                .help(spanSelection ? "Click a word to start a selection there, or press and drag to select a passage"
+                      : "Click to select just this word; drag an anchor or use the Start / End buttons to extend")
                 .onGeometryChange(for: CGPoint.self, of: { $0.frame(in: .named("qaWordViewport")).origin }) {
                     store.move(line: line.id, to: $0)
                 }
@@ -556,8 +568,11 @@ private struct TranscriptQALineView: View, Equatable {
         // otherwise sit yellow inside the selection being made. The weight never
         // changes: a bold word is wider and rewraps the line under Follow.
         let spoken = spokenWordID == word.id
-        return Button { if !spanSelection { onSelect(word) } } label: {
-            Text(word.text)
+        // Plain text, not a button: a button per word is a focus responder
+        // per word, and with an accessibility client attached every focus
+        // update walks them all (a 1-2 s stall per section switch). The
+        // panel resolves clicks to words through their frames instead.
+        return Text(word.text)
                 .font(.callout)
                 .foregroundStyle(spoken ? Color.black : inside || other != nil ? Color.primary : Color.secondary)
                 .padding(.horizontal, 2)
@@ -582,16 +597,6 @@ private struct TranscriptQALineView: View, Equatable {
                             .padding(.vertical, -TranscriptQAWordCursor.rowSpacing - 1)
                     }
                 }
-                .contentShape(Rectangle())
-        }
-        .buttonStyle(.plain)
-        .disabled(!canTrim)
-        // In span mode the drag gesture on the content owns the pointer.
-        .allowsHitTesting(!spanSelection)
-        .help(spanSelection ? "Click a word to start a selection there, or press and drag to select a passage"
-              : "Click to select just this word; drag an anchor or use the Start / End buttons to extend")
-        .accessibilityLabel("\(word.text), \(word.start.timecode)")
-        .accessibilityAddTraits(inside ? .isSelected : [])
     }
 }
 

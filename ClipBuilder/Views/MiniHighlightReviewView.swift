@@ -19,7 +19,7 @@ struct MiniHighlightReviewView: View {
 
     private var kept: Binding<Set<Int64>> {
         Binding(get: {
-            guard let current = store.miniRun, current.batchID == run.batchID else { return [] }
+            guard let current = store.miniRuns[.highlights], current.batchID == run.batchID else { return [] }
             return MiniHighlightReview.keptIDs(current.candidates)
         }, set: { kept in
             store.setMiniHighlightsKept(kept, batchID: run.batchID)
@@ -28,10 +28,10 @@ struct MiniHighlightReviewView: View {
 
     private var selection: Binding<Int64?> {
         Binding(get: {
-            store.miniRun?.batchID == run.batchID ? store.miniRun?.selectedSelectionID : nil
+            store.miniRuns[.highlights]?.batchID == run.batchID ? store.miniRuns[.highlights]?.selectedSelectionID : nil
         }, set: { selected in
-            guard store.miniRun?.batchID == run.batchID else { return }
-            store.miniRun?.selectedSelectionID = selected
+            guard store.miniRuns[.highlights]?.batchID == run.batchID else { return }
+            store.miniRuns[.highlights]?.selectedSelectionID = selected
         })
     }
 
@@ -48,15 +48,11 @@ struct MiniHighlightReviewView: View {
             }
         }
         .task(id: videoIDs) { await loadTranscript() }
-        .onChange(of: store.miniReelReveal, initial: true) { _, reveal in
-            guard let reveal, reveal.kind == .highlights, run.candidates.contains(where: { $0.id == reveal.itemID }) else { return }
-            selection.wrappedValue = reveal.itemID
-            store.miniReelReveal = nil
-        }
+        .onMiniReelReveal(.highlights, contains: { id in run.candidates.contains { $0.id == id } }) { selection.wrappedValue = $0 }
     }
 
     private func save(_ item: RangeReviewItem, start: Double, end: Double) {
-        guard let current = store.miniRun, current.batchID == run.batchID,
+        guard let current = store.miniRuns[.highlights], current.batchID == run.batchID,
               let candidate = current.candidates.first(where: { $0.id == item.id.ownerID }),
               let plan = MiniHighlightReview.trimming(item.id, to: start...max(start, end),
                                                       candidate: candidate, scenes: store.scenes) else { return }
@@ -95,9 +91,9 @@ struct MiniHighlightReviewView: View {
         TextField("What should change?", text: Binding(
             get: { currentCandidate(candidate.id)?.note ?? candidate.note },
             set: { note in
-                guard store.miniRun?.batchID == run.batchID, !store.isWizardRunning,
-                      let index = store.miniRun?.candidates.firstIndex(where: { $0.id == candidate.id }) else { return }
-                store.miniRun?.candidates[index].note = note
+                guard store.miniRuns[.highlights]?.batchID == run.batchID, !store.isWizardRunning,
+                      let index = store.miniRuns[.highlights]?.candidates.firstIndex(where: { $0.id == candidate.id }) else { return }
+                store.miniRuns[.highlights]?.candidates[index].note = note
             }))
             .textFieldStyle(.roundedBorder)
             .lineLimit(1).fixedSize(horizontal: false, vertical: true)
@@ -115,8 +111,8 @@ struct MiniHighlightReviewView: View {
     }
 
     private func currentCandidate(_ id: Int64) -> MiniWizardCandidate? {
-        guard store.miniRun?.batchID == run.batchID else { return nil }
-        return store.miniRun?.candidates.first { $0.id == id }
+        guard store.miniRuns[.highlights]?.batchID == run.batchID else { return nil }
+        return store.miniRuns[.highlights]?.candidates.first { $0.id == id }
     }
 
     private func regenerate(_ id: Int64) {
@@ -140,7 +136,7 @@ struct MiniHighlightReviewView: View {
                 let videoRows = try await database.fetchTranscripts(videoID: id)
                 let speakers = await store.speakerTurns(videoID: id)
                 try Task.checkCancellation()
-                guard generation == store.profileGeneration, store.miniRun?.batchID == run.batchID else { return }
+                guard generation == store.profileGeneration, store.miniRuns[.highlights]?.batchID == run.batchID else { return }
                 let people = store.people
                 let labelTask = Task.detached { () throws -> [Int64: String] in
                     var result: [Int64: String] = [:]
@@ -158,7 +154,7 @@ struct MiniHighlightReviewView: View {
                     labelTask.cancel()
                 }
                 try Task.checkCancellation()
-                guard generation == store.profileGeneration, store.miniRun?.batchID == run.batchID else { return }
+                guard generation == store.profileGeneration, store.miniRuns[.highlights]?.batchID == run.batchID else { return }
                 loadedRows.append(contentsOf: videoRows)
                 loadedLabels.merge(videoLabels, uniquingKeysWith: { first, _ in first })
                 loadedSpans += TranscriptSpeakers.spans(turns: TranscriptSpeakers.named(speakers.turns, roster: speakers.roster),
@@ -171,7 +167,7 @@ struct MiniHighlightReviewView: View {
             return
         } catch {
             guard !Task.isCancelled, generation == store.profileGeneration,
-                  store.miniRun?.batchID == run.batchID else { return }
+                  store.miniRuns[.highlights]?.batchID == run.batchID else { return }
             transcriptError = "Could not load the transcript. Reopen Footage to try again."
         }
     }

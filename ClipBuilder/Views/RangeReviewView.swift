@@ -1041,7 +1041,8 @@ struct RangeReviewView<Footer: View>: View {
     }
 
     private func handleKey(_ event: NSEvent) -> Bool {
-        guard isEnabled, range != nil else { return false }
+        // The monitor is window-wide; a mounted but hidden review stays quiet.
+        guard isEnabled, pageVisible, range != nil else { return false }
         if let onDelete, let selected, event.keyCode == 51 || event.keyCode == 117,
            !selected.isDraft, selected.id.cutIndex == nil {
             onDelete(selected)
