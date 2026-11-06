@@ -15,6 +15,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
     case fightStory
     case openInEditor
     case roughCut
+    case voiceClone
 
     var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief || self == .generateImage }
     /// Routine cycles finish quietly; the outcome goes to the activity log only.
@@ -62,6 +63,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .fightStory: "Fight Story"
         case .openInEditor: "Open in Editor"
         case .roughCut: "Rough Cut"
+        case .voiceClone: "Voice Clone"
         }
     }
 

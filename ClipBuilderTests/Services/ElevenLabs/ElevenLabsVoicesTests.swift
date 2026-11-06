@@ -21,6 +21,15 @@ struct ElevenLabsVoicesTests {
         }
     }
 
+    @Test func appClonesDropTheUploadSuffixOnlyWhenCloned() {
+        let voices = ElevenLabsVoices.voices(from: [
+            ElevenLabsVoice(voiceID: "alice", name: "Alice Pereira (Clip Builder)", category: "cloned"),
+            ElevenLabsVoice(voiceID: "stock", name: "Stock (Clip Builder)", category: "premade"),
+        ], language: "en-US")
+        #expect(voices.first { $0.identifier == "elevenlabs:alice" }?.name == "Alice Pereira (cloned)")
+        #expect(voices.first { $0.identifier == "elevenlabs:stock" }?.name == "Stock (Clip Builder)")
+    }
+
     @Test func labelGenderWinsThenFallsBackToTheKnownVoiceName() async throws {
         let stub = ElevenLabsTransportStub([(200, ElevenLabsFixtures.voices)])
         let voices = ElevenLabsVoices.voices(from: try await stub.client().voices(), language: "fr")

@@ -7,10 +7,12 @@ nonisolated struct ProfileEditingDefaults: Codable, Sendable, Hashable {
     var podcast = PodcastEditingPolicy()
     var footage = FootageDefaults()
     var dubVoices: [String: String]?
+    var clonedVoices: [String: String]?
 
     enum CodingKeys: String, CodingKey {
         case transitions, podcast, footage
         case dubVoices = "dub_voices"
+        case clonedVoices = "cloned_voices"
     }
 
     init() {}
@@ -27,5 +29,6 @@ nonisolated struct ProfileEditingDefaults: Codable, Sendable, Hashable {
         podcast = try container.decodeIfPresent(PodcastEditingPolicy.self, forKey: .podcast) ?? PodcastEditingPolicy()
         footage = try container.decodeIfPresent(FootageDefaults.self, forKey: .footage) ?? FootageDefaults()
         dubVoices = try container.decodeIfPresent([String: String].self, forKey: .dubVoices)
+        clonedVoices = try container.decodeIfPresent([String: String].self, forKey: .clonedVoices)
     }
 }

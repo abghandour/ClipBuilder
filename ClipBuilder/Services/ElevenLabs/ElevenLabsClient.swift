@@ -31,7 +31,7 @@ nonisolated enum ElevenLabsError: LocalizedError, Equatable {
         case .tooManyRequests:
             "ElevenLabs is handling too many requests. Wait a moment and try again."
         case .badRequest(let message):
-            "ElevenLabs could not speak this text: \(message). Check the text and selected voice."
+            "ElevenLabs rejected this request: \(message)"
         case .http(let status):
             "ElevenLabs returned HTTP \(status). Try again in a moment."
         }
@@ -103,10 +103,32 @@ nonisolated struct ElevenLabsClient: Sendable {
         let body = try JSONEncoder().encode(SpeechRequest(text: text, model_id: model,
             voice_settings: .init(stability: settings.stability, similarity_boost: settings.similarity)))
         return try await send(path: "/v1/text-to-speech/" + escaped,
-                              query: [.init(name: "output_format", value: "mp3_44100_128")], body: body)
+                              query: [.init(name: "output_format", value: "mp3_44100_128")], body: body,
+                              accept: "audio/mpeg")
     }
 
-    private func send(path: String, query: [URLQueryItem] = [], body: Data? = nil) async throws -> Data {
+    @concurrent
+    func addVoice(name: String, files: [URL], labels: [String: String],
+                  removeBackgroundNoise: Bool = true) async throws -> String {
+        let multipart = try ElevenLabsMultipart.voice(name: name, files: files, labels: labels,
+                                                       removeBackgroundNoise: removeBackgroundNoise)
+        let data = try await send(path: "/v1/voices/add", body: multipart.body,
+                                  contentType: multipart.contentType, returnsCommittedResponse: true)
+        let response = try JSONDecoder().decode(AddedVoice.self, from: data)
+        guard !response.voice_id.isEmpty else { throw ElevenLabsError.badRequest("No voice ID returned") }
+        return response.voice_id
+    }
+
+    func deleteVoice(id: String) async throws {
+        guard !id.isEmpty, let escaped = id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
+            throw ElevenLabsError.badRequest("Choose a voice")
+        }
+        _ = try await send(path: "/v1/voices/" + escaped, method: "DELETE", returnsCommittedResponse: true)
+    }
+
+    private func send(path: String, query: [URLQueryItem] = [], body: Data? = nil,
+                      contentType: String = "application/json", accept: String = "application/json",
+                      method: String? = nil, returnsCommittedResponse: Bool = false) async throws -> Data {
         try Task.checkCancellation()
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ElevenLabsError.invalidKey }
         var components = URLComponents()
@@ -116,11 +138,11 @@ nonisolated struct ElevenLabsClient: Sendable {
         components.queryItems = query.isEmpty ? nil : query
         guard let url = components.url else { throw URLError(.badURL) }
         var request = URLRequest(url: url, timeoutInterval: 60)
-        request.httpMethod = body == nil ? "GET" : "POST"
+        request.httpMethod = method ?? (body == nil ? "GET" : "POST")
         request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
-        request.setValue(body == nil ? "application/json" : "audio/mpeg", forHTTPHeaderField: "Accept")
+        request.setValue(accept, forHTTPHeaderField: "Accept")
         if let body {
-            request.setValue("application/json", forHTTPHeaderField: "Content-Type")
+            request.setValue(contentType, forHTTPHeaderField: "Content-Type")
             request.httpBody = body
         }
         for attempt in 0...1 {
@@ -134,6 +156,9 @@ nonisolated struct ElevenLabsClient: Sendable {
                 }
                 throw error
             }
+            // Keep a successful external mutation's response so its caller can
+            // reconcile it (or delete the returned clone) after Stop.
+            if returnsCommittedResponse, (200..<300).contains(response.statusCode) { return data }
             try Task.checkCancellation()
             if (200..<300).contains(response.statusCode) { return data }
             // The raw answer, so a rejection can be read in the console. It
@@ -161,7 +186,7 @@ nonisolated struct ElevenLabsClient: Sendable {
             return .keyRejected(message?.isEmpty == false ? message : nil)
         }
         if status == 429 { return .tooManyRequests }
-        if status == 400 || status == 422 {
+        if status == 400 || status == 403 || status == 422 {
             let validation = object?["detail"] as? [[String: Any]]
             let message = detail?["message"] as? String ?? object?["detail"] as? String
                 ?? validation?.compactMap { $0["msg"] as? String }.joined(separator: "; ")
@@ -173,6 +198,10 @@ nonisolated struct ElevenLabsClient: Sendable {
 
     nonisolated private struct VoiceList: Decodable {
         var voices: [ElevenLabsVoice]
+    }
+
+    nonisolated private struct AddedVoice: Decodable {
+        var voice_id: String
     }
 
     nonisolated private struct SpeechRequest: Encodable {

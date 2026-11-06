@@ -589,6 +589,13 @@ struct PeopleView: View {
                 .padding()
 
                 ScrollView {
+                    HStack {
+                        Text("ElevenLabs voice").font(.headline).lineLimit(1).fixedSize()
+                        VoiceCloneControls(store: store, personKey: person.key, name: person.displayName)
+                            .id("\(store.profileGeneration)|\(person.key)")
+                        Spacer()
+                    }
+                    .padding(.horizontal)
                     PersonTagFieldsView(person: person)
                         .id(person.key)
                         .padding(.horizontal)

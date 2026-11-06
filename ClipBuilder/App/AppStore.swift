@@ -72,6 +72,8 @@ final class AppStore {
     /// loads them itself); filled once per launch by `loadDubVoicesForAssistant`.
     @ObservationIgnored var dubVoicesForAssistant: [DubSynthesizer.Voice] = []
     @ObservationIgnored var dubVoicesForAssistantRequested = false
+    /// Includes cancelled clone jobs until their remote/scratch cleanup drains.
+    var voiceCloneInFlight: Set<String> = []
     var languageReadinessRevision = 0
     var languageProbe = LanguageProbe.live
     var languageEditorProject: ProjectRecord?

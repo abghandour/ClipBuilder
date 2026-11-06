@@ -2,6 +2,8 @@ import Foundation
 
 nonisolated enum ElevenLabsVoices {
     static let identifierPrefix = "elevenlabs:"
+    /// Appended to the person's name when the app uploads a clone.
+    static let cloneNameSuffix = " (Clip Builder)"
     /// The account's own voices, where voices are added and cloned.
     static let manageURL = URL(string: "https://elevenlabs.io/app/voice-lab")!
     /// Settings posts this on the main actor after changing the key or checking the account.
@@ -28,8 +30,12 @@ nonisolated enum ElevenLabsVoices {
             default: gender = DubVoiceGender.inferred(voiceName: voice.name)
             }
             let cloned = ["cloned", "professional"].contains(voice.category ?? "")
+            // Clones made here are uploaded as "Name (Clip Builder)" so they are
+            // recognizable on elevenlabs.io; in the app "(cloned)" says enough.
+            let name = cloned && voice.name.hasSuffix(cloneNameSuffix)
+                ? String(voice.name.dropLast(cloneNameSuffix.count)) : voice.name
             return .init(identifier: identifierPrefix + voice.voiceID, language: language,
-                         name: voice.name + (cloned ? " (cloned)" : ""), quality: 3, gender: gender)
+                         name: name + (cloned ? " (cloned)" : ""), quality: 3, gender: gender)
         })
     }
 }

@@ -12,6 +12,8 @@ struct DubReviewSheet: View {
     @State private var playback = DubReviewPlayback()
     @State private var continuing = false
     @State private var subscription: ElevenLabsSubscription?
+    @State private var voiceListRevision = 0
+    @State private var observedClones: [String: String] = [:]
     /// Play hears the phrase alone unless the source video is expanded.
     @AppStorage("dubReview.showVideo") private var showVideo = false
 
@@ -109,10 +111,15 @@ struct DubReviewSheet: View {
         }
         .padding(Theme.spaceL).frame(minWidth: 680, idealWidth: 780, minHeight: 460, idealHeight: 650)
         .modalCloseButton(action: cancel)
-        .task {
+        .task(id: voiceListRevision) {
             let installed = await DubLanguageChoices.voices(engine: review.prepared.settings.engine,
                                                            language: review.prepared.settings.language)
+            guard !Task.isCancelled, review.profileGeneration == store.profileGeneration else { return }
             voices = installed.filter { DubLanguageChoices.matches($0.language, requested: review.prepared.settings.language) }
+            adoptClones()
+        }
+        .onReceive(NotificationCenter.default.publisher(for: ElevenLabsVoices.settingsChanged)) { _ in
+            voiceListRevision += 1
         }
         .task { await loadSubscription() }
         .onDisappear {
@@ -148,25 +155,54 @@ struct DubReviewSheet: View {
     /// One voice per speaker who has a line.
     private var voicesSection: some View {
         let speaking = speakerKeys.filter { key in lines.contains { $0.speakerKey == key } }
+        let elevenLabs = review.prepared.settings.engine == .elevenLabs
+        // A grid keeps the columns aligned; the voice menu is the one column
+        // that shrinks (and truncates), so a long voice name never widens the
+        // sheet past its edges.
         return VStack(alignment: .leading, spacing: 6) {
             Text("Voices").font(.headline)
-            ForEach(speaking, id: \.self) { key in
-                HStack {
-                    Text(name(key)).lineLimit(1).fixedSize().frame(minWidth: 140, alignment: .leading)
-                    Picker("Voice for \(name(key))", selection: voiceBinding(key)) {
-                        if let current = settings.voices[key], !voices.contains(where: { $0.identifier == current }) {
-                            Text(current).tag(current)
+            Grid(alignment: .leading, horizontalSpacing: Theme.spaceM, verticalSpacing: 6) {
+                ForEach(speaking, id: \.self) { key in
+                    let count = lines.filter { $0.speakerKey == key }.count
+                    GridRow {
+                        Text(name(key)).lineLimit(1).truncationMode(.tail)
+                            .frame(maxWidth: 180, alignment: .leading)
+                        Picker("Voice for \(name(key))", selection: voiceBinding(key)) {
+                            if let current = settings.voices[key], !voices.contains(where: { $0.identifier == current }) {
+                                Text(current).tag(current)
+                            }
+                            ForEach(voicesFor(key)) { voice in
+                                // Every voice here is ElevenLabs when that engine is on; say it once.
+                                Text(elevenLabs ? voice.name : voice.qualityLabel.map { "\(voice.name) (\($0))" } ?? voice.name)
+                                    .tag(voice.identifier)
+                            }
                         }
-                        ForEach(voicesFor(key)) { voice in
-                            Text(voice.qualityLabel.map { "\(voice.name) (\($0))" } ?? voice.name).tag(voice.identifier)
+                        .labelsHidden().lineLimit(1).frame(minWidth: 160, maxWidth: 300, alignment: .leading)
+                        if elevenLabs, store.people.contains(where: { $0.key == key }) {
+                            VoiceCloneControls(store: store, personKey: key, name: name(key)).fixedSize()
+                        } else {
+                            Color.clear.frame(width: 0, height: 0)
                         }
+                        Text(count == 1 ? "1 line" : "\(count) lines")
+                            .font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
                     }
-                    .labelsHidden().lineLimit(1).fixedSize()
-                    Text("\(lines.filter { $0.speakerKey == key }.count) lines")
-                        .font(.caption).foregroundStyle(.secondary)
                 }
             }
         }
+    }
+
+    private func adoptClones() {
+        guard review.prepared.settings.engine == .elevenLabs else { return }
+        let clones = store.editingDefaults.clonedVoices ?? [:]
+        for key in speakerKeys {
+            if let id = clones[key], observedClones[key] != id {
+                settings.voices[key] = ElevenLabsVoices.identifierPrefix + id
+            } else if let removed = observedClones[key], clones[key] == nil,
+                      settings.voices[key] == ElevenLabsVoices.identifierPrefix + removed {
+                settings.voices[key] = voicesFor(key).first?.identifier ?? ""
+            }
+        }
+        observedClones = clones
     }
 
     /// Only voices of the speaker's gender, when known and installed.

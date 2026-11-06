@@ -1,6 +1,8 @@
 # ElevenLabs voice clone per speaker
 
-Date: November 6, 2026. Status: proposed, not implemented. Requested by the
+Date: November 6, 2026. Status: phases 1-4 implemented and building (Claude review fixes applied);
+phase 5 live check pending.
+Approved November 6, 2026 with the five defaults below. Requested by the
 user on November 6, 2026: "how to choose the speaker's own voice for
 ElevenLabs?" Follow-up to `docs/ElevenLabs-Dub-Plan.md`, which left cloning
 out of scope.
@@ -39,7 +41,7 @@ steps and the hunting for clean audio.
 
 ## ElevenLabs API used
 
-- `POST /v1/voices/add` (multipart): `name`, one or more `files`,
+- [`POST /v1/voices/add`](https://elevenlabs.io/docs/api-reference/voices/ivc/create) (multipart): `name`, one or more `files`,
   `remove_background_noise`, `description`, `labels` (JSON). Returns
   `voice_id`. Key permission: Voices › Write.
 - `DELETE /v1/voices/{voice_id}` for Remove clone.
@@ -49,7 +51,7 @@ steps and the hunting for clean audio.
 - ElevenLabs recommends one to two minutes of clean speech; more does not
   help an instant clone much.
 
-## Decisions to confirm (proposed defaults)
+## Decisions (approved by the user, November 6, 2026)
 
 1. Entry point: a "Clone voice…" button beside each speaker's voice menu in
    the dub review sheet, plus the same button on the person in People. Both
@@ -119,6 +121,18 @@ already returned. Failures go through `presentError` and the Errors channel.
 - Audio settings caption keeps counting clones in "N ElevenLabs voices".
 
 ### 5. Live check
+
+Phases 1–4 are implemented. Claude must compile, address build errors, and
+verify the new client/sampler tests and live flow. No xcodebuild or tests
+were run during implementation. New source files use the project's
+filesystem-synchronized groups.
+
+Implementation details to verify: sampling reserves complete transcript
+rows for other videos, extraction joins mono 44.1 kHz WAV samples into one
+upload, and an in-flight upload finishes before cancellation cleanup can
+delete its returned ID. Re-clone keeps the previous voice until the new
+one is saved, then deletes the previous voice; a deletion failure retains
+the new mapping and reports the old ID. Profile mappings are saved locally.
 
 Clone Alice from "ALICE pereira interview.mov" on a scratch copy of the
 Peace Grappler profile, dub the two Express transcript picks into English,
