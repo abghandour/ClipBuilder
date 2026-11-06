@@ -114,6 +114,8 @@ nonisolated enum WizardPreviewComposite {
         var sourceRect: CGRect?
         var captions: [CaptionBox] = []
         var tags: [CGRect] = []
+        /// The person key of each entry in `tags`, in the same order.
+        var tagKeys: [String] = []
         var overlay: CGRect?
         /// Every component of the overlay design (texts as the box they
         /// rendered in, grown or wrapped; images at their file's aspect) so
@@ -309,6 +311,7 @@ nonisolated enum WizardPreviewComposite {
                     imageAspects: imageAspects)
                 for tag in tags {
                     layout.tags.append(tag.rect)
+                    layout.tagKeys.append(tag.personKey)
                     try draw(textRenderer.render(NameTagPlanner.overlay(tag, canvas: canvas.size, style: tagStyle), to: scratch))
                 }
             }
@@ -559,7 +562,7 @@ nonisolated enum WizardPreviewComposite {
             // the single-feed path does, instead of the sample name.
             let person = cell.person ?? (cells.count == 1 || cell.isTalking ? scene.person : nil)
             let key = person?.key ?? "preview"
-            // The person's own corner wins over the run's corner, as in the export.
+            // The person's own position places the tag, as in the export.
             names.append(.init(key: key, name: person?.tagName ?? "Alex Morgan", role: person?.descriptor ?? "Guest",
                                position: person?.tagPosition))
             let source: CGRect

@@ -168,7 +168,7 @@ struct MiniWizardView: View {
                                 positions[slot] = position.string
                                 miniSettings.speakerCaptionPositions = positions
                             } else { miniSettings.captionPosition = position.string }
-                        case .nameTag: miniSettings.nameTagPosition = position.string
+                        case .nameTag(let person): store.setPersonTagPosition(person, position.string)
                         }
                     },
                     onPlaceOverlay: { component, box in

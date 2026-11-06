@@ -118,7 +118,8 @@ struct RoughCutReviewSheet: View {
                                     ScrubbingPlayerView(player: players[cut.id], aspect: size.width / max(1, size.height),
                                                         stale: stale, onPlayStale: { render(thenPlay: cut.takeID) },
                                                         hidesOverlayWhilePlaying: true,
-                                                        pictureOverlay: { time in still(for: cut, at: time) })
+                                                        pictureOverlay: { time in still(for: cut, at: time) },
+                                                        pictureChrome: safeAreaShading(in: size))
                                         .frame(width: size.width)
                                     HStack(spacing: 6) {
                                         Text(cut.name).lineLimit(1).truncationMode(.middle)
@@ -221,6 +222,24 @@ struct RoughCutReviewSheet: View {
         }
     }
 
+    /// The unsafe platform zones over the player's picture whenever the
+    /// overlays' Safe area only is on: on the picture itself, not in the
+    /// still, so it stays while the cut plays and when the still is not shown.
+    private func safeAreaShading(in playerSize: CGSize) -> AnyView? {
+        guard hasOverlays, let previewOptions, previewOptions.safeAreaOnly == true,
+              let safeArea = previewOptions.resolvedSafeArea else { return nil }
+        // The player frame can be taller than the letterboxed picture inside
+        // it, so the zones are fitted to the canvas aspect; the overlay
+        // centres them on the picture.
+        let aspect = max(0.01, previewOptions.renderSettings.aspectRatio)
+        let fitted = playerSize.width / max(1, playerSize.height) > aspect
+            ? CGSize(width: playerSize.height * aspect, height: playerSize.height)
+            : CGSize(width: playerSize.width, height: playerSize.width / aspect)
+        return AnyView(PlatformChromeLayer(size: fitted,
+                                           safeAreaSettings: previewOptions.renderSettings.platformSafeArea,
+                                           safeAreaOnly: safeArea))
+    }
+
     private func pinnedStill(options: WizardOptions, moment: WizardPreviewMoment) -> some View {
         let editing = editsOverlays
         var onMove: ((PreviewElement, CustomPosition) -> Void)?
@@ -257,7 +276,7 @@ struct RoughCutReviewSheet: View {
                 positions[slot] = position.string
                 settings.speakerCaptionPositions = positions
             } else { settings.captionPosition = position.string }
-        case .nameTag: settings.nameTagPosition = position.string
+        case .nameTag(let person): store.setPersonTagPosition(person, position.string)
         }
         overlaySettings.wrappedValue = settings
     }

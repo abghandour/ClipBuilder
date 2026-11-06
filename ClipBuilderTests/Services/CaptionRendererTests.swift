@@ -297,7 +297,7 @@ extension CaptionRendererTests {
         }
     }
 
-    @Test func draggedPositionCentresTheCaptionAndStaysInsideTheFrameAndSafeArea() throws {
+    @Test func draggedPositionCentresTheCaptionAndStaysInsideTheFrameWhateverTheSafeArea() throws {
         let caption = CaptionRenderer.RenderedCaption(pngURL: URL(fileURLWithPath: "/unused"), width: 500, height: 100)
         let plain = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: CaptionStyle(), safeArea: nil)
         let middle = plain.position(for: caption, positionOverride: CustomPosition(x: 0.5, y: 0.5).string)
@@ -306,14 +306,16 @@ extension CaptionRendererTests {
         #expect(corner.x == 580 && corner.y == 1820, "never past the frame edge")
         // The Builder's clip path accepts the same string.
         #expect(plain.position(for: caption, clipPosition: CustomPosition(x: 0.5, y: 0.5).string) == (290, 910))
-        // Safe area only keeps a dragged caption clear of the platform chrome.
+        // Safe area only resizes the frame for Auto and the named rows; a dragged caption keeps its spot.
         let safe = try #require(PlatformSafeArea.resolve(platforms: SocialPlatform.allCases, aspectRatio: 9.0 / 16))
         let guarded = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: CaptionStyle(), safeArea: safe, safeAreaOnly: true)
-        let low = guarded.position(for: caption, positionOverride: CustomPosition(x: 0.5, y: 1).string)
-        #expect(Double(low.y + caption.height) <= safe.rect.maxY * 1920 + 1)
+        #expect(guarded.position(for: caption, positionOverride: CustomPosition(x: 0.5, y: 1).string).y == 1820)
+        #expect(guarded.position(for: caption, clipPosition: CustomPosition(x: 0.5, y: 1).string).y == 1820)
         let free = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: CaptionStyle(), safeArea: safe, safeAreaOnly: false)
         #expect(free.position(for: caption, positionOverride: CustomPosition(x: 0.5, y: 1).string).y == 1820,
-                "without safe area only the user's spot is honoured exactly")
+                "the user's spot is honoured exactly")
+        let bottom = guarded.position(for: caption, positionOverride: "bottom")
+        #expect(Double(bottom.y + caption.height) <= safe.rect.maxY * 1920 + 1, "a named row still keeps clear")
     }
 }
 

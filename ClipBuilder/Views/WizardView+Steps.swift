@@ -82,7 +82,7 @@ extension WizardView {
                             positions[slot] = position.string
                             speakerPositionChoices.wrappedValue = positions
                         } else { captionChoice(\.captionPosition).wrappedValue = position.string }
-                    case .nameTag: nameTagPosition = position.string
+                    case .nameTag(let person): store.setPersonTagPosition(person, position.string)
                     }
                 },
                 onPlaceOverlay: { component, box in

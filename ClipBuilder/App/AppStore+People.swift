@@ -92,6 +92,31 @@ extension AppStore {
         await refreshAllNow()
     }
 
+    /// A person's own name tag placement (a corner raw value or a dragged
+    /// `CustomPosition` string); nil or empty returns them to Auto. Keys
+    /// that are not on the roster (the preview's sample) are ignored.
+    func setPersonTagPosition(_ key: String?, _ position: String?) {
+        guard let database, let key, people.contains(where: { $0.key == key }) else { return }
+        let value = position?.isEmpty == false ? position : nil
+        guard people.first(where: { $0.key == key })?.tagPosition != value else { return }
+        let generation = profileGeneration
+        Task {
+            do {
+                if let value {
+                    try await database.savePersonTagField(personKey: key, field: NameTagPlanner.positionField,
+                                                          value: value, provenance: nil, source: "user")
+                } else {
+                    try await database.clearPersonTagField(personKey: key, field: NameTagPlanner.positionField)
+                }
+                guard generation == profileGeneration, self.database === database else { return }
+                personTagFieldsVersion &+= 1
+                await reloadPeople()
+            } catch {
+                presentError("Could not save the name tag position", error)
+            }
+        }
+    }
+
     /// `research` false saves a name that is still being typed without
     /// starting the first-name research; the final commit passes true.
     func renamePerson(_ person: PersonRecord, to name: String, research: Bool = true) {

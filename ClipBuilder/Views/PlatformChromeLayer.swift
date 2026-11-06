@@ -57,6 +57,10 @@ struct PlatformChromeLayer: View {
     let size: CGSize
     /// The output canvas's flag, so the safe-area choice shades the union.
     var safeAreaSettings: PlatformSafeAreaSettings
+    /// The render's own Safe area only choice: its unsafe zones are shaded
+    /// whatever the Simulate menu says, so the user sees what Auto and the
+    /// corners keep clear of (dragged items ignore it).
+    var safeAreaOnly: PlatformSafeArea? = nil
     @AppStorage(PlatformChromePreview.storageKey) private var choice = PlatformChromePreview.off.rawValue
 
     private var preview: PlatformChromePreview { PlatformChromePreview(rawValue: choice) ?? .off }
@@ -72,20 +76,27 @@ struct PlatformChromeLayer: View {
         }
     }
 
+    /// A unit rect of the canvas in points.
+    private func scaled(_ rect: CGRect) -> CGRect {
+        CGRect(x: size.width * rect.minX, y: size.height * rect.minY,
+               width: size.width * rect.width, height: size.height * rect.height)
+    }
+
     var body: some View {
-        if preview != .off, size.width > 0, size.height > 0 {
+        if preview != .off || safeAreaOnly != nil, size.width > 0, size.height > 0 {
             ZStack(alignment: .topLeading) {
-                if let safeArea {
-                    ForEach(Array(safeArea.zones.enumerated()), id: \.offset) { _, zone in
-                        Rectangle()
-                            .fill(Color.red.opacity(0.16))
-                            .frame(width: size.width * zone.rect.width, height: size.height * zone.rect.height)
-                            .offset(x: size.width * zone.rect.minX, y: size.height * zone.rect.minY)
+                if let safeArea = safeAreaOnly ?? safeArea {
+                    // One drawing, no offset views: offset subviews over an
+                    // AVPlayerView host were painted a second time further down.
+                    Canvas { context, _ in
+                        for zone in safeArea.zones {
+                            context.fill(Path(scaled(zone.rect)), with: .color(Color.red.opacity(0.16)))
+                        }
+                        context.stroke(Path(scaled(safeArea.rect).insetBy(dx: 0.5, dy: 0.5)),
+                                       with: .color(Color.green.opacity(0.7)),
+                                       style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
                     }
-                    Rectangle()
-                        .strokeBorder(Color.green.opacity(0.7), style: StrokeStyle(lineWidth: 1, dash: [4, 3]))
-                        .frame(width: size.width * safeArea.rect.width, height: size.height * safeArea.rect.height)
-                        .offset(x: size.width * safeArea.rect.minX, y: size.height * safeArea.rect.minY)
+                    .frame(width: size.width, height: size.height)
                 }
                 if let platform = preview.platform, platform.applies(toAspectRatio: aspectRatio) {
                     mockChrome(platform)
@@ -103,7 +114,7 @@ struct PlatformChromeLayer: View {
             }
             .frame(width: size.width, height: size.height)
             .allowsHitTesting(false)
-            .accessibilityLabel("Simulated \(preview.label) player chrome")
+            .accessibilityLabel(preview == .off ? "Safe area shading" : "Simulated \(preview.label) player chrome")
         }
     }
 

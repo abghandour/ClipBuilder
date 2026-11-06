@@ -497,10 +497,11 @@ nonisolated struct CaptionRenderer: Sendable {
 
     /// Overlay pixel position for a rendered caption box — captions.py math.
     func position(for caption: RenderedCaption, positionOverride: String? = nil) -> (x: Int, y: Int) {
-        // A position the user dragged to in the preview: centred on the point,
-        // kept inside the frame, and inside the safe area when that is on.
+        // A position the user dragged to in the preview: centred on the point
+        // and kept inside the frame. Safe area only resizes the frame the
+        // Auto and corner choices use; a hand placement is left alone.
         if let custom = CustomPosition(positionOverride) {
-            return customOrigin(custom, caption: caption, respectSafeArea: safeAreaOnly)
+            return customOrigin(custom, caption: caption, respectSafeArea: false)
         }
         if safeAreaOnly {
             let position = positionOverride.flatMap { $0 == "auto" ? nil : $0 } ?? style.position
@@ -527,7 +528,7 @@ nonisolated struct CaptionRenderer: Sendable {
     /// `position(for:positionOverride:)` and the frame edge instead.
     func position(for caption: RenderedCaption, clipPosition: String) -> (x: Int, y: Int) {
         if let custom = CustomPosition(clipPosition) {
-            return customOrigin(custom, caption: caption, respectSafeArea: true)
+            return customOrigin(custom, caption: caption, respectSafeArea: false)
         }
         let margin = max(40, videoHeight / 18)
         let x = (videoWidth - caption.width) / 2

@@ -284,7 +284,7 @@ extension WizardFormPlanTests {
             .styleReference, .fightResearch, .layouts, .iteration, .planningModels])
         #expect(custom.step2Controls == [.output, .pacing, .audio, .dub, .musicTrack, .text,
             .overlayStyle, .transitions, .cameraFocus, .framingCamera, .bRoll, .bumpers, .branding, .presentationModels,
-            .captionPosition, .captionStyle, .nameTags, .nameTagStyleID, .nameTagPosition])
+            .captionPosition, .captionStyle, .nameTags, .nameTagStyleID])
         #expect(custom.step1Controls.union(custom.step2Controls) == Set(WizardFormPlan.Control.allCases))
         for recipe in ReelRecipe.all {
             let form = WizardFormPlan(recipe: recipe)

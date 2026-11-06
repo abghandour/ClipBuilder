@@ -105,17 +105,21 @@ struct NameTagPeopleEditor: View {
             Picker("Position", selection: Binding(
                 get: { positions[person.key] ?? "" },
                 set: { setPosition(person, $0) })) {
-                Text("Run default").lineLimit(1).fixedSize().tag("")
+                Text("Auto").lineLimit(1).fixedSize().tag("")
                 Text("Top left").lineLimit(1).fixedSize().tag(NameTagPlanner.Corner.topLeading.rawValue)
                 Text("Top right").lineLimit(1).fixedSize().tag(NameTagPlanner.Corner.topTrailing.rawValue)
                 Text("Bottom left").lineLimit(1).fixedSize().tag(NameTagPlanner.Corner.bottomLeading.rawValue)
                 Text("Bottom right").lineLimit(1).fixedSize().tag(NameTagPlanner.Corner.bottomTrailing.rawValue)
+                // Set by dragging this person's tag in the preview.
+                if let custom = positions[person.key], CustomPosition.isCustom(custom) {
+                    Text("Custom (dragged)").lineLimit(1).fixedSize().tag(custom)
+                }
             }
             .pickerStyle(.menu)
             .labelsHidden()
             .fixedSize()
             .accessibilityLabel("Name tag position of \(person.displayName)")
-            .help("Where this person's tag sits; Run default follows the Name tag position above")
+            .help("Where this person's tag sits; drag their tag in the preview to place it by hand")
             Image(systemName: hasChanges(person) ? "ellipsis.circle" : "checkmark.circle")
                 .foregroundStyle(hasChanges(person) ? Color.secondary : Color.green)
                 .controlSize(.small)
@@ -168,24 +172,9 @@ struct NameTagPeopleEditor: View {
     }
 
     private func setPosition(_ person: PersonRecord, _ corner: String) {
-        guard let database = store.database, corner != (positions[person.key] ?? "") else { return }
-        positions[person.key] = corner
-        Task {
-            do {
-                if corner.isEmpty {
-                    try await database.clearPersonTagField(personKey: person.key, field: NameTagPlanner.positionField)
-                } else {
-                    try await database.savePersonTagField(personKey: person.key, field: NameTagPlanner.positionField,
-                                                          value: corner, provenance: nil, source: "user")
-                }
-                guard store.database === database else { return }
-                store.personTagFieldsVersion &+= 1
-                await store.reloadPeople()
-                error = nil
-            } catch {
-                self.error = error.localizedDescription
-            }
-        }
+        guard corner != (positions[person.key] ?? "") else { return }
+        positions[person.key] = corner.isEmpty ? nil : corner
+        store.setPersonTagPosition(person.key, corner)
     }
 
     /// Saves the typed name. The draft stays in the field until the store's

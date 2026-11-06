@@ -28,7 +28,9 @@ nonisolated enum WizardNameTags {
         }
         let renderer = CaptionRenderer(videoWidth: render.width, videoHeight: render.height,
                                        style: captionStyle, safeArea: safe, safeAreaOnly: options.safeAreaOnly == true)
-        return NameTagPlanner.Settings(position: options.nameTagPosition,
+        // Placement is per person (People list or a drag); the legacy run-wide
+        // nameTagPosition is ignored.
+        return NameTagPlanner.Settings(
             safeRect: safeRect, captionBand: options.addCaptions
                 ? renderer.twoRowBand(positionOverride: options.captionPositionOverride) : nil, canvas: canvas, safeOnly: options.safeAreaOnly == true)
     }

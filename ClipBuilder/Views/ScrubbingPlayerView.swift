@@ -20,6 +20,9 @@ struct ScrubbingPlayerView<Overlay: View>: View {
     /// Drawn over the picture only, not the transport (platform chrome, a
     /// still of the pending settings), given the playhead in seconds.
     @ViewBuilder var pictureOverlay: (Double) -> Overlay
+    /// Drawn over the picture whatever the transport does (safe-area
+    /// shading); above the picture overlay, never over the controls.
+    var pictureChrome: AnyView? = nil
 
     @State private var transport = PlayerTransport()
     @State private var scrubbing: Double?
@@ -34,7 +37,10 @@ struct ScrubbingPlayerView<Overlay: View>: View {
                 .contentShape(Rectangle())
                 .onTapGesture { play() }
                 .overlay {
-                    if !(hidesOverlayWhilePlaying && transport.isPlaying) { pictureOverlay(scrubbing ?? transport.time) }
+                    ZStack {
+                        if !(hidesOverlayWhilePlaying && transport.isPlaying) { pictureOverlay(scrubbing ?? transport.time) }
+                        if let pictureChrome { pictureChrome.allowsHitTesting(false) }
+                    }
                 }
             HStack(spacing: Theme.spaceS) {
                 Button(stale ? (player == nil ? "Render and play" : "Regenerate and play") : transport.isPlaying ? "Pause" : "Play",

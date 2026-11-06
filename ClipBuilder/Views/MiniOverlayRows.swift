@@ -67,8 +67,7 @@ struct MiniOverlayRows: View {
             }
             if settings.nameTags {
                 MiniDependents {
-                    NameTagControls(style: $settings.nameTagStyleID,
-                                    position: $settings.nameTagPosition, profile: store.activeProfile,
+                    NameTagControls(style: $settings.nameTagStyleID, profile: store.activeProfile,
                                     videoIDs: videoIDs)
                 }
             }

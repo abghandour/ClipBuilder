@@ -45,7 +45,7 @@ struct WizardAssistantTests {
         #expect(settings.quality == .compact && settings.preset == .square1080 && settings.look == "vintage")
         #expect(settings.transition == "Dissolve" && settings.framing.subject == .centerStage)
         #expect(settings.captions && settings.captionPosition == "top" && settings.captionStyleID == nil && settings.englishCaptions)
-        #expect(settings.nameTags && settings.nameTagPosition == "topTrailing" && settings.nameTagStyleID == "ABCDEF")
+        #expect(settings.nameTags && settings.nameTagPosition == nil && settings.nameTagStyleID == "ABCDEF")
         #expect(settings.safeAreaOnly && !settings.watermark && settings.watermarkOverlay == "Lower third" && settings.watermarkOpacity == 0.4)
         #expect(settings.overlay && settings.overlayTemplate == "Promo" && settings.introVideo && !settings.outroVideo)
         #expect(settings.muteSourceAudio && settings.music && settings.dub && settings.dubLanguage == "en-US")

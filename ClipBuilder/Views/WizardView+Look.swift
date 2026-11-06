@@ -137,7 +137,7 @@ extension WizardView {
         if lookFormPlan.step2Controls.contains(.nameTags) {
             WizardControlRow("Name tags") { Toggle("Name tags", isOn: $nameTags) }
             if nameTags {
-                NameTagControls(style: $nameTagStyleID, position: $nameTagPosition, profile: store.activeProfile,
+                NameTagControls(style: $nameTagStyleID, profile: store.activeProfile,
                                 people: eligibleSourcePeople)
                     .formDependent()
             }

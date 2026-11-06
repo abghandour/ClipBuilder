@@ -236,7 +236,6 @@ nonisolated struct WizardAssistant: PageAssistant {
         if m.nameTags {
             add("nameTagContent", "Name tag content", m.nameTagContent)
             add("nameTagStyle", "Name tag style", m.nameTagStyleID ?? m.nameTagStyle)
-            add("nameTagPosition", "Name tag position", m.nameTagPosition)
         }
         if m.safeAreaOnly, let platforms = m.safeAreaPlatforms, !platforms.isEmpty {
             add("safeAreaPlatforms", "Safe area platforms", Self.platformLabels(platforms))
@@ -695,8 +694,6 @@ nonisolated struct WizardAssistant: PageAssistant {
             choice("captionStyle", "Caption style", captionStyles),
             choice("captionLanguage", "Caption language", [("native", "Native (spoken language)"), ("english", "English")]),
             AssistantSetting("nameTags", "Name tags", .bool),
-            choice("nameTagPosition", "Name tag position", [(defaultChoice, "Auto"), ("topLeading", "Top left"), ("topTrailing", "Top right"),
-                                                            ("bottomLeading", "Bottom left"), ("bottomTrailing", "Bottom right")]),
             choice("nameTagStyle", "Name tag style", tagStyles),
             AssistantSetting("safeAreaOnly", "Safe area only (keep text clear of platform buttons)", .bool),
             AssistantSetting("watermark", "Watermark", .bool),
@@ -833,7 +830,6 @@ nonisolated struct WizardAssistant: PageAssistant {
             case "captionPosition": settings.captionPosition = optional(value)
             case "captionStyle": settings.captionStyleID = optional(value)
             case "captionLanguage": settings.englishCaptions = value == "english"
-            case "nameTagPosition": settings.nameTagPosition = optional(value)
             case "nameTagStyle": settings.nameTagStyleID = optional(value)
             case "watermarkDesign": settings.watermarkOverlay = optional(value)
             case "watermarkOpacity": if let percent = Int(value) { settings.watermarkOpacity = Double(percent) / 100 }

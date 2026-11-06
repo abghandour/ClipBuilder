@@ -3,7 +3,8 @@ import SwiftUI
 /// An element the user can drag to a new place in the preview.
 enum PreviewElement: Hashable, Sendable {
     case caption(slot: String?)
-    case nameTag
+    /// The tagged person's key; a drag sets that person's own position.
+    case nameTag(person: String?)
 
     var label: String {
         switch self {
@@ -483,8 +484,12 @@ struct WizardPreviewColumn: View {
             .overlay {
                 if model.selectedScene != nil {
                     GeometryReader { geometry in
+                        // A pinned still sits on the rough cut sheet's player, which
+                        // shades the unsafe zones itself so they stay during playback.
                         PlatformChromeLayer(size: geometry.size,
-                                            safeAreaSettings: options.renderSettings.platformSafeArea)
+                                            safeAreaSettings: options.renderSettings.platformSafeArea,
+                                            safeAreaOnly: pinned == nil && options.safeAreaOnly == true
+                                                ? options.resolvedSafeArea : nil)
                     }
                     .allowsHitTesting(false)
                 }
@@ -588,8 +593,9 @@ private struct PreviewHandlesLayer: View {
 
     var body: some View {
         ZStack(alignment: .topLeading) {
-            ForEach(Array(layout.tags.enumerated()), id: \.offset) { _, rect in
-                PreviewHandle(element: .nameTag, rect: viewRect(rect), size: size, onMove: onMove)
+            ForEach(Array(layout.tags.enumerated()), id: \.offset) { index, rect in
+                let person = layout.tagKeys.indices.contains(index) ? layout.tagKeys[index] : nil
+                PreviewHandle(element: .nameTag(person: person), rect: viewRect(rect), size: size, onMove: onMove)
             }
             ForEach(Array(layout.captions.enumerated()), id: \.element.personKey) { _, caption in
                 let slot = caption.personKey.flatMap { ordinals[$0] }.map(CaptionSpeakerOrder.slot)

@@ -21,11 +21,12 @@ nonisolated enum NameTagPlanner {
         var key: String
         var name: String
         var role: String = ""
-        /// This person's own corner (a `Corner` raw value); nil follows the run.
+        /// This person's own placement: a `Corner` raw value, or a
+        /// `CustomPosition` string from a drag in the preview; nil is Auto.
         var position: String? = nil
     }
 
-    /// The person tag field that stores a per-person corner.
+    /// The person tag field that stores a person's corner or dragged point.
     static let positionField = "Tag position"
     struct Span: Sendable {
         var start: Double
@@ -38,6 +39,8 @@ nonisolated enum NameTagPlanner {
         var spans: [Span]
     }
     struct Settings: Sendable {
+        /// Placement for people without their own. The app leaves it nil:
+        /// a tag's position is set per person (People list or a drag).
         var position: String? = nil
         var safeRect: CGRect? = nil
         var captionBand: CGRect? = nil
@@ -48,28 +51,28 @@ nonisolated enum NameTagPlanner {
     static func plan(areas: [Area], people: [Person], settings: Settings,
                      style: TagStyle = TagStyle(), imageAspects: [UUID: CGFloat] = [:]) -> [NameTag] {
         let names = Dictionary(people.map { ($0.key, $0) }, uniquingKeysWith: { first, _ in first })
-        let explicitCorner = Corner(rawValue: settings.position ?? "")
-        // Dragged in the preview: every tag is centred on this canvas point
-        // (inside its area), never moved for the caption. The drag is the
-        // later, explicit choice, so it beats a person's own corner too.
-        let customAnchor = CustomPosition(settings.position)
-        // A chosen corner or a dragged point is a deliberate placement: the
-        // platform safe area only limits it when Safe area only is on.
-        let keepsSafe = (explicitCorner == nil && customAnchor == nil) || settings.safeOnly
         let frame = CGRect(origin: .zero, size: settings.canvas)
         let renderer = TextOverlayRenderer(videoWidth: Int(settings.canvas.width),
                                            videoHeight: Int(settings.canvas.height), safeArea: nil)
         return areas.flatMap { area -> [NameTag] in
             let inset = min(area.rect.width, area.rect.height) * 0.04
-            var allowed = area.rect.insetBy(dx: inset, dy: inset)
-            if keepsSafe, let safe = settings.safeRect {
-                allowed = allowed.intersection(safe)
-                if allowed.isNull || allowed.isEmpty { allowed = safe.intersection(frame) }
-            }
-            guard !allowed.isNull, allowed.width > 0, allowed.height > 0 else { return [] }
             var tags: [NameTag] = []
             for span in area.spans.sorted(by: { ($0.start, $0.faceBox?.midX ?? 0) < ($1.start, $1.faceBox?.midX ?? 0) }) {
                 guard span.end > span.start, let key = span.personKey, let person = names[key] else { continue }
+                // Each person's own placement: a corner, a point dragged in the
+                // preview (centred there, never moved for the caption), or Auto.
+                let position = person.position ?? settings.position
+                let explicitCorner = Corner(rawValue: position ?? "")
+                let customAnchor = CustomPosition(position)
+                // Safe area only shrinks the frame the Auto and corner placements
+                // use; a dragged point is the user's own spot and is never moved.
+                let keepsSafe = customAnchor == nil && (explicitCorner == nil || settings.safeOnly)
+                var allowed = area.rect.insetBy(dx: inset, dy: inset)
+                if keepsSafe, let safe = settings.safeRect {
+                    allowed = allowed.intersection(safe)
+                    if allowed.isNull || allowed.isEmpty { allowed = safe.intersection(frame) }
+                }
+                guard !allowed.isNull, allowed.width > 0, allowed.height > 0 else { continue }
                 let name = person.name.split(whereSeparator: \.isWhitespace).joined(separator: " ")
                 let role = person.role.split(whereSeparator: \.isWhitespace).joined(separator: " ")
                 guard !name.isEmpty else { continue }
@@ -106,7 +109,6 @@ nonisolated enum NameTagPlanner {
                     let trailing = corner == .topTrailing || corner == .bottomTrailing
                     return (face.midX >= area.rect.midX) == trailing ? 0 : 1
                 }
-                let personCorner = Corner(rawValue: person.position ?? "")
                 let gap = settings.canvas.height * 0.01
                 if let customAnchor {
                     // The anchor is a canvas point; the tag is kept inside this area's allowed rect.
@@ -116,8 +118,9 @@ nonisolated enum NameTagPlanner {
                     let corner: Corner = anchored.midY < area.rect.midY
                         ? (anchored.midX < area.rect.midX ? .topLeading : .topTrailing)
                         : (anchored.midX < area.rect.midX ? .bottomLeading : .bottomTrailing)
-                    let bounds = settings.safeOnly ? (settings.safeRect?.intersection(frame) ?? frame) : frame
-                    let placed = clearingConcurrent(anchored, corner: corner, others: concurrent, bounds: bounds, gap: gap) ?? anchored
+                    // Stacking away from a concurrent tag uses the whole frame too: the
+                    // safe area never moves a dragged tag.
+                    let placed = clearingConcurrent(anchored, corner: corner, others: concurrent, bounds: frame, gap: gap) ?? anchored
                     let tag = NameTag(personKey: key, lines: layout.lines, areaRect: area.rect, rect: placed,
                                       corner: corner, fontSize: layout.fontSize, start: span.start, end: span.end)
                     if let index = tags.lastIndex(where: { $0.personKey == key && $0.lines == tag.lines
@@ -126,7 +129,7 @@ nonisolated enum NameTagPlanner {
                     } else { tags.append(tag) }
                     continue
                 }
-                let corner = personCorner ?? explicitCorner ?? Corner.allCases.enumerated().min {
+                let corner = explicitCorner ?? Corner.allCases.enumerated().min {
                     (overlap(rect($0.element)), sidePenalty($0.element), $0.offset)
                         < (overlap(rect($1.element)), sidePenalty($1.element), $1.offset)
                 }!.element

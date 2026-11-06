@@ -18,7 +18,7 @@ struct SafeAreaControls: View {
                 }
             }
             if enabled {
-                FormCaption("Captions and name tags stay clear of the chosen platforms' buttons and bars. Watermark and overlays are not moved.")
+                FormCaption("Auto and corner captions and name tags stay clear of the chosen platforms' buttons and bars, shaded in the preview. Dragged items, the watermark and overlays are not moved.")
             }
         }
     }
