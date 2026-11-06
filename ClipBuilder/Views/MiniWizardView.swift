@@ -118,6 +118,14 @@ struct MiniWizardView: View {
                                 summary: generateSummary)
     }
 
+    /// The output format's width / height, for the plain player column.
+    private var playerAspect: CGFloat {
+        let options = miniSettings.effective(for: flow,
+            introAvailable: store.bumpers.contains { $0.placements.contains(.intro) },
+            outroAvailable: store.bumpers.contains { $0.placements.contains(.outro) })
+        return CGFloat(options.previewOptions(profile: store.activeProfile).renderSettings.aspectRatio)
+    }
+
     /// The reel as preview clips: every selected item across the sections.
     private func reelClips(videoID: Int64) -> [WizardPreviewClip] {
         WizardPreviewClips.reel(items: store.miniReelItems, runs: store.miniRuns, videoID: videoID, scenes: store.scenes)
@@ -151,33 +159,10 @@ struct MiniWizardView: View {
         HSplitView {
             settingsColumn.frame(minWidth: 480, maxWidth: .infinity)
             if let video = selectedVideo {
-                WizardPreviewColumn(scenes: store.scenes.filter { $0.videoID == video.id },
-                    clips: reelClips(videoID: video.id),
-                    options: miniSettings.effective(for: flow,
-                        introAvailable: store.bumpers.contains { $0.placements.contains(.intro) },
-                        outroAvailable: store.bumpers.contains { $0.placements.contains(.outro) })
-                        .previewOptions(profile: store.activeProfile),
-                    profile: store.activeProfile, thumbnails: store.thumbnails,
+                WizardPlayerColumn(clips: reelClips(videoID: video.id), aspect: playerAspect,
                     footer: generateFooter,
                     headerAccessory: AnyView(MiniStartOverButton(hasChanges: hasChangesToReset, startOver: startOver)),
-                    onMove: { element, position in
-                        switch element {
-                        case .caption(let slot):
-                            if let slot {
-                                var positions = miniSettings.speakerCaptionPositions ?? [:]
-                                positions[slot] = position.string
-                                miniSettings.speakerCaptionPositions = positions
-                            } else { miniSettings.captionPosition = position.string }
-                        case .nameTag(let person): store.setPersonTagPosition(person, position.string)
-                        }
-                    },
-                    onPlaceOverlay: { component, box in
-                        miniSettings.overlayEdits.place(component, at: box)
-                    },
-                    onPlaceFocusFrame: flow.visibleCard == .settings && flow.canExpand(.settings) && settingsProfile == profileName
-                        && !store.isWizardRunning && flow.effectiveSettingsTab(settingsTab) == .picture
-                        ? { miniSettings.framing.focusFrame = $0 } : nil,
-                    emptyMessage: sceneVideoIDs.contains(video.id) ? "Choose a video to preview"
+                    emptyMessage: sceneVideoIDs.contains(video.id) ? "No kept footage yet. Keep footage in the Footage step to play it here."
                         : "No scenes to preview yet. Run Analyze on this source in Sources to see it here.",
                     list: previewListConfig)
                     .id("\(store.profileGeneration):\(store.activeProjectID ?? 0):\(video.id)")

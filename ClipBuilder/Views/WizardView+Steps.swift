@@ -72,31 +72,7 @@ extension WizardView {
     var configurationForm: some View {
         HSplitView {
             configurationCards.frame(minWidth: 480, maxWidth: .infinity)
-            WizardPreviewColumn(scenes: previewScenes, options: presentationOptions(),
-                profile: store.activeProfile, thumbnails: store.thumbnails, captionOrdinals: captionOrdinals,
-                onMove: { element, position in
-                    switch element {
-                    case .caption(let slot):
-                        if let slot {
-                            var positions = speakerCaptionPositions ?? [:]
-                            positions[slot] = position.string
-                            speakerPositionChoices.wrappedValue = positions
-                        } else { captionChoice(\.captionPosition).wrappedValue = position.string }
-                    case .nameTag(let person): store.setPersonTagPosition(person, position.string)
-                    }
-                },
-                onPlaceOverlay: { component, box in
-                    var edits = OverlayEdits.split(fixedOverlayEdits)
-                    edits.place(component, at: box)
-                    fixedOverlayEdits = edits.joined
-                },
-                onPlaceFocusFrame: cardFlow.visibleCard == .settings && cardFlow.canExpand(.settings) && !store.isWizardRunning
-                    && (WizardSettingsTab(rawValue: settingsTabRaw) ?? .picture) == .picture
-                    ? { frame in
-                        var value = framingBinding.wrappedValue
-                        value.focusFrame = frame
-                        framingBinding.wrappedValue = value
-                    } : nil)
+            WizardPlayerColumn(scenes: previewScenes, aspect: presentationOptions().renderSettings.aspectRatio)
                 .id("\(store.profileGeneration):\(store.activeProjectID ?? 0)")
                 .rememberedPaneWidth("pane.wizard.preview", min: 240, initial: 320, max: 900)
         }

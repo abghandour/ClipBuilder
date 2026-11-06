@@ -78,6 +78,12 @@ struct RoughCutReviewSheet: View {
     private var tab: WizardSettingsTab { (WizardSettingsTab(rawValue: tabRaw) ?? .picture).effective(in: tabs) }
     /// The Overlays tab edits in the picture: the still covers the cut and its handles are live.
     private var editsOverlays: Bool { hasOverlays && tab == .overlays && !busy && pendingJob == nil }
+    /// The Picture tab places the focus frame in the picture: the still
+    /// covers the paused cut with the frame's handle live. The wizard pages
+    /// only play the recording, so this is where the frame is drawn.
+    private var editsFocus: Bool {
+        tab == .picture && framing.subject != .layout && !busy && pendingJob == nil
+    }
     /// The Overlays tab's settings; a plain cut never reads this.
     private var overlaySettings: Binding<MiniWizardSettings> {
         Binding(get: { extras.overlays?.settings ?? MiniWizardSettings() },
@@ -154,6 +160,10 @@ struct RoughCutReviewSheet: View {
                     Text("Drag a caption, name tag or overlay item on the picture to place it.")
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.tail)
+                } else if editsFocus {
+                    Text("Drag the focus frame on the picture to move it, or a grip to resize it.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.tail)
                 }
                 Spacer()
                 Button("Discard") { finish() }
@@ -216,7 +226,7 @@ struct RoughCutReviewSheet: View {
     /// the cut plays.
     @ViewBuilder
     private func still(for cut: RoughCut, at time: Double) -> some View {
-        if stale || editsOverlays, let previewOptions, let takeID = cut.takeID,
+        if stale || editsOverlays || editsFocus, let previewOptions, let takeID = cut.takeID,
            let moment = WizardPreviewClips.moment(in: WizardPreviewClips.clips(review.previewClips, ofTake: takeID), at: time) {
             pinnedStill(options: previewOptions, moment: moment)
         }
@@ -241,19 +251,24 @@ struct RoughCutReviewSheet: View {
     }
 
     private func pinnedStill(options: WizardOptions, moment: WizardPreviewMoment) -> some View {
-        let editing = editsOverlays
+        let editing = editsOverlays || editsFocus
         var onMove: ((PreviewElement, CustomPosition) -> Void)?
         var onPlaceOverlay: ((OverlayComponent, CGRect) -> Void)?
-        if editing {
+        var onPlaceFocusFrame: ((FreeCropRect?) -> Void)?
+        if editsOverlays {
             onMove = { element, position in moveOverlayElement(element, position) }
             onPlaceOverlay = { component, box in placeOverlayComponent(component, box) }
         }
-        let label: String = editing ? "Preview of the settings at this moment; drag a caption, name tag or overlay item to place it"
+        if editsFocus {
+            onPlaceFocusFrame = { frame in framing.focusFrame = frame }
+        }
+        let label: String = editsOverlays ? "Preview of the settings at this moment; drag a caption, name tag or overlay item to place it"
+            : editsFocus ? "Preview of the framing at this moment; drag the focus frame to move it, or a grip to resize it"
             : "Preview of the changed settings at this moment"
         return WizardPreviewColumn(scenes: review.previewClips.map(\.scene), clips: review.previewClips,
                                    options: options, profile: store.activeProfile,
                                    thumbnails: store.thumbnails, onMove: onMove, onPlaceOverlay: onPlaceOverlay,
-                                   pinned: moment)
+                                   onPlaceFocusFrame: onPlaceFocusFrame, pinned: moment)
             .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
             .allowsHitTesting(editing)
             .accessibilityLabel(label)

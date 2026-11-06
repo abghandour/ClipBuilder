@@ -14,97 +14,58 @@ enum PreviewElement: Hashable, Sendable {
     }
 }
 
-/// A sibling of the settings form, so the scene stays visible while editing.
+/// The rough cut sheet's still: one kept clip at one moment rendered with
+/// the sheet's settings, filling its frame, with live handles for the
+/// caption, name tags, overlay items and focus frame. The wizard pages'
+/// third column only plays the recording (`WizardPlayerColumn`); this is
+/// the one place the settings are previewed before a render.
 struct WizardPreviewColumn: View {
     @Environment(AppStore.self) private var store
     let scenes: [SceneRecord]
-    /// Kept footage in output order. When present the column previews these
-    /// stretches with a scrubber instead of stepping through analysis scenes.
+    /// Kept footage; the pinned moment names one of these.
     let clips: [WizardPreviewClip]
     let options: WizardOptions
     let profile: BrandProfile
     var captionOrdinals: [String: Int]? = nil
-    /// Pinned under the preview: Express puts its run summary and Generate here.
-    /// It must scroll on its own; the column only gives it the pane.
-    var footer: AnyView? = nil
-    /// Sits in the top-right corner of the header, after the chrome picker:
-    /// Express puts Start Over here.
-    var headerAccessory: AnyView? = nil
-    /// Called when the user drops a dragged element; the owner stores the
-    /// position in its settings and the preview re-renders from them.
+    /// Called when the user drops a dragged caption or name tag.
     var onMove: ((PreviewElement, CustomPosition) -> Void)? = nil
     /// Called when the user moves or resizes one component of the overlay
-    /// design to a box in design coordinates, as canvas fractions; the
-    /// owner stores it and the preview re-renders (text wraps to its width,
-    /// an image keeps its aspect).
+    /// design to a box in design coordinates, as canvas fractions.
     var onPlaceOverlay: ((OverlayComponent, CGRect) -> Void)? = nil
-    /// Non-nil only while the Framing settings are visible. A saved frame's outline stays visible elsewhere.
+    /// Non-nil while the focus frame can be placed (the sheet's Picture tab).
     var onPlaceFocusFrame: ((FreeCropRect?) -> Void)? = nil
-    /// Shown instead of a frame when there is no scene to preview.
-    var emptyMessage = "Choose a video to preview"
-    /// When set, the header gets List and Video tabs and List shows the kept
-    /// clips as reorderable rows (Express). Nil keeps the video-only column.
-    var list: WizardPreviewListConfig? = nil
-    /// The chosen tab, remembered across launches. List is the default.
-    @AppStorage("preview.express.tab") private var tabRaw = PreviewTab.list.rawValue
-    private enum PreviewTab: String, CaseIterable { case list, video, summary }
-    private var tab: PreviewTab {
-        guard let list else { return .video }
-        let chosen = PreviewTab(rawValue: tabRaw) ?? .list
-        return chosen == .summary && list.summary == nil ? .list : chosen
-    }
-    /// When set, the column is only the still of this clip at this moment,
-    /// filling its frame: no title, stepper, scrubber or caption. The rough
-    /// cut sheet draws it over a player whose settings have changed.
-    var pinned: WizardPreviewMoment? = nil
+    /// The clip and moment the still shows.
+    let pinned: WizardPreviewMoment
     @State private var model: WizardPreviewModel
     @State private var reloadID = 0
     @State private var loadedContentKey: ContentKey?
-    @State private var clipIndex = 0
-    /// Scrubber position in source seconds; nil shows the middle of the clip.
-    @State private var scrubTime: Double?
-    /// Chips the user has set for this recording; nil means every speaker.
-    @State private var shownSpeakers: Set<String>?
-    /// Name markers show briefly after a chip changes or while a caption is hovered.
-    @State private var markersRevealed = false
-    @State private var markerRevealID = 0
-    /// Measured height of the texts under the Video tab's image.
-    @State private var textsHeight: CGFloat = 0
 
-    init(scenes: [SceneRecord], clips: [WizardPreviewClip] = [], options: WizardOptions, profile: BrandProfile,
-         thumbnails: ThumbnailService, footer: AnyView? = nil, headerAccessory: AnyView? = nil, captionOrdinals: [String: Int]? = nil,
+    init(scenes: [SceneRecord], clips: [WizardPreviewClip], options: WizardOptions, profile: BrandProfile,
+         thumbnails: ThumbnailService, captionOrdinals: [String: Int]? = nil,
          onMove: ((PreviewElement, CustomPosition) -> Void)? = nil,
          onPlaceOverlay: ((OverlayComponent, CGRect) -> Void)? = nil,
          onPlaceFocusFrame: ((FreeCropRect?) -> Void)? = nil,
-         emptyMessage: String = "Choose a video to preview", pinned: WizardPreviewMoment? = nil,
-         list: WizardPreviewListConfig? = nil) {
-        self.emptyMessage = emptyMessage
+         pinned: WizardPreviewMoment) {
         self.pinned = pinned
-        self.list = list
         self.scenes = scenes
         self.clips = clips
         self.options = options
         self.profile = profile
         self.captionOrdinals = captionOrdinals
-        self.footer = footer
-        self.headerAccessory = headerAccessory
         self.onMove = onMove
         self.onPlaceOverlay = onPlaceOverlay
         self.onPlaceFocusFrame = onPlaceFocusFrame
         _model = State(initialValue: WizardPreviewModel(thumbnails: thumbnails))
     }
 
-    private var currentClip: WizardPreviewClip? {
-        if let pinned { return clips.first { $0.id == pinned.clipID } }
-        return clips.isEmpty ? nil : clips[min(clipIndex, clips.count - 1)]
-    }
+    private var currentClip: WizardPreviewClip? { clips.first { $0.id == pinned.clipID } }
 
-    /// The scene the still is read from: the kept clip's, else the stepper's.
+    /// The scene the still is read from.
     private var previewRecord: SceneRecord? { currentClip?.scene ?? model.selectedScene }
 
     private var previewTime: Double? {
         guard let clip = currentClip else { return nil }
-        return min(clip.end, max(clip.start, pinned?.time ?? scrubTime ?? (clip.start + clip.end) / 2))
+        return min(clip.end, max(clip.start, pinned.time))
     }
 
     private struct ContentKey: Equatable {
@@ -112,7 +73,7 @@ struct WizardPreviewColumn: View {
         var generation: Int
         var transcriptVersion: Int
         var people: [PersonRecord]
-        /// Bumped when a tag field (Role, Team, handle) is saved for a person.
+        /// Bumped when a tag field (Role, Team, handle, position) is saved for a person.
         var tagFieldsVersion: Int
         var language: String?
         var tagStyle: TagStyle
@@ -125,12 +86,12 @@ struct WizardPreviewColumn: View {
         /// The kept range the framing is planned over (a trim changes it, not the id).
         var rangeStart: Double?
         var rangeEnd: Double?
-        /// Scrubber moment, rounded so a slider's sub-frame jitter does not reload.
+        /// The moment, rounded so sub-frame jitter does not reload.
         var time: Double?
     }
 
     /// What the recording-wide part of a scene load depends on; the model
-    /// keeps that part across scrubs while this stays the same.
+    /// keeps that part across moments while this stays the same.
     private var snapshotKey: String {
         "\(previewRecord?.videoID ?? -1)|\(options.effectiveCaptionLanguage ?? "")|\(store.transcriptCountsVersion)|"
             + "\(store.personTagFieldsVersion)|\(store.profileGeneration)|\(options.nameTagStyleID ?? "")|\(reloadID)|\(store.videosVersion)|\(store.scenesVersion)"
@@ -152,205 +113,42 @@ struct WizardPreviewColumn: View {
         guard let record = previewRecord else { return nil }
         return PreviewKey(options: options, scene: record, profile: profile,
                           contentRevision: model.contentRevision, overlayTexts: overlayTexts, time: previewTime,
-                          shownSpeakers: effectiveShownSpeakers, captionOrdinals: captionOrdinals,
+                          shownSpeakers: Set(speakerKeys), captionOrdinals: captionOrdinals,
                           chosenSubject: currentClip?.chosenSubject)
     }
 
     var body: some View {
-        Group {
-            if pinned != nil {
-                preview
-            } else if let footer, list?.summary != nil {
-                // The summary is a tab, so the footer is only the action row,
-                // pinned under the preview at its own height.
-                VStack(spacing: 0) {
-                    previewArea
-                    Divider()
-                    footer
+        preview
+            .onChange(of: scenes, initial: true) { _, values in model.setScenes(values) }
+            .task(id: contentKey) {
+                let requestedContent = contentKey
+                loadedContentKey = nil
+                model.cancel()
+                // The playhead under the still changes the key many times a
+                // second while it is dragged; load once the hand pauses.
+                if contentKey.time != nil {
+                    try? await Task.sleep(for: .milliseconds(120))
+                    if Task.isCancelled { return }
                 }
-            } else if let footer {
-                // The divider between the preview and the footer is draggable,
-                // so the preview can take the height it needs. The footer owns
-                // its scrolling so it can keep its action pinned when squeezed.
-                VSplitView {
-                    previewArea
-                        .rememberedPaneHeight("pane.wizard.previewArea", min: 260, initial: 560)
-                    footer
-                        .frame(minHeight: 96)
-                }
-            } else {
-                previewArea
-            }
-        }
-        .onChange(of: shownSpeakersKey, initial: true) { _, key in
-            // While no recording is resolved the key is a placeholder; keep the
-            // chips as they are rather than resetting them to "everyone".
-            guard previewRecord != nil else { return }
-            shownSpeakers = UserDefaults.standard.string(forKey: key).map {
-                Set($0.split(separator: "\n").map(String.init))
-            }
-        }
-        .onChange(of: scenes, initial: true) { _, values in model.setScenes(values) }
-        .onChange(of: clips.map(\.id)) { _, ids in
-            if clipIndex >= ids.count { clipIndex = 0 }
-            scrubTime = nil
-        }
-        .task(id: contentKey) {
-            let requestedContent = contentKey
-            loadedContentKey = nil
-            model.cancel()
-            // A dragged scrubber changes the key many times a second; load
-            // once the hand pauses.
-            if contentKey.time != nil {
-                try? await Task.sleep(for: .milliseconds(120))
-                if Task.isCancelled { return }
-            }
-            await model.loadScene(previewRecord, database: store.database, people: store.people,
-                                  language: options.effectiveCaptionLanguage, tagStyleID: options.nameTagStyleID, profile: profile, options: options,
-                                  range: currentClip?.range, time: previewTime, snapshotKey: snapshotKey,
-                                  reviewedBRoll: currentClip?.brollCuts, chosenSubject: currentClip?.chosenSubject)
-            if !Task.isCancelled, model.isSceneCurrent {
-                loadedContentKey = requestedContent
-            }
-        }
-        // Use the current view's options: composite controls may have changed
-        // while the content task was loading with its earlier options snapshot.
-        .onChange(of: loadedContentKey) { _, _ in refresh() }
-        // The cache key includes the text snapshot used by the next render.
-        .onChange(of: key(overlayTexts: []), initial: true) { _, _ in refresh() }
-        // Typed replacement texts re-render after a short pause so the preview
-        // shows what the user wrote without rendering on every keystroke.
-        .task(id: options.fixedOverlayTexts ?? []) {
-            try? await Task.sleep(for: .milliseconds(400))
-            if !Task.isCancelled { refresh() }
-        }
-        .onDisappear { model.cancel() }
-    }
-
-    private var previewArea: some View {
-        VStack(alignment: .leading, spacing: Theme.spaceM) {
-            if list != nil {
-                // Two fixed rows: the column is narrow, and a one-line header
-                // clipped the clip stepper.
-                VStack(alignment: .leading, spacing: Theme.spaceS) {
-                    HStack(spacing: Theme.spaceS) {
-                        title
-                        Spacer(minLength: 0)
-                        if tab == .video { chromePicker }
-                        headerAccessory
-                    }
-                    // The stepper drops to a third row when the tabs and
-                    // it do not share one: an overflowing row pushed the
-                    // List segment off the left edge.
-                    ViewThatFits(in: .horizontal) {
-                        HStack(spacing: Theme.spaceS) {
-                            tabPicker
-                            Spacer(minLength: 0)
-                            if tab == .video { stepper }
-                        }
-                        VStack(alignment: .leading, spacing: Theme.spaceS) {
-                            tabPicker
-                            if tab == .video { stepper }
-                        }
-                    }
-                }
-            } else {
-                ViewThatFits(in: .horizontal) {
-                    HStack(spacing: Theme.spaceS) {
-                        title
-                        Spacer(minLength: 0)
-                        stepper
-                        chromePicker
-                        headerAccessory
-                    }
-                    VStack(alignment: .leading, spacing: Theme.spaceS) {
-                        HStack {
-                            title
-                            Spacer(minLength: 0)
-                            chromePicker
-                            headerAccessory
-                        }
-                        stepper
-                    }
+                await model.loadScene(previewRecord, database: store.database, people: store.people,
+                                      language: options.effectiveCaptionLanguage, tagStyleID: options.nameTagStyleID, profile: profile, options: options,
+                                      range: currentClip?.range, time: previewTime, snapshotKey: snapshotKey,
+                                      reviewedBRoll: currentClip?.brollCuts, chosenSubject: currentClip?.chosenSubject)
+                if !Task.isCancelled, model.isSceneCurrent {
+                    loadedContentKey = requestedContent
                 }
             }
-            if let list, tab == .list {
-                WizardPreviewList(clips: clips, selectedIndex: $clipIndex, config: list,
-                                  emptyMessage: clips.isEmpty ? "No kept footage yet. Keep footage in the Footage step to list it here." : "")
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else if let summary = list?.summary, tab == .summary {
-                ScrollView { summary.frame(maxWidth: .infinity, alignment: .topLeading) }
-                    .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-            } else {
-                videoArea
+            // Use the current view's options: controls may have changed while
+            // the content task was loading with its earlier options snapshot.
+            .onChange(of: loadedContentKey) { _, _ in refresh() }
+            // The cache key includes the text snapshot used by the next render.
+            .onChange(of: key(overlayTexts: []), initial: true) { _, _ in refresh() }
+            // Typed replacement texts re-render after a short pause.
+            .task(id: options.fixedOverlayTexts ?? []) {
+                try? await Task.sleep(for: .milliseconds(400))
+                if !Task.isCancelled { refresh() }
             }
-        }
-        .padding(Theme.spaceM)
-    }
-
-    @ViewBuilder
-    private var tabPicker: some View {
-        if list != nil {
-            Picker("Preview tab", selection: $tabRaw) {
-                Text("List").tag(PreviewTab.list.rawValue)
-                Text("Video").tag(PreviewTab.video.rawValue)
-                if list?.summary != nil { Text("Summary").tag(PreviewTab.summary.rawValue) }
-            }
-            .pickerStyle(.segmented)
-            .labelsHidden()
-            .controlSize(.small)
-            .fixedSize()
-            .help("List shows the kept clips in order; Video previews one clip with the current settings; Summary shows what Generate will make")
-        }
-    }
-
-    private var videoArea: some View {
-        let aspect = max(0.01, options.renderSettings.aspectRatio)
-        let showsChips = options.addCaptions && !speakerKeys.isEmpty
-        // What sits under the image: the scrubber row, the speaker chips and
-        // the texts, whose height is measured (it wraps with the column).
-        let reserve: CGFloat = (currentClip == nil ? 0 : 28) + (showsChips ? 30 : 0) + textsHeight + Theme.spaceS
-        return GeometryReader { available in
-            // The largest frame that fits: the full column width when the
-            // column is narrow, else the full remaining height. Sized
-            // explicitly so the scrubber and texts sit flush under it.
-            let height = min(max(120, available.size.height - reserve), available.size.width / aspect)
-            VStack(alignment: .leading, spacing: Theme.spaceS) {
-                preview
-                    .frame(width: height * aspect, height: height)
-                if let clip = currentClip { scrubber(clip).frame(width: height * aspect) }
-                if showsChips { speakerChips.frame(width: height * aspect) }
-                videoTexts
-                    .onGeometryChange(for: CGFloat.self) { $0.size.height } action: { textsHeight = $0 }
-            }
-            .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
-        }
-    }
-
-    private var videoTexts: some View {
-        VStack(alignment: .leading, spacing: Theme.spaceS) {
-                    if let error = model.error {
-                        Text(error).font(.caption).foregroundStyle(.secondary)
-                        Button("Retry preview") { reloadID += 1 }
-                            .lineLimit(1).fixedSize()
-                    }
-                    if let warning = model.scene?.framingWarning {
-                        Text(warning).font(.caption).foregroundStyle(.secondary)
-                            .fixedSize(horizontal: false, vertical: true)
-                    }
-                    Text((currentClip == nil
-                        ? "One scene with the current Picture and Overlays settings. Position choices set to Auto are resolved for this scene."
-                        : "Your kept footage with the current Picture and Overlays settings. Drag to any moment; position choices set to Auto are resolved for it.")
-                        + (onMove == nil ? "" : " Drag the caption or a name tag to place it.")
-                        + (onPlaceOverlay == nil ? "" : " Drag any part of the overlay to move it, or its edges to resize it.")
-                        + (onPlaceFocusFrame == nil ? "" : " Drag the focus frame to move it, or a grip to resize it. Zoom with the slider in Settings, or scroll or pinch over the preview."))
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-        }
-    }
-
-    private var shownSpeakersKey: String {
-        "preview.shownSpeakers.\(profile.profileName).\(previewRecord?.videoID ?? -1)"
+            .onDisappear { model.cancel() }
     }
 
     private var resolvedOrdinals: [String: Int] {
@@ -365,131 +163,29 @@ struct WizardPreviewColumn: View {
         }
     }
 
-    private var talkingSpeaker: String? {
-        guard let scene = model.scene else { return nil }
-        return CaptionSpeakerColors.personKey(CaptionSpeakerColors.speakerKey(
-            for: .init(start: scene.time, end: scene.time.nextUp, text: ""),
-            turns: scene.speakerTurns, rows: scene.speakerRows))
-    }
-
-    /// The people drawn: the chips when set, else everyone who speaks.
-    private var effectiveShownSpeakers: Set<String> { shownSpeakers ?? Set(speakerKeys) }
-
-    private func toggleSpeaker(_ key: String) {
-        var shown = effectiveShownSpeakers
-        if shown.contains(key) { shown.remove(key) } else { shown.insert(key) }
-        shownSpeakers = shown
-        if previewRecord != nil {
-            UserDefaults.standard.set(shown.sorted().joined(separator: "\n"), forKey: shownSpeakersKey)
-        }
-        revealMarkers()
-    }
-
-    private func revealMarkers() {
-        markerRevealID += 1
-        let id = markerRevealID
-        markersRevealed = true
-        Task {
-            try? await Task.sleep(for: .seconds(3))
-            if markerRevealID == id { markersRevealed = false }
-        }
-    }
-
-    private var speakerChips: some View {
-        FlowLayout(spacing: Theme.spaceS) {
-            ForEach(speakerKeys, id: \.self) { key in
-                let selected = effectiveShownSpeakers.contains(key)
-                Button { toggleSpeaker(key) } label: {
-                    Label(model.scene?.roster[key] ?? key, systemImage: selected ? "checkmark.circle.fill" : "circle")
-                        .font(.caption).lineLimit(1).fixedSize()
-                }
-                .buttonStyle(.bordered).controlSize(.small)
-                .tint(selected ? Color.accentColor : Color.secondary)
-                .help(key == talkingSpeaker ? "Talking at this moment. Show or hide this speaker's caption in the preview."
-                    : "Show or hide this speaker's caption in the preview")
-                .accessibilityValue(selected ? "Shown" : "Hidden")
-            }
-        }
-        .frame(maxWidth: .infinity, alignment: .leading)
-    }
-
-    private var title: some View {
-        Text("Preview").font(.headline).lineLimit(1).fixedSize()
-    }
-
-    private var chromePicker: some View {
-        PlatformChromePicker().labelStyle(.iconOnly).lineLimit(1).fixedSize()
-    }
-
-    @ViewBuilder
-    private var stepper: some View {
-        if clips.isEmpty { sceneStepper } else { clipStepper }
-    }
-
-    private var clipStepper: some View {
-        HStack(spacing: Theme.spaceS) {
-            Button("Previous clip", systemImage: "chevron.left") { clipIndex -= 1; scrubTime = nil }
-                .disabled(clipIndex <= 0)
-            Text("Clip \(min(clipIndex, clips.count - 1) + 1) of \(clips.count)")
-                .font(.caption).monospacedDigit().lineLimit(1).fixedSize()
-            Button("Next clip", systemImage: "chevron.right") { clipIndex += 1; scrubTime = nil }
-                .disabled(clipIndex + 1 >= clips.count)
-        }
-        .labelStyle(.iconOnly)
-        .controlSize(.small)
-        .lineLimit(1).fixedSize()
-    }
-
-    /// Source-time scrubber across the kept clip, with the moment shown as
-    /// output time so it reads like the player's clock.
-    private func scrubber(_ clip: WizardPreviewClip) -> some View {
-        let shown = (previewTime ?? clip.start) - clip.start
-        return HStack(spacing: Theme.spaceS) {
-            Slider(value: Binding(
-                get: { shown },
-                set: { scrubTime = clip.start + min(clip.duration, max(0, $0)) }), in: 0...max(0.01, clip.duration))
-                .controlSize(.small)
-                .accessibilityLabel("Preview moment")
-            Text("\(WizardPreviewClips.clock(shown)) / \(WizardPreviewClips.clock(clip.duration))")
-                .font(.caption).monospacedDigit().foregroundStyle(.secondary).lineLimit(1).fixedSize()
-        }
-    }
-
-    private var sceneStepper: some View {
-        HStack(spacing: Theme.spaceS) {
-            Button("Previous scene", systemImage: "chevron.left") { model.sceneIndex -= 1 }
-                .disabled(model.sceneIndex <= 0 || model.scenes.isEmpty)
-            Text("Scene \(model.scenes.isEmpty ? 0 : model.sceneIndex + 1) of \(model.scenes.count)")
-                .font(.caption).monospacedDigit().lineLimit(1).fixedSize()
-            Button("Next scene", systemImage: "chevron.right") { model.sceneIndex += 1 }
-                .disabled(model.sceneIndex + 1 >= model.scenes.count)
-        }
-        .labelStyle(.iconOnly)
-        .controlSize(.small)
-        .lineLimit(1).fixedSize()
-    }
-
     private var preview: some View {
         Color.black
             .overlay {
-                if model.selectedScene == nil {
-                    Text(emptyMessage)
-                        .font(.callout).foregroundStyle(.white)
-                        .multilineTextAlignment(.center).padding(Theme.spaceM)
+                if let error = model.error {
+                    VStack(spacing: Theme.spaceS) {
+                        Text(error).font(.caption).foregroundStyle(.white)
+                            .multilineTextAlignment(.center)
+                        Button("Retry preview") { reloadID += 1 }
+                            .lineLimit(1).fixedSize()
+                    }
+                    .padding(Theme.spaceM)
                 } else if let image = model.image {
                     Image(decorative: image, scale: 1).resizable().scaledToFit()
-                        .accessibilityLabel("Scene preview with the current settings")
+                        .accessibilityLabel("Preview with the current settings")
                 }
             }
             .overlay {
                 if model.selectedScene != nil {
                     GeometryReader { geometry in
-                        // A pinned still sits on the rough cut sheet's player, which
-                        // shades the unsafe zones itself so they stay during playback.
+                        // The sheet's player shades the unsafe zones itself so they stay during playback.
                         PlatformChromeLayer(size: geometry.size,
                                             safeAreaSettings: options.renderSettings.platformSafeArea,
-                                            safeAreaOnly: pinned == nil && options.safeAreaOnly == true
-                                                ? options.resolvedSafeArea : nil)
+                                            safeAreaOnly: nil)
                     }
                     .allowsHitTesting(false)
                 }
@@ -500,7 +196,7 @@ struct WizardPreviewColumn: View {
                         PreviewHandlesLayer(layout: layout, canvas: CGSize(width: options.renderSettings.width,
                                                                            height: options.renderSettings.height),
                                             size: geometry.size, ordinals: resolvedOrdinals,
-                                            revealMarkers: markersRevealed, onMove: onMove, onPlaceOverlay: onPlaceOverlay)
+                                            revealMarkers: false, onMove: onMove, onPlaceOverlay: onPlaceOverlay)
                     }
                 }
             }
@@ -553,14 +249,14 @@ struct WizardPreviewColumn: View {
 
     private func refresh() {
         // This also closes the gap before the content task starts (or while
-        // scrubbing is debounced): the retained scene belongs to the old key.
+        // a moment change is debounced): the retained scene belongs to the old key.
         guard loadedContentKey == contentKey, model.isSceneCurrent,
               let record = previewRecord, model.loadedSceneID == record.id,
               var scene = model.scene, let key = key(overlayTexts: options.fixedOverlayTexts ?? []) else { return }
         scene.captionOrdinals = captionOrdinals ?? scene.captionOrdinals
         model.update(key: key) {
             .init(scene: scene, options: options, profile: profile, templates: model.templates,
-                  frameData: Data(), shownSpeakers: speakerKeys.isEmpty ? nil : effectiveShownSpeakers)
+                  frameData: Data(), shownSpeakers: speakerKeys.isEmpty ? nil : Set(speakerKeys))
         }
     }
 }

@@ -715,7 +715,7 @@ final class PlayerLayerHostView: NSView {
     }
 }
 
-private struct InlinePlayerLayerView: NSViewRepresentable {
+struct InlinePlayerLayerView: NSViewRepresentable {
     let player: AVPlayer
 
     func makeNSView(context: Context) -> PlayerLayerHostView {
