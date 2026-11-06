@@ -38,6 +38,10 @@ struct RoughCutReviewSheet: View {
     @State private var playAfterRender: Int64?
     /// Picture or Overlays, remembered across sheets.
     @AppStorage("roughCut.settings.tab") private var tabRaw = WizardSettingsTab.picture.rawValue
+    /// A dragged name tag writes the person's own position at once (the
+    /// still renders from the People list); what it was, so Discard can put
+    /// it back. Keyed by person; the value is the position before the sheet.
+    @State private var tagPositionsBefore: [String: String?] = [:]
 
     /// Wide enough for the framing rows' label column, a segmented picker
     /// and a short detail; the rows never spill past the sheet.
@@ -166,7 +170,7 @@ struct RoughCutReviewSheet: View {
                         .lineLimit(1).truncationMode(.tail)
                 }
                 Spacer()
-                Button("Discard") { finish() }
+                Button("Discard") { discard() }
                     .keyboardShortcut(.cancelAction)
                     .help(hasOverlays ? "Close without changing the page's framing or overlays" : "Close without changing the page's framing")
                 Button("Apply") {
@@ -180,7 +184,7 @@ struct RoughCutReviewSheet: View {
         .frame(minWidth: 420 + controlsWidth, idealWidth: idealSize.width, maxWidth: .infinity,
                minHeight: 480, idealHeight: idealSize.height, maxHeight: .infinity)
         .presentationSizing(.fitted)
-        .modalCloseButton { finish() }
+        .modalCloseButton { discard() }
         .onAppear {
             isVisible = true
             loadingTask = Task { await loadPlayers() }
@@ -291,9 +295,19 @@ struct RoughCutReviewSheet: View {
                 positions[slot] = position.string
                 settings.speakerCaptionPositions = positions
             } else { settings.captionPosition = position.string }
-        case .nameTag(let person): store.setPersonTagPosition(person, position.string)
+        case .nameTag(let person):
+            if let person, tagPositionsBefore[person] == nil {
+                tagPositionsBefore[person] = .some(store.people.first { $0.key == person }?.tagPosition)
+            }
+            store.setPersonTagPosition(person, position.string)
         }
         overlaySettings.wrappedValue = settings
+    }
+
+    /// Discard: every person dragged on the still gets their position back.
+    private func discard() {
+        for (person, position) in tagPositionsBefore { store.setPersonTagPosition(person, position) }
+        finish()
     }
 
     /// What Apply keeps, for the footer.
@@ -469,7 +483,7 @@ struct RoughCutReviewSheet: View {
         store.isShowingProjectsHome = false
         store.selectedSection = .wizard
         store.wizardMode = review.namespace == WizardAssistant.expressNamespace ? .express : .full
-        store.assistant.sendCommand(actionID, text: framing.joined, expressOverlays: hasOverlays ? extras.overlays?.settings : nil,
+        store.assistant.sendCommand(actionID, text: framing.joined, expressOverlays: hasOverlays ? extras.overlays : nil,
                                     namespace: review.namespace)
         finish()
     }

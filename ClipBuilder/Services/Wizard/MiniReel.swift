@@ -90,10 +90,15 @@ nonisolated enum MiniReelRules {
     /// `items` with its `kind` rows brought in line with `kept`: rows whose
     /// item is no longer kept go, kept items without a row join at the end in
     /// the section's order, and the rest take the live snapshot.
-    static func reconcile(_ items: [MiniReelItem], kind: MiniWizardFlow.FootageKind, kept: [MiniReelItem]) -> [MiniReelItem] {
+    /// `known` lists every item id the loaded run can speak for (Highlights:
+    /// its batch's candidates, kept or not); an item of the kind outside it
+    /// belongs to another batch and is left as it is. Nil: the run owns them all.
+    static func reconcile(_ items: [MiniReelItem], kind: MiniWizardFlow.FootageKind, kept: [MiniReelItem],
+                          known: Set<Int64>? = nil) -> [MiniReelItem] {
         let live = Dictionary(kept.map { ($0.itemID, $0) }, uniquingKeysWith: { first, _ in first })
         var result = items.compactMap { item -> MiniReelItem? in
             guard item.kind == kind else { return item }
+            if let known, !known.contains(item.itemID) { return item }
             return live[item.itemID]
         }
         let present = Set(result.filter { $0.kind == kind }.map(\.itemID))
@@ -126,9 +131,15 @@ nonisolated enum MiniReelRules {
 
     /// The saved candidates behind the reel, in reel order, for Generate.
     /// Items whose section is not loaded or whose selection has not been
-    /// recorded are left out.
-    static func candidates(items: [MiniReelItem], runs: [MiniWizardFlow.FootageKind: MiniWizardRun]) -> [MiniWizardCandidate] {
+    /// recorded are left out. `otherHighlights` are the saved candidates of
+    /// Highlights batches other than the loaded one (another Length): a
+    /// Highlights item its loaded batch does not know resolves there.
+    static func candidates(items: [MiniReelItem], runs: [MiniWizardFlow.FootageKind: MiniWizardRun],
+                           otherHighlights: [MiniWizardCandidate] = []) -> [MiniWizardCandidate] {
         items.sorted { $0.position < $1.position }.compactMap { item in
+            if item.kind == .highlights, !(runs[.highlights]?.candidates.contains { $0.id == item.itemID } ?? false) {
+                return otherHighlights.first { $0.id == item.itemID && $0.kept && !$0.take.plan.clips.isEmpty }
+            }
             guard let run = runs[item.kind] else { return nil }
             let saved = run.candidates.filter { $0.kept && !$0.take.plan.clips.isEmpty }
             switch item.kind {

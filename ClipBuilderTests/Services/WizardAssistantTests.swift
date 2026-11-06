@@ -35,7 +35,7 @@ struct WizardAssistantTests {
             "footageKind": "highlights", "length": "30", "quality": "compact", "canvas": "square1080",
             "look": "vintage", "transition": "Dissolve", "framing": "centerStage",
             "captions": "true", "captionPosition": "top", "captionStyle": "default", "captionLanguage": "english",
-            "nameTags": "true", "nameTagPosition": "topTrailing", "nameTagStyle": "ABCDEF",
+            "nameTags": "true", "nameTagStyle": "ABCDEF",
             "safeAreaOnly": "true", "watermark": "false", "watermarkDesign": "Lower third", "watermarkOpacity": "40",
             "overlay": "true", "overlayDesign": "Promo", "introVideo": "true", "outroVideo": "false",
             "muteSourceAudio": "true", "music": "true", "dub": "true", "dubLanguage": "en-US",
@@ -69,7 +69,7 @@ struct WizardAssistantTests {
         #expect(settings.first { $0.key == "dubLanguage" }?.normalize("Portuguese (Brazil)") == "pt-BR")
         #expect(settings.first { $0.key == "watermarkOpacity" }?.normalize(150) == nil)
         #expect(settings.first { $0.key == "dubLanguage" }?.normalize("default") == WizardAssistant.defaultChoice)
-        #expect(settings.first { $0.key == "nameTagPosition" }?.normalize("Bottom right") == "bottomTrailing")
+        #expect(settings.first { $0.key == "nameTagPosition" } == nil, "tag placement is per person, not a run setting")
         #expect(WizardAssistant.expressGuidance.contains(WizardAssistant.findHighlightsAction))
         // Looks are the card's menu, not the whole catalogue; framing follows the source type.
         let looks = settings.first { $0.key == "look" }

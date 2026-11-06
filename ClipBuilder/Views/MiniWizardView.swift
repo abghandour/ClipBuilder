@@ -462,8 +462,9 @@ struct MiniWizardView: View {
             renderFlow.length = store.miniRuns[.highlights]?.length ?? length
             renderFlow.outputMode = miniSettings.outputMode
             // The reel now holds the opened candidates (the run change
-            // reconciled it); Re-render makes the reel as it stands.
-            store.generateMiniReel(settings: miniSettings, flow: renderFlow)
+            // reconciled it); Re-render makes that highlight again, from the
+            // reel's Highlights items alone.
+            store.generateMiniReel(settings: miniSettings, flow: renderFlow, only: [.highlights])
         }
     }
 
@@ -807,7 +808,10 @@ struct MiniWizardView: View {
             if let value = Framing.split(command.text) { miniSettings.framing = value }
             // The sheet's Overlays tab: its choices replace the page's, the
             // rest of the settings stay.
-            if let overlays = command.expressOverlays { miniSettings = miniSettings.adoptingOverlays(from: overlays) }
+            if let overlays = command.expressOverlays {
+                miniSettings = miniSettings.adoptingOverlays(from: overlays.settings, nameTags: overlays.showsNameTags,
+                                                             captionLanguage: overlays.showsCaptionLanguage)
+            }
         }
         if id == WizardAssistant.findHighlightsAction {
             // The brief is already in the instructions (from the patch or

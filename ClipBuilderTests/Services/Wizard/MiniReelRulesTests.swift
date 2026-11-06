@@ -29,6 +29,15 @@ struct MiniReelRulesTests {
         #expect(MiniReelRules.reconcile(result, kind: .qa, kept: kept) == result, "a second pass changes nothing")
     }
 
+    @Test func reconcileLeavesAnotherBatchsHighlightsAlone() {
+        // The 30 s batch's candidates are 40 and 41; 60 s loaded with 50 kept and 51 unkept.
+        let reel = [item(.highlights, 40), item(.qa, 1), item(.highlights, 51)]
+        let result = MiniReelRules.reconcile(reel, kind: .highlights, kept: [item(.highlights, 50)], known: [50, 51])
+        #expect(result.map(\.key) == [.init(kind: .highlights, itemID: 40), .init(kind: .qa, itemID: 1),
+                                      .init(kind: .highlights, itemID: 50)],
+                "the other batch's item stays, the loaded batch's unkept one leaves and its kept one joins")
+    }
+
     @Test func reconcileLeavesOtherSectionsAlone() {
         let reel = [item(.highlights, 40), item(.fightMetrics, 3)]
         #expect(MiniReelRules.reconcile(reel, kind: .transcript, kept: []) == MiniReelRules.renumbered(reel))
@@ -96,6 +105,33 @@ struct MiniReelRulesTests {
         let reel = [item(.highlights, 41), item(.qa, 5), item(.transcript, 8)]
         let found = MiniReelRules.candidates(items: reel, runs: [.transcript: transcriptRun, .highlights: highlights])
         #expect(found.map(\.id) == [41, 90], "reel order; the Q&A item has no loaded section")
+    }
+
+    @Test func anotherLengthsHighlightsResolveFromItsBatch() {
+        // 60 s is loaded (50); 40 was kept at 30 s, 42 was unkept there since.
+        let loaded = MiniWizardRun(projectID: 1, video: Fixtures.video(), footageKind: .highlights, length: .automatic,
+            batchID: "hl60", candidates: [candidate(50, name: "Loaded", clips: [Fixtures.planClip(sceneID: 1, start: 1, end: 2)])],
+            options: WizardOptions())
+        let others = [candidate(40, name: "Other", clips: [Fixtures.planClip(sceneID: 1, start: 5, end: 9)]),
+                      candidate(42, name: "Unkept", clips: [Fixtures.planClip(sceneID: 1, start: 9, end: 10)], kept: false)]
+        let reel = [item(.highlights, 40), item(.highlights, 50), item(.highlights, 42)]
+        #expect(MiniReelRules.candidates(items: reel, runs: [.highlights: loaded]).map(\.id) == [50])
+        #expect(MiniReelRules.candidates(items: reel, runs: [.highlights: loaded], otherHighlights: others).map(\.id) == [40, 50],
+                "reel order; an unkept candidate of the other batch stays out")
+    }
+
+    @Test func reelDrawsAnotherLengthsHighlightFromItsSnapshot() {
+        let scene = Fixtures.scene(id: 1, start: 0, end: 50)
+        let loaded = MiniWizardRun(projectID: 1, video: Fixtures.video(), footageKind: .highlights, length: .automatic,
+            batchID: "hl60", candidates: [candidate(50, name: "Loaded", clips: [Fixtures.planClip(sceneID: 1, start: 1, end: 2)])],
+            options: WizardOptions())
+        let reel = [
+            MiniReelItem(kind: .highlights, itemID: 40, position: 0, sceneID: 1, start: 5, end: 9, title: "Other"),
+            MiniReelItem(kind: .highlights, itemID: 50, position: 1, sceneID: 1, start: 1, end: 2, title: "Loaded"),
+        ]
+        let clips = WizardPreviewClips.reel(items: reel, runs: [.highlights: loaded], videoID: 1, scenes: [scene])
+        #expect(clips.map(\.id) == ["take-40-0", "take-50-0"], "the other batch's item is drawn from its snapshot")
+        #expect(clips[0].range == 5...9)
     }
 
     @Test func reelClipsUseLiveRangesAndFallBackToSnapshots() {

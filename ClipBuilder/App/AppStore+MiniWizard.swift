@@ -480,14 +480,16 @@ extension AppStore {
     /// (`generateMiniReel` loads and records them first). The section on
     /// screen lends its options and batch to the combined take.
     func generateMiniVideos(settings miniSettings: MiniWizardSettings, flow: MiniWizardFlow,
-                            mode: WizardBatchMode = .render) {
+                            mode: WizardBatchMode = .render, only: Set<MiniWizardFlow.FootageKind>? = nil,
+                            otherHighlights: [MiniWizardCandidate] = []) {
         guard let key = miniReelKey, key.projectID == activeProjectID, database != nil, !isWizardRunning else { return }
         let runs = miniRuns.filter { $0.value.projectID == key.projectID && $0.value.video.id == key.videoID }
+        let items = miniReelItems.filter { only?.contains($0.kind) ?? true }
         guard let run = runs[flow.effectiveFootageKind]
-            ?? MiniReelRules.kinds(miniReelItems).compactMap({ runs[$0] }).first else { return }
-        let candidates = MiniReelRules.candidates(items: miniReelItems, runs: runs)
+            ?? MiniReelRules.kinds(items).compactMap({ runs[$0] }).first else { return }
+        let candidates = MiniReelRules.candidates(items: items, runs: runs, otherHighlights: otherHighlights)
         guard !candidates.isEmpty else { return }
-        let batchIDs = Set(runs.values.map(\.batchID))
+        let batchIDs = Set(runs.values.map(\.batchID)).union(candidates.compactMap(\.selection.miniBatch))
         let chosen = miniSettings.effective(for: flow,
             introAvailable: bumpers.contains { $0.placements.contains(.intro) },
             outroAvailable: bumpers.contains { $0.placements.contains(.outro) })

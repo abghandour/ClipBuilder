@@ -204,7 +204,7 @@ struct AssistantSettingTests {
         let keys = WizardAssistant.expressSettings(profile: BrandProfile(name: "T"), overlays: ["Lower third"]).map(\.key)
         #expect(keys == ["footageKind", "length", "quality", "canvas", "look", "transition", "framing",
                          "captions", "captionPosition", "captionStyle", "captionLanguage",
-                         "nameTags", "nameTagPosition", "nameTagStyle", "safeAreaOnly",
+                         "nameTags", "nameTagStyle", "safeAreaOnly",
                          "watermark", "watermarkDesign", "watermarkOpacity", "overlay", "overlayDesign",
                          "introVideo", "outroVideo", "muteSourceAudio", "music", "dub", "dubLanguage",
                          "aiInstructions"])

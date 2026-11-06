@@ -283,14 +283,17 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     /// These settings with `other`'s Overlays tab choices (captions, name
     /// tags, safe area, watermark, overlay design and placements); every
     /// other choice stays. The rough cut sheet's Apply lands here.
-    func adoptingOverlays(from other: Self) -> Self {
+    /// `nameTags` and `captionLanguage` say whether the sheet showed those
+    /// rows: a hidden row's value was forced by `effective(for:)`, not
+    /// chosen, so the page keeps its own.
+    func adoptingOverlays(from other: Self, nameTags: Bool = true, captionLanguage: Bool = true) -> Self {
         var result = self
         result.captions = other.captions
-        result.englishCaptions = other.englishCaptions
+        if captionLanguage, other.captions { result.englishCaptions = other.englishCaptions }
         result.captionPosition = other.captionPosition
         result.speakerCaptionPositions = other.speakerCaptionPositions
         result.captionStyleID = other.captionStyleID
-        result.nameTags = other.nameTags
+        if nameTags { result.nameTags = other.nameTags }
         result.nameTagContent = other.nameTagContent
         result.nameTagStyle = other.nameTagStyle
         result.nameTagStyleID = other.nameTagStyleID

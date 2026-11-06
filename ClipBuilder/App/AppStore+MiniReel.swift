@@ -54,7 +54,10 @@ extension AppStore {
         guard miniReelLoaded, let key = miniReelKey else { return }
         var items = miniReelItems
         for (kind, run) in miniRuns where run.projectID == key.projectID && run.video.id == key.videoID && run.hasFootage {
-            items = MiniReelRules.reconcile(items, kind: kind, kept: MiniReelRules.kept(run: run))
+            // A Highlights run speaks only for its own batch (one per Length):
+            // items from another length's batch stay in the reel.
+            let known: Set<Int64>? = kind == .highlights ? Set(run.candidates.map(\.id)) : nil
+            items = MiniReelRules.reconcile(items, kind: kind, kept: MiniReelRules.kept(run: run), known: known)
         }
         guard items != miniReelItems else { return }
         miniReelItems = items
@@ -148,7 +151,9 @@ extension AppStore {
                 }
             }
         case .highlights:
-            if let run {
+            // Only the batch holding the candidate owns it: an item kept at
+            // another Length is unkept in that batch's memory.
+            if let run, run.candidates.contains(where: { $0.id == item.itemID }) {
                 setMiniHighlightsKept(MiniHighlightReview.keptIDs(run.candidates).subtracting([item.itemID]),
                                       batchID: run.batchID)
             } else {
@@ -179,21 +184,48 @@ extension AppStore {
     /// later restore does not bring it back.
     private func unkeepUnloadedHighlight(_ selectionID: Int64, key: MiniReelKey) {
         guard let database else { return }
-        let profileName = activeProfile.profileName
         let generation = profileGeneration
         let defaults = UserDefaults.standard
-        let batches = MiniWizardFlow.Length.allCases.compactMap {
-            defaults.string(forKey: MiniWizardMemory.batchKey(profileName: profileName, projectID: key.projectID,
-                                                               videoID: key.videoID, kind: .highlights, length: $0))
-        }
+        let batches = rememberedHighlightBatches(key: key)
         Task {
-            for batch in Set(batches) {
+            for batch in batches {
                 guard let ids = try? await database.fetchWizardSelections(projectID: key.projectID, miniBatch: batch).map(\.id),
                       ids.contains(selectionID), generation == profileGeneration else { continue }
                 let kept = Set(defaults.stringArray(forKey: "mini.kept.\(batch)")?.compactMap(Int64.init) ?? ids)
                 defaults.set(kept.subtracting([selectionID]).sorted().map(String.init), forKey: "mini.kept.\(batch)")
             }
         }
+    }
+
+    /// The Highlights batches remembered for this source, one per Length.
+    private func rememberedHighlightBatches(key: MiniReelKey) -> Set<String> {
+        let profileName = activeProfile.profileName
+        return Set(MiniWizardFlow.Length.allCases.compactMap {
+            UserDefaults.standard.string(forKey: MiniWizardMemory.batchKey(profileName: profileName, projectID: key.projectID,
+                                                                            videoID: key.videoID, kind: .highlights, length: $0))
+        })
+    }
+
+    /// The saved candidates of the remembered Highlights batches other than
+    /// the loaded one that hold reel items, with each batch's kept memory
+    /// applied: Generate resolves another Length's reel items from them.
+    private func otherHighlightCandidates(key: MiniReelKey) async -> [MiniWizardCandidate] {
+        guard let database else { return [] }
+        let wanted = Set(miniReelItems.filter { $0.kind == .highlights }.map(\.itemID))
+        let loaded = miniRuns[.highlights].flatMap {
+            $0.projectID == key.projectID && $0.video.id == key.videoID ? $0.batchID : nil
+        }
+        guard !wanted.isEmpty else { return [] }
+        var result: [MiniWizardCandidate] = []
+        for batch in rememberedHighlightBatches(key: key).sorted() where batch != loaded {
+            guard var candidates = try? await database.miniSavedCandidates(projectID: key.projectID, miniBatch: batch),
+                  candidates.contains(where: { wanted.contains($0.id) }) else { continue }
+            if let kept = UserDefaults.standard.stringArray(forKey: "mini.kept.\(batch)") {
+                candidates = MiniHighlightReview.settingKept(Set(kept.compactMap(Int64.init)), in: candidates)
+            }
+            result += candidates.filter { wanted.contains($0.id) }
+        }
+        return result
     }
 
     /// The Highlights candidates' kept set; remembered per batch next to
@@ -209,11 +241,13 @@ extension AppStore {
     /// Generate, Preview or Edit from the Generate panel: one reel from the
     /// whole list in list order. Every section the reel names is loaded
     /// first, then each records its selections in turn, then the render.
-    func generateMiniReel(settings: MiniWizardSettings, flow: MiniWizardFlow, mode: WizardBatchMode = .render) {
-        guard !isWizardRunning, miniReelGenerateTask == nil, miniReelLoaded, let key = miniReelKey,
-              let video = flow.video, key.videoID == video.id, key.projectID == activeProjectID,
-              !miniReelItems.isEmpty else { return }
-        let kinds = MiniReelRules.kinds(miniReelItems)
+    /// `only` limits the render to those sections' items (History's
+    /// Re-render makes the opened Highlights batch alone); nil renders the
+    /// whole reel. A reel still being read is waited for.
+    func generateMiniReel(settings: MiniWizardSettings, flow: MiniWizardFlow, mode: WizardBatchMode = .render,
+                          only: Set<MiniWizardFlow.FootageKind>? = nil) {
+        guard !isWizardRunning, miniReelGenerateTask == nil, let key = miniReelKey,
+              let video = flow.video, key.videoID == video.id, key.projectID == activeProjectID else { return }
         let generation = profileGeneration
         miniReelGenerateTask = Task {
             defer { miniReelGenerateTask = nil }
@@ -223,15 +257,21 @@ extension AppStore {
                       self.miniReelKey == key, self.miniFootageVideoID == key.videoID else { return false }
                 return true
             }
+            while !miniReelLoaded, stillWanted() { try? await Task.sleep(for: .milliseconds(50)) }
+            guard stillWanted(), miniReelLoaded else { return }
+            let kinds = MiniReelRules.kinds(miniReelItems.filter { only?.contains($0.kind) ?? true })
+            guard !kinds.isEmpty else { return }
             await ensureMiniRunsLoaded(kinds: kinds, flow: flow, stillWanted: stillWanted)
             guard stillWanted(), !isWizardRunning else { return }
             let missing = kinds.filter { miniRuns[$0] == nil }
             if !missing.isEmpty {
                 appendLog(\.wizardLog, ["Express: \(missing.map(\.label).joined(separator: ", ")) footage is not available; its reel items are left out."])
             }
+            let others = kinds.contains(.highlights) ? await otherHighlightCandidates(key: key) : []
+            guard stillWanted(), !isWizardRunning else { return }
             recordMiniReelSelections(kinds: kinds.filter { miniRuns[$0] != nil }[...]) { [weak self] in
                 guard let self, generation == self.profileGeneration, self.miniReelKey == key else { return }
-                self.generateMiniVideos(settings: settings, flow: flow, mode: mode)
+                self.generateMiniVideos(settings: settings, flow: flow, mode: mode, only: only, otherHighlights: others)
             }
         }
     }

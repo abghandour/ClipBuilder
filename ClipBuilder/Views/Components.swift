@@ -717,16 +717,21 @@ final class PlayerLayerHostView: NSView {
 
 struct InlinePlayerLayerView: NSViewRepresentable {
     let player: AVPlayer
+    var gravity: AVLayerVideoGravity = .resizeAspectFill
 
     func makeNSView(context: Context) -> PlayerLayerHostView {
         let view = PlayerLayerHostView(frame: .zero)
         view.playerLayer.player = player
+        view.playerLayer.videoGravity = gravity
         return view
     }
 
     func updateNSView(_ view: PlayerLayerHostView, context: Context) {
         if view.playerLayer.player !== player {
             view.playerLayer.player = player
+        }
+        if view.playerLayer.videoGravity != gravity {
+            view.playerLayer.videoGravity = gravity
         }
     }
 }

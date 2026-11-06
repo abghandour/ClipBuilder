@@ -158,6 +158,19 @@ struct MiniWizardSettingsTests {
         expected.music = page.music
         #expect(adopted == expected)
         #expect(adopted.captions && adopted.captionPosition == "custom:0.5,0.8" && adopted.nameTagPosition == "custom:0.5,0.2")
+        // Rows the sheet hid were forced by effective(for:), not chosen: the page keeps its own.
+        var hidden = sheet
+        hidden.nameTags = false
+        hidden.englishCaptions = false
+        var tagged = page
+        tagged.nameTags = true
+        tagged.englishCaptions = true
+        let kept = tagged.adoptingOverlays(from: hidden, nameTags: false, captionLanguage: false)
+        #expect(kept.nameTags && kept.englishCaptions && kept.captions)
+        var captionsOff = sheet
+        captionsOff.captions = false
+        captionsOff.englishCaptions = false
+        #expect(tagged.adoptingOverlays(from: captionsOff).englishCaptions, "a language row hidden by captions off is not adopted")
         #expect(adopted.overlayTemplate == "Lower third" && adopted.overlayEdits.texts.first?.alignment == "left")
         #expect(page.adoptingOverlays(from: page) == page)
     }

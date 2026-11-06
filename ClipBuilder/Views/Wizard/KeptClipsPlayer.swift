@@ -2,15 +2,17 @@ import AVKit
 import Combine
 import SwiftUI
 
-/// The wizard pages' third column: the recording itself, cropped to fill
-/// the output format, playing one kept clip's range at a time. Nothing is
+/// The wizard pages' third column: the recording itself in its own shape
+/// (never cropped to the output format), playing one kept clip's range at
+/// a time. Nothing is
 /// rendered over it; captions, name tags, overlays and the focus frame are
 /// placed in the rough cut sheet. Under the picture: the transport across
 /// the current clip, the clip stepper with the speed control, and Play All
 /// with the length of every clip together.
 struct KeptClipsPlayer: View {
     let clips: [WizardPreviewClip]
-    /// Width / height of the output format.
+    /// Width / height the frame takes until the recording's own shape has
+    /// been read (the output format).
     let aspect: CGFloat
     @Binding var index: Int
     /// "Clip" for kept footage, "Scene" for analysis scenes.
@@ -19,6 +21,8 @@ struct KeptClipsPlayer: View {
 
     @State private var player = AVPlayer()
     @State private var loadedURL: URL?
+    /// Width / height of the loaded recording as displayed (rotation applied).
+    @State private var sourceAspect: CGFloat?
     /// The playhead in source seconds.
     @State private var time = 0.0
     @State private var isPlaying = false
@@ -34,7 +38,8 @@ struct KeptClipsPlayer: View {
 
     var body: some View {
         GeometryReader { available in
-            // The largest output-shaped frame that leaves room for the rows below.
+            // The largest frame in the recording's shape that leaves room for the rows below.
+            let aspect = max(0.01, sourceAspect ?? aspect)
             let reserve: CGFloat = clips.isEmpty ? 0 : 96
             let height = max(120, min(available.size.height - reserve, available.size.width / max(0.01, aspect)))
             VStack(alignment: .leading, spacing: Theme.spaceS) {
@@ -81,8 +86,8 @@ struct KeptClipsPlayer: View {
                         .font(.callout).foregroundStyle(.white)
                         .multilineTextAlignment(.center).padding(Theme.spaceM)
                 } else {
-                    // Aspect fill: the recording cropped at its centre to the output shape.
-                    InlinePlayerLayerView(player: player)
+                    // The whole recording, uncropped; the frame already has its shape.
+                    InlinePlayerLayerView(player: player, gravity: .resizeAspect)
                         .accessibilityLabel("\(noun) video")
                 }
             }
@@ -177,6 +182,17 @@ struct KeptClipsPlayer: View {
         }
     }
 
+    /// The recording's displayed width / height: the video track's natural
+    /// size turned by its preferred transform (a portrait phone clip is
+    /// stored landscape). Nil when it cannot be read.
+    nonisolated private static func displayAspect(of url: URL) async -> CGFloat? {
+        guard let track = try? await AVURLAsset(url: url).loadTracks(withMediaType: .video).first,
+              let (size, transform) = try? await track.load(.naturalSize, .preferredTransform) else { return nil }
+        let shown = size.applying(transform)
+        let width = abs(shown.width), height = abs(shown.height)
+        return width > 0 && height > 0 ? width / height : nil
+    }
+
     /// Puts the current clip in the player at its start.
     private func load(play: Bool) {
         guard let clip = current else {
@@ -188,6 +204,11 @@ struct KeptClipsPlayer: View {
         if url != loadedURL {
             player.replaceCurrentItem(with: AVPlayerItem(url: url))
             loadedURL = url
+            Task {
+                let shape = await Self.displayAspect(of: url)
+                guard loadedURL == url else { return }
+                sourceAspect = shape
+            }
         }
         time = clip.start
         player.seek(to: CMTime(seconds: clip.start, preferredTimescale: 600),

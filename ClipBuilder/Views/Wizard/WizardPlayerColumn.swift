@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The Express and full wizard pages' third column: the kept footage played
-/// as recorded, cropped to the output format. Express adds List and Summary
+/// as recorded, in the video's own format. Express adds List and Summary
 /// tabs and a footer. Nothing here renders the settings; the rough cut
 /// sheet (Preview) is where captions, name tags, overlays and the focus
 /// frame are seen and placed.
@@ -9,7 +9,8 @@ struct WizardPlayerColumn: View {
     /// Kept footage in output order. Empty: the scenes play instead.
     var clips: [WizardPreviewClip] = []
     var scenes: [SceneRecord] = []
-    /// Width / height of the output format.
+    /// Width / height of the output format: the player's frame until the
+    /// recording's own shape has been read.
     let aspect: CGFloat
     /// Pinned under the player: Express puts its run summary and Generate here.
     var footer: AnyView? = nil
@@ -89,6 +90,6 @@ struct WizardPlayerColumn: View {
         .labelsHidden()
         .controlSize(.small)
         .fixedSize()
-        .help("List shows the kept clips in order; Video plays them as recorded in the output format; Summary shows what Generate will make")
+        .help("List shows the kept clips in order; Video plays them as recorded, in the video's own format; Summary shows what Generate will make")
     }
 }

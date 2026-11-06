@@ -92,7 +92,7 @@ struct WizardPreviewList: View {
                         Button("Remove All", role: .destructive) { config.onDeleteAll?() }
                         Button("Cancel", role: .cancel) {}
                     } message: {
-                        Text("Each clip is unselected in its Footage section.")
+                        Text("Each clip is unselected in its Footage section; Fight-metrics stretches are deleted.")
                     }
             }
         }
@@ -133,6 +133,8 @@ struct WizardPreviewList: View {
             .focusable()
             .focusEffectDisabled()
             .focused($listFocused)
+            .onChange(of: listFocused, initial: true) { _, focused in store.miniReelListFocused = focused }
+            .onDisappear { store.miniReelListFocused = false }
             .onDeleteCommand { deleteSelected() }
             .onPreferenceChange(PreviewRowFramePreference.self) { rowFrames = $0 }
             .overlay(alignment: .topLeading) {
@@ -151,7 +153,36 @@ struct WizardPreviewList: View {
     private func rowView(_ row: WizardPreviewRow, index: Int) -> some View {
         let selected = index == selectedIndex
         let isExpanded = expanded.contains(row.id)
-        return HStack(alignment: .top, spacing: Theme.spaceS) {
+        // The row's buttons sit in a strip across the top so the words
+        // use the card's whole width below them.
+        return VStack(alignment: .leading, spacing: 2) {
+            HStack(spacing: Theme.spaceS) {
+                Spacer(minLength: 0)
+                if !row.text.isEmpty {
+                    Button(isExpanded ? "Collapse" : "Expand",
+                           systemImage: isExpanded ? "chevron.up" : "chevron.down") {
+                        if isExpanded { expanded.remove(row.id) } else { expanded.insert(row.id) }
+                    }
+                    .labelStyle(.iconOnly)
+                    .buttonStyle(.borderless)
+                    .controlSize(.small)
+                    .help(isExpanded ? "Show two lines" : "Show the whole text")
+                }
+                if let onSelect = config.onSelect {
+                    Button("Select", systemImage: "arrow.up.right.square") { selectedIndex = index; onSelect(row.id) }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                        .help("Open this clip in its Footage section")
+                }
+                if canDelete {
+                    Button("Delete", systemImage: "trash", role: .destructive) { config.onDelete?(row.id) }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                        .help("Remove this clip from the reel")
+                }
+            }
             Button { selectedIndex = index; listFocused = true } label: {
                 // Only who is talking and what they said; the Video tab's
                 // stepper carries the clip number and time.
@@ -159,8 +190,10 @@ struct WizardPreviewList: View {
                     if row.text.isEmpty {
                         Text("No words or description for this clip")
                             .font(.body).foregroundStyle(.secondary)
+                    } else if !row.segments.isEmpty {
+                        speakerTurns(row, expanded: isExpanded)
                     } else {
-                        rowText(row)
+                        Text(row.text)
                             .font(.body)
                             .foregroundStyle(row.textKind == .description ? .secondary : .primary)
                             .italic(row.textKind == .description)
@@ -174,16 +207,6 @@ struct WizardPreviewList: View {
             .buttonStyle(.plain)
             .accessibilityLabel("Clip \(index + 1), \(row.title)")
             .accessibilityAddTraits(selected ? .isSelected : [])
-            if !row.text.isEmpty {
-                Button(isExpanded ? "Collapse" : "Expand",
-                       systemImage: isExpanded ? "chevron.up" : "chevron.down") {
-                    if isExpanded { expanded.remove(row.id) } else { expanded.insert(row.id) }
-                }
-                .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
-                .controlSize(.small)
-                .help(isExpanded ? "Show two lines" : "Show the whole text")
-            }
         }
         .padding(Theme.spaceS)
         .background(selected ? Color.accentColor.opacity(0.18) : Color.clear,
@@ -191,16 +214,31 @@ struct WizardPreviewList: View {
         .padding(.horizontal, Theme.spaceXS)
     }
 
-    /// Speaker names, in the transcript's colour for that speaker, at the
-    /// start of each stretch they speak; the words in regular body text.
-    private func rowText(_ row: WizardPreviewRow) -> Text {
-        guard !row.segments.isEmpty else { return Text(row.text) }
-        return row.segments.enumerated().reduce(Text("")) { text, item in
-            let (index, segment) = item
-            let name = segment.speaker.map {
-                Text("\($0): ").fontWeight(.semibold).foregroundColor(SpeakerColors.color(for: $0))
-            } ?? Text("")
-            return text + Text(index == 0 ? "" : " ") + name + Text(segment.text)
+    /// One block per speaker turn, a blank line apart: the speaker's name
+    /// as a pill in the transcript's colour for them, the words under it.
+    /// Collapsed, only the first turn shows, cut to the collapsed lines.
+    private func speakerTurns(_ row: WizardPreviewRow, expanded: Bool) -> some View {
+        let turns = expanded ? row.segments : Array(row.segments.prefix(1))
+        return VStack(alignment: .leading, spacing: Theme.spaceL) {
+            ForEach(turns.indices, id: \.self) { index in
+                let turn = turns[index]
+                VStack(alignment: .leading, spacing: Theme.spaceXS) {
+                    if let speaker = turn.speaker {
+                        let color = SpeakerColors.color(for: speaker)
+                        Text(speaker)
+                            .font(.callout.weight(.semibold))
+                            .foregroundStyle(color)
+                            .lineLimit(1)
+                            .padding(.horizontal, Theme.spaceS)
+                            .padding(.vertical, 2)
+                            .background(color.opacity(0.18), in: Capsule())
+                    }
+                    Text(turn.text)
+                        .font(.body)
+                        .lineLimit(expanded ? nil : Self.collapsedLines)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
+            }
         }
     }
 

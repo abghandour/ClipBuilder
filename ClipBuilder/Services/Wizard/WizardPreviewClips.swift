@@ -72,7 +72,8 @@ nonisolated enum WizardPreviewClips {
 
     /// The Express reel as preview clips, in reel order. A loaded section
     /// supplies the live range (and every cut of a Highlights candidate);
-    /// otherwise the item's snapshot stands in.
+    /// otherwise, or for a Highlights item of another batch, the item's
+    /// snapshot stands in.
     static func reel(items: [MiniReelItem], runs: [MiniWizardFlow.FootageKind: MiniWizardRun],
                      videoID: Int64, scenes: [SceneRecord]) -> [WizardPreviewClip] {
         let scenes = scenes.filter { $0.videoID == videoID }
@@ -80,7 +81,10 @@ nonisolated enum WizardPreviewClips {
         let runs = runs.filter { $0.value.video.id == videoID }
         var result: [WizardPreviewClip] = []
         for item in items.sorted(by: { $0.position < $1.position }) {
-            if let run = runs[item.kind] {
+            // A Highlights item from another Length's batch: the loaded
+            // batch cannot speak for it, so its snapshot stands in.
+            if let run = runs[item.kind],
+               item.kind != .highlights || run.candidates.contains(where: { $0.id == item.itemID }) {
                 result += liveClips(item, run: run, scenes: scenes, byID: byID)
             } else if let scene = containing(item.range, id: item.sceneID, scenes: scenes, byID: byID) {
                 result.append(.init(id: item.clipID, title: item.title, scene: scene,

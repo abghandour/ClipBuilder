@@ -474,7 +474,7 @@ extension WizardView {
                 }
             }
             .formDependent()
-            FormCaption("Each text and image of the design is its own object in the preview: drag it to move it, drag its edges to resize it.")
+            FormCaption("Each text and image of the design is its own object; Reset puts them back where the design has them.")
                 .formDependent()
             WizardControlRow("Starts at") {
                 HStack(spacing: Theme.spaceXS) {

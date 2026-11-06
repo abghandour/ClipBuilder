@@ -3,6 +3,7 @@ import AVKit
 
 /// Shared review surface; adapters own domain data and persistence.
 struct RangeReviewView<Footer: View>: View {
+    @Environment(AppStore.self) private var store
     @Environment(\.isEnabled) private var isEnabled
     let items: [RangeReviewItem]
     let rows: [TranscriptRow]
@@ -1043,8 +1044,9 @@ struct RangeReviewView<Footer: View>: View {
     private func handleKey(_ event: NSEvent) -> Bool {
         // The monitor is window-wide; a mounted but hidden review stays quiet.
         guard isEnabled, pageVisible, range != nil else { return false }
+        // The preview's List owns Delete while it has focus.
         if let onDelete, let selected, event.keyCode == 51 || event.keyCode == 117,
-           !selected.isDraft, selected.id.cutIndex == nil {
+           !selected.isDraft, selected.id.cutIndex == nil, !store.miniReelListFocused {
             onDelete(selected)
             return true
         }

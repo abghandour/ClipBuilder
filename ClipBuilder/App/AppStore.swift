@@ -447,6 +447,9 @@ final class AppStore {
     /// Select on a List row: the Footage section to open and the item to
     /// select there; the section's review clears it once it has selected.
     var miniReelReveal: MiniReelRules.Key?
+    /// The preview's List has keyboard focus: its Delete key removes a reel
+    /// item, so the Footage review's window-wide key monitor leaves Delete alone.
+    @ObservationIgnored var miniReelListFocused = false
     @ObservationIgnored var miniReelSaveTask: Task<Void, Error>?
     @ObservationIgnored var miniReelGenerateTask: Task<Void, Never>?
     /// Rough cut requests by id, so the review sheet can re-run one with
