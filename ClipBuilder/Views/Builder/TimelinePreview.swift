@@ -675,7 +675,7 @@ struct TimelinePreviewSheet: View {
             player.play()
             fastPlayer = player
         } catch {
-            failure = "Could not build the preview: \(error.localizedDescription)"
+            failure = "Could not build the preview: \(error.logged())"
         }
     }
 

@@ -261,7 +261,7 @@ private struct TextLooksCaptionSample: View {
             } catch is CancellationError {
             } catch {
                 guard !Task.isCancelled else { return }
-                self.error = "Could not render captions: \(error.localizedDescription)"
+                self.error = "Could not render captions: \(error.logged())"
             }
         }
     }

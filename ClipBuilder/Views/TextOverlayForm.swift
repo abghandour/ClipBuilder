@@ -193,7 +193,7 @@ struct FontFamilyPicker: View {
                     importError = count == 0 ? "No font files were imported." : nil
                     libraryFamilies = await AssetStore.libraryFontFamiliesAsync()
                 } catch {
-                    importError = error.localizedDescription
+                    importError = error.logged()
                 }
             }
         }

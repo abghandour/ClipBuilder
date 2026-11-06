@@ -21,7 +21,13 @@ nonisolated struct ElevenLabsKeychain: Sendable {
 
     func read() throws -> String? {
         var result = copy(legacy: false)
-        if result.status == errSecMissingEntitlement { result = copy(legacy: true) }
+        // An unentitled build is refused writes (-34018) but a data-protection
+        // read can answer "not found" instead, so look in the login keychain
+        // for both, as GoogleDriveKeychain does. Otherwise a key saved there
+        // is never read back and every check says "Add your key".
+        if result.status == errSecMissingEntitlement || result.status == errSecItemNotFound {
+            result = copy(legacy: true)
+        }
         if result.status == errSecItemNotFound { return nil }
         guard result.status == errSecSuccess else { throw StoreError(status: result.status) }
         guard let data = result.data, let key = String(data: data, encoding: .utf8) else {

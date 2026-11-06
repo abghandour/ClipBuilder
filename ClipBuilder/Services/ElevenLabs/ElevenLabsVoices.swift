@@ -2,6 +2,8 @@ import Foundation
 
 nonisolated enum ElevenLabsVoices {
     static let identifierPrefix = "elevenlabs:"
+    /// The account's own voices, where voices are added and cloned.
+    static let manageURL = URL(string: "https://elevenlabs.io/app/voice-lab")!
     /// Settings posts this on the main actor after changing the key or checking the account.
     static let settingsChanged = Notification.Name("ElevenLabsSettingsChanged")
     static let supportedLanguages = [

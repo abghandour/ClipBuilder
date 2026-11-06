@@ -467,6 +467,7 @@ extension AppStore {
                     failed += 1
                     appendLog(\.analysisLog, ["\(video.filename): \(error)"])
                     let message = "\(error)"
+                    logEvent("error", "Analysis of \(video.filename) failed: \(message)")
                     await updateAnalysisCheckpoint(videoID: video.id) { $0.lastError = message }
                     if case .quotaExhausted = error {
                         appendLog(\.analysisLog, ["Quota exhausted — stopping the run."])

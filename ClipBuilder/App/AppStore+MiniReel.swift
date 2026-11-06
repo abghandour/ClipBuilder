@@ -20,6 +20,7 @@ extension AppStore {
         miniReelKey = key
         miniReelLoaded = false
         miniReelItems = []
+        miniReelSectionOrder = [:]
         guard let database else { return }
         let generation = profileGeneration
         let previous = miniReelSaveTask
@@ -36,6 +37,53 @@ extension AppStore {
             miniReelItems = items
             miniReelLoaded = true
             reconcileMiniReel()
+            loadMiniReelSectionOrder(key: key)
+        }
+    }
+
+    /// Reads, for every section the reel names, the order its list shows
+    /// its items in, without loading the section onto the page: Q&A
+    /// exchanges, transcript and fight picks by position, and each
+    /// remembered Highlights batch's candidates in their kept order.
+    private func loadMiniReelSectionOrder(key: MiniReelKey) {
+        guard let database else { return }
+        let kinds = Set(miniReelItems.map(\.kind))
+        let generation = profileGeneration
+        let batches = rememberedHighlightBatches(key: key)
+        Task {
+            var order: [MiniReelRules.Key: Int] = [:]
+            func record(_ kind: MiniWizardFlow.FootageKind, _ ids: [Int64]) {
+                for (index, id) in ids.enumerated() { order[.init(kind: kind, itemID: id)] = index }
+            }
+            if kinds.contains(.qa),
+               let rows = try? await miniTranscriptRows(videoID: key.videoID),
+               let scenes = try? await database.fetchScenes(projectID: key.projectID, scope: .active, includeExcluded: true) {
+                let videoScenes = scenes.filter { $0.videoID == key.videoID }
+                let ids = await Task.detached(priority: .utility) {
+                    TranscriptQASections.sections(scenes: videoScenes, rows: rows, labels: [:]).map(\.id)
+                }.value
+                record(.qa, ids)
+            }
+            if kinds.contains(.transcript),
+               let picks = try? await database.fetchTranscriptPicks(projectID: key.projectID, videoID: key.videoID) {
+                record(.transcript, picks.map(\.id))
+            }
+            if kinds.contains(.fightMetrics),
+               let picks = try? await database.fetchFightPicks(projectID: key.projectID, videoID: key.videoID) {
+                record(.fightMetrics, picks.map(\.id))
+            }
+            if kinds.contains(.highlights) {
+                for batch in batches.sorted() {
+                    // The same candidates the section restores (a selection needs a take).
+                    guard let ids = try? await database.miniSavedCandidates(projectID: key.projectID, miniBatch: batch)
+                        .map(\.id) else { continue }
+                    let saved = UserDefaults.standard.stringArray(forKey: MiniWizardMemory.highlightOrderKey(batch))?
+                        .compactMap(Int64.init) ?? []
+                    record(.highlights, WizardPreviewRows.merging(saved, into: ids))
+                }
+            }
+            guard generation == profileGeneration, miniReelKey == key else { return }
+            miniReelSectionOrder = order
         }
     }
 

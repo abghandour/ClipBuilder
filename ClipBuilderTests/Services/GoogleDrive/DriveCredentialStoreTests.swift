@@ -19,10 +19,15 @@ final class FakeKeychain: Sendable {
     /// A data-protection write that fails for a reason other than a missing
     /// entitlement (a locked keychain, an I/O error).
     let modernWriteStatus: OSStatus
+    /// Real unentitled builds: data-protection writes answer -34018 while
+    /// reads can answer "not found".
+    let unentitledReadsNotFound: Bool
 
-    init(entitled: Bool = true, modernWriteStatus: OSStatus = errSecSuccess) {
+    init(entitled: Bool = true, modernWriteStatus: OSStatus = errSecSuccess,
+         unentitledReadsNotFound: Bool = false) {
         self.entitled = entitled
         self.modernWriteStatus = modernWriteStatus
+        self.unentitledReadsNotFound = unentitledReadsNotFound
     }
 
     private func isModern(_ query: [String: Any]) -> Bool {
@@ -37,7 +42,9 @@ final class FakeKeychain: Sendable {
     var api: KeychainAPI {
         KeychainAPI(
             copyMatching: { [self] query in
-                if isModern(query) && !entitled { return (errSecMissingEntitlement, nil) }
+                if isModern(query) && !entitled {
+                    return (unentitledReadsNotFound ? errSecItemNotFound : errSecMissingEntitlement, nil)
+                }
                 let value = items.withLock { store in
                     isModern(query) ? store.modern[key(query)] : store.legacy[key(query)]
                 }

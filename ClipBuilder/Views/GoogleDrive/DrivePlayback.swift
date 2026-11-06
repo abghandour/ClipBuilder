@@ -12,7 +12,7 @@ enum DrivePlayback {
         } catch is CancellationError { return false } catch {
             let alert = NSAlert()
             alert.messageText = "Could not open media"
-            alert.informativeText = error.localizedDescription
+            alert.informativeText = error.logged()
             alert.addButton(withTitle: "OK")
             alert.addButton(withTitle: "Report…")
             let response: NSApplication.ModalResponse

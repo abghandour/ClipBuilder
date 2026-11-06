@@ -3,6 +3,7 @@ import SwiftUI
 struct DubLanguagePicker: View {
     @Environment(AppStore.self) private var store
     @Environment(\.openSettings) private var openSettings
+    @Environment(\.openURL) private var openURL
     @Environment(\.scenePhase) private var scenePhase
     @AppStorage("settings.selectedTab") private var settingsTab = "profile"
     @Binding var language: String?
@@ -12,6 +13,8 @@ struct DubLanguagePicker: View {
     @State private var missingKey = false
     @State private var reloadID = 0
     @State private var refreshVoices = false
+    /// The last load was an explicit refresh, so the caption confirms it.
+    @State private var refreshed = false
 
     private var selectedLanguage: String { language ?? DubLanguageChoices.defaultLanguage }
 
@@ -50,12 +53,17 @@ struct DubLanguagePicker: View {
                             }
                             .controlSize(.small).lineLimit(1).fixedSize()
                         } else {
-                            Button("Manage…") {
-                                refreshVoices = true
-                                reloadID += 1
+                            Menu("Manage…") {
+                                Button("Refresh voices", systemImage: "arrow.clockwise") {
+                                    refreshVoices = true
+                                    reloadID += 1
+                                }
+                                Button("Open ElevenLabs voices", systemImage: "safari") {
+                                    openURL(ElevenLabsVoices.manageURL)
+                                }
                             }
                             .controlSize(.small).lineLimit(1).fixedSize()
-                            .help("Refresh your ElevenLabs voices")
+                            .help("Refresh this list, or add and clone voices at elevenlabs.io")
                         }
                     }
                 }
@@ -81,7 +89,7 @@ struct DubLanguagePicker: View {
         case (.mac, _): "\(count) voices installed"
         case (.siri, 0): "Siri voices need a one-time setup for \(DubLanguageChoices.name(selectedLanguage))"
         case (.siri, _): "\(count) Siri voices ready"
-        case (.elevenLabs, _): connectionError ?? "\(count) ElevenLabs voices"
+        case (.elevenLabs, _): connectionError ?? (refreshed ? "Updated: " : "") + "\(count) ElevenLabs voices"
         }
     }
 
@@ -101,6 +109,7 @@ struct DubLanguagePicker: View {
         let language = selectedLanguage
         let refresh = refreshVoices
         refreshVoices = false
+        refreshed = false
         voices = nil
         connectionError = nil
         missingKey = false
@@ -109,10 +118,14 @@ struct DubLanguagePicker: View {
                 let cached = try await (refresh ? ElevenLabsVoiceCache.shared.refresh() : ElevenLabsVoiceCache.shared.voices())
                 try Task.checkCancellation()
                 voices = ElevenLabsVoices.voices(from: cached, language: language)
+                refreshed = refresh
             } catch {
                 guard !Task.isCancelled else { return }
-                connectionError = (error as? ElevenLabsError)?.userMessage ?? error.localizedDescription
-                missingKey = (error as? ElevenLabsError) == .invalidKey
+                connectionError = error.logged()
+                switch error as? ElevenLabsError {
+                case .invalidKey?, .keyRejected?: missingKey = true
+                default: missingKey = false
+                }
                 voices = []
             }
         } else {

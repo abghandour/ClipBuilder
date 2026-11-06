@@ -509,9 +509,8 @@ private struct TranscriptQALineView: View, Equatable {
                 .help("Move the playhead to \(line.start.timecode)")
             VStack(alignment: .leading, spacing: 2) {
                 if let speaker = line.speaker, !line.continuesSpeaker {
-                    Text(speaker).font(.caption.weight(.semibold))
-                        .foregroundStyle(SpeakerColors.color(for: speaker))
-                        .lineLimit(1).help(speaker)
+                    SpeakerPill(speaker: speaker, font: .caption.weight(.semibold))
+                        .help(speaker)
                 }
                 FlowLayout(spacing: TranscriptQAWordCursor.wordSpacing,
                            rowSpacing: TranscriptQAWordCursor.rowSpacing,

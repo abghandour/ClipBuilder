@@ -70,7 +70,7 @@ struct LookThumbnail: View {
                 error = nil
             } catch is CancellationError {
             } catch {
-                self.error = "Could not render look: \(error.localizedDescription)"
+                self.error = "Could not render look: \(error.logged())"
             }
         }
     }

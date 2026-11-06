@@ -18,7 +18,12 @@ nonisolated enum DubPlanning {
             for row in rows[clip.uid] ?? [] where row.isTranslation && row.language == settings.language {
                 let start = max(sourceStart, row.startTime), end = min(sourceEnd, row.endTime)
                 let span = row.endTime - row.startTime
-                guard span > 0, end > start, (end - start) / span >= 0.4 - 1e-9 else { continue }
+                // A row barely inside a clip edge is dropped. A clip that sits
+                // inside one long row (a transcript pick of a few words) keeps
+                // the row: it covers most of the clip, so it is the clip's speech.
+                guard span > 0, end > start,
+                      (end - start) / span >= 0.4 - 1e-9
+                        || (end - start) / (sourceEnd - sourceStart) >= 0.5 - 1e-9 else { continue }
                 let text = trimmedText(row, start: start, end: end)
                 guard !text.isEmpty else { continue }
                 let speaker: String

@@ -95,7 +95,10 @@ struct ElevenLabsClientTests {
 
     @Test func mapsErrorFixturesWithoutLosingQuotaToThe401Case() async throws {
         let fixtures: [(Int, String, ElevenLabsError)] = [
-            (401, #"{"detail":{"status":"invalid_api_key","message":"Invalid key"}}"#, .invalidKey),
+            (401, #"{"detail":{"status":"invalid_api_key","message":"Invalid key"}}"#, .keyRejected("Invalid key")),
+            (401, #"{"detail":{"status":"missing_permissions","message":"The API key you used is missing the permission user_read to execute this operation."}}"#,
+             .keyRejected("The API key you used is missing the permission user_read to execute this operation.")),
+            (401, "", .keyRejected(nil)),
             (401, #"{"detail":{"status":"quota_exceeded","remaining":4}}"#, .quotaExceeded(remaining: 4)),
             (401, #"{"detail":{"status":"quota_exceeded","message":"Quota exceeded"}}"#, .quotaExceeded(remaining: nil)),
             (422, #"{"detail":{"message":"Voice not found"}}"#, .badRequest("Voice not found")),
@@ -115,6 +118,11 @@ struct ElevenLabsClientTests {
             #expect(await stub.requests.count == 1)
         }
         #expect(ElevenLabsError.invalidKey.userMessage == "Add your ElevenLabs key in Settings > AI")
+        // A rejected key must never read like the empty-field prompt.
+        #expect(ElevenLabsError.keyRejected(nil).userMessage != ElevenLabsError.invalidKey.userMessage)
+        #expect(ElevenLabsError.keyRejected("Missing user_read.").userMessage.contains("Missing user_read."))
+        #expect(ElevenLabsError.keyRejected("Missing the permission user_read.").userMessage.contains("permissions at"))
+        #expect(ElevenLabsError.keyRejected("Invalid API key.").userMessage.contains("Copy it again"))
         #expect(ElevenLabsError.quotaExceeded(remaining: nil).userMessage.hasPrefix("Your ElevenLabs credits for this month are used up"))
     }
 

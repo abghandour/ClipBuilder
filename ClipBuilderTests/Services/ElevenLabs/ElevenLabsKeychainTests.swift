@@ -74,4 +74,17 @@ struct ElevenLabsKeychainTests {
         #expect(try denied.read() == nil)
         fake.items.withLock { #expect($0.legacy.isEmpty) }
     }
+
+    /// The field case of November 6, 2026: the key was saved to the login
+    /// keychain, the data-protection read said "not found", and Check said
+    /// "Add your ElevenLabs key" without sending a request.
+    @Test func notFoundFromAnUnentitledReadStillFindsTheLoginKeychainKey() throws {
+        let fake = FakeKeychain(entitled: false, unentitledReadsNotFound: true)
+        let keychain = ElevenLabsKeychain(api: fake.api)
+        #expect(try keychain.read() == nil)
+        try keychain.write("saved-key")
+        #expect(try keychain.read() == "saved-key")
+        try keychain.write(nil)
+        #expect(try keychain.read() == nil)
+    }
 }

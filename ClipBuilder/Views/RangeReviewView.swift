@@ -11,6 +11,9 @@ struct RangeReviewView<Footer: View>: View {
     /// Named speaker turns; rows crossing a speaker change split into one line per speaker.
     var speakerSpans: [TranscriptQATrim.SpeakerSpan] = []
     var kept: Binding<Set<Int64>>? = nil
+    /// The colour family of this list's bars and transcript blocks: each
+    /// Express Footage section has its own, so no two share a colour.
+    var palette: RangeReviewPalette.Family = .qa
     var preferredTranslationLanguage: String? = nil
     var selection: Binding<Int64?>? = nil
     var emptyTitle = "Select a Q&A section"
@@ -130,8 +133,9 @@ struct RangeReviewView<Footer: View>: View {
     }
     /// Position of a saved item among the saved items, for its palette colour.
     private func paletteIndex(_ item: RangeReviewItem) -> Int? {
-        guard !item.isDraft else { return nil }
-        return items.filter { !$0.isDraft }.firstIndex { $0.id.ownerID == item.id.ownerID }
+        guard !item.isDraft,
+              let index = items.filter({ !$0.isDraft }).firstIndex(where: { $0.id.ownerID == item.id.ownerID }) else { return nil }
+        return RangeReviewPalette.slot(index, family: palette)
     }
 
     /// Saved picks of `video` as marked ranges, in the colour of their rows:

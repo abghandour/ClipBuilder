@@ -121,6 +121,14 @@ nonisolated enum DubPreparation {
         return prepared
     }
 
+    /// An empty ElevenLabs list means no key, a failed voice fetch, or no
+    /// voice for the language. The Mac "install voices" advice fits none of them.
+    static func elevenLabsSetupMessage(language: String) -> String {
+        let name = Locale.current.localizedString(forIdentifier: language) ?? language
+        return "No ElevenLabs voices for \(name). Add your ElevenLabs key in Settings > AI, "
+            + "or set Voices to Mac voices in the Audio settings."
+    }
+
     /// Best installed voices go out first (they arrive ranked), one per
     /// speaker, round-robin within the speaker's gender: a male speaker never
     /// gets a female voice or the reverse, even a remembered one, as long as a
@@ -157,6 +165,9 @@ nonisolated enum DubPreparation {
         let installed = await speech.voices(settings.language)
         if settings.engine == .siri, installed.isEmpty {
             throw ScriptError.invalid(SiriDubVoices.setupMessage(language: settings.language))
+        }
+        if settings.engine == .elevenLabs, installed.isEmpty {
+            throw ScriptError.invalid(elevenLabsSetupMessage(language: settings.language))
         }
         let settings = try assigningVoices(lines: lines, settings: settings, installed: installed, genders: genders)
         let slots = Dictionary(uniqueKeysWithValues: lines.indices.map { index in

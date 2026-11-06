@@ -372,7 +372,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
         } catch is CancellationError {
             // A newer scene request owns the column now.
         } catch {
-            if sceneRequestID == id { self.error = error.localizedDescription }
+            if sceneRequestID == id { self.error = error.logged() }
         }
     }
 

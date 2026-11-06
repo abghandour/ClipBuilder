@@ -103,7 +103,7 @@ struct MiniBRollPanel: View {
     private func editor(_ cut: BRollCut, piece: MiniBRollRules.Piece) -> some View {
         MiniBRollEditor(cut: cut, piece: piece, words: transcript.words,
             scene: scenes.first { $0.id == cut.sceneID },
-            paletteIndex: allCuts.firstIndex { $0.id == cut.id } ?? 0,
+            paletteIndex: RangeReviewPalette.slot(allCuts.firstIndex { $0.id == cut.id } ?? 0, family: .qa),
             sourceURL: run.video.path.flatMap { $0.isEmpty ? nil : URL(fileURLWithPath: $0) },
             onSpoken: { time in
                 if let time { spoken = (piece.id, cut.id, time) } else if spoken?.cut == cut.id { spoken = nil }
@@ -161,7 +161,7 @@ struct MiniBRollPanel: View {
             return
         } catch {
             guard !Task.isCancelled, key == loadKey else { return }
-            self.error = "Could not load B-roll: \(error.localizedDescription)"
+            self.error = "Could not load B-roll: \(error.logged())"
             loading = false
         }
     }

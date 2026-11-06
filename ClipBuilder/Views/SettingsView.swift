@@ -208,6 +208,7 @@ private struct InstagramSettingsTab: View {
                 testResult = "OK — reached @\(profile.username)"
             } catch {
                 testResult = "\(error)"
+                ErrorLog.record("Instagram connection test", testResult ?? "\(error)")
             }
             testing = false
         }
@@ -1006,7 +1007,7 @@ private struct AISettingsTab: View {
             do {
                 elevenLabsKey = try ElevenLabsKeychain().read() ?? ""
             } catch {
-                elevenLabsResult = error.localizedDescription
+                elevenLabsResult = error.logged()
             }
             availableProviders = await ModelPicker.probeAvailability(ai: store.ai)
         }
@@ -1050,7 +1051,7 @@ private struct AISettingsTab: View {
             }
         } catch {
             guard !Task.isCancelled else { return }
-            elevenLabsResult = (error as? ElevenLabsError)?.userMessage ?? error.localizedDescription
+            elevenLabsResult = error.logged()
         }
     }
 }

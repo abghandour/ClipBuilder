@@ -447,6 +447,10 @@ final class AppStore {
     /// Select on a List row: the Footage section to open and the item to
     /// select there; the section's review clears it once it has selected.
     var miniReelReveal: MiniReelRules.Key?
+    /// Each reel item's place in its Footage section's list, read for the
+    /// sections not loaded yet so the List can colour every row as its
+    /// section does; a loaded section's live order wins.
+    var miniReelSectionOrder: [MiniReelRules.Key: Int] = [:]
     /// The preview's List has keyboard focus: its Delete key removes a reel
     /// item, so the Footage review's window-wide key monitor leaves Delete alone.
     @ObservationIgnored var miniReelListFocused = false
@@ -928,6 +932,12 @@ final class AppStore {
         if openProfile { openActiveProfile() }
         refreshBumpers()
         updateBugReportContext()
+        // The launched app's store (not a test's) owns the Errors channel.
+        if startWatcher {
+            ErrorLog.install { [weak self] line in
+                Task { @MainActor in self?.logEvent("error", line) }
+            }
+        }
     }
 
     // MARK: - Diagnostics

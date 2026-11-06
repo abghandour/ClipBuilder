@@ -522,7 +522,7 @@ struct AssetBrowserView: View {
                         try await store.database?.moveAssetMetadata(kind: kind, from: url, to: destination)
                     }
                 }
-            } catch { operationError = error.localizedDescription }
+            } catch { operationError = error.logged() }
             refresh()
         }
     }
@@ -725,7 +725,7 @@ struct AssetBrowserView: View {
             do {
                 let destination = try AssetStore.rename(item, to: name)
                 try await store.database?.moveAssetMetadata(kind: kind, from: item.url, to: destination)
-            } catch { operationError = error.localizedDescription }
+            } catch { operationError = error.logged() }
             refresh()
         }
     }
@@ -743,7 +743,7 @@ struct AssetBrowserView: View {
                     let allowed = kind.allowedExtensions.sorted().joined(separator: ", ").uppercased()
                     operationError = "No matching files to import. \(kind.title) accepts: \(allowed)."
                 }
-            } catch { operationError = error.localizedDescription }
+            } catch { operationError = error.logged() }
             // Also refresh after a partial success followed by an error.
             refresh()
         }
@@ -754,7 +754,7 @@ struct AssetBrowserView: View {
             try operation()
             refresh()
         } catch {
-            operationError = error.localizedDescription
+            operationError = error.logged()
         }
     }
 

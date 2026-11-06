@@ -12,6 +12,9 @@ struct WizardPreviewListConfig {
     var onDeleteAll: (() -> Void)? = nil
     /// Select on a row: open the clip's Footage section with the item selected.
     var onSelect: ((String) -> Void)? = nil
+    /// The palette slot of a row's clip id: the colour its item has in its
+    /// Footage section, drawn as the row's left bar. Nil: no bar.
+    var barSlot: ((String) -> Int?)? = nil
     /// A third tab, Summary: what Generate will make. The column's footer is
     /// then only the action buttons, pinned without a split.
     var summary: AnyView? = nil
@@ -115,8 +118,11 @@ struct WizardPreviewList: View {
                         .opacity(isDragging(row) ? 0.75 : 1)
                         .zIndex(isDragging(row) ? 1 : 0)
                         .highPriorityGesture(reorderGesture(row), including: canReorder ? .all : .subviews)
-                        .help(canReorder ? "Drag up or down to reorder" : "")
+                        .help(canReorder ? "Double-click to expand or collapse; drag to reorder" : "Double-click to expand or collapse")
                         .contextMenu {
+                            if !row.text.isEmpty {
+                                Button(expanded.contains(row.id) ? "Collapse" : "Expand") { toggleExpanded(row) }
+                            }
                             if let onSelect = config.onSelect {
                                 Button("Select") { selectedIndex = index; onSelect(row.id) }
                             }
@@ -153,36 +159,9 @@ struct WizardPreviewList: View {
     private func rowView(_ row: WizardPreviewRow, index: Int) -> some View {
         let selected = index == selectedIndex
         let isExpanded = expanded.contains(row.id)
-        // The row's buttons sit in a strip across the top so the words
-        // use the card's whole width below them.
+        // No buttons on the card: a click selects, a double-click expands or
+        // collapses, and the context menu carries Expand, Select and Delete.
         return VStack(alignment: .leading, spacing: 2) {
-            HStack(spacing: Theme.spaceS) {
-                Spacer(minLength: 0)
-                if !row.text.isEmpty {
-                    Button(isExpanded ? "Collapse" : "Expand",
-                           systemImage: isExpanded ? "chevron.up" : "chevron.down") {
-                        if isExpanded { expanded.remove(row.id) } else { expanded.insert(row.id) }
-                    }
-                    .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
-                    .controlSize(.small)
-                    .help(isExpanded ? "Show two lines" : "Show the whole text")
-                }
-                if let onSelect = config.onSelect {
-                    Button("Select", systemImage: "arrow.up.right.square") { selectedIndex = index; onSelect(row.id) }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
-                        .controlSize(.small)
-                        .help("Open this clip in its Footage section")
-                }
-                if canDelete {
-                    Button("Delete", systemImage: "trash", role: .destructive) { config.onDelete?(row.id) }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
-                        .controlSize(.small)
-                        .help("Remove this clip from the reel")
-                }
-            }
             Button { selectedIndex = index; listFocused = true } label: {
                 // Only who is talking and what they said; the Video tab's
                 // stepper carries the clip number and time.
@@ -205,12 +184,25 @@ struct WizardPreviewList: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .simultaneousGesture(TapGesture(count: 2).onEnded { toggleExpanded(row) })
             .accessibilityLabel("Clip \(index + 1), \(row.title)")
             .accessibilityAddTraits(selected ? .isSelected : [])
+            .accessibilityAction(named: isExpanded ? "Collapse" : "Expand") { toggleExpanded(row) }
         }
         .padding(Theme.spaceS)
+        .padding(.leading, RangeReviewPalette.barWidth)
         .background(selected ? Color.accentColor.opacity(0.18) : Color.clear,
                     in: RoundedRectangle(cornerRadius: 6))
+        .overlay(alignment: .leading) {
+            // The colour this clip's item has in its Footage section.
+            if let slot = config.barSlot?(row.id) {
+                RangeReviewPalette.bar(slot)
+                    .frame(width: RangeReviewPalette.barWidth)
+                    .padding(.vertical, Theme.spaceXS)
+                    .allowsHitTesting(false)
+                    .accessibilityHidden(true)
+            }
+        }
         .padding(.horizontal, Theme.spaceXS)
     }
 
@@ -224,22 +216,22 @@ struct WizardPreviewList: View {
                 let turn = turns[index]
                 VStack(alignment: .leading, spacing: Theme.spaceXS) {
                     if let speaker = turn.speaker {
-                        let color = SpeakerColors.color(for: speaker)
-                        Text(speaker)
-                            .font(.callout.weight(.semibold))
-                            .foregroundStyle(color)
-                            .lineLimit(1)
-                            .padding(.horizontal, Theme.spaceS)
-                            .padding(.vertical, 2)
-                            .background(color.opacity(0.18), in: Capsule())
+                        SpeakerPill(speaker: speaker)
                     }
-                    Text(turn.text)
+                    // Collapsed with later turns hidden: the shown turn ends
+                    // in "…" even when its own words fit.
+                    Text(!expanded && row.segments.count > 1 ? turn.text + " …" : turn.text)
                         .font(.body)
                         .lineLimit(expanded ? nil : Self.collapsedLines)
                         .fixedSize(horizontal: false, vertical: true)
                 }
             }
         }
+    }
+
+    private func toggleExpanded(_ row: WizardPreviewRow) {
+        guard !row.text.isEmpty else { return }
+        if expanded.contains(row.id) { expanded.remove(row.id) } else { expanded.insert(row.id) }
     }
 
     /// The selected row leaves the reel; the next row (or the last) is selected.

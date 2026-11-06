@@ -124,7 +124,7 @@ struct PersonTagFieldsView: View {
                 fields = withStyleFields(loaded)
                 error = nil
             } catch is CancellationError {
-            } catch { self.error = error.localizedDescription }
+            } catch { self.error = error.logged() }
         }
         // A reload keeps unsaved edits of the other fields; a draft goes
         // once it matches what is saved, or its field is gone.
@@ -197,7 +197,7 @@ struct PersonTagFieldsView: View {
                 fields = withStyleFields(loaded)
                 store.personTagFieldsVersion &+= 1
                 error = nil
-            } catch { self.error = error.localizedDescription }
+            } catch { self.error = error.logged() }
         }
     }
 
@@ -210,7 +210,7 @@ struct PersonTagFieldsView: View {
                 fields = withStyleFields(fields.filter { $0.id != field.id })
                 store.personTagFieldsVersion &+= 1
                 error = nil
-            } catch { self.error = error.localizedDescription }
+            } catch { self.error = error.logged() }
         }
     }
 }

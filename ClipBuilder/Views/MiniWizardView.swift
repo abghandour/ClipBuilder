@@ -99,7 +99,10 @@ struct MiniWizardView: View {
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .frame(height: visible ? nil : 0, alignment: .top)
-                .clipped()
+                // A hidden section clips to nothing; the open one keeps the
+                // review's spill past the card edge (MiniFootageCard.resizable
+                // pads it out by spaceS), where the list's colour bars sit.
+                .clipShape(Rectangle().inset(by: visible ? -Theme.spaceS : 0))
                 .opacity(visible ? 1 : 0)
                 .allowsHitTesting(visible)
                 .accessibilityHidden(!visible)
@@ -115,6 +118,12 @@ struct MiniWizardView: View {
                                 onDelete: { store.removeMiniReelItem(clipID: $0) },
                                 onDeleteAll: { store.removeAllMiniReelItems() },
                                 onSelect: { store.revealMiniReelItem(clipID: $0) },
+                                barSlot: { clipID in
+                                    guard let item = MiniReelRules.item(store.miniReelItems, clipID: clipID),
+                                          let index = MiniReelRules.paletteIndex(of: item, runs: store.miniRuns,
+                                                                                 cached: store.miniReelSectionOrder) else { return nil }
+                                    return RangeReviewPalette.slot(index, family: .init(item.kind))
+                                },
                                 summary: generateSummary)
     }
 
@@ -670,7 +679,7 @@ struct MiniWizardView: View {
             videos = []
             podcastVideoIDs = []
             sceneVideoIDs = []
-            loadError = "Could not load analyzed videos: \(error.localizedDescription)"
+            loadError = "Could not load analyzed videos: \(error.logged())"
             isLoading = false
         }
     }

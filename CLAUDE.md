@@ -58,25 +58,6 @@ slices, verify with the compiler.
 
 ## Map
 
-```
-ClipBuilder/
-  App/        AppStore.swift (state + core, 2k lines) and AppStore+<Feature>.swift
-              extensions (Projects, Analysis, WizardPipeline, Wizard, People,
-              AITools, Scenes, Timelines, FightResearch, Instagram, Jobs,
-              ImageSearch, ReelModels, ImageGeneration); AppJobs (background jobs);
-              BuilderStore (timeline editing)
-  Data/       Models, Database.swift (schema + migrations) and
-              Database+<TableGroup>.swift query extensions, BrandProfile,
-              settings, recipes, AI provenance
-  Services/   AITask (registry), AIService (dispatch), Analyzer,
-              MultitrackRenderer, WizardEngine, Wizard/ (pure plan rules),
-              ReelCritic, PodcastHighlight*, GoogleDrive/, Instagram/,
-              Models/ (on-device CreateML), Script/
-  Views/      one file per sheet or pane; GoogleDrive/, AIInfo/ subfolders
-ClipBuilderTests/  mirrors the app folders; Support/Fixtures.swift has builders
-docs/       plans and results; scripts/  release, test, benchmarks
-```
-
 Every file over ~2k lines opens with a `// MAP` comment listing its sections
 or its extension files. Read that first, then jump to the section.
 

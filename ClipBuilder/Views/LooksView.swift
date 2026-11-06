@@ -95,7 +95,7 @@ struct LooksView: View {
                       allowedContentTypes: [.movie, .mpeg4Movie, .quickTimeMovie]) { result in
             switch result {
             case .success(let url): changeSample(to: url)
-            case .failure(let error): sampleError = error.localizedDescription
+            case .failure(let error): sampleError = error.logged()
             }
         }
         .alert("Could not change sample", isPresented: Binding(

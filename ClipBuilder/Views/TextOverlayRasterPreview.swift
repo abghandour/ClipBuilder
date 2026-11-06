@@ -60,7 +60,7 @@ struct TextOverlayRasterPreview: View {
                 // A newer edit owns the preview.
             } catch {
                 image = nil
-                self.error = "Could not render text preview: \(error.localizedDescription)"
+                self.error = "Could not render text preview: \(error.logged())"
             }
         }
     }

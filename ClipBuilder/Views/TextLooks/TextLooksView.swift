@@ -196,7 +196,7 @@ struct TextLooksView: View {
                 counts = result
                 countError = nil
             } catch is CancellationError {
-            } catch { countError = "Could not count style usage: \(error.localizedDescription)" }
+            } catch { countError = "Could not count style usage: \(error.logged())" }
         }
         .confirmationDialog("Delete this style?", isPresented: $deleting) {
             Button("Delete Style", role: .destructive, action: remove)

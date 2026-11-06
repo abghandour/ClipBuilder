@@ -66,6 +66,7 @@ struct MiniTranscriptPickView: View {
     var body: some View {
         RangeReviewView(items: items, rows: rows, labels: transcript?.labels ?? [:],
                         speakerSpans: transcript?.speakerSpans ?? [], kept: kept,
+                        palette: .transcript,
                         preferredTranslationLanguage: store.activeProfile.captionLanguages.first,
                         selection: $selectedOwner,
                         emptyTitle: "Pick a passage",

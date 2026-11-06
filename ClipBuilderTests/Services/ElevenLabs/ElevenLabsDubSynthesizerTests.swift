@@ -148,7 +148,7 @@ struct ElevenLabsDubSynthesizerTests {
         let temp = try TempDirectory()
         let directory = temp.url
         let fixtures: [(Int, String, ElevenLabsError)] = [
-            (401, #"{"detail":{"status":"invalid_api_key"}}"#, .invalidKey),
+            (401, #"{"detail":{"status":"invalid_api_key"}}"#, .keyRejected(nil)),
             (401, #"{"detail":{"status":"quota_exceeded"}}"#, .quotaExceeded(remaining: nil)),
             (422, #"{"detail":{"message":"Voice not found"}}"#, .badRequest("Voice not found")),
             (503, "unavailable", .http(503)),

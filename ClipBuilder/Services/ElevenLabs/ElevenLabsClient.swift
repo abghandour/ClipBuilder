@@ -1,7 +1,11 @@
 import Foundation
 
 nonisolated enum ElevenLabsError: LocalizedError, Equatable {
+    /// No key saved on this Mac.
     case invalidKey
+    /// ElevenLabs answered 401 for the saved key: wrong key, or a restricted
+    /// key without the permission this call needs (the server's message).
+    case keyRejected(String?)
     case quotaExceeded(remaining: Int?)
     case tooManyRequests
     case badRequest(String)
@@ -11,6 +15,15 @@ nonisolated enum ElevenLabsError: LocalizedError, Equatable {
         switch self {
         case .invalidKey:
             "Add your ElevenLabs key in Settings > AI"
+        case .keyRejected(let message?) where message.localizedCaseInsensitiveContains("permission"):
+            "ElevenLabs rejected this key: \(message) Edit the key's permissions at "
+                + "elevenlabs.io › Developers › API Keys, or create a key with full access."
+        case .keyRejected(let message?):
+            "ElevenLabs rejected this key: \(message) Copy it again from elevenlabs.io › "
+                + "Developers › API Keys and paste the whole key."
+        case .keyRejected(nil):
+            "ElevenLabs rejected this key. Copy it again from elevenlabs.io › Developers › "
+                + "API Keys and paste the whole key."
         case .quotaExceeded(let remaining):
             "Your ElevenLabs credits for this month are used up"
                 + (remaining.map { " (\($0) remaining)." } ?? ".")
@@ -112,9 +125,21 @@ nonisolated struct ElevenLabsClient: Sendable {
         }
         for attempt in 0...1 {
             try Task.checkCancellation()
-            let (data, response) = try await transport(request)
+            let data: Data, response: HTTPURLResponse
+            do {
+                (data, response) = try await transport(request)
+            } catch {
+                if !(error is CancellationError) {
+                    ErrorLog.record("ElevenLabs", "\(path) did not answer: \(error.localizedDescription)")
+                }
+                throw error
+            }
             try Task.checkCancellation()
             if (200..<300).contains(response.statusCode) { return data }
+            // The raw answer, so a rejection can be read in the console. It
+            // never echoes the key, which travels only in the request header.
+            let body = String(decoding: data.prefix(600), as: UTF8.self)
+            ErrorLog.record("ElevenLabs", "HTTP \(response.statusCode) for \(path): \(body)")
             if response.statusCode == 429, attempt == 0 {
                 try await Task.sleep(for: .seconds(2))
                 continue
@@ -130,7 +155,11 @@ nonisolated struct ElevenLabsClient: Sendable {
         if detail?["status"] as? String == "quota_exceeded" {
             return .quotaExceeded(remaining: (detail?["remaining"] as? Int) ?? (detail?["remaining_credits"] as? Int))
         }
-        if status == 401 || detail?["status"] as? String == "invalid_api_key" { return .invalidKey }
+        if status == 401 || detail?["status"] as? String == "invalid_api_key" {
+            let message = (detail?["message"] as? String)?.trimmingCharacters(in: .whitespacesAndNewlines)
+            // ElevenLabs says why (wrong key, missing permission); keep its words.
+            return .keyRejected(message?.isEmpty == false ? message : nil)
+        }
         if status == 429 { return .tooManyRequests }
         if status == 400 || status == 422 {
             let validation = object?["detail"] as? [[String: Any]]

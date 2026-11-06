@@ -199,6 +199,21 @@ extension DubPreparationTests {
             == ["ElevenLabs request: 3 characters", "ElevenLabs: 3 characters"])
     }
 
+    @Test func emptyElevenLabsVoicesPointAtTheKeyNotMacVoices() async throws {
+        let clip = Fixtures.timelineClip(sourceStart: 0, duration: 2)
+        let row = TranscriptRow(id: 1, videoID: 1, language: "pt-BR", isTranslation: true,
+            startTime: 0, endTime: 2, text: "Olá", originalText: nil, wordsJSON: nil, provider: nil, model: nil)
+        let speech = DubPreparation.Speech(voices: { _ in [] },
+            synthesize: { _, _, _ in URL(fileURLWithPath: "/tmp/unused.caf") }, duration: { _ in 1 })
+        let expected = ScriptError.invalid(DubPreparation.elevenLabsSetupMessage(language: "pt-BR"))
+        await #expect(throws: expected) {
+            _ = try await DubPreparation.synthesize(document: Fixtures.timelineDocument(clips: [clip]),
+                rows: [clip.uid: [row]], turns: [:], settings: .init(language: "pt-BR", engine: .elevenLabs),
+                speech: speech)
+        }
+        #expect(DubPreparation.elevenLabsSetupMessage(language: "pt-BR").contains("ElevenLabs key"))
+    }
+
     @Test func cropBoundariesDoNotShortenSpeechSourceRange() {
         let clip = Fixtures.timelineClip(sourceStart: 10, duration: 4)
         var document = Fixtures.timelineDocument(clips: [clip])

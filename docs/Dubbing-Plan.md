@@ -84,8 +84,9 @@ its language choice live in AI Wizard Express, on the Audio tab next to Music.
   inside `[sourceStart, sourceEnd]`, placed on the timeline at
   `clip.startTime + (row.start - sourceStart) / clip.speed`, clipped to the
   clip. Muted clips, cutaways and bumpers get no lines. A row cut by a clip
-  edge is dropped when less than 40 % of it remains, else trimmed to the
-  words that fit (word timings when present).
+  edge is dropped when less than 40 % of it remains, unless it covers at
+  least half the clip (a short pick inside a long row, 2026-11-06); a kept
+  row is trimmed to the words that fit (word timings when present).
 - Speaker: the row's attribution when set, else the speaker turn covering
   the row's midpoint, else "unknown". Each speaker key maps to a voice.
 - Synthesis runs off the main actor in an actor, one utterance per line,

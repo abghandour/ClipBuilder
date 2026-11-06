@@ -751,7 +751,7 @@ struct TextInspector: View {
             try OverlayTemplateStore.save(OverlayTemplate(name: name,
                                                           composition: OverlayComposition(texts: [text])))
         } catch {
-            saveError = error.localizedDescription
+            saveError = error.logged()
         }
     }
 }

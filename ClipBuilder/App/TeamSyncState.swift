@@ -211,7 +211,7 @@ final class TeamSyncState {
             counts = try await db.syncRowCounts()
             counts["profile_documents"] = 1
             return true
-        } catch { message = error.localizedDescription; return false }
+        } catch { message = error.logged(); return false }
     }
 
     /// Called only after the row-count/privacy confirmation has dismissed.
@@ -331,7 +331,7 @@ final class TeamSyncState {
                 do { try await self.performCycle(log: log) }
                 catch {
                     if self.generation == captured {
-                        self.message = error.localizedDescription
+                        self.message = error.logged()
                         if error is CancellationError || Task.isCancelled { self.setPaused(true) }
                     }
                     throw error
@@ -461,6 +461,6 @@ final class TeamSyncState {
         message = nil
         defer { busy = false }
         do { try await body() }
-        catch { message = error.localizedDescription }
+        catch { message = error.logged() }
     }
 }

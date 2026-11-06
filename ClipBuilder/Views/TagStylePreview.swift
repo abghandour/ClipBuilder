@@ -99,7 +99,7 @@ struct TagStylePreview: View {
                 // A newer edit owns the preview.
             } catch {
                 guard !Task.isCancelled else { return }
-                self.error = "Could not render preview: \(error.localizedDescription)"
+                self.error = "Could not render preview: \(error.logged())"
             }
         }
     }

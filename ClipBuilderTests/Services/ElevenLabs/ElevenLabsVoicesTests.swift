@@ -70,8 +70,8 @@ struct ElevenLabsVoicesTests {
         for _ in 0..<2 {
             do {
                 _ = try await cache.voices()
-                Issue.record("Expected invalid key")
-            } catch { #expect(error as? ElevenLabsError == .invalidKey) }
+                Issue.record("Expected a rejected key")
+            } catch { #expect(error as? ElevenLabsError == .keyRejected(nil)) }
         }
         #expect(await stub.requests.count == 1)
         #expect(try await cache.refresh().count == 5)

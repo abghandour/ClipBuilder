@@ -129,6 +129,26 @@ nonisolated enum MiniReelRules {
         return renumbered(items.filter { $0.key != key })
     }
 
+    /// The item's place in its loaded section's list (Q&A exchanges,
+    /// transcript or fight picks, Highlights candidates), which picks its
+    /// colour there; nil when the section is not loaded or does not hold it.
+    static func sectionIndex(of item: MiniReelItem, runs: [MiniWizardFlow.FootageKind: MiniWizardRun]) -> Int? {
+        guard let run = runs[item.kind] else { return nil }
+        switch item.kind {
+        case .qa: return run.qa?.sections.firstIndex { $0.id == item.itemID }
+        case .transcript: return run.transcript?.picks.firstIndex { $0.id == item.itemID }
+        case .fightMetrics: return run.fight?.picks.firstIndex { $0.id == item.itemID }
+        case .highlights: return run.candidates.firstIndex { $0.id == item.itemID }
+        }
+    }
+
+    /// `sectionIndex` from a loaded section, else the order read ahead for
+    /// the sections not loaded (`cached`).
+    static func paletteIndex(of item: MiniReelItem, runs: [MiniWizardFlow.FootageKind: MiniWizardRun],
+                             cached: [Key: Int]) -> Int? {
+        sectionIndex(of: item, runs: runs) ?? cached[item.key]
+    }
+
     /// The saved candidates behind the reel, in reel order, for Generate.
     /// Items whose section is not loaded or whose selection has not been
     /// recorded are left out. `otherHighlights` are the saved candidates of

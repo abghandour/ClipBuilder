@@ -364,7 +364,7 @@ struct PodcastHighlightTrimView: View {
             .help("Move the playhead to \(line.start.timecode)")
             VStack(alignment: .leading, spacing: 2) {
                 if let speaker = line.speaker {
-                    Text(speaker).font(.caption.weight(.semibold)).foregroundStyle(SpeakerColors.color(for: speaker))
+                    SpeakerPill(speaker: speaker, font: .caption.weight(.semibold))
                 }
                 FlowLayout(spacing: Theme.spaceXS) {
                     ForEach(line.words) { word in

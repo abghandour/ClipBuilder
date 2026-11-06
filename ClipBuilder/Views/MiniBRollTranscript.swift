@@ -26,9 +26,8 @@ struct MiniBRollTranscript: View {
                         ForEach(transcript.blocks) { block in
                             VStack(alignment: .leading, spacing: Theme.spaceXS) {
                                 if let speaker = block.speaker {
-                                    Text(speaker).font(.caption.weight(.semibold))
-                                        .foregroundStyle(SpeakerColors.color(for: speaker))
-                                        .lineLimit(1).fixedSize()
+                                    SpeakerPill(speaker: speaker, font: .caption.weight(.semibold))
+                                        .fixedSize()
                                 }
                                 FlowLayout(spacing: TranscriptQAWordCursor.wordSpacing, rowSpacing: TranscriptQAWordCursor.rowSpacing) {
                                     ForEach(block.words) { word in token(word) }
@@ -110,7 +109,7 @@ struct MiniBRollTranscript: View {
                     // One opaque block across the gaps in the B-roll's list
                     // colour, as the Footage panel draws picks.
                     Rectangle().fill(active ? TranscriptQAWordCursor.selectionColor
-                                     : mark.map { RangeReviewPalette.block($0.1) } ?? TranscriptQAWordCursor.selectionColor)
+                                     : mark.map { RangeReviewPalette.block(RangeReviewPalette.slot($0.1, family: .qa)) } ?? TranscriptQAWordCursor.selectionColor)
                         .padding(.horizontal, -TranscriptQAWordCursor.wordSpacing / 2 - 0.5)
                         .padding(.vertical, -TranscriptQAWordCursor.rowSpacing / 2 - 0.5)
                 }

@@ -134,6 +134,20 @@ struct MiniReelRulesTests {
         #expect(clips[0].range == 5...9)
     }
 
+    @Test func sectionIndexIsTheItemsPlaceInItsLoadedSection() {
+        let highlights = MiniWizardRun(projectID: 1, video: Fixtures.video(), footageKind: .highlights, length: .automatic,
+            batchID: "hl", candidates: [candidate(40, name: "A", clips: [Fixtures.planClip(sceneID: 1, start: 0, end: 1)]),
+                                         candidate(41, name: "B", clips: [Fixtures.planClip(sceneID: 1, start: 1, end: 2)])],
+            options: WizardOptions())
+        let runs: [MiniWizardFlow.FootageKind: MiniWizardRun] = [.highlights: highlights]
+        #expect(MiniReelRules.sectionIndex(of: item(.highlights, 41), runs: runs) == 1)
+        #expect(MiniReelRules.sectionIndex(of: item(.highlights, 99), runs: runs) == nil, "another batch's item")
+        #expect(MiniReelRules.sectionIndex(of: item(.qa, 1), runs: runs) == nil, "Q&A is not loaded")
+        let cached: [MiniReelRules.Key: Int] = [.init(kind: .qa, itemID: 1): 4, .init(kind: .highlights, itemID: 41): 0]
+        #expect(MiniReelRules.paletteIndex(of: item(.qa, 1), runs: runs, cached: cached) == 4, "read ahead for an unloaded section")
+        #expect(MiniReelRules.paletteIndex(of: item(.highlights, 41), runs: runs, cached: cached) == 1, "the live order wins")
+    }
+
     @Test func reelClipsUseLiveRangesAndFallBackToSnapshots() {
         let first = Fixtures.scene(id: 1, start: 0, end: 50)
         let second = Fixtures.scene(id: 2, start: 50, end: 120)

@@ -52,6 +52,16 @@ struct DubPlanningTests {
         #expect(both.text == "c d e f" && both.sourceStart == 10 && both.sourceEnd == 14)
     }
 
+    /// A transcript pick is often a few words of a long row: 4 s of a 40 s
+    /// row is 10 % of the row but all of the clip, so it is dubbed, trimmed.
+    @Test func clipInsideALongRowKeepsItsTrimmedWords() throws {
+        let clip = Fixtures.timelineClip(sourceStart: 10, duration: 4)
+        let words = (0..<40).map { "w\($0)" }.joined(separator: " ")
+        let line = try #require(plan(clip, rows: [row(start: 0, end: 40, text: words)]).first)
+        #expect(line.text == "w10 w11 w12 w13")
+        #expect(line.sourceStart == 10 && line.sourceEnd == 14)
+    }
+
     @Test func wordTimesOwnEdgeTrimming() throws {
         let clip = Fixtures.timelineClip(sourceStart: 10, duration: 4)
         var translated = row(start: 9, end: 15)

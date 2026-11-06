@@ -20,7 +20,7 @@ struct AssetSyncSettingsSection: View {
                             Button("Forget Folder", role: .destructive) {
                                 Task {
                                     do { try await store.googleDrive.forgetAssetHome(profile: profile) } catch {
-                                        self.error = error.localizedDescription
+                                        self.error = error.logged()
                                     }
                                 }
                             }

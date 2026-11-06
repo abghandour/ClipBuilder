@@ -261,7 +261,7 @@ struct OverlayTemplatesView: View {
                     templates[index].composition = snapshot.composition
                 }
             } catch {
-                operationError = error.localizedDescription
+                operationError = error.logged()
             }
             isSaving = false
         }
@@ -280,7 +280,7 @@ struct OverlayTemplatesView: View {
                 templates[index].composition = snapshot.composition
             }
         } catch {
-            operationError = error.localizedDescription
+            operationError = error.logged()
         }
     }
 
@@ -289,7 +289,7 @@ struct OverlayTemplatesView: View {
             try operation()
             refresh()
         } catch {
-            operationError = error.localizedDescription
+            operationError = error.logged()
         }
     }
 }

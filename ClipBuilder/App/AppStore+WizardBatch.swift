@@ -473,6 +473,7 @@ extension AppStore {
                     failures.append(name)
                     let reason = (error as? AppJobEmptyResult)?.message ?? error.userMessage
                     self.logEvent("job", "Open in Editor: \"\(name)\" failed: \(reason)")
+                    self.logEvent("error", "Open in Editor: \"\(name)\" failed: \(reason)")
                     log("Could not build \"\(name)\": \(reason)")
                 }
             }

@@ -37,6 +37,7 @@ struct MiniHighlightReviewView: View {
 
     var body: some View {
         RangeReviewView(items: items, rows: rows, labels: labels, speakerSpans: speakerSpans, kept: kept,
+                        palette: .highlights,
                         preferredTranslationLanguage: store.activeProfile.captionLanguages.first,
                         selection: selection, emptyTitle: "Select a candidate",
                         emptyMessage: "Choose a candidate to watch it and adjust its cuts.",

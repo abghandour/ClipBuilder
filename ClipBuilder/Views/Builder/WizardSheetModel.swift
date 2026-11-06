@@ -231,7 +231,7 @@ final class WizardSheetModel {
             await scriptLibrary.refresh()
         } catch {
             guard token == generation, !dismissed else { return }
-            saveReplayMessage = "Could not save script: " + error.localizedDescription
+            saveReplayMessage = "Could not save script: " + error.logged()
         }
     }
 
@@ -274,7 +274,7 @@ final class WizardSheetModel {
                                       sourceStart: sourceStart, coverAll: coverAll))], library: found.context.library)
         } catch {
             failure = error as? ApplyFailure
-            reasons = [failureMessage ?? error.localizedDescription]
+            reasons = [failureMessage ?? error.logged()]
             phase = .refused
         }
     }
@@ -394,7 +394,7 @@ final class WizardSheetModel {
     }
 
     func refuseJavaScriptFile(_ error: any Error) {
-        reasons = [error.localizedDescription]
+        reasons = [error.logged()]
         phase = .refused
         appendLog(error.localizedDescription)
     }
@@ -461,7 +461,7 @@ final class WizardSheetModel {
             }
         } catch {
             failure = error as? ApplyFailure
-            reasons = [failureMessage ?? error.localizedDescription]
+            reasons = [failureMessage ?? error.logged()]
             phase = .refused
         }
     }
@@ -487,7 +487,7 @@ final class WizardSheetModel {
             self?.logToolOutcome(event)
         }
         do { runRequest = try routedRequest ?? run.requestText() }
-        catch { reasons = [error.localizedDescription]; phase = .refused; scriptRun = nil; session.discard(); self.session = nil; return }
+        catch { reasons = [error.logged()]; phase = .refused; scriptRun = nil; session.discard(); self.session = nil; return }
         if let id = activeScriptID {
             do { try scriptLibrary.rememberParameters(params, id: id) }
             catch { scriptLibrary.fail(error) }
@@ -567,7 +567,7 @@ final class WizardSheetModel {
             replyError = "The timeline changed while waiting. Start a new request."; return
         }
         do { try conversation.append(question: question, answer: reply) }
-        catch { replyError = error.localizedDescription; return }
+        catch { replyError = error.logged(); return }
         reply = ""; replyError = nil; clarificationQuestion = nil
         phase = .running
         appendLog("Continuing with your reply…")
@@ -773,7 +773,7 @@ final class WizardSheetModel {
         } catch {
             guard !dismissed, token == generation else { return }
             if let applyFailure = error as? ApplyFailure { failure = applyFailure }
-            else { reasons = [error.localizedDescription] }
+            else { reasons = [error.logged()] }
             phase = .refused
             appendLog(failureMessage ?? error.localizedDescription)
         }
@@ -1013,7 +1013,7 @@ final class WizardSheetModel {
         appendLog("No timeline changes applied." + (persistentEffects.isEmpty ? "" : " Library work already saved remains."))
         do {
             if let database, session.timelineID != nil, !alreadyFailed { try await database.recordBuilderRun(record) }
-        } catch { failure = .persistence(error.localizedDescription); appendLog(failureMessage ?? "Could not record discard.") }
+        } catch { failure = .persistence(error.logged()); appendLog(failureMessage ?? "Could not record discard.") }
     }
 
     func cancelRun() {
@@ -1050,7 +1050,7 @@ final class WizardSheetModel {
         do {
             let before = try await database.fetchWizardBefore(timelineID: timelineID)
             if identityMatches { beforeVersion = before }
-        } catch { failure = .persistence(error.localizedDescription) }
+        } catch { failure = .persistence(error.logged()) }
     }
 
     func revert() async {
@@ -1161,7 +1161,7 @@ final class WizardSheetModel {
                 try await database.recordBuilderRun(record)
                 agentAuditSaved = true
             }
-        } catch { failure = .persistence(error.localizedDescription) }
+        } catch { failure = .persistence(error.logged()) }
         agentRun = nil
         if identityMatches, let database, !persistentEffects.isEmpty {
             do {
@@ -1204,7 +1204,7 @@ final class WizardSheetModel {
                     showingAuthoredScript = true
                     phase = .completed
                 } catch {
-                    scriptLibrary.fail(error); reasons = [error.localizedDescription]; phase = .refused
+                    scriptLibrary.fail(error); reasons = [error.logged()]; phase = .refused
                 }
             }
             diff = nil; diffLines = []

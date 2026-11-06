@@ -356,6 +356,24 @@ struct PlayerView: NSViewRepresentable {
     }
 }
 
+/// A speaker's name as a pill in their transcript colour: the Express
+/// preview list and every transcript column that names speakers share it.
+struct SpeakerPill: View {
+    let speaker: String
+    var font: Font = .callout.weight(.semibold)
+
+    var body: some View {
+        let color = SpeakerColors.color(for: speaker)
+        Text(speaker)
+            .font(font)
+            .foregroundStyle(color)
+            .lineLimit(1)
+            .padding(.horizontal, Theme.spaceS)
+            .padding(.vertical, 2)
+            .background(color.opacity(0.18), in: Capsule())
+    }
+}
+
 /// One color per speaker name, stable across launches, so the outline on
 /// the picture and the name in the transcript column read as the same
 /// person. "Unknown" stays grey.
@@ -658,9 +676,7 @@ struct PlayerSheet: View {
                                             .frame(width: 40, alignment: .trailing)
                                         VStack(alignment: .leading, spacing: 2) {
                                             if let speaker = speakerLabels[row.id] {
-                                                Text(speaker)
-                                                    .font(.caption.weight(.semibold))
-                                                    .foregroundStyle(SpeakerColors.color(for: speaker))
+                                                SpeakerPill(speaker: speaker, font: .caption.weight(.semibold))
                                             }
                                             Text(row.text)
                                                 .font(.callout)

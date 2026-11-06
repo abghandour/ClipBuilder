@@ -3,35 +3,72 @@ import SwiftUI
 
 /// Distinct colours that tie each saved pick in the list to its words in
 /// the transcript: the list row carries a thick bar of the colour and the
-/// pick's words sit on a block of the same colour.
+/// pick's words sit on a block of the same colour. The Express reel List
+/// repeats the bar on each row.
+///
+/// Colours are addressed by slot (0..<18). Each Footage section draws from
+/// its own `Family` of six slots, so Q&A, Transcript and Highlights never
+/// share a colour: the 18 hues sit 20 degrees apart and a family takes every
+/// third one, ordered so neighbouring picks land far apart on the wheel.
 enum RangeReviewPalette {
-    /// Clearly separated hues in list order, cycling past the end: orange,
-    /// green, violet, yellow, blue, pink. Saturated enough to tell apart at
-    /// a 4 pt bar on a dark or light window.
-    private static let hues: [NSColor] = [
-        NSColor(calibratedRed: 0.98, green: 0.56, blue: 0.22, alpha: 1), // orange
-        NSColor(calibratedRed: 0.33, green: 0.78, blue: 0.42, alpha: 1), // green
-        NSColor(calibratedRed: 0.63, green: 0.50, blue: 0.96, alpha: 1), // violet
-        NSColor(calibratedRed: 0.96, green: 0.80, blue: 0.18, alpha: 1), // yellow
-        NSColor(calibratedRed: 0.28, green: 0.64, blue: 0.96, alpha: 1), // blue
-        NSColor(calibratedRed: 0.95, green: 0.42, blue: 0.66, alpha: 1), // pink
-    ]
+    /// The Footage section a colour belongs to. Fight metrics shares Q&A's
+    /// family: a source offers Q&A (podcast or interview) or Fight metrics
+    /// (fight or training), never both.
+    enum Family: Int, Sendable {
+        case qa = 0, transcript = 1, highlights = 2
 
-    /// The bar colour for the pick at `index`.
-    static func bar(_ index: Int) -> Color {
-        Color(nsColor: hues[((index % hues.count) + hues.count) % hues.count])
+        init(_ kind: MiniWizardFlow.FootageKind) {
+            switch kind {
+            case .qa, .fightMetrics: self = .qa
+            case .transcript: self = .transcript
+            case .highlights: self = .highlights
+            }
+        }
     }
 
-    /// The block behind a saved pick's words: the pick's own hue toned down
+    static let slotCount = 18
+
+    /// Hue steps (of 60 degrees) in pick order: orange-ish, then its
+    /// opposite, then a third away, and so on.
+    private static let order = [0, 3, 1, 4, 2, 5]
+
+    /// The slot of the pick at `index` in its section's list.
+    static func slot(_ index: Int, family: Family) -> Int {
+        let step = order[((index % order.count) + order.count) % order.count]
+        return family.rawValue * order.count + step
+    }
+
+    /// The bar colour for `slot`.
+    static func bar(_ slot: Int) -> Color {
+        Color(nsColor: hue(slot))
+    }
+
+    /// The block behind a saved pick's words: the slot's hue toned down
     /// over the window background, the same colour as its list row's bar.
     /// Opaque, so adjoining word rectangles join without seams.
-    static func block(_ index: Int) -> Color {
-        let hue = hues[((index % hues.count) + hues.count) % hues.count]
+    static func block(_ slot: Int) -> Color {
+        let hue = hue(slot)
         return Color(nsColor: hue.blended(withFraction: 0.7, of: .windowBackgroundColor) ?? hue.withAlphaComponent(0.3))
     }
 
     /// Width of the bar on the list row.
     static let barWidth: CGFloat = 4
+
+    /// Hue 25 degrees (orange) for slot 0; a family shifts by 20 degrees and
+    /// each step by 60. Families also differ a little in depth so two hues
+    /// 20 degrees apart still read as different colours.
+    private static func hue(_ slot: Int) -> NSColor {
+        let slot = ((slot % slotCount) + slotCount) % slotCount
+        let family = slot / order.count, step = slot % order.count
+        let degrees = 25 + Double(family) * 20 + Double(step) * 60
+        let (saturation, brightness): (Double, Double) = switch family {
+        case 0: (0.70, 0.95)
+        case 1: (0.52, 1.00)
+        default: (0.85, 0.85)
+        }
+        return NSColor(calibratedHue: (degrees.truncatingRemainder(dividingBy: 360)) / 360,
+                       saturation: saturation, brightness: brightness, alpha: 1)
+    }
 }
 
 /// A saved pick's range with the palette index its list row shows.

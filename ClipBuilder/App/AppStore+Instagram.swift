@@ -267,6 +267,7 @@ extension AppStore {
                 await reloadIGReport()
             } catch {
                 igImportStatus = "Import failed: \(error)"
+                logEvent("error", "Instagram import failed: \(error)")
                 finishIGStatus("failed")
                 presentError("Report history import failed", error)
             }

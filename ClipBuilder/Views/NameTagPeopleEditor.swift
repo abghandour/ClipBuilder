@@ -167,7 +167,7 @@ struct NameTagPeopleEditor: View {
             }
             error = nil
         } catch {
-            self.error = error.localizedDescription
+            self.error = error.logged()
         }
     }
 
@@ -226,7 +226,7 @@ struct NameTagPeopleEditor: View {
                 error = nil
                 store.appendLog(\.analysisLog, ["Name tag: \(field) for \(person.displayName) set to \(value ?? "nothing")"])
             } catch {
-                self.error = error.localizedDescription
+                self.error = error.logged()
                 store.appendLog(\.analysisLog, ["Name tag: could not save \(field) for \(person.displayName): \(error.localizedDescription)"])
             }
         }

@@ -738,7 +738,7 @@ struct LearnedPreferencesView: View {
             modelsToken = UUID()
         } catch {
             guard generation == reloadGeneration else { return }
-            status = error.localizedDescription
+            status = error.logged()
         }
     }
     private func showPreview() {
@@ -749,7 +749,7 @@ struct LearnedPreferencesView: View {
             preview = String(
                 decoding: try encoder.encode(LearnedRedaction.apply(document, publishing: true)), as: UTF8.self)
             showingPreview = true
-        } catch { status = error.localizedDescription }
+        } catch { status = error.logged() }
     }
     private func publish() {
         store.startPublishingLessons()
@@ -773,7 +773,7 @@ struct LearnedPreferencesView: View {
             await reload()
             return true
         } catch {
-            status = error.localizedDescription
+            status = error.logged()
             return false
         }
     }
