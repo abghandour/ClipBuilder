@@ -935,3 +935,26 @@ extension SyncEngineTests {
         #expect(try await b.database.video(id: 1)?.driveLink == "drive-B-link")
     }
 }
+
+extension SyncEngineTests {
+    /// The 400 of November 6, 2026: a deleted transcript pick padded into a
+    /// batch with live picks sent "kept": null to a NOT NULL column. Deletes
+    /// now go in their own request, carrying only their identity.
+    @Test func deletesNeverCarryNullColumnsIntoALiveBatch() async throws {
+        let server = StubSyncServer()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        let picks = try SyncTable.named("transcript_picks")
+        let live = try SyncMapping.wire(local: ["video_id": .text(UUID().uuidString.lowercased()), "project_id": .null,
+                                                "position": .integer(0), "start_time": .real(1), "end_time": .real(2),
+                                                "original_start": .real(1), "original_end": .real(2), "scene_id": .null,
+                                                "kept": .integer(1)],
+                                        syncID: UUID().uuidString.lowercased(), scope: scope, table: picks)
+        let deleted = try SyncMapping.wire(local: nil, syncID: UUID().uuidString.lowercased(), scope: scope, table: picks)
+        try await server.client().push([live, deleted, live], table: picks)
+        let bodies = try await server.capturedRequests().filter { $0.httpMethod == "POST" }
+            .map { try JSONDecoder().decode([SyncMapping.WireRow].self, from: $0.httpBody!) }
+        #expect(bodies.map(\.count) == [2, 1])
+        #expect(Set(bodies[1][0].keys) == ["sync_id", "team_id", "profile_id", "deleted_at"])
+        #expect(bodies.flatMap { $0 }.allSatisfy { $0["kept"] != .null })
+    }
+}

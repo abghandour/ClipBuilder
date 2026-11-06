@@ -75,14 +75,23 @@ nonisolated struct SupabaseClient: Sendable {
 
     func push(_ rows: [SyncMapping.WireRow], table: SyncTable = .lessons) async throws {
         guard !rows.isEmpty else { return }
-        // PostgREST array inserts require the same keys on every object.
-        let keys = Set(rows.flatMap { $0.keys })
-        let batch = rows.map { row in
-            Dictionary(uniqueKeysWithValues: keys.map { ($0, row[$0] ?? .null) })
+        // PostgREST array inserts require the same keys on every object. Rows
+        // go out grouped by their key set rather than padded with nulls: a
+        // padded delete would send NULL for every column, which a NOT NULL
+        // column (transcript_picks.kept) rejects with a 400 for the whole batch.
+        var groups: [Set<String>: [SyncMapping.WireRow]] = [:]
+        var order: [Set<String>] = []
+        for row in rows {
+            let keys = Set(row.keys)
+            if groups[keys] == nil { order.append(keys) }
+            groups[keys, default: []].append(row)
         }
-        _ = try await request(path: "rest/v1/\(table.name)", method: "POST",
-                              query: [.init(name: "on_conflict", value: "sync_id")], encodedBody: try JSONEncoder().encode(batch),
-                              prefer: "resolution=merge-duplicates,return=minimal")
+        for keys in order {
+            _ = try await request(path: "rest/v1/\(table.name)", method: "POST",
+                                  query: [.init(name: "on_conflict", value: "sync_id")],
+                                  encodedBody: try JSONEncoder().encode(groups[keys] ?? []),
+                                  prefer: "resolution=merge-duplicates,return=minimal")
+        }
     }
 
     /// Keyset pagination includes sync_id so equal server stamps never skip rows.
@@ -135,7 +144,13 @@ nonisolated struct SupabaseClient: Sendable {
         else if let body { request.httpBody = try JSONEncoder().encode(body) }
         if request.httpBody != nil { request.setValue("application/json", forHTTPHeaderField: "Content-Type") }
         let (data, response) = try await transport(request)
-        guard (200..<300).contains(response.statusCode) else { throw SyncError.http(response.statusCode) }
+        guard (200..<300).contains(response.statusCode) else {
+            // PostgREST says why (an unknown column, a constraint); without it a
+            // 400 cannot be diagnosed. Its message never carries the token.
+            let reason = String(decoding: data.prefix(600), as: UTF8.self)
+            ErrorLog.record("Team sync", "HTTP \(response.statusCode) for \(method) \(path): \(reason)")
+            throw SyncError.http(response.statusCode)
+        }
         return data
     }
 }
