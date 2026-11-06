@@ -40,6 +40,14 @@ struct FramingTests {
         #expect(Framing.split("{\"subject\":\"speakerFocus\"}")?.vipSentences == nil, "older requests decode with the defaults")
     }
 
+    @Test func talkerShotTimingsRoundTripAndStayOutOfTheDefaultEncoding() throws {
+        let timed = Framing(subject: .speakerFocus, speakerShot: .talker, talkerMaxShot: 12, talkerMinShot: 3)
+        #expect(timed.joined.contains("\"talker_max_shot\":12") && timed.joined.contains("\"talker_min_shot\":3"))
+        #expect(Framing.split(timed.joined) == timed)
+        #expect(!Framing(subject: .speakerFocus, speakerShot: .talker).joined.contains("talker_"))
+        #expect(Framing.split("{\"subject\":\"speakerFocus\"}")?.talkerMaxShot == nil, "older requests decode with the defaults")
+    }
+
     @Test func originalWinsAndRemovedControlsDoNotInventAChoice() {
         var old = WizardOptions()
         #expect(Framing.legacy(from: old) == Framing())

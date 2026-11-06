@@ -21,34 +21,30 @@ struct FramingRows: View {
     /// Everyone the selected recordings know, one entry per person key.
     @State private var roster: [(record: VideoPersonRecord, videoURL: URL)] = []
 
-    /// VIP focus: how long the other side is shown, how long a talker holds
-    /// the picture, and whether changes wait for the sentence to end.
-    @ViewBuilder private var vipFocusRows: some View {
-        let show = Binding(get: { framing.vipShow ?? VIPFocusPlanning.askerShow },
-                           set: { framing.vipShow = $0 == VIPFocusPlanning.askerShow ? nil : $0 })
-        let stretch = Binding(get: { framing.vipStretch ?? VIPFocusPlanning.vipStretch },
-                              set: { framing.vipStretch = $0 == VIPFocusPlanning.vipStretch ? nil : $0 })
-        SettingsRow("Asker", detail: "How long the asker, or a cutaway from a long answer, stays on screen before the VIP is back.") {
-            Slider(value: show, in: VIPFocusPlanning.showRange, step: 0.5).accessibilityLabel("Asker on screen")
+    /// Talker full screen: the longest one person holds the picture and the
+    /// shortest any shot lasts. Min never passes Max.
+    @ViewBuilder private var talkerShotRows: some View {
+        let maxShot = Binding(get: { framing.talkerMaxShot ?? TalkerShotPlanning.maxShot },
+                              set: { value in
+                                  framing.talkerMaxShot = value == TalkerShotPlanning.maxShot ? nil : value
+                                  if let minShot = framing.talkerMinShot, minShot > value { framing.talkerMinShot = value }
+                              })
+        let minShot = Binding(get: { min(framing.talkerMinShot ?? TalkerShotPlanning.minShot, maxShot.wrappedValue) },
+                              set: { value in
+                                  let clamped = min(value, maxShot.wrappedValue)
+                                  framing.talkerMinShot = clamped == TalkerShotPlanning.minShot ? nil : clamped
+                              })
+        SettingsRow("Max continuous shot", detail: "How long one person can hold the picture before it cuts to the most recent other speaker. Every change restarts the clock.") {
+            Slider(value: maxShot, in: TalkerShotPlanning.maxRange, step: 1).accessibilityLabel("Max continuous shot")
                 .frame(maxWidth: SettingsRowMetrics.controlWidth)
-            Text("\(show.wrappedValue, format: .number.precision(.fractionLength(0...1))) s")
+            Text("\(maxShot.wrappedValue, format: .number.precision(.fractionLength(0))) s")
                 .monospacedDigit().lineLimit(1).fixedSize()
         }
-        SettingsRow("Hold", detail: "How long a talker holds the picture before the other side is shown for a moment.") {
-            Slider(value: stretch, in: VIPFocusPlanning.stretchRange, step: 1).accessibilityLabel("Talker holds the picture")
+        SettingsRow("Min continuous shot", detail: "How long any shot stays before the picture can move again; after a cutaway it returns to whoever is talking.") {
+            Slider(value: minShot, in: TalkerShotPlanning.minRange, step: 0.5).accessibilityLabel("Min continuous shot")
                 .frame(maxWidth: SettingsRowMetrics.controlWidth)
-            Text("\(stretch.wrappedValue, format: .number.precision(.fractionLength(0))) s")
+            Text("\(minShot.wrappedValue, format: .number.precision(.fractionLength(0...1))) s")
                 .monospacedDigit().lineLimit(1).fixedSize()
-        }
-        SettingsRow("Sentences", detail: framing.vipSentences == true
-            ? "A change waits for the end of the sentence being spoken; a new talker still cuts at once. Needs a transcript."
-            : "Changes happen on the clock, mid-sentence or not.") {
-            Toggle(isOn: Binding(get: { framing.vipSentences == true }, set: { framing.vipSentences = $0 ? true : nil })) {
-                Text("Finish the sentence").lineLimit(1).fixedSize()
-            }
-            .toggleStyle(.switch)
-            .accessibilityLabel("Finish the sentence")
-            .help("Hold a shot until the sentence ends instead of cutting away in the middle of it")
         }
     }
 
@@ -68,8 +64,13 @@ struct FramingRows: View {
     }
     /// VIP focus's timings apply when that shot is chosen, or when Auto will
     /// pick it (a VIP is tagged).
-    private var showsVIPFocusRows: Bool {
-        framing.subject == .speakerFocus && (framing.speakerShot == .interview || (framing.speakerShot == nil && hasVIP))
+    /// Pull back opens the fighter tracking crop; nothing else reads it.
+    private var showsPullBack: Bool { framing.subject == .vipFocus && type == .fight }
+    /// Talker full screen, chosen or Auto's pick (`FramingPlanner.speakerKind`).
+    private var showsTalkerShotRows: Bool {
+        guard framing.subject == .speakerFocus else { return false }
+        let shot = framing.speakerShot.flatMap { Framing.speakerShots.contains($0) ? $0 : nil }
+        return shot == .talker || (shot == nil && feedCounts.allSatisfy { FramingPlanner.autoShotIsTalker(vips: vipKeys.count, feeds: $0) })
     }
     private var showsVIPPicker: Bool {
         (framing.subject == .centerStage && framing.people == .vips)
@@ -103,6 +104,28 @@ struct FramingRows: View {
         }
         if type == .fight, framing.subject == .vipFocus, !hasVIP {
             FormCaption("Following both fighters. Tag a fighter in People to follow one.")
+        }
+        if framing.subject == .speakerFocus {
+            // The shot comes right under Framing: it decides which rows follow.
+            // A stored choice of the retired VIP focus shot reads as Auto.
+            let chosenShot = framing.speakerShot.flatMap { Framing.speakerShots.contains($0) ? $0 : nil }
+            SettingsRow("Shot", detail: chosenShot?.summary
+                ?? "Auto puts several VIPs beside the talker, else the talker full screen.") {
+                Picker("Shot", selection: Binding(get: { chosenShot }, set: { framing.speakerShot = $0 })) {
+                    Text("Auto").lineLimit(1).fixedSize().tag(CropRecipe.Kind?.none)
+                    ForEach(Framing.speakerShots, id: \.self) { kind in
+                        Text(kind.name).lineLimit(1).fixedSize().tag(CropRecipe.Kind?.some(kind))
+                    }
+                }
+                .labelsHidden()
+                .accessibilityLabel("Shot")
+            }
+            if let shot = chosenShot,
+               let reason = feedCounts.lazy.compactMap({ FramingPlanner.shotReason(shot, feeds: $0, hasVIP: hasVIP) }).first {
+                FormCaption("\(reason) Auto is used there.")
+            }
+            // The shot's own timings follow it; the camera rows come after.
+            if showsTalkerShotRows { talkerShotRows }
         }
         if framing.subject == .centerStage {
             SettingsRow("Show", detail: framing.people == .vips
@@ -155,40 +178,13 @@ struct FramingRows: View {
                 sourceRow(.presenter)
             }
         }
-        if framing.subject == .vipFocus || framing.subject == .speakerFocus {
+        if showsPullBack {
             SettingsRow("Pull back") {
                 Slider(value: $framing.pullBack, in: 0...1)
                     .accessibilityLabel("Pull back")
                 Text(framing.pullBack, format: .percent.precision(.fractionLength(0)))
                     .monospacedDigit().lineLimit(1).fixedSize()
             }
-        }
-        if framing.subject == .speakerFocus {
-            SettingsRow("Shot", detail: framing.speakerShot?.summary
-                ?? "Auto pairs one VIP with the talker, puts several VIPs beside the talker, else the talker full screen.") {
-                Picker("Shot", selection: Binding(get: { framing.speakerShot }, set: { framing.speakerShot = $0 })) {
-                    Text("Auto").lineLimit(1).fixedSize().tag(CropRecipe.Kind?.none)
-                    ForEach(Framing.speakerShots, id: \.self) { kind in
-                        Text(kind.name).lineLimit(1).fixedSize().tag(CropRecipe.Kind?.some(kind))
-                    }
-                }
-                .labelsHidden()
-                .accessibilityLabel("Shot")
-            }
-            if let shot = framing.speakerShot,
-               let reason = feedCounts.lazy.compactMap({ FramingPlanner.shotReason(shot, feeds: $0, hasVIP: hasVIP) }).first {
-                FormCaption("\(reason) Auto is used there.")
-            }
-            SettingsRow("Moves") {
-                Picker("Moves", selection: $framing.moves) {
-                    Text("Smooth").lineLimit(1).fixedSize().tag(Framing.Moves.smooth)
-                    Text("Cuts").lineLimit(1).fixedSize().tag(Framing.Moves.cuts)
-                }
-                .pickerStyle(.segmented)
-                .labelsHidden()
-                .accessibilityLabel("Moves")
-            }
-            if showsVIPFocusRows { vipFocusRows }
         }
         if showsSteady {
             SettingsRow("Camera", detail: framing.steady == true

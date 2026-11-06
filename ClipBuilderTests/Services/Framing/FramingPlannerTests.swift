@@ -15,12 +15,28 @@ struct FramingPlannerTests {
                 confidence: 1, personKey: "guest", tile: 0)], layouts: ScreenCropStore.builtIn, hasBRoll: broll)
     }
 
-    @Test func vipFocusTimingsReachTheRecipeClamped() throws {
-        let recipe = try #require(FramingPlanner.resolve(framing: Framing(subject: .speakerFocus, vipShow: 9, vipStretch: 1, vipSentences: true),
+    @Test func theRetiredVIPFocusShotReadsAsAuto() throws {
+        let stored = try #require(FramingPlanner.resolve(framing: Framing(subject: .speakerFocus, speakerShot: .interview, vipShow: 3),
             context: context(vip: true)).recipe)
-        #expect(recipe.kind == .interview && recipe.vipShow == 5 && recipe.vipStretch == 4 && recipe.vipSentences == true)
-        let plain = try #require(FramingPlanner.resolve(framing: Framing(subject: .speakerFocus), context: context(vip: true)).recipe)
-        #expect(plain.vipShow == nil && plain.vipStretch == nil && plain.vipSentences == nil)
+        #expect(stored.kind == .talker && stored.vipShow == nil && stored.talkerMaxShot == TalkerShotPlanning.maxShot,
+                "a saved VIP focus choice plans as the automatic talker shot with its clock")
+        #expect(!Framing.speakerShots.contains(.interview))
+    }
+
+    @Test func talkerShotTimingsReachOnlyTheTalkerFullScreenRecipe() throws {
+        let auto = try #require(FramingPlanner.resolve(framing: Framing(subject: .speakerFocus, talkerMaxShot: 50, talkerMinShot: 0.2),
+            context: context(vip: false)).recipe)
+        #expect(auto.kind == .talker && auto.talkerMaxShot == 30 && auto.talkerMinShot == 1, "Auto without a VIP is the talker full screen, clamped")
+        let plain = try #require(FramingPlanner.resolve(framing: Framing(subject: .speakerFocus), context: context(vip: false)).recipe)
+        #expect(plain.talkerMaxShot == 8 && plain.talkerMinShot == 2, "the defaults apply with nothing stored")
+        let chosen = try #require(FramingPlanner.resolve(framing: Framing(subject: .speakerFocus, speakerShot: .talker, talkerMaxShot: 10, talkerMinShot: 4),
+            context: context(vip: true)).recipe)
+        #expect(chosen.kind == .talker && chosen.talkerMaxShot == 10 && chosen.talkerMinShot == 4)
+        let oneVIP = try #require(FramingPlanner.resolve(framing: Framing(subject: .speakerFocus, talkerMaxShot: 10), context: context(vip: true)).recipe)
+        #expect(oneVIP.kind == .talker && oneVIP.talkerMaxShot == 10, "one VIP no longer picks VIP focus")
+        let stage = try #require(FramingPlanner.resolve(framing: Framing(subject: .centerStage, talkerMaxShot: 10, talkerMinShot: 4),
+            context: context(vip: false)).recipe)
+        #expect(stage.kind == .talker && stage.talkerMaxShot == nil, "Center stage keeps the plain cut to whoever talks")
     }
 
     @Test func steadyCameraNamesTheSteadyTuningExceptForFighterFocus() throws {
@@ -128,10 +144,12 @@ struct FramingPlannerTests {
     func speakerKeepsShotAndTransitionParameters(vip: Bool) throws {
         let request = Framing(subject: .speakerFocus, pullBack: 0.6, moves: .cuts)
         let recipe = try #require(FramingPlanner.resolve(framing: request, context: context(vip: vip)).recipe)
-        var expected = CropRecipe(kind: vip ? .interview : .talker)
+        var expected = CropRecipe(kind: .talker)
         expected.interviewZoom = 0.6
         expected.interviewCuts = true
         expected.interviewPunchIn = .talker
+        expected.talkerMaxShot = TalkerShotPlanning.maxShot
+        expected.talkerMinShot = TalkerShotPlanning.minShot
         #expect(recipe == expected)
         #expect(!recipe.interviewZoomMoves && recipe.tracking)
     }
@@ -186,11 +204,10 @@ struct FramingPlannerTests {
         #expect(try JSONDecoder().decode(Framing.Subject.self, from: oldTake) == .speakerFocus)
     }
 
-    /// A group grid with several VIPs would land the VIP cell and the talker
-    /// cell on the same feed under Interview; it shows the talker beside the
-    /// rest instead. One VIP keeps Interview, none keeps the talker.
-    @Test(arguments: [(0, CropRecipe.Kind.talker), (1, .interview), (2, .talkerAndRest), (3, .talkerAndRest)])
-    func speakerFocusOnAGroupGridAvoidsInterviewUnlessOneVIP(vips: Int, kind: CropRecipe.Kind) throws {
+    /// Several VIPs on a group grid show the talker beside the rest; one or
+    /// none keeps the talker full screen.
+    @Test(arguments: [(0, CropRecipe.Kind.talker), (1, .talker), (2, .talkerAndRest), (3, .talkerAndRest)])
+    func speakerFocusOnAGroupGridPairsSeveralVIPsWithTheRest(vips: Int, kind: CropRecipe.Kind) throws {
         var video = Fixtures.video()
         video.videoType = VideoType.podcast.rawValue
         video.podcastLayout = PodcastLayout.grid.rawValue
@@ -247,12 +264,14 @@ struct FramingPlannerTests {
         #expect(FramingPlanner.resolve(framing: fallback, context: single).recipe?.kind == .talker)
     }
 
-    @Test func speakerFocusOnASingleCameraWithSeveralVIPsKeepsInterview() {
-        // Portrait columns are not recorded feeds; Interview handles one camera full screen.
+    @Test func speakerFocusOnASingleCameraWithSeveralVIPsStaysFullScreen() {
+        // Portrait columns are not recorded feeds; the talker shot handles one camera full screen.
         var evidence = context(vip: true)
         evidence.roster.append(VideoPersonRecord(videoID: evidence.video.id, personID: 2, key: "guest2", name: "Guest 2",
             descriptor: "", portraitAt: 0, portraitBox: .init(x: 0.6, y: 0.2, w: 0.1, h: 0.2), vip: true))
         #expect(evidence.vipIDs.count == 2)
-        #expect(FramingPlanner.speakerKind(context: evidence) == .interview)
+        #expect(FramingPlanner.speakerKind(context: evidence) == .talker)
+        #expect(FramingPlanner.autoShotIsTalker(vips: 2, feeds: 1) && !FramingPlanner.autoShotIsTalker(vips: 2, feeds: 3)
+                && FramingPlanner.autoShotIsTalker(vips: 1, feeds: 3) && FramingPlanner.autoShotIsTalker(vips: 3, feeds: 5))
     }
 }

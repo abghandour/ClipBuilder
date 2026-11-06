@@ -62,8 +62,11 @@ nonisolated enum FramingPlanner {
             recipe = CropRecipe(kind: context.hasBRoll && context.type != .fight ? .vipBRoll : .vip)
             if context.type == .fight { recipe.fighterFocus = true }
         case .speakerFocus:
-            // A chosen shot the recording cannot hold falls back to the automatic pick.
-            let shot = framing.speakerShot.flatMap { shotReason($0, context: context) == nil ? $0 : nil }
+            // A chosen shot the recording cannot hold falls back to the
+            // automatic pick, as does the retired VIP focus shot.
+            let shot = framing.speakerShot.flatMap {
+                Framing.speakerShots.contains($0) && shotReason($0, context: context) == nil ? $0 : nil
+            }
             recipe = CropRecipe(kind: shot ?? speakerKind(context: context))
         case .layout:
             recipe = CropRecipe(kind: .grid)
@@ -78,26 +81,28 @@ nonisolated enum FramingPlanner {
         recipe.interviewPunchIn = .talker
         recipe.interviewCuts = framing.moves == .cuts
         recipe.steady = framing.steady == true ? true : nil
-        recipe.vipShow = framing.vipShow.map { VIPFocusPlanning.clamp($0, to: VIPFocusPlanning.showRange) }
-        recipe.vipStretch = framing.vipStretch.map { VIPFocusPlanning.clamp($0, to: VIPFocusPlanning.stretchRange) }
-        recipe.vipSentences = framing.vipSentences == true ? true : nil
+        if subject == .speakerFocus, recipe.kind == .talker {
+            let timings = TalkerShotPlanning.timings(max: framing.talkerMaxShot, min: framing.talkerMinShot)
+            recipe.talkerMaxShot = timings.max
+            recipe.talkerMinShot = timings.min
+        }
         return .tracked(recipe, region: frame, fit: framing.fit, feather: framing.feather, blur: framing.blur)
     }
 
-    /// Speaker focus pairs one VIP with whoever talks. Several VIPs on a group
-    /// recording would put the rotating VIP cell and the talker cell on the
-    /// same feed, so that case shows the talker beside the rest instead; no
-    /// VIP keeps the full-screen talker. Only recorded feeds count: a single
-    /// camera with portrait columns keeps Interview's full-screen handling.
-    /// Above four feeds no "Talker + n" layout exists and the talker stays
-    /// full screen.
+    /// Speaker focus's automatic shot: the talker full screen (with its shot
+    /// clock), except that several VIPs on a recording of two to four feeds
+    /// show the talker beside the rest. Only recorded feeds count: a single
+    /// camera with portrait columns stays full screen, and above four feeds
+    /// no "Talker + n" layout exists.
     static func speakerKind(context: FramingContext) -> CropRecipe.Kind {
-        let vips = context.vipIDs.count
-        if vips == 0 { return .talker }
-        if vips == 1 { return .interview }
+        guard context.vipIDs.count >= 2 else { return .talker }
         let feeds = recordedFeedCount(video: context.video, roster: context.roster)
-        if feeds < 2 { return .interview }
-        return feeds <= 4 ? .talkerAndRest : .talker
+        return (2...4).contains(feeds) ? .talkerAndRest : .talker
+    }
+
+    /// The same choice from what the settings rows know.
+    nonisolated static func autoShotIsTalker(vips: Int, feeds: Int) -> Bool {
+        vips < 2 || !(2...4).contains(feeds)
     }
 
     /// Separate recorded feeds; a single camera's portrait columns are not feeds.

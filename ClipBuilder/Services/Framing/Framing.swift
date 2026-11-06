@@ -29,9 +29,15 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
     var vipShow: Double?
     var vipStretch: Double?
     var vipSentences: Bool?
+    /// Talker full screen timings: the longest one person holds the picture
+    /// (nil: 8 s) and the shortest any shot lasts (nil: 2 s).
+    var talkerMaxShot: Double?
+    var talkerMinShot: Double?
 
-    /// The shots Speaker focus can be told to use, in menu order.
-    static let speakerShots: [CropRecipe.Kind] = [.talker, .interview, .talkerAndRest, .talkerAndPrevious, .talkerAndRotation]
+    /// The shots Speaker focus can be told to use, in menu order. VIP focus
+    /// (`.interview`) left the menu on November 6, 2026; a stored choice of
+    /// it reads as Auto.
+    static let speakerShots: [CropRecipe.Kind] = [.talker, .talkerAndRest, .talkerAndPrevious, .talkerAndRotation]
 
     enum Subject: String, Codable, CaseIterable, Hashable, Sendable {
         case auto, original, centerStage, vipFocus, speakerFocus, layout
@@ -72,7 +78,7 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
             case .vipFocus: type == .fight
                 ? "Tracks the tagged fighter, or both fighters when none is tagged."
                 : "Keeps the VIP on screen; several VIPs take turns, B-roll breaks when available."
-            case .speakerFocus: "Follows whoever is talking. Pull back widens the shot, Moves picks glide or cut."
+            case .speakerFocus: "Follows whoever is talking; the shot below sets the picture and its rhythm."
             case .layout: "Fills a screen layout by role: VIP, others, B-roll, screen, presenter."
             }
         }
@@ -91,13 +97,16 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
         case lockAspect = "lock_aspect"
         case sourceRoles = "source_roles"
         case speakerShot = "speaker_shot"
+        case talkerMaxShot = "talker_max_shot"
+        case talkerMinShot = "talker_min_shot"
     }
 
     init(subject: Subject = .auto, pullBack: Double = 0, moves: Moves = .smooth,
          fit: Fit = .fill, feather: Double = 0.08, blur: Double = 0.5,
          focusFrame: FreeCropRect? = nil, lockAspect: Bool? = nil, people: People? = nil, vips: [String]? = nil,
          layout: String? = nil, sourceRoles: [String: String]? = nil, speakerShot: CropRecipe.Kind? = nil,
-         steady: Bool? = nil, vipShow: Double? = nil, vipStretch: Double? = nil, vipSentences: Bool? = nil) {
+         steady: Bool? = nil, vipShow: Double? = nil, vipStretch: Double? = nil, vipSentences: Bool? = nil,
+         talkerMaxShot: Double? = nil, talkerMinShot: Double? = nil) {
         self.subject = subject
         self.pullBack = pullBack
         self.moves = moves
@@ -115,6 +124,8 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
         self.vipShow = vipShow
         self.vipStretch = vipStretch
         self.vipSentences = vipSentences
+        self.talkerMaxShot = talkerMaxShot
+        self.talkerMinShot = talkerMinShot
     }
 
     init(from decoder: Decoder) throws {
@@ -136,6 +147,8 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
         vipShow = try c.decodeIfPresent(Double.self, forKey: .vipShow)
         vipStretch = try c.decodeIfPresent(Double.self, forKey: .vipStretch)
         vipSentences = try c.decodeIfPresent(Bool.self, forKey: .vipSentences)
+        talkerMaxShot = try c.decodeIfPresent(Double.self, forKey: .talkerMaxShot)
+        talkerMinShot = try c.decodeIfPresent(Double.self, forKey: .talkerMinShot)
     }
 
     func encode(to encoder: Encoder) throws {
@@ -158,6 +171,8 @@ nonisolated struct Framing: Codable, Hashable, Sendable {
         try c.encodeIfPresent(vipShow, forKey: .vipShow)
         try c.encodeIfPresent(vipStretch, forKey: .vipStretch)
         try c.encodeIfPresent(vipSentences, forKey: .vipSentences)
+        try c.encodeIfPresent(talkerMaxShot, forKey: .talkerMaxShot)
+        try c.encodeIfPresent(talkerMinShot, forKey: .talkerMinShot)
     }
 
     /// One scalar for AppStorage, Express memory and the shared preset catalog.

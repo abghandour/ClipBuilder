@@ -104,7 +104,7 @@ nonisolated struct CropRecipe: Codable, Sendable, Hashable, Identifiable {
             case .vip: "Keep the VIP on screen: the VIP full screen, and their reaction while others talk."
             case .vipBRoll: "Follow the talker, with short breaks to the VIPs on their expressive moments."
             case .interview: "Full screen on whoever talks; a question returns to the VIP after 2 s, and a long answer cuts away to the asker for 2 s every 8 s."
-            case .talker: "One person at a time, cutting to whoever is talking."
+            case .talker: "One person at a time, cutting to whoever is talking. After the Max continuous shot the picture cuts to the most recent other speaker for the Min continuous shot."
             case .grid: "Every feed in its own cell; 50/50 for two, thirds for three, 2×2 for four, 2×3 for five or six."
             case .talkerAndRest: "The talker in the top half; the others share the bottom."
             case .talkerAndPrevious: "The talker on top, the previous speaker below."
@@ -145,6 +145,11 @@ nonisolated struct CropRecipe: Codable, Sendable, Hashable, Identifiable {
     var vipShow: Double?
     var vipStretch: Double?
     var vipSentences: Bool?
+    /// Talker full screen's shot clock (both set by Speaker focus): the
+    /// longest one person holds the picture and the shortest any shot
+    /// lasts. Nil keeps the plain cut to whoever talks.
+    var talkerMaxShot: Double?
+    var talkerMinShot: Double?
     /// Still cells (a fixed feed or person) get the tracking camera inside
     /// their feed instead of a fixed crop of it.
     var tracking = true
@@ -590,11 +595,19 @@ nonisolated enum CropRecipePlanner {
                     ? VIPRecipePlanning.events(segments: segments, tiles: tiles, roster: roster,
                                                turns: turns, start: span.lowerBound, end: span.upperBound)
                     : []
+                var cellSegments = segments
                 if recipe.kind == .interview {
                     // VIP focus on separate feeds: the same rhythm as the
                     // single camera, cut between feeds.
                     events = vipFocusEvents(recipe, segments: segments, tiles: tiles, vipTiles: vipTiles, range: span,
                         hold: hold, sentenceEnds: sentenceEnds).map { ($0.time, $0.tile) }
+                } else if recipe.kind == .talker, let maxShot = recipe.talkerMaxShot, let minShot = recipe.talkerMinShot {
+                    // The shot clock is the only timing: segments without the
+                    // recipe hold, so a Min below it is not lost.
+                    let timings = TalkerShotPlanning.timings(max: maxShot, min: minShot)
+                    cellSegments = Self.segments(turns: turns, tiles: tiles, range: span, hold: 0)
+                    events = TalkerShotPlanning.events(segments: cellSegments, range: span, order: order,
+                                                       maxShot: timings.max, minShot: timings.min)
                 } else {
                     events = talkerEvents(segments: segments, avoiding: vipShown, order: order)
                 }
@@ -602,7 +615,7 @@ nonisolated enum CropRecipePlanner {
                 // where the cell shows the actual talker are outlined.
                 for (index, event) in events.enumerated() {
                     let end = events[safe: index + 1]?.time ?? span.upperBound
-                    for segment in segments where segment.talker == event.tile && segment.end > event.time && segment.start < end {
+                    for segment in cellSegments where segment.talker == event.tile && segment.end > event.time && segment.start < end {
                         talking.append(max(segment.start, event.time)...min(segment.end, end))
                     }
                 }
