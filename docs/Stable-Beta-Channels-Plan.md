@@ -1,6 +1,6 @@
 # Stable and Beta channels
 
-Date: 2026-11-04. Status: in progress. Phase 0 and the code of phase 1 and 4 done 2026-11-04; the Xcode configurations, scheme and provisioning profiles, and phases 2, 3 and 5 are open.
+Date: 2026-11-04. Status: in progress. Phase 0 and the code of phase 1 and 4 done 2026-11-04; the Xcode configurations, scheme and provisioning profiles, and phases 2, 3 and 5 are open. Release names (2026-11-06): app side done, bless.sh side open.
 
 ## Goal
 
@@ -278,6 +278,45 @@ so the server migration goes in before the beta that adds the column is
 released, as today. Server changes stay additive for the same reason the
 library's do: stable apps keep pushing the old shape.
 
+### Release names (requested 2026-11-06; app side done 2026-11-06)
+
+Every stable release has a name, and the stable app shows it in its About
+box. Betas have no name: a name marks a release the developer blessed.
+
+- **Picked at bless time.** `scripts/bless.sh <version> "<name>"`; without
+  the argument and with a terminal it asks. The name is one to three words,
+  letters, digits, spaces and hyphens, and must not repeat an earlier one.
+- **Recorded in the tree.** `ReleaseNames.json` at the repo root, version to
+  name (`{"1.152": "Harbor"}`), appended by the "Bless <version> as stable"
+  commit. It is the uniqueness check and the history; the app does not read
+  it.
+- **Baked into the stable binary only.** bless.sh already builds the stable
+  pkg in a throwaway worktree of the tag; before `make_pkg.sh` runs it writes
+  `ClipBuilder/Resources/ReleaseName.txt` (the name, one line) into that
+  worktree, and the filesystem-synchronized group bundles it. No change to
+  `make_pkg.sh` or the tagged commit, and nothing goes through Info.plist
+  (the release Mac builds from the ignored `GoogleDrive-Local.plist`, which
+  would not carry a key). Debug and beta builds have no file and no name.
+- **In the app** (done 2026-11-06). `ReleaseName.current`
+  (`Services/ReleaseName.swift`) reads the bundled file once: first
+  non-blank line, trimmed, `nil` when missing or empty. `ContentView`
+  replaces the standard About item (`CommandGroup(replacing: .appInfo)`)
+  with one that calls `orderFrontStandardAboutPanel(options:)`, setting
+  `.applicationVersion` to `1.152 “Harbor”` when there is a name; the panel
+  adds "Version" and the build, so it reads `Version 1.152 “Harbor” (154)`.
+  Without a name the options are empty and the panel is the standard one.
+  Checked live 2026-11-06 on a Debug copy with a `ReleaseName.txt` added:
+  the item stays in the app menu (the `.appInfo` drop the `ContentView`
+  comment mentions is about `after:` placement, not `replacing:`), and the
+  panel showed `Version 1.151 “Harbor” (153)`. Tests: `ReleaseNameTests`.
+- **Elsewhere.** The GitHub release title becomes
+  `Clip Builder 1.152 “Harbor”` when blessed (`gh release edit --title`).
+  The update alert needs no change: `UpdateService` already shows the
+  release's GitHub title.
+- Still open with bless.sh: the name rule, the duplicate check against
+  `ReleaseNames.json`, writing `ClipBuilder/Resources/ReleaseName.txt` in
+  the worktree, and the title edit.
+
 ### In the app
 
 - `AppChannel` (`Services/AppChannel.swift`): `.stable` or `.beta`, read once
@@ -406,7 +445,9 @@ configurations and the scheme in the project file.
 
 - `release.sh`: builds the beta pkg, `gh release create --prerelease`, asset
   name with the `-Beta` suffix, the guide no longer updated here.
-- `scripts/bless.sh <version>` as designed; the optional `release.sh --stable`.
+- `scripts/bless.sh <version> "<name>"` as designed, with the release name
+  (see Release names); the optional `release.sh --stable`.
+- The bless side of release names (the app side is done).
 - `.claude/skills/release` describes both commands; a `bless` skill or a
   section in the release skill.
 - Verify: release a beta, confirm GitHub shows it as a prerelease and

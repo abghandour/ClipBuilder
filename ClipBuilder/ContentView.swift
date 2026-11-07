@@ -73,6 +73,11 @@ struct ClipBuilderApp: App {
         }
         .defaultSize(width: 1200, height: 780)
         .commands {
+            // A blessed stable build names its release in the About box
+            // ("Version 1.152 “Harbor” (154)"); otherwise the standard panel.
+            CommandGroup(replacing: .appInfo) {
+                Button("About \(AppChannel.current.displayName)") { showAboutPanel() }
+            }
             // .appInfo placement silently drops the item on this macOS, so
             // the updater lives below Settings… in the app menu instead.
             CommandGroup(after: .appSettings) {
@@ -149,6 +154,18 @@ struct ClipBuilderApp: App {
                 .environment(store)
         }
     }
+}
+
+/// The standard About panel, with the release name in its version line when
+/// this is a blessed stable build.
+@MainActor private func showAboutPanel() {
+    var options: [NSApplication.AboutPanelOptionKey: Any] = [:]
+    let version = Bundle.main.object(forInfoDictionaryKey: "CFBundleShortVersionString") as? String ?? ""
+    if let named = ReleaseName.aboutVersion(version: version, name: ReleaseName.current) {
+        options[.applicationVersion] = named
+    }
+    NSApp.activate()
+    NSApp.orderFrontStandardAboutPanel(options: options)
 }
 
 /// The visible project and Studio destinations use a compact ⌘1–⌘8 order.
