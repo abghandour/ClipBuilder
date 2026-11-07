@@ -44,8 +44,12 @@ struct ClipBuilderApp: App {
 #if PERFORMANCE_BASELINE
         let store = PerformanceBaseline.makeStore()
 #else
+        // The beta's first launch takes over the stable app's settings,
+        // libraries and defaults before the store reads any of them.
+        let imported = AppStore.importFromStableIfFirstLaunch()
         let store = AppStore()
         BugReporting.configureIfPossible(store: store)
+        if let imported { store.presentChannelImport(imported) }
 #endif
         _store = State(initialValue: store)
     }
@@ -133,6 +137,9 @@ struct ClipBuilderApp: App {
             CommandGroup(before: .help) {
                 Button("Training Guide") {
                     store.showTrainingGuide = true
+                }
+                Button(AppChannel.current == .beta ? "Download the Stable App…" : "Try the Beta…") {
+                    NSWorkspace.shared.open(UpdateService.releasesPage)
                 }
             }
         }
@@ -476,6 +483,13 @@ struct MainWindowView: View {
         .onDisappear {
             store.builder.flushPendingAutosave()
             store.flushActiveProjectState()
+        }
+        .toolbar {
+            // The beta is unmistakable: a blue BETA capsule leads every
+            // window's toolbar (root items sort before a screen's own).
+            if AppChannel.current == .beta {
+                ToolbarItem(placement: .navigation) { BetaBadge() }
+            }
         }
         // Rightmost control on every screen: a trailing title-bar accessory,
         // not a toolbar item (root toolbar items sort before a screen's own).

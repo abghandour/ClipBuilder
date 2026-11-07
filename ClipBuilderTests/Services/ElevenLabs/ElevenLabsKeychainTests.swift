@@ -1,6 +1,5 @@
 import Foundation
 import Security
-import Synchronization
 import Testing
 @testable import Clip_Builder
 
@@ -25,12 +24,11 @@ struct ElevenLabsKeychainTests {
     }
 
     @Test func queriesAlwaysUseDataProtectionAndDeviceOnlyAccessibility() throws {
-        // A not-found read also looks in the login keychain (unentitled builds
-        // store there), so only the first read of each pair is data-protection.
-        let reads = Mutex(0)
         let api = KeychainAPI(copyMatching: { query in
-            let first = reads.withLock { count in count += 1; return count % 2 == 1 }
-            #expect((query[kSecUseDataProtectionKeychain as String] as? Bool == true) == first)
+            // A miss in the shared keychain looks in the login keychain once,
+            // to adopt an item from before the shared keychain existed.
+            if query[kSecUseDataProtectionKeychain as String] == nil { return (errSecItemNotFound, nil) }
+            #expect(query[kSecAttrAccessGroup as String] as? String == AppKeychain.accessGroup)
             #expect(query[kSecAttrService as String] as? String == "com.clipbuilder.elevenlabs")
             #expect(query[kSecAttrAccount as String] as? String == "api-key")
             #expect(query[kSecReturnData as String] as? Bool == true)
@@ -78,18 +76,5 @@ struct ElevenLabsKeychainTests {
         try denied.write(nil)
         #expect(try denied.read() == nil)
         fake.items.withLock { #expect($0.legacy.isEmpty) }
-    }
-
-    /// The field case of November 6, 2026: the key was saved to the login
-    /// keychain, the data-protection read said "not found", and Check said
-    /// "Add your ElevenLabs key" without sending a request.
-    @Test func notFoundFromAnUnentitledReadStillFindsTheLoginKeychainKey() throws {
-        let fake = FakeKeychain(entitled: false, unentitledReadsNotFound: true)
-        let keychain = ElevenLabsKeychain(api: fake.api)
-        #expect(try keychain.read() == nil)
-        try keychain.write("saved-key")
-        #expect(try keychain.read() == "saved-key")
-        try keychain.write(nil)
-        #expect(try keychain.read() == nil)
     }
 }

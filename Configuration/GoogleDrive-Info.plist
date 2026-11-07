@@ -10,5 +10,10 @@
     <string></string>
     <key>VCEndpoint</key>
     <string></string>
+    <!-- stable or beta, from the build configuration's CLIPBUILDER_CHANNEL
+         (Configuration/Beta.xcconfig). Empty or missing: AppChannel uses the
+         bundle id. -->
+    <key>ClipBuilderChannel</key>
+    <string>$(CLIPBUILDER_CHANNEL)</string>
 </dict>
 </plist>

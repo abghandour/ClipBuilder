@@ -770,13 +770,19 @@ nonisolated enum SettingsStore {
         customDataFolder ?? ProfileStore.profilesDirectory.appendingPathComponent("data", isDirectory: true)
     }
 
-    static var settingsURL: URL { dataDirectory.appendingPathComponent("app_settings.json") }
+    /// This channel's settings file; the other channel's sits beside it.
+    static var settingsURL: URL { settingsURL(channel: .current) }
+    static func settingsURL(channel: AppChannel) -> URL {
+        dataDirectory.appendingPathComponent(channel.settingsFileName)
+    }
     static var activeProfileURL: URL { dataDirectory.appendingPathComponent("active_profile.json") }
     static var profilesDBDirectory: URL { dataDirectory.appendingPathComponent("profiles_db", isDirectory: true) }
     static var cacheDirectory: URL { dataDirectory.appendingPathComponent(".cache", isDirectory: true) }
 
-    static func databaseURL(profileName: String) -> URL {
-        profilesDBDirectory.appendingPathComponent(ProfileStore.sanitize(profileName) + ".db")
+    /// This channel's library for the profile; the other channel's sits
+    /// beside it (`<profile>.db` and `<profile>.beta.db`).
+    static func databaseURL(profileName: String, channel: AppChannel = .current) -> URL {
+        profilesDBDirectory.appendingPathComponent(channel.libraryFileName(profile: ProfileStore.sanitize(profileName)))
     }
 
     /// Saved taste-exemplar frames: taste/<profile>/exemplar-*.jpg.

@@ -1105,6 +1105,7 @@ final class AppStore {
 
     func openActiveProfile() {
         ProfileStore.ensureFolders(for: activeProfile)
+        importLibraryBeforeOpening(profileName: activeProfile.profileName)
         do {
             database = try Database(path: SettingsStore.databaseURL(profileName: activeProfile.profileName))
         } catch {
