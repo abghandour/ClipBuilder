@@ -64,6 +64,29 @@ other Clip Builder instance running) and commit the PNGs before releasing.
    Group as Features / Fixes; lead with the headline feature; skip internal
    refactors and CI noise.
 
+## Blessing a release as stable (and naming it)
+
+Every stable release gets a name, shown in the stable app's About box
+("Version 1.152 “Harbor” (154)"). Blessing is a separate command, run when
+the user says a release is good:
+
+```bash
+scripts/bless.sh <version> "<name>" --dry-run   # checks + plan, nothing published
+scripts/bless.sh <version> "<name>"             # 5–10 min, background or long timeout
+```
+
+The user picks the name; never invent one. One to three words of letters,
+digits and hyphens, never reused (`ReleaseNames.json`). The script needs a
+clean main equal to origin, the tag published on GitHub, and an unlocked
+screen (notarization). It builds the stable pkg from the tag in a throwaway
+worktree with `ReleaseName.txt` added, checks the pkg payload, replaces the
+release's `ClipBuilder-<version>.pkg`, retitles it "Clip Builder <version>
+“<name>”", clears the prerelease flag, marks it latest unless a newer
+stable exists, and commits "Bless <version> as stable" (ReleaseNames.json,
+guide) on main and pushes. Releases before 1.152 cannot be named. If it
+fails after the upload, finish the remaining `gh release edit` / commit steps
+by hand rather than rerunning (a rerun rebuilds and re-notarizes).
+
 ## When it fails
 
 - **Dirty tree** → commit/stash, rerun. **Tag already exists** → a previous run

@@ -1,6 +1,6 @@
 # Stable and Beta channels
 
-Date: 2026-11-04. Status: in progress. Phase 0 and the code of phase 1 and 4 done 2026-11-04; the Xcode configurations, scheme and provisioning profiles, and phases 2, 3 and 5 are open. Release names (2026-11-06): app side done, bless.sh side open.
+Date: 2026-11-04. Status: in progress. Phase 0 and the code of phase 1 and 4 done 2026-11-04; the Xcode configurations, scheme and provisioning profiles, and phases 2, 3 and 5 are open. Release names (2026-11-06): app side done; scripts/bless.sh written, not yet run for real.
 
 ## Goal
 
@@ -313,9 +313,10 @@ box. Betas have no name: a name marks a release the developer blessed.
   `Clip Builder 1.152 “Harbor”` when blessed (`gh release edit --title`).
   The update alert needs no change: `UpdateService` already shows the
   release's GitHub title.
-- Still open with bless.sh: the name rule, the duplicate check against
-  `ReleaseNames.json`, writing `ClipBuilder/Resources/ReleaseName.txt` in
-  the worktree, and the title edit.
+- bless.sh does the rest (Phase 3): the name rule, the duplicate check
+  against `ReleaseNames.json`, `ClipBuilder/Resources/ReleaseName.txt` in
+  the worktree (bundled flat as `Contents/Resources/ReleaseName.txt`,
+  checked 2026-11-06), and the title edit.
 
 ### In the app
 
@@ -445,9 +446,17 @@ configurations and the scheme in the project file.
 
 - `release.sh`: builds the beta pkg, `gh release create --prerelease`, asset
   name with the `-Beta` suffix, the guide no longer updated here.
-- `scripts/bless.sh <version> "<name>"` as designed, with the release name
-  (see Release names); the optional `release.sh --stable`.
-- The bless side of release names (the app side is done).
+- `scripts/bless.sh <version> "<name>"` (written 2026-11-06, dry-run
+  checked, not yet run for real): name rule and `ReleaseNames.json`
+  duplicate check, tag worktree with the local packages linked beside it and
+  the ignored `Configuration/*-Local.*` copied in, `ReleaseName.txt`, the
+  tag's own `make_pkg.sh` (`CHANNEL=stable`, ignored until phase 2), a
+  payload check of the name and version, `gh release upload --clobber`,
+  title, prerelease off, `--latest` unless a newer stable exists, the guide
+  and the "Bless" commit on main. `--dry-run` prints the plan. Until
+  `release.sh` publishes prereleases, blessing a release replaces its
+  unnamed stable pkg with a named one of the same version.
+- The optional `release.sh --stable`.
 - `.claude/skills/release` describes both commands; a `bless` skill or a
   section in the release skill.
 - Verify: release a beta, confirm GitHub shows it as a prerelease and
