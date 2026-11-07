@@ -170,7 +170,9 @@ print -r -- "$NAME" > "$TREE/ClipBuilder/Resources/ReleaseName.txt"
 
 # ------------------------------------------------------------- build + sign
 step "Building and notarizing the stable pkg (this takes 5 to 10 minutes)"
-CHANNEL=stable "$TREE/scripts/make_pkg.sh"
+# caffeinate keeps the display awake: an idle lock during the build locks
+# the keychain, and notarytool then fails with "No Keychain password item".
+caffeinate -di env CHANNEL=stable "$TREE/scripts/make_pkg.sh"
 PKG="$TREE/dist/$PKG_NAME"
 [[ -f $PKG ]] || fail "expected $PKG from make_pkg.sh"
 
