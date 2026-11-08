@@ -60,7 +60,10 @@ struct ChannelImportTests {
     }
 
     @Test func aProfileCreatedLaterImportsWhenFirstOpened() throws {
-        _ = try DataFolderOverride()
+        // Held to the end of the test: `_ =` would release it at once and the
+        // test would run against the shared test-host data folder.
+        let scope = try DataFolderOverride()
+        defer { withExtendedLifetime(scope) {} }
         #expect(try !ChannelImport.importLibraryIfMissing(profileName: "Later"), "nothing to import yet")
         try seedStableLibrary("Later")
         #expect(try ChannelImport.importLibraryIfMissing(profileName: "Later"))
@@ -68,7 +71,10 @@ struct ChannelImportTests {
     }
 
     @Test func promotionWaitsForTheStableAppToReachTheBetaSchema() throws {
-        _ = try DataFolderOverride()
+        // Held to the end of the test: `_ =` would release it at once and the
+        // test would run against the shared test-host data folder.
+        let scope = try DataFolderOverride()
+        defer { withExtendedLifetime(scope) {} }
         #expect(ChannelImport.promotionBlocker(profileName: "Peace") != nil, "no beta library")
         let stable = try seedStableLibrary("Peace")
         try ChannelImport.importLibraryIfMissing(profileName: "Peace")
