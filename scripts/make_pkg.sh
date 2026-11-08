@@ -7,18 +7,52 @@
 #   INSTALLER_SIGN_IDENTITY "Developer ID Installer: ..."   — signs the pkg
 #   NOTARY_PROFILE          notarytool keychain profile — notarizes + staples
 #   UNSIGNED=1              force an unsigned (ad-hoc) build
+#   PROVISIONING_PROFILE    path of the Developer ID provisioning profile to
+#                           embed (default: the installed one for the bundle id)
 #
-# Output: dist/ClipBuilder-<version>.pkg
+# Channel (docs/Stable-Beta-Channels-Plan.md):
+#   CHANNEL=stable (default) builds "Clip Builder" (MyApp, Release)
+#   CHANNEL=beta             builds "Clip Builder Beta" (MyApp Beta, Release-Beta)
+#
+# A signed build embeds the channel's Developer ID provisioning profile and
+# signs with the shared keychain group (ClipBuilder/Clip Builder.entitlements),
+# so the stable and beta apps share keys. keychain-access-groups is a
+# restricted entitlement: without the profile the app is killed at launch,
+# so a missing profile fails the build.
+#
+# Output: dist/ClipBuilder-<version>.pkg, or dist/ClipBuilder-Beta-<version>.pkg
 set -euo pipefail
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PROJECT="$REPO_ROOT/Clip Builder.xcodeproj"
-SCHEME="MyApp"
-APP_NAME="Clip Builder"
 BUILD_DIR="$REPO_ROOT/build"
 DIST_DIR="$REPO_ROOT/dist"
 INSTALLER_DIR="$REPO_ROOT/scripts/installer"
-PKG_ID="com.mokotti-solutions.clipbuilder.pkg"
+ENTITLEMENTS="$REPO_ROOT/ClipBuilder/Clip Builder.entitlements"
+KEYCHAIN_GROUP_SUFFIX="com.mokotti-solutions.clipbuilder.shared"
+
+CHANNEL="${CHANNEL:-stable}"
+case "$CHANNEL" in
+    stable)
+        SCHEME="MyApp"
+        CONFIGURATION="Release"
+        APP_NAME="Clip Builder"
+        PKG_ID="com.mokotti-solutions.clipbuilder.pkg"
+        PKG_PREFIX="ClipBuilder"
+        ;;
+    beta)
+        SCHEME="MyApp Beta"
+        CONFIGURATION="Release-Beta"
+        APP_NAME="Clip Builder Beta"
+        PKG_ID="com.mokotti-solutions.clipbuilder.beta.pkg"
+        PKG_PREFIX="ClipBuilder-Beta"
+        ;;
+    *)
+        echo "error: CHANNEL must be stable or beta, not '$CHANNEL'" >&2
+        exit 1
+        ;;
+esac
+echo "==> Channel: $CHANNEL"
 
 # The build reads the ignored local override; never package the empty fallback.
 /bin/sh "$REPO_ROOT/scripts/check_google_drive_credentials.sh" "$REPO_ROOT/Configuration/GoogleDrive-Local.plist"
@@ -61,16 +95,16 @@ else
     )
 fi
 
-echo "==> Building $APP_NAME (Release)"
+echo "==> Building $APP_NAME ($CONFIGURATION)"
 xcodebuild -project "$PROJECT" \
     -scheme "$SCHEME" \
-    -configuration Release \
+    -configuration "$CONFIGURATION" \
     -derivedDataPath "$BUILD_DIR" \
     -destination 'generic/platform=macOS' \
     "${SIGN_ARGS[@]}" \
     build
 
-APP_PATH="$BUILD_DIR/Build/Products/Release/$APP_NAME.app"
+APP_PATH="$BUILD_DIR/Build/Products/$CONFIGURATION/$APP_NAME.app"
 if [[ ! -d "$APP_PATH" ]]; then
     echo "error: app not found at $APP_PATH" >&2
     exit 1
@@ -79,13 +113,93 @@ fi
 # Check the actual bundle too, in case the build configuration ignored the override.
 /bin/sh "$REPO_ROOT/scripts/check_google_drive_credentials.sh" "$APP_PATH/Contents/Info.plist"
 
+# ------------------------------------- provisioning profile + keychain group
+# Re-sign the app (its nested code is already signed by the build) with the
+# entitlements file and the channel's provisioning profile embedded. Done
+# here rather than through xcodebuild settings, which would also apply the
+# profile to the Swift package targets.
+if [[ -n "${APP_SIGN_IDENTITY:-}" ]]; then
+    BUNDLE_ID=$(/usr/libexec/PlistBuddy -c "Print :CFBundleIdentifier" "$APP_PATH/Contents/Info.plist")
+    TEAM_ID=$(print -r -- "$APP_SIGN_IDENTITY" | sed -n 's/.*(\([A-Z0-9]*\))$/\1/p')
+    [[ -n "$TEAM_ID" ]] || { echo "error: no team id in '$APP_SIGN_IDENTITY'" >&2; exit 1; }
+    SIGN_CERT_SHA1=$(security find-certificate -c "$APP_SIGN_IDENTITY" -Z 2>/dev/null \
+        | sed -n 's/^SHA-1 hash: //p' | head -1 | tr 'A-F' 'a-f')
+    PROFILE_SCRATCH=$(mktemp -d)
+
+    # Prints the profile's expiry (epoch) when it is for this app id, holds
+    # the signing certificate, and has not expired; fails otherwise.
+    profile_matches() {
+        local plist="$PROFILE_SCRATCH/profile.plist" n=0 cert
+        security cms -D -i "$1" > "$plist" 2>/dev/null || return 1
+        [[ $(/usr/libexec/PlistBuddy -c "Print :Entitlements:com.apple.application-identifier" "$plist" 2>/dev/null) \
+            == "$TEAM_ID.$BUNDLE_ID" ]] || return 1
+        local expiry=$(date -j -u -f "%Y-%m-%dT%H:%M:%SZ" \
+            "$(plutil -extract ExpirationDate raw -o - "$plist")" +%s 2>/dev/null || echo 0)
+        (( expiry > $(date +%s) )) || return 1
+        while cert=$(plutil -extract "DeveloperCertificates.$n" raw -o - "$plist" 2>/dev/null); do
+            if [[ $(print -r -- "$cert" | base64 -d | shasum | cut -c1-40) == "$SIGN_CERT_SHA1" ]]; then
+                print -r -- "$expiry"
+                return 0
+            fi
+            n=$((n + 1))
+        done
+        return 1
+    }
+
+    if [[ -z "${PROVISIONING_PROFILE:-}" ]]; then
+        BEST_EXPIRY=0
+        for candidate in "$HOME/Library/Developer/Xcode/UserData/Provisioning Profiles/"*.provisionprofile(N) \
+                         "$HOME/Library/MobileDevice/Provisioning Profiles/"*.provisionprofile(N); do
+            if expiry=$(profile_matches "$candidate") && (( expiry > BEST_EXPIRY )); then
+                PROVISIONING_PROFILE="$candidate"
+                BEST_EXPIRY=$expiry
+            fi
+        done
+    elif ! profile_matches "$PROVISIONING_PROFILE" > /dev/null; then
+        echo "error: $PROVISIONING_PROFILE is not a current profile for $TEAM_ID.$BUNDLE_ID" >&2
+        echo "       signed by '$APP_SIGN_IDENTITY'" >&2
+        exit 1
+    fi
+    if [[ -z "${PROVISIONING_PROFILE:-}" ]]; then
+        echo "error: no Developer ID provisioning profile for $TEAM_ID.$BUNDLE_ID that holds" >&2
+        echo "       the '$APP_SIGN_IDENTITY' certificate is installed." >&2
+        echo "Create one at developer.apple.com (Profiles > Developer ID, macOS) and put it in" >&2
+        echo "~/Library/Developer/Xcode/UserData/Provisioning Profiles/, or set PROVISIONING_PROFILE." >&2
+        exit 1
+    fi
+    echo "==> Embedding provisioning profile: $(basename "$PROVISIONING_PROFILE")"
+    cp "$PROVISIONING_PROFILE" "$APP_PATH/Contents/embedded.provisionprofile"
+
+    # The entitlements file uses Xcode variables; resolve them for codesign.
+    RESOLVED_ENTITLEMENTS="$PROFILE_SCRATCH/app.entitlements"
+    sed -e "s/\$(AppIdentifierPrefix)/$TEAM_ID./g" -e "s/\$(CFBundleIdentifier)/$BUNDLE_ID/g" \
+        "$ENTITLEMENTS" > "$RESOLVED_ENTITLEMENTS"
+    /usr/libexec/PlistBuddy -c "Add :com.apple.developer.team-identifier string $TEAM_ID" "$RESOLVED_ENTITLEMENTS"
+    if grep -q '\$(' "$RESOLVED_ENTITLEMENTS"; then
+        echo "error: unresolved variable in $ENTITLEMENTS" >&2
+        exit 1
+    fi
+    echo "==> Signing app with the shared keychain group ($TEAM_ID.$KEYCHAIN_GROUP_SUFFIX)"
+    codesign --force --options runtime --timestamp \
+        --entitlements "$RESOLVED_ENTITLEMENTS" \
+        --sign "$APP_SIGN_IDENTITY" "$APP_PATH"
+    rm -rf "$PROFILE_SCRATCH"
+
+    SIGNED_GROUPS=$(codesign -d --entitlements - --xml "$APP_PATH" 2>/dev/null \
+        | plutil -extract keychain-access-groups.0 raw -o - - 2>/dev/null || true)
+    if [[ "$SIGNED_GROUPS" != "$TEAM_ID.$KEYCHAIN_GROUP_SUFFIX" ]]; then
+        echo "error: the signed app does not carry the shared keychain group" >&2
+        exit 1
+    fi
+fi
+
 if [[ -n "${APP_SIGN_IDENTITY:-}" ]]; then
     echo "==> Verifying app signature"
     codesign --verify --strict --deep --verbose=1 "$APP_PATH"
 fi
 
 VERSION=$(defaults read "$APP_PATH/Contents/Info" CFBundleShortVersionString 2>/dev/null || echo "1.0")
-PKG_NAME="ClipBuilder-$VERSION.pkg"
+PKG_NAME="$PKG_PREFIX-$VERSION.pkg"
 STAGING_DIR=$(mktemp -d)
 trap 'rm -rf "$STAGING_DIR"' EXIT
 
@@ -101,7 +215,7 @@ xattr -rc "$PAYLOAD" 2>/dev/null || true
 echo "==> Staging install scripts"
 SCRIPTS="$STAGING_DIR/scripts"
 mkdir -p "$SCRIPTS"
-cp "$INSTALLER_DIR/postinstall" "$SCRIPTS/postinstall"
+sed "s/__APP_NAME__/$APP_NAME/g" "$INSTALLER_DIR/postinstall" > "$SCRIPTS/postinstall"
 chmod 755 "$SCRIPTS/postinstall"
 
 echo "==> Building component package"
@@ -114,7 +228,8 @@ pkgbuild \
     "$STAGING_DIR/ClipBuilderApp.pkg"
 
 echo "==> Building distribution package"
-sed "s/__VERSION__/$VERSION/g" "$INSTALLER_DIR/distribution.xml" > "$STAGING_DIR/distribution.xml"
+sed -e "s/__VERSION__/$VERSION/g" -e "s/__TITLE__/$APP_NAME/g" -e "s/__PKG_ID__/$PKG_ID/g" \
+    "$INSTALLER_DIR/distribution.xml" > "$STAGING_DIR/distribution.xml"
 mkdir -p "$DIST_DIR"
 rm -f "$DIST_DIR/$PKG_NAME"
 

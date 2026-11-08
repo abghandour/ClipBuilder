@@ -1,6 +1,6 @@
 # Stable and Beta channels
 
-Date: 2026-11-04. Status: in progress. Phase 0 and the code of phase 1 and 4 done 2026-11-04; the Xcode configurations, scheme and provisioning profiles, and phases 2, 3 and 5 are open. Release names (2026-11-06): app side done; scripts/bless.sh written, not yet run for real.
+Date: 2026-11-04. Status: in progress. Phase 0 and the code of phase 1 and 4 done 2026-11-04; the Xcode configurations, scheme and provisioning profiles, and phases 2, 3 and 5 are open. Release names (2026-11-06): app side done; 1.152 blessed as “Sao Paulo” with scripts/bless.sh (2026-11-07). Portal App IDs and Developer ID provisioning profiles done 2026-11-07; Debug-Beta/Release-Beta configurations and the `MyApp Beta` scheme added 2026-11-07 (uncommitted, beta Debug build checked); make_pkg.sh channel mode and profile signing 2026-11-07 (uncommitted, signed beta pkg built and launched).
 
 ## Goal
 
@@ -158,6 +158,17 @@ and library from Clip Builder <version>". What it imports:
    the shared group, and a Developer ID (Mac) provisioning profile for
    each, installed on the build Mac. The profiles embed as
    `embedded.provisionprofile`; notarization accepts them.
+
+   Done 2026-11-07: App IDs `Clip Builder` and `Clip Builder Beta`; profiles
+   "ClipBuilder Developer ID" (cc0b4a0f-8e8b-4db3-b059-2264f6ff6983) and
+   "Clip Builder Developer Beta ID" (ef2b6e81-e212-438d-89ef-caf209269fc7),
+   installed in `~/Library/Developer/Xcode/UserData/Provisioning Profiles/`,
+   expiring 2044, both on the Aug 1 2026 Developer ID Application
+   certificate (SHA-1 7527…51AF; the portal also lists an older Jul 8
+   certificate with no key on this Mac, do not pick it). Their entitlements
+   allow `D7JTNCH58D.*`, so no Keychain Sharing capability is needed.
+   Probe: two signed apps with these profiles and the shared group, one
+   wrote an item and the other read and deleted it.
 5. **Not importable.** TCC grants: the beta asks for Documents access (and
    Automation for the dub shortcuts) once on first use. Nothing else.
 

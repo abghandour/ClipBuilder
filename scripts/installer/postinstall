@@ -4,7 +4,7 @@
 set -u
 
 SETUP="/Library/Application Support/ClipBuilder/Clip Builder Setup.command"
-APP="/Applications/Clip Builder.app"
+APP="/Applications/__APP_NAME__.app"
 
 chmod 755 "$SETUP" 2>/dev/null || true
 # Payload-installed apps aren't quarantined, but clear the flag defensively.
