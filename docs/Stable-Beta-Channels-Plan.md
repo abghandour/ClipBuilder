@@ -1,6 +1,6 @@
 # Stable and Beta channels
 
-Date: 2026-11-04. Status: in progress. Phase 0 and the code of phase 1 and 4 done 2026-11-04; the Xcode configurations, scheme and provisioning profiles, and phases 2, 3 and 5 are open. Release names (2026-11-06): app side done; 1.152 blessed as “Sao Paulo” with scripts/bless.sh (2026-11-07). Portal App IDs and Developer ID provisioning profiles done 2026-11-07; Debug-Beta/Release-Beta configurations and the `MyApp Beta` scheme added 2026-11-07 (uncommitted, beta Debug build checked); make_pkg.sh channel mode and profile signing 2026-11-07 (uncommitted, signed beta pkg built and launched).
+Date: 2026-11-04. Status: in progress. Phase 0 and the code of phase 1 and 4 done 2026-11-04; the Xcode configurations, scheme and provisioning profiles, and phases 2, 3 and 5 are open. Release names (2026-11-06): app side done; 1.152 blessed as “Sao Paulo” with scripts/bless.sh (2026-11-07). Portal App IDs and Developer ID provisioning profiles done 2026-11-07; Debug-Beta/Release-Beta configurations and the `MyApp Beta` scheme added 2026-11-07 (uncommitted, beta Debug build checked); make_pkg.sh channel mode and profile signing 2026-11-07 (signed beta pkg built and launched); release.sh publishes beta prereleases 2026-11-07, not yet run. Open: `release.sh --stable`, the live updater check, phase 5 docs.
 
 ## Goal
 

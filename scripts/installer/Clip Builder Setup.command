@@ -425,9 +425,19 @@ echo "    In the app, check Settings → General (ffmpeg status) and"
 echo "    Settings → AI (provider status and task routing)."
 echo
 
-if [[ -d "/Applications/Clip Builder.app" ]]; then
-    if ask_yes_no "Launch Clip Builder now?" y; then
-        open -a "Clip Builder"
+# The stable and beta installers share this script; offer the app installed
+# last (the one whose installer just opened this window).
+LAUNCH_APP=""
+for candidate in "/Applications/Clip Builder.app" "/Applications/Clip Builder Beta.app"; do
+    [[ -d "$candidate" ]] || continue
+    if [[ -z "$LAUNCH_APP" || "$candidate" -nt "$LAUNCH_APP" ]]; then
+        LAUNCH_APP="$candidate"
+    fi
+done
+if [[ -n "$LAUNCH_APP" ]]; then
+    LAUNCH_NAME=$(basename "$LAUNCH_APP" .app)
+    if ask_yes_no "Launch $LAUNCH_NAME now?" y; then
+        open "$LAUNCH_APP"
     fi
 else
     warn "/Applications/Clip Builder.app not found — install the app first."

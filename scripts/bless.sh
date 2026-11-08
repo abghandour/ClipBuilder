@@ -204,7 +204,7 @@ mv "$WORK/names.json" "$NAMES_FILE"
 git -C "$REPO_ROOT" add "$NAMES_FILE"
 if [[ $MARK_LATEST == 1 ]]; then
     # The stable download, never the beta's ClipBuilder-Beta-<version>.pkg.
-    sed -i '' -E "s/ClipBuilder-[0-9.]+\.pkg/$PKG_NAME/g" "$GUIDE"
+    sed -i '' -E "s/ClipBuilder-[0-9.]+\.pkg/$PKG_NAME/g; s/Clip Builder [0-9.]+ — Getting Started/Clip Builder $VERSION — Getting Started/g" "$GUIDE"
     git -C "$REPO_ROOT" add "$GUIDE"
 fi
 git -C "$REPO_ROOT" commit --quiet -m "Bless $VERSION as stable (“$NAME”)"

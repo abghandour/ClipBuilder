@@ -1,14 +1,18 @@
 #!/bin/zsh
-# One-command release for Clip Builder:
+# One-command release for Clip Builder. Every release is a beta
+# (docs/Stable-Beta-Channels-Plan.md):
 #   1. Determines the release version: if the current MARKETING_VERSION is
 #      already tagged on GitHub, bumps it (last component +1) and always
-#      increments CURRENT_PROJECT_VERSION — so every published pkg/dmg
+#      increments CURRENT_PROJECT_VERSION — so every published pkg
 #      carries a new version number.
-#   2. Updates the version references in the Getting Started guide (HTML only;
-#      no PDF is generated).
-#   3. Builds, signs, and notarizes the pkg (make_pkg.sh).
-#   4. Commits the bump, tags v<version>, pushes, and creates the GitHub
-#      release with the pkg attached.
+#   2. Builds, signs, and notarizes the beta pkg
+#      (CHANNEL=beta make_pkg.sh → ClipBuilder-Beta-<version>.pkg).
+#   3. Commits the bump, tags v<version>, pushes, and creates the GitHub
+#      release as a prerelease with the beta pkg attached. Stable apps skip
+#      prereleases; beta apps update to it.
+# A release becomes stable only when scripts/bless.sh <version> "<name>"
+# builds its stable pkg, clears the prerelease flag and points the Getting
+# Started guide at it, so this script no longer touches the guide.
 #
 # Usage: scripts/release.sh [--tests | --skip-tests]
 #   In a terminal the script asks whether to run the unit tests first.
@@ -35,7 +39,6 @@ done
 
 REPO_ROOT="$(cd "$(dirname "$0")/.." && pwd)"
 PBXPROJ="$REPO_ROOT/Clip Builder.xcodeproj/project.pbxproj"
-GUIDE="$REPO_ROOT/docs/ClipBuilder-Getting-Started.html"
 DIST_DIR="$REPO_ROOT/dist"
 
 export DEVELOPER_DIR="${DEVELOPER_DIR:-/Applications/Xcode-beta.app/Contents/Developer}"
@@ -92,23 +95,22 @@ NEW_BUILD=$((BUILD + 1))
 sed -i '' "s/MARKETING_VERSION = $CURRENT;/MARKETING_VERSION = $VERSION;/g; s/CURRENT_PROJECT_VERSION = $BUILD;/CURRENT_PROJECT_VERSION = $NEW_BUILD;/g" "$PBXPROJ"
 echo "    MARKETING_VERSION $CURRENT -> $VERSION, build $BUILD -> $NEW_BUILD"
 
-step "Updating Getting Started guide version references"
-sed -i '' -E "s/ClipBuilder-[0-9.]+\.pkg/ClipBuilder-$VERSION.pkg/g; s/Clip Builder [0-9.]+ — Getting Started/Clip Builder $VERSION — Getting Started/g" "$GUIDE"
-
 # ------------------------------------------------------------- build + sign
-step "Building and notarizing pkg"
-"$REPO_ROOT/scripts/make_pkg.sh"
-PKG="$DIST_DIR/ClipBuilder-$VERSION.pkg"
+step "Building and notarizing the beta pkg"
+CHANNEL=beta "$REPO_ROOT/scripts/make_pkg.sh"
+PKG="$DIST_DIR/ClipBuilder-Beta-$VERSION.pkg"
 [[ -f $PKG ]] || { echo "error: expected $PKG from make_pkg.sh" >&2; exit 1; }
 
 # --------------------------------------------------------- commit + publish
 step "Committing, tagging v$VERSION, pushing"
-git -C "$REPO_ROOT" add "$PBXPROJ" "$GUIDE"
+git -C "$REPO_ROOT" add "$PBXPROJ"
 git -C "$REPO_ROOT" commit -m "Release $VERSION (build $NEW_BUILD)"
 git -C "$REPO_ROOT" tag "v$VERSION"
 git -C "$REPO_ROOT" push origin HEAD "v$VERSION"
 
-step "Creating GitHub release v$VERSION"
-gh release create "v$VERSION" "$PKG" --title "Clip Builder $VERSION" --generate-notes
+step "Creating GitHub prerelease v$VERSION"
+gh release create "v$VERSION" "$PKG" --title "Clip Builder Beta $VERSION" --prerelease --generate-notes
 
-step "Done — released Clip Builder $VERSION"
+step "Done — released Clip Builder Beta $VERSION (prerelease)"
+echo "    Stable apps will not see it. When it is good, name and bless it:"
+echo "    scripts/bless.sh $VERSION \"<name>\""

@@ -1,6 +1,6 @@
 ---
 name: release
-description: Publish a new Clip Builder release — bump the version, build + sign + notarize the pkg, refresh the Getting Started guide, tag, and create the GitHub release. Use when asked to release, ship, publish a version, or cut a release of this app.
+description: Publish a new Clip Builder release — bump the version, build + sign + notarize the beta pkg, tag, and create the GitHub prerelease; bless.sh later makes it stable. Use when asked to release, ship, publish a version, or cut a release of this app.
 ---
 
 # Release Clip Builder
@@ -11,10 +11,14 @@ One command does the whole pipeline — do NOT reimplement its steps by hand:
 scripts/release.sh
 ```
 
-It bumps versions in `project.pbxproj`, updates the version references in the
-Getting Started HTML guide (no PDF is generated), builds/signs/notarizes/staples
-the pkg (`scripts/make_pkg.sh`), commits, tags `v<version>`, pushes, and creates
-the GitHub release with the pkg attached (`--generate-notes`). Run it from the repo root with a **long timeout
+Every release is a **beta**. It bumps versions in `project.pbxproj`,
+builds/signs/notarizes/staples the beta pkg (`CHANNEL=beta scripts/make_pkg.sh`
+→ `dist/ClipBuilder-Beta-<version>.pkg`), commits, tags `v<version>`, pushes,
+and creates the GitHub release **as a prerelease** titled "Clip Builder Beta
+<version>" with that pkg attached (`--generate-notes`). Stable apps skip
+prereleases; beta apps update to it. It does not touch the Getting Started
+guide: `scripts/bless.sh` points the guide at a release when it becomes
+stable (below). Run it from the repo root with a **long timeout
 (600000 ms) or in the background** — the Xcode build plus Apple's notarization
 wait routinely takes 5–10 minutes.
 
@@ -46,6 +50,13 @@ wait routinely takes 5–10 minutes.
    they've changed): `DEVELOPER_DIR=/Applications/Xcode-beta.app/Contents/Developer`,
    `NOTARY_PROFILE=ClipBuilderNotary`, Developer ID Application/Installer
    certificates in the keychain (team D7JTNCH58D), `gh` authenticated.
+4. **Provisioning profiles.** `make_pkg.sh` embeds a Developer ID profile per
+   channel ("ClipBuilder Developer ID", "Clip Builder Developer Beta ID",
+   installed in `~/Library/Developer/Xcode/UserData/Provisioning Profiles/`)
+   and signs the app with the shared keychain group. It fails when no
+   installed profile matches the bundle id and the signing certificate; the
+   fix is a new profile at developer.apple.com on the Aug 1 2026 Developer ID
+   Application certificate, not skipping the entitlement.
 
 The release does **not** capture Training Guide screenshots. When the guide's
 UI changed, run `scripts/capture_help_screenshots.sh` by hand (Mac unlocked, no
@@ -53,7 +64,9 @@ other Clip Builder instance running) and commit the PNGs before releasing.
 
 ## After it finishes
 
-1. Verify: `gh release view v<version>` — pkg attached, tag correct.
+1. Verify: `gh release view v<version>` — `ClipBuilder-Beta-<version>.pkg`
+   attached, prerelease, tag correct; `gh release view` (latest) still shows
+   the last stable.
    (The script already ran `stapler staple` and a Gatekeeper `spctl` check.)
 2. **Replace the auto-generated notes with human ones.** Summarize what
    actually changed for a user of the app:
@@ -98,7 +111,7 @@ by hand rather than rerunning (a rerun rebuilds and re-notarizes).
   `xcrun notarytool history --keychain-profile ClipBuilderNotary`.
 - **Partial publish** (commit+tag pushed but release creation failed) → do NOT
   rerun the whole script (it would bump again); finish with
-  `gh release create v<version> dist/ClipBuilder-<version>.pkg --title "Clip Builder <version>" --generate-notes`.
+  `gh release create v<version> dist/ClipBuilder-Beta-<version>.pkg --title "Clip Builder Beta <version>" --prerelease --generate-notes`.
 
 ## Never
 
