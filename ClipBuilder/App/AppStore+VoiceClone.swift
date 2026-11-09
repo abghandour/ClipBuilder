@@ -146,7 +146,9 @@ extension AppStore {
     }
 
     /// Throw before publishing new state so a failed save can roll back the
-    /// remote clone. This account-local mapping is not queued for Team Sync.
+    /// remote clone. The mapping rides the shared profile document, so every
+    /// teammate sees who has a clone; a teammate whose ElevenLabs key is for
+    /// another account sees it marked as such and keeps their own voice.
     private func saveVoiceCloneEditing(_ editing: ProfileEditingDefaults) throws {
         var profile = activeProfile
         profile.editing = editing
@@ -155,5 +157,6 @@ extension AppStore {
         if let index = profiles.firstIndex(where: { $0.profileName == profile.profileName }) {
             profiles[index] = profile
         }
+        queueSharedProfileSync()
     }
 }

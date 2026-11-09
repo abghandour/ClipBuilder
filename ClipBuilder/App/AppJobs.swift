@@ -377,6 +377,13 @@ final class AppJobs {
         }
     }
 
+    /// An open review sheet that started a follow-up job (Update lines) shows
+    /// that job's result itself, so the result must not queue a second
+    /// presentation that closes and reopens the sheet.
+    func adoptReviewInPlace(_ id: UUID) {
+        reviewQueue.removeAll { $0 == id }
+    }
+
     func requestReview(_ id: UUID) {
         guard let job = awaitingReview.first(where: { $0.id == id }) else { return }
         Task { [self] in

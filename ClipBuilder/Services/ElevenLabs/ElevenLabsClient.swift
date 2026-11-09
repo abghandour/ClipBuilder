@@ -107,6 +107,27 @@ nonisolated struct ElevenLabsClient: Sendable {
                               accept: "audio/mpeg")
     }
 
+    nonisolated struct TimestampSpeech: Decodable, Sendable {
+        var audio_base64: String
+        var alignment: DubTakeAlignment?
+        var normalized_alignment: DubTakeAlignment?
+
+        var audio: Data? { Data(base64Encoded: audio_base64) }
+    }
+
+    func speakWithTimestamps(text: String, voiceID: String, model: String,
+                             settings: ElevenLabsSettings) async throws -> TimestampSpeech {
+        guard !voiceID.isEmpty,
+              let escaped = voiceID.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
+            throw ElevenLabsError.badRequest("Choose a voice")
+        }
+        let body = try JSONEncoder().encode(SpeechRequest(text: text, model_id: model,
+            voice_settings: .init(stability: settings.stability, similarity_boost: settings.similarity)))
+        let data = try await send(path: "/v1/text-to-speech/" + escaped + "/with-timestamps",
+            query: [.init(name: "output_format", value: "mp3_44100_128")], body: body)
+        return try JSONDecoder().decode(TimestampSpeech.self, from: data)
+    }
+
     @concurrent
     func addVoice(name: String, files: [URL], labels: [String: String],
                   removeBackgroundNoise: Bool = true) async throws -> String {

@@ -21,7 +21,7 @@ actor ElevenLabsDubSynthesizer {
         self.client = client
     }
 
-    func synthesize(text: String, voice: String, rate: Double, directory: URL) async throws -> URL {
+    func synthesize(text: String, voice: String, rate: Double, directory: URL, model: String? = nil) async throws -> URL {
         try Task.checkCancellation()
         guard let voiceID = ElevenLabsVoices.voiceID(voice) else {
             throw ScriptError.invalid("\(voice) is not an ElevenLabs voice.")
@@ -30,10 +30,11 @@ actor ElevenLabsDubSynthesizer {
               rate.isFinite, rate >= 1, rate <= 1.25 else {
             throw ScriptError.invalid("A dub line needs text and a speech rate between 1 and 1.25.")
         }
-        let settings = settings()
+        var settings = settings()
+        if let model { settings.model = model }
         // Multilingual voices infer language from the text; no locale is part
         // of this API call. The model must be part of the cache identity.
-        let cacheVoice = voice + "#" + settings.model
+        let cacheVoice = DubTake.cacheVoice(voice, settings: settings)
         let output = directory.appendingPathComponent(try DubSynthesizer.cacheName(
             language: "elevenlabs", voice: cacheVoice, rate: rate, text: text))
         let plain = directory.appendingPathComponent(try DubSynthesizer.cacheName(
@@ -41,7 +42,11 @@ actor ElevenLabsDubSynthesizer {
         try await acquire(plain)
         defer { release(plain) }
         try Task.checkCancellation()
-        if hasAudio(output) { return output }
+        if hasAudio(output) {
+            if rate == 1 { ElevenLabsDubUsage.current?.reuse(characters: text.count) }
+            return output
+        }
+        if rate == 1, hasAudio(plain) { ElevenLabsDubUsage.current?.reuse(characters: text.count) }
         if !hasAudio(plain) {
             guard let key = try key(), !key.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else {
                 throw ElevenLabsError.invalidKey

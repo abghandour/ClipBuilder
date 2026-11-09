@@ -5,6 +5,7 @@ import Foundation
 final class DubReviewCoordinator {
     weak var store: AppStore?
     private var pending: [UUID: CheckedContinuation<DubPreparation.Prepared, Error>] = [:]
+    private var finalizing: [UUID: UUID] = [:]
 
     func review(_ prepared: DubPreparation.Prepared, projectID: Int64?, profileName: String) async throws -> DubPreparation.Prepared {
         try Task.checkCancellation()
@@ -31,12 +32,20 @@ final class DubReviewCoordinator {
 
     func isPending(_ id: UUID) -> Bool { pending[id] != nil }
 
+    func finalizing(_ id: UUID, jobID: UUID) {
+        guard isPending(id) else { store?.jobs.cancel(jobID); return }
+        finalizing[id] = jobID
+    }
+
     func apply(_ id: UUID, prepared: DubPreparation.Prepared) {
+        guard !prepared.lines.contains(where: { $0.draft == true }) else { return }
+        finalizing[id] = nil
         pending.removeValue(forKey: id)?.resume(returning: prepared)
     }
 
     func cancel(_ id: UUID) {
         pending.removeValue(forKey: id)?.resume(throwing: CancellationError())
+        if let jobID = finalizing.removeValue(forKey: id) { store?.jobs.cancel(jobID) }
         guard let store else { return }
         for job in store.jobs.items {
             if case .dub(let review) = job.result, review.target == .render(id) { store.jobs.dismiss(job.id) }

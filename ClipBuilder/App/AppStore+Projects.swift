@@ -311,7 +311,8 @@ extension AppStore {
         let folder = profile.sourceFolderURL.standardizedFileURL.path
         Task {
             do {
-                try await database.retireVideos(ids)
+                let takeFiles = try await database.retireVideos(ids)
+                try await database.deleteDubTakeAudioFiles(takeFiles)
                 guard generation == profileGeneration else { return }
                 await refreshAllNow()
                 let trashed = await Task.detached(priority: .utility) { () -> Int in
@@ -541,33 +542,7 @@ extension AppStore {
         }
         do {
             try ProfileStore.save(activeProfile)
-            var syncTask: Task<Void, Never>?
-            if activeProfile.teamID != nil, !teamSync.syncing, let database {
-                let generation = profileGeneration
-                let teamID = activeProfile.teamID
-                syncTask = Task {
-                    guard generation == profileGeneration, !teamSync.syncing else { return }
-                    do {
-                        let canSeed = try await database.canSeedProfileEditingDefaults()
-                        guard generation == profileGeneration, teamID == activeProfile.teamID,
-                              !teamSync.syncing else { return }
-                        if activeProfile.editing == nil, canSeed {
-                            var seeded = activeProfile
-                            seeded.editing = editingDefaults
-                            try ProfileStore.save(seeded)
-                            activeProfile = seeded
-                            if let index = profiles.firstIndex(where: { $0.profileName == seeded.profileName }) {
-                                profiles[index] = seeded
-                            }
-                        }
-                        try await database.saveSyncProfile(activeProfile)
-                    }
-                    catch {
-                        guard generation == profileGeneration else { return }
-                        presentError("Could not queue the shared profile", error)
-                    }
-                }
-            }
+            let syncTask = queueSharedProfileSync()
             if let index = profiles.firstIndex(where: { $0.profileName == activeProfile.profileName }) {
                 profiles[index] = activeProfile
             }
@@ -578,6 +553,37 @@ extension AppStore {
         } catch {
             presentError("Could not save the profile", error)
             return nil
+        }
+    }
+
+    /// Queues the saved active profile's shared document for Team Sync. Call
+    /// after `ProfileStore.save` succeeded; does nothing outside a team.
+    @discardableResult
+    func queueSharedProfileSync() -> Task<Void, Never>? {
+        guard activeProfile.teamID != nil, !teamSync.syncing, let database else { return nil }
+        let generation = profileGeneration
+        let teamID = activeProfile.teamID
+        return Task {
+            guard generation == profileGeneration, !teamSync.syncing else { return }
+            do {
+                let canSeed = try await database.canSeedProfileEditingDefaults()
+                guard generation == profileGeneration, teamID == activeProfile.teamID,
+                      !teamSync.syncing else { return }
+                if activeProfile.editing == nil, canSeed {
+                    var seeded = activeProfile
+                    seeded.editing = editingDefaults
+                    try ProfileStore.save(seeded)
+                    activeProfile = seeded
+                    if let index = profiles.firstIndex(where: { $0.profileName == seeded.profileName }) {
+                        profiles[index] = seeded
+                    }
+                }
+                try await database.saveSyncProfile(activeProfile)
+            }
+            catch {
+                guard generation == profileGeneration else { return }
+                presentError("Could not queue the shared profile", error)
+            }
         }
     }
 

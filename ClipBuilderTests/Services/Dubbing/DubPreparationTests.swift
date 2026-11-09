@@ -196,7 +196,7 @@ extension DubPreparationTests {
         #expect(result.lines.first?.voice == voice)
         #expect(result.lines.first?.audio == "fixture.caf")
         #expect(messages.withLock { $0 }.filter { $0.hasPrefix("ElevenLabs") }
-            == ["ElevenLabs request: 3 characters", "ElevenLabs: 3 characters"])
+            == ["ElevenLabs request: 3 characters", "ElevenLabs: 0 characters reused · 3 characters requested"])
     }
 
     @Test func emptyElevenLabsVoicesPointAtTheKeyNotMacVoices() async throws {

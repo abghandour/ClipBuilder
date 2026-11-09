@@ -53,4 +53,12 @@ nonisolated struct DubLine: Codable, Sendable, Identifiable, Equatable {
     var tight = false
     /// A leaf filename under SettingsStore.cacheDirectory/dubs.
     var audio: String?
+    var takeSource: DubTakeSource?
+    var takeID: String?
+    var takeIsOverride: Bool?
+    var plannedText: String?
+    var plannedSpeaker: String?
+    var reviewedEarlier: Bool?
+    /// Preview audio only; Apply replaces it with the configured final model.
+    var draft: Bool?
 }
