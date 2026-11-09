@@ -58,11 +58,12 @@ nonisolated struct SpeakerSpotlight: Equatable, Sendable {
         turns.filter { $0.start <= time && time < $0.end }.max { $0.start < $1.start }
     }
 
-    /// The cell a turn points at: the tile it was seen in, else the tile of
-    /// the person it names.
+    /// The cell a turn points at: the tile of the person it names (a
+    /// corrected name keeps the tracker's old tile index), else the tile it
+    /// was seen in. Same order as `CropRecipePlanner.tile(for:tiles:)`.
     static func tile(for turn: SpeakerTurn, in tiles: [PodcastTile]) -> PodcastTile? {
-        if let index = turn.tile, let tile = tiles.first(where: { $0.index == index }) { return tile }
-        if let key = turn.personKey { return tiles.first { $0.personKey == key } }
+        if let key = turn.personKey, let tile = tiles.first(where: { $0.personKey == key }) { return tile }
+        if let index = turn.tile { return tiles.first { $0.index == index } }
         return nil
     }
 

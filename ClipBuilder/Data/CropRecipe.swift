@@ -294,10 +294,13 @@ nonisolated enum CropRecipePlanner {
         return result
     }
 
-    /// The tile a turn was seen or heard in.
+    /// The tile a turn belongs to: the named person's tile first, since the
+    /// name is what the user corrects (Speakers menu, hand attribution) and a
+    /// correction leaves the tracker's tile index as it was; then the tile
+    /// the turn was seen or heard in; then the side.
     static func tile(for turn: SpeakerTurn, tiles: [PodcastTile]) -> Int? {
-        if let index = turn.tile, tiles.contains(where: { $0.index == index }) { return index }
         if let key = turn.personKey, let match = tiles.first(where: { $0.personKey == key }) { return match.index }
+        if let index = turn.tile, tiles.contains(where: { $0.index == index }) { return index }
         if tiles.count == 2, turn.resolvedSide == .left { return tiles[0].index }
         if tiles.count == 2, turn.resolvedSide == .right { return tiles[1].index }
         return nil

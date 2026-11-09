@@ -650,6 +650,30 @@ extension Database {
             }
     }
 
+    /// The video and speaker turns speaker focus pairs: stored feeds with the
+    /// turns of the transcription they were measured on (`FramingTranscription`).
+    /// `fetchVideos` drops feeds from another transcription; this keeps them.
+    func framingEvidence(videoID: Int64) throws -> FramingEvidence? {
+        guard let row = try connection.query("SELECT * FROM videos WHERE id = ?", [.integer(videoID)]).first else {
+            return nil
+        }
+        let stored = Self.videoRecord(row)
+        let tilesKey = row["podcast_transcription_key"]?.stringValue
+        let activeKey = try activeTranscription(videoID: videoID).key
+        let keysWithTurns = Set(try connection.query("""
+            SELECT DISTINCT transcription_key FROM speaker_turns WHERE video_id = ? AND transcription_key IS NOT NULL
+            """, [.integer(videoID)]).compactMap { $0["transcription_key"]?.stringValue })
+        let key = FramingTranscription.key(tilesKey: tilesKey,
+            hasStoredFeeds: stored.podcastLayout != nil || !stored.podcastTiles.isEmpty,
+            keysWithTurns: keysWithTurns, activeKey: activeKey)
+        let video = key == tilesKey ? stored : try resolvedVideoRecord(row)
+        // Hand attributions come from the transcript the user sees (the
+        // active one), even when the feeds pair with an older set's turns.
+        let turns = FramingTranscription.attributed(try fetchSpeakerTurns(videoID: videoID, transcriptionKey: key),
+                                                    rows: try fetchTranscripts(videoID: videoID, transcriptionKey: activeKey))
+        return FramingEvidence(video: video, turns: turns, transcriptionKey: key)
+    }
+
     /// One grouped read for the library; only the active transcript's turns
     /// contribute, including legacy NULL keys when that is the active set.
     func speakerNamingSummaries() throws -> [Int64: SpeakerClusterNaming.Summary] {

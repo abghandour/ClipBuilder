@@ -9,14 +9,21 @@ nonisolated enum WizardPodcastTimeline {
         let recipe = ReelRecipe.recipe(id: options.formatPreset) ?? .custom
         guard options.requestedFraming.subject != .original,
               recipe.capabilities.podcastFraming || options.requestedFraming.subject == .layout else { return [:] }
-        let videos = try await database.fetchVideos(projectID: options.projectID)
+        var videos = try await database.fetchVideos(projectID: options.projectID)
         let ids = Set(plan.clips.compactMap { sceneMap[$0.sceneID] }
             .map(\.videoID))
         var turns: [Int64: [SpeakerTurn]] = [:]
         var rosters: [Int64: [VideoPersonRecord]] = [:]
         var sentenceEnds: [Int64: [Double]] = [:]
         for id in ids {
-            turns[id] = try await database.fetchSpeakerTurns(videoID: id)
+            // Feeds and turns from one transcription, so focus follows the
+            // person its feeds were measured against.
+            if let evidence = try await database.framingEvidence(videoID: id) {
+                turns[id] = evidence.turns
+                if let index = videos.firstIndex(where: { $0.id == id }) { videos[index] = evidence.video }
+            } else {
+                turns[id] = try await database.fetchSpeakerTurns(videoID: id)
+            }
             rosters[id] = try await database.fetchVideoPeople(videoID: id)
             if options.requestedFraming.vipSentences == true {
                 sentenceEnds[id] = VIPFocusPlanning.sentenceEnds(rows: try await database.fetchTranscripts(videoID: id))

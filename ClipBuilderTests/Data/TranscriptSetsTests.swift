@@ -163,4 +163,42 @@ struct TranscriptSetsTests {
         #expect(try await temp.database.fetchVoiceProfiles().isEmpty)
         #expect(try await temp.database.video(id: id)?.podcastLayout == "single_camera")
     }
+    /// Feeds measured on one transcription stay paired with its turns even
+    /// when another transcription is active (a teammate's swapped set).
+    @Test func framingEvidencePairsFeedsWithTheirTranscription() async throws {
+        let temp = try await TempDatabase()
+        let id = try await temp.seedVideo()
+        try await original(temp.database, videoID: id, key: "feeds")
+        try await original(temp.database, videoID: id, key: "other")
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, personKey: "guest"),
+                     PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, personKey: "host")]
+        try await temp.database.setPodcastLayout(videoID: id, transcriptionKey: "feeds", layout: .splitHorizontal,
+                                                 seamX: 0.5, confidence: 1, tiles: tiles)
+        try await temp.database.replaceSpeakerTurns(videoID: id, transcriptionKey: "feeds", turns: [
+            SpeakerTurn(videoID: id, start: 0, end: 4, cluster: 0, confidence: 1, personKey: "guest", tile: 0)])
+        try await temp.database.replaceSpeakerTurns(videoID: id, transcriptionKey: "other", turns: [
+            SpeakerTurn(videoID: id, start: 0, end: 4, cluster: 0, confidence: 1, personKey: "host", tile: 1)])
+        try await temp.database.setActiveTranscriptionKey(videoID: id, key: "other")
+
+        // The ordinary read drops feeds that belong to another transcription.
+        #expect(try await temp.database.video(id: id)?.podcastTiles.isEmpty == true)
+        let evidence = try #require(try await temp.database.framingEvidence(videoID: id))
+        #expect(evidence.transcriptionKey == "feeds")
+        #expect(evidence.video.podcastTiles.map(\.personKey) == ["guest", "host"])
+        #expect(evidence.turns.map(\.personKey) == ["guest"])
+
+        // A line attributed by hand in the active transcript reaches the feeds' turns.
+        let activeRow = try #require(try await temp.database.fetchTranscripts(videoID: id, transcriptionKey: "other").first)
+        try await temp.database.setTranscriptSpeaker(ids: [activeRow.id], speaker: .person(key: "host"))
+        let corrected = try #require(try await temp.database.framingEvidence(videoID: id))
+        #expect(corrected.transcriptionKey == "feeds")
+        #expect(corrected.turns.map(\.personKey) == ["host"])
+
+        // Without turns for the feeds' transcription, focus reads the active one.
+        try await temp.database.replaceSpeakerTurns(videoID: id, transcriptionKey: "feeds", turns: [])
+        let fallback = try #require(try await temp.database.framingEvidence(videoID: id))
+        #expect(fallback.transcriptionKey == "other")
+        #expect(fallback.video.podcastTiles.isEmpty)
+        #expect(fallback.turns.map(\.personKey) == ["host"])
+    }
 }

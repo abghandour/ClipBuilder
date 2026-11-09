@@ -121,6 +121,9 @@ nonisolated struct PreviewKey: Hashable, Sendable {
         var roster: [VideoPersonRecord]
         var video: VideoRecord?
         var turns: [SpeakerTurn]
+        /// Speaker focus pairs `video`'s stored feeds with the turns of the
+        /// transcription they came from; captions keep `turns`.
+        var framingTurns: [SpeakerTurn]
         var speakerRows: [TranscriptRow]
         var tagText: [String: String]
         var captionOrdinals: [String: Int]
@@ -212,7 +215,8 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             } else {
                 let segments = (try? await database.transcriptSegments(videoID: record.videoID,
                     start: 0, end: max(record.videoDuration, record.endTime), language: language)) ?? []
-                let video = try? await database.video(id: record.videoID)
+                let framingEvidence = try? await database.framingEvidence(videoID: record.videoID)
+                let video = framingEvidence?.video
                 let transcription = try? await database.activeTranscription(videoID: record.videoID).key
                 let evidence = await CaptionSpeakerEvidence.load(database: database, videoID: record.videoID,
                     transcriptionKey: transcription)
@@ -229,7 +233,8 @@ nonisolated struct PreviewKey: Hashable, Sendable {
                     ? (try? await database.fetchScenes(projectID: options.projectID, scope: .active, includeExcluded: false)) ?? [] : []
                 guard sceneRequestID == id, !Task.isCancelled else { return }
                 let fresh = RecordingSnapshot(key: key, segments: segments, roster: evidence.roster, video: video,
-                    turns: evidence.turns, speakerRows: evidence.rows, tagText: tagText,
+                    turns: evidence.turns, framingTurns: framingEvidence?.turns ?? evidence.turns,
+                    speakerRows: evidence.rows, tagText: tagText,
                     captionOrdinals: captionOrder.0, speakingPeople: captionOrder.1,
                     layoutSources: layoutSources, layoutScenes: layoutScenes)
                 snapshot = fresh
@@ -252,6 +257,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
             var video: VideoRecord?
             var roster: [VideoPersonRecord] = []
             var turns: [SpeakerTurn] = []
+            var framingTurns: [SpeakerTurn] = []
             var taggedPeople = people
             if let snapshotForWorker {
                 let segments = snapshotForWorker.segments
@@ -259,8 +265,9 @@ nonisolated struct PreviewKey: Hashable, Sendable {
                 roster = snapshotForWorker.roster
                 video = snapshotForWorker.video
                 turns = snapshotForWorker.turns
+                framingTurns = snapshotForWorker.framingTurns
                 if let video, let talker = WizardPreviewFraming.speaker(video: video, record: record,
-                    turns: turns, roster: roster, people: people, time: time) {
+                    turns: framingTurns, roster: roster, people: people, time: time) {
                     person = talker.person ?? person
                     face = talker.face
                 }
@@ -307,7 +314,7 @@ nonisolated struct PreviewKey: Hashable, Sendable {
                 let candidate = HighlightCandidate(sourceStart: record.startTime, sourceEnd: record.endTime,
                     title: "Layout", reason: "", score: 0, kind: .whole, speakerKeys: [])
                 let sources = PodcastHighlightBRollPlanner.sources(videoID: video.id, range: record.startTime...record.endTime,
-                    turns: turns, roster: roster, scenes: scenes, segments: [], people: taggedPeople)
+                    turns: framingTurns, roster: roster, scenes: scenes, segments: [], people: taggedPeople)
                 if let reviewedBRoll {
                     brollCuts = reviewedBRoll.compactMap { cut in
                         guard let source = scenes.first(where: { $0.id == cut.sceneID }) else { return nil }
@@ -318,12 +325,12 @@ nonisolated struct PreviewKey: Hashable, Sendable {
                     }
                 } else {
                     brollCuts = PodcastHighlightBRollPlanner.plan(candidate: candidate, sources: sources,
-                        turns: turns, segments: [], tiles: CropRecipePlanner.tiles(video: video, roster: roster),
+                        turns: framingTurns, segments: [], tiles: CropRecipePlanner.tiles(video: video, roster: roster),
                         scenes: scenes, threshold: 7, instructions: options.brollInstructions)
                 }
             }
             let framing = await WizardPreviewFraming.resolveCached(options: options, record: record, video: video,
-                face: face, turns: turns, roster: roster, people: taggedPeople, layouts: ScreenCropStore.all(), time: time,
+                face: face, turns: framingTurns, roster: roster, people: taggedPeople, layouts: ScreenCropStore.all(), time: time,
                 sceneStart: original.startTime, contentBox: scene.contentBox,
                 sources: snapshotForWorker?.layoutSources ?? [], scenes: snapshotForWorker?.layoutScenes ?? [], brollCuts: brollCuts,
                 sentenceEnds: options.requestedFraming.vipSentences == true

@@ -631,9 +631,12 @@ actor WizardEngine {
         }
         guard !segments.isEmpty else { throw AIError.unusableResponse("This podcast needs a transcript before finding highlights.") }
         let turns = try await database.fetchSpeakerTurns(videoID: video.id)
+        // Framing pairs feeds and turns from one transcription (FramingTranscription);
+        // highlight speakers keep following the active transcription.
+        let evidence = try await database.framingEvidence(videoID: video.id)
         let roster = try await database.fetchVideoPeople(videoID: video.id)
-        let framingContext = FramingContext(video: video, range: 0...video.duration,
-            canvasAspect: options.renderSettings.aspectRatio, roster: roster, turns: turns,
+        let framingContext = FramingContext(video: evidence?.video ?? video, range: 0...video.duration,
+            canvasAspect: options.renderSettings.aspectRatio, roster: roster, turns: evidence?.turns ?? turns,
             hasBRoll: options.useBRoll && scenes.contains { $0.videoID != video.id })
         let explicitSubject = options.requestedFraming.subject
         // Candidates still carry a recipe kind; a layout request is the grid kind for them.
@@ -2699,7 +2702,7 @@ actor WizardEngine {
             }
         }
         guard !pending.isEmpty else { return result }
-        let videos = try await database.fetchVideos(projectID: options.projectID)
+        var videos = try await database.fetchVideos(projectID: options.projectID)
         let podcastClips = Dictionary(uniqueKeysWithValues: pending.map { index in
             (result[index].id, result[index].plan.clips.filter { sceneMap[$0.sceneID]?.tags.contains("podcast") == true })
         })
@@ -2710,7 +2713,13 @@ actor WizardEngine {
         var videoFeeds: [Int64: Int] = [:]
         for id in videoIDs.sorted() {
             try Task.checkCancellation()
-            turns[id] = try await database.fetchSpeakerTurns(videoID: id)
+            // Feeds and turns from one transcription (FramingTranscription).
+            if let evidence = try await database.framingEvidence(videoID: id) {
+                turns[id] = evidence.turns
+                if let index = videos.firstIndex(where: { $0.id == id }) { videos[index] = evidence.video }
+            } else {
+                turns[id] = try await database.fetchSpeakerTurns(videoID: id)
+            }
             let roster = try await database.fetchVideoPeople(videoID: id)
             rosters[id] = roster
             rows[id] = try await database.fetchTranscripts(videoID: id)
