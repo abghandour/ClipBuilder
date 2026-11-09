@@ -740,6 +740,14 @@ struct RangeReviewView<Footer: View>: View {
                     Spacer(minLength: Theme.spaceS)
                     rangeLabel
                 }
+                if canTrim, !isEmptyRange {
+                    RangeBoundaryWaveforms(url: item.video.url, range: shownRange, limits: limits,
+                                           minimumSpan: min(policy.minimumSpan, max(0, limits.upperBound - limits.lowerBound)),
+                                           lines: visibleTranscript.lines, words: visibleTranscript.words,
+                                           onDrag: dragEdge, onRelease: releaseEdge,
+                                           playback: playback, willPlay: { playingAll = false })
+                        .id(item.id)
+                }
                 if canTrim, !isEmptyRange, policy != .wizard, !visibleTranscript.words.isEmpty {
                     RangeStepControls(range: editRange, transcript: visibleTranscript,
                                       spans: speakerSpans.filter { $0.videoID == nil || $0.videoID == contextVideo?.id },
@@ -829,6 +837,26 @@ struct RangeReviewView<Footer: View>: View {
         let spans = speakerSpans.filter { $0.videoID == nil || $0.videoID == contextVideo?.id }
         return RangeAdjustment.target(adjustment, range: editRange, words: visibleTranscript.words,
                                       spans: spans, limits: limits)
+    }
+
+    /// A boundary waveform drag: the range follows live, the picture shows the edge.
+    private func dragEdge(_ proposed: ClosedRange<Double>) {
+        guard isEnabled, canTrim else { return }
+        let moved: TranscriptQATrim.Edge = abs(proposed.lowerBound - editRange.lowerBound) > abs(proposed.upperBound - editRange.upperBound)
+            ? .start : .end
+        draft = (proposed.lowerBound, proposed.upperBound)
+        playback.scrub(to: moved == .start ? proposed.lowerBound : proposed.upperBound)
+    }
+
+    /// A boundary waveform release: save the range (the wave then plays its stretch).
+    private func releaseEdge(_ proposed: ClosedRange<Double>, _ edge: TranscriptQATrim.Edge) {
+        guard isEnabled, canTrim else { return }
+        if let range, abs(proposed.lowerBound - range.lowerBound) < 0.001, abs(proposed.upperBound - range.upperBound) < 0.001 {
+            draft = nil
+        } else {
+            draft = (proposed.lowerBound, proposed.upperBound)
+            commitDraft(snap: false)
+        }
     }
 
     private func apply(_ adjustment: RangeAdjustment) {
