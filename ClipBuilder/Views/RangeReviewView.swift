@@ -840,23 +840,20 @@ struct RangeReviewView<Footer: View>: View {
     }
 
     /// A boundary waveform drag: the range follows live, the picture shows the edge.
-    private func dragEdge(_ proposed: ClosedRange<Double>) {
+    private func dragEdge(_ proposed: ClosedRange<Double>, _ edge: TranscriptQATrim.Edge) {
         guard isEnabled, canTrim else { return }
-        let moved: TranscriptQATrim.Edge = abs(proposed.lowerBound - editRange.lowerBound) > abs(proposed.upperBound - editRange.upperBound)
-            ? .start : .end
         draft = (proposed.lowerBound, proposed.upperBound)
-        playback.scrub(to: moved == .start ? proposed.lowerBound : proposed.upperBound)
+        playback.scrub(to: edge == .start ? proposed.lowerBound : proposed.upperBound)
     }
 
-    /// A boundary waveform release: save the range (the wave then plays its stretch).
+    /// A boundary waveform release: save the range (the wave then plays its
+    /// stretch). Always through `commit`: with an earlier save still pending,
+    /// a return to the range on record must be saved too, or the pending one
+    /// would win.
     private func releaseEdge(_ proposed: ClosedRange<Double>, _ edge: TranscriptQATrim.Edge) {
         guard isEnabled, canTrim else { return }
-        if let range, abs(proposed.lowerBound - range.lowerBound) < 0.001, abs(proposed.upperBound - range.upperBound) < 0.001 {
-            draft = nil
-        } else {
-            draft = (proposed.lowerBound, proposed.upperBound)
-            commitDraft(snap: false)
-        }
+        draft = (proposed.lowerBound, proposed.upperBound)
+        commitDraft(snap: false)
     }
 
     private func apply(_ adjustment: RangeAdjustment) {

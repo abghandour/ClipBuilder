@@ -187,8 +187,10 @@ extension AppStore {
     /// preview stays truthful.
     func setSceneEditRange(_ scene: SceneRecord, start: Double, end: Double) {
         guard let database, end > start else { return }
-        let clearing = abs(start - scene.originalStart) < 0.05
-            && abs(end - scene.originalEnd) < 0.05
+        // Only float noise counts as "back to the original": the boundary
+        // waveforms place edges to the hundredth of a second.
+        let clearing = abs(start - scene.originalStart) < 0.005
+            && abs(end - scene.originalEnd) < 0.005
         let previous = sceneEditSaveTask
         let generation = profileGeneration
         let projectID = activeProjectID

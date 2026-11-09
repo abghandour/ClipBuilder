@@ -159,6 +159,7 @@ final class PodcastHighlightTrimPlayback {
     /// item's end time stops the player; reaching it rewinds as usual.
     func playEnding(seconds: Double = 3) {
         guard player != nil else { return }
+        clearStop()
         seek(to: max(range.lowerBound, range.upperBound - seconds))
         player?.playImmediately(atRate: Float(rate))
         isPlaying = true

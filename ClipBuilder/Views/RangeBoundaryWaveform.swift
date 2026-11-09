@@ -13,8 +13,8 @@ struct RangeBoundaryWaveforms: View {
     let minimumSpan: Double
     let lines: [TranscriptQATrim.Line]
     let words: [TranscriptQATrim.Word]
-    /// Live while dragging: the new range.
-    let onDrag: (ClosedRange<Double>) -> Void
+    /// Live while dragging: the new range, and the edge being dragged.
+    let onDrag: (ClosedRange<Double>, TranscriptQATrim.Edge) -> Void
     /// On release: the range to save, and the edge that moved.
     let onRelease: (ClosedRange<Double>, TranscriptQATrim.Edge) -> Void
     /// Plays each edge's stretch and shows its progress.
@@ -40,7 +40,7 @@ struct RangeBoundaryWaveforms: View {
         return BoundaryWaveform(edge: edge, url: url, time: time, other: edge == .start ? range.upperBound : range.lowerBound,
                                 limits: limits, minimumSpan: minimumSpan, words: words, speaker: speaker,
                                 halfWidth: halfWidth, zoom: $zoom,
-                                onDrag: { onDrag(Self.range(range, edge: edge, to: $0)) },
+                                onDrag: { onDrag(Self.range(range, edge: edge, to: $0), edge) },
                                 onRelease: { onRelease(Self.range(range, edge: edge, to: $0), edge) },
                                 playback: playback, willPlay: willPlay)
     }
