@@ -107,6 +107,7 @@ final class PodcastHighlightTrimPlayback {
 
     func play() {
         guard let player else { return }
+        clearStop()
         if time >= range.upperBound - 0.05 || time < range.lowerBound - 0.05 { seek(to: range.lowerBound) }
         player.playImmediately(atRate: Float(rate))
         isPlaying = true
@@ -123,6 +124,34 @@ final class PodcastHighlightTrimPlayback {
     func pause() {
         player?.pause()
         isPlaying = false
+        clearStop()
+    }
+
+    /// Where a `play(from:until:)` stops, while it plays.
+    private(set) var stopTime: Double?
+    private var stopObserver: Any?
+
+    /// Play from `start` and stop at `stop` (both inside the range): a
+    /// boundary waveform's stretch. Reaching the range's end stops on its own.
+    func play(from start: Double, until stop: Double) {
+        guard let player, stop > start else { return }
+        clearStop()
+        seek(to: start)
+        if stop < range.upperBound - 0.01 {
+            stopTime = stop
+            stopObserver = player.addBoundaryTimeObserver(
+                forTimes: [NSValue(time: CMTime(seconds: stop, preferredTimescale: 600))], queue: .main) { [weak self] in
+                Task { @MainActor in self?.pause() }
+            }
+        }
+        player.playImmediately(atRate: Float(rate))
+        isPlaying = true
+    }
+
+    private func clearStop() {
+        if let stopObserver { player?.removeTimeObserver(stopObserver) }
+        stopObserver = nil
+        stopTime = nil
     }
 
     /// Play the last `seconds` of the range and stop at its end: a quick
@@ -138,6 +167,7 @@ final class PodcastHighlightTrimPlayback {
     func togglePlay() { isPlaying ? pause() : play() }
 
     func tearDown() {
+        clearStop()
         loadTask?.cancel()
         loadTask = nil
         if let timeObserver { player?.removeTimeObserver(timeObserver) }
