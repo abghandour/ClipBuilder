@@ -39,7 +39,10 @@ nonisolated enum DubPlanning {
                 result.append(DubLine(clipUID: clip.uid, speakerKey: speaker,
                     voice: settings.voices[speaker] ?? settings.voices["unknown"] ?? "", text: text,
                     sourceStart: start, sourceEnd: end,
-                    start: clip.startTime + (start - sourceStart) / speed, duration: (end - start) / speed))
+                    start: clip.startTime + (start - sourceStart) / speed, duration: (end - start) / speed,
+                    takeSource: DubTakeSource(videoID: row.videoID, transcriptionKey: row.transcriptionKey ?? "",
+                        rowStart: row.startTime, rowEnd: row.endTime, language: row.language, text: row.text, wordsJSON: row.wordsJSON),
+                    plannedText: text, plannedSpeaker: speaker))
             }
         }
         // Stable input order breaks ties; overlapping speakers keep both lines.
@@ -62,7 +65,7 @@ nonisolated enum DubPlanning {
         return result
     }
 
-    private static func trimmedText(_ row: TranscriptRow, start: Double, end: Double) -> String {
+    static func trimmedText(_ row: TranscriptRow, start: Double, end: Double) -> String {
         guard start > row.startTime || end < row.endTime else {
             return row.text.trimmingCharacters(in: .whitespacesAndNewlines)
         }

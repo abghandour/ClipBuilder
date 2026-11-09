@@ -7,6 +7,10 @@ nonisolated enum DubPreparation {
         var voices: @Sendable (String) async -> [DubSynthesizer.Voice]
         var synthesize: @Sendable (String, String, Double) async throws -> URL
         var duration: @Sendable (URL) async throws -> Double
+        var synthesizeDraft: @Sendable (String, String, Double) async throws -> URL = {
+            try await ElevenLabsDubSynthesizer.shared.synthesize(text: $0, voice: $1, rate: $2,
+                directory: DubSynthesizer.cacheDirectory, model: "eleven_flash_v2_5")
+        }
 
         static let mac = Speech(voices: { DubSynthesizer.installedVoices(language: $0) },
             synthesize: { try await DubSynthesizer.shared.synthesize(text: $0, voice: $1, rate: $2) },
@@ -114,7 +118,8 @@ nonisolated enum DubPreparation {
         let people = try await database.fetchPeople()
         let genders = Dictionary(uniqueKeysWithValues: people.map { ($0.key, DubVoiceGender.inferred(from: $0.descriptor)) })
         var prepared = try await synthesize(document: document, rows: rows, turns: turns,
-                                             settings: settings, speech: speech, genders: genders, log: log)
+                                             settings: settings, speech: speech, genders: genders, database: database,
+                                             preview: settings.engine == .elevenLabs, log: log)
         prepared.speakerNames = Dictionary(uniqueKeysWithValues: people.map { ($0.key, $0.displayName) })
         prepared.speakerChoices = choices
         prepared.speakerGenders = genders
@@ -155,14 +160,41 @@ nonisolated enum DubPreparation {
         return result
     }
 
+    /// A teammate's clone may be absent from this account's voice list, but its
+    /// paid take is still playable. Keep that remembered voice when all of its
+    /// lines can be reused; missing speech still needs an available voice.
+    @concurrent
+    static func includingReusableVoices(_ installed: [DubSynthesizer.Voice], lines: [DubLine], settings: DubSettings,
+                                        genders: [String: DubVoiceGender] = [:], database: Database?,
+                                        elevenLabs: ElevenLabsSettings? = nil) async throws -> [DubSynthesizer.Voice] {
+        guard settings.engine == .elevenLabs, let database else { return installed }
+        var result = installed
+        for (speaker, voice) in settings.voices where ElevenLabsVoices.isElevenLabs(voice)
+            && !result.contains(where: { $0.identifier == voice }) {
+            let lines = lines.filter { $0.speakerKey == speaker }
+            guard !lines.isEmpty else { continue }
+            let estimate = try await ElevenLabsDubUsage.estimate(lines: lines, voices: [speaker: voice],
+                database: database, settings: elevenLabs)
+            guard estimate.characters == 0 else { continue }
+            result.append(.init(identifier: voice, language: settings.language, name: "Shared voice",
+                                gender: genders[speaker] ?? .unknown))
+        }
+        return result
+    }
+
     @concurrent
     static func synthesize(document: TimelineDocument, rows: [UUID: [TranscriptRow]],
                            turns: [UUID: [SpeakerTurn]], settings: DubSettings, speech: Speech = .mac,
-                           genders: [String: DubVoiceGender] = [:],
+                           genders: [String: DubVoiceGender] = [:], database: Database? = nil,
+                           preview: Bool = false,
                            log: @escaping @Sendable (String) -> Void = { _ in }) async throws -> Prepared {
         var lines = DubPlanning.lines(document: document, rows: rows, turns: turns, settings: settings)
+        if let database {
+            lines = try await DubTakeStore.applyingReviews(lines, database: database)
+        }
         guard !lines.isEmpty else { throw ScriptError.invalid("No translated speech in this timeline's audible clips.") }
-        let installed = await speech.voices(settings.language)
+        let installed = try await includingReusableVoices(await speech.voices(settings.language), lines: lines,
+            settings: settings, genders: genders, database: database)
         if settings.engine == .siri, installed.isEmpty {
             throw ScriptError.invalid(SiriDubVoices.setupMessage(language: settings.language))
         }
@@ -174,12 +206,16 @@ nonisolated enum DubPreparation {
             (lines[index].id, DubPlanning.slot(for: lines[index], next: lines[safe: index + 1]))
         })
         let overlaps = Set(lines.filter(\.tight).map(\.id))
+        if settings.engine == .elevenLabs {
+            let estimate = try await ElevenLabsDubUsage.estimate(lines: lines, voices: settings.voices, database: database)
+            log(estimate.caption)
+        }
         let planned = lines
         lines = try await ElevenLabsDubUsage.withLogging(enabled: settings.engine == .elevenLabs, log: log) {
             let limit = settings.engine == .elevenLabs
                 ? (SettingsStore.loadSettings().ai.elevenLabs ?? ElevenLabsSettings()).concurrency : 1
             return try await fitLines(planned, settings: settings, slots: slots, overlaps: overlaps,
-                                      speech: speech, limit: limit, log: log)
+                                      speech: speech, limit: limit, database: database, preview: preview, log: log)
         }
         return Prepared(document: document, settings: settings, lines: lines, slots: slots, overlaps: overlaps)
     }
@@ -188,7 +224,8 @@ nonisolated enum DubPreparation {
     /// since remote requests can finish in a different order from the lines.
     @concurrent
     static func fitLines(_ lines: [DubLine], settings: DubSettings, slots: [UUID: Double], overlaps: Set<UUID>,
-                         speech: Speech, limit: Int,
+                         speech: Speech, limit: Int, database: Database? = nil,
+                         preview: Bool = false,
                          log: @escaping @Sendable (String) -> Void) async throws -> [DubLine] {
         let completed = Mutex(0)
         return try await BoundedConcurrency.map(lines, limit: limit) { index, line in
@@ -197,7 +234,7 @@ nonisolated enum DubPreparation {
             var line = line
             line.voice = settings.voices[line.speakerKey] ?? ""
             let fitted = try await fit(line, slot: slots[line.id] ?? 0,
-                                       overlapping: overlaps.contains(line.id), speech: speech)
+                                       overlapping: overlaps.contains(line.id), speech: speech, database: database, preview: preview)
             completed.withLock { count in
                 count += 1
                 log("PROGRESS: \(Double(count) / Double(lines.count))")
@@ -207,17 +244,33 @@ nonisolated enum DubPreparation {
     }
 
     @concurrent
-    static func fit(_ line: DubLine, slot: Double, overlapping: Bool, speech: Speech = .mac) async throws -> DubLine {
+    static func fit(_ line: DubLine, slot: Double, overlapping: Bool, speech: Speech = .mac,
+                    database: Database? = nil, preview: Bool = false,
+                    takeStore: DubTakeStore = .shared,
+                    directory: URL = DubSynthesizer.cacheDirectory) async throws -> DubLine {
         var result = line
         result.rate = 1
-        var url = try await speech.synthesize(line.text, line.voice, 1)
+        result.takeID = nil
+        result.draft = nil
+        let take: (line: DubLine, url: URL)?
+        if let database, ElevenLabsVoices.isElevenLabs(line.voice) {
+            take = try await takeStore.audio(for: line, database: database, directory: directory, reuseOnly: preview)
+        } else { take = nil }
+        if let take { result = take.line; result.rate = 1; result.draft = nil }
+        let isDraft = preview && ElevenLabsVoices.isElevenLabs(line.voice) && take == nil
+        let synthesize = isDraft ? speech.synthesizeDraft : speech.synthesize
+        result.draft = isDraft ? true : nil
+        var url: URL
+        if let take { url = take.url }
+        else { url = try await synthesize(line.text, line.voice, 1) }
         var duration = try await speech.duration(url)
         guard duration.isFinite, duration > 0 else { throw ScriptError.invalid("The Mac voice returned an empty dub line.") }
         let fit = DubPlanning.fit(duration: duration, slot: slot)
         if fit.rate > 1 {
             try Task.checkCancellation()
             result.rate = fit.rate
-            url = try await speech.synthesize(line.text, line.voice, fit.rate)
+            if let take { url = try await DubTakeStore.fitted(take.url, rate: fit.rate, directory: directory) }
+            else { url = try await synthesize(line.text, line.voice, fit.rate) }
             duration = try await speech.duration(url)
         }
         try Task.checkCancellation()
@@ -229,11 +282,38 @@ nonisolated enum DubPreparation {
         return result
     }
 
+    /// Final takes remain untouched. Drafts resolve takes again in case another
+    /// job or teammate completed the same row while this review was open.
+    @concurrent
+    static func finalize(_ prepared: Prepared, database: Database?, speech: Speech? = nil,
+                         takeStore: DubTakeStore = .shared,
+                         log: @escaping @Sendable (String) -> Void = { _ in }) async throws -> Prepared {
+        var result = prepared
+        let speech = speech ?? .forEngine(prepared.settings.engine)
+        let drafts = prepared.lines.filter { $0.draft == true }
+        for (index, line) in drafts.enumerated() {
+            try Task.checkCancellation()
+            log("Final dub line \(index + 1) of \(drafts.count)")
+            let final = try await fit(line, slot: prepared.slots[line.id] ?? 0,
+                overlapping: prepared.overlaps.contains(line.id), speech: speech, database: database, takeStore: takeStore)
+            if let position = result.lines.firstIndex(where: { $0.id == line.id }) { result.lines[position] = final }
+            log("PROGRESS: \(Double(index + 1) / Double(drafts.count))")
+        }
+        return result
+    }
+
     @concurrent
     static func reopening(document: TimelineDocument, scenes: [SceneRecord], settings: DubSettings,
                           lines: [DubLine], speakerNames: [String: String],
-                          speakerChoices: [String] = []) async -> Prepared {
+                          speakerChoices: [String] = [], database: Database? = nil) async -> Prepared {
         let document = resolvedDocument(document, scenes: scenes)
+        // Legacy timelines predate row metadata. Resolve it before accepting
+        // review corrections, without changing the saved wording or timing.
+        var lines = lines
+        if let database {
+            do { lines = try await attachingSources(lines, document: document, settings: settings, database: database) }
+            catch { ErrorLog.record("Dub", "Could not resolve earlier dub rows: \(error.localizedDescription)") }
+        }
         // Reconstruct planned spans from source times, never from synthesized durations.
         let planned = lines.sorted { $0.start < $1.start }.map { line in
             var planned = line
@@ -249,6 +329,30 @@ nonisolated enum DubPreparation {
         }.map(\.id))
         return Prepared(document: document, settings: settings, lines: lines, slots: slots,
                         overlaps: overlaps, speakerNames: speakerNames, speakerChoices: speakerChoices)
+    }
+
+    @concurrent
+    static func attachingSources(_ lines: [DubLine], document: TimelineDocument, settings: DubSettings,
+                                 database: Database) async throws -> [DubLine] {
+        guard lines.contains(where: { $0.takeSource == nil }) else { return lines }
+        let videos = try await database.fetchVideos()
+        var rows: [Int64: [TranscriptRow]] = [:]
+        var result = lines
+        for index in result.indices where result[index].takeSource == nil {
+            let line = result[index]
+            guard let clip = playbackClip(for: line, document: document),
+                  let videoID = videos.first(where: { $0.path == clip.videoFile })?.id else { continue }
+            if rows[videoID] == nil { rows[videoID] = try await database.fetchTranscripts(videoID: videoID) }
+            guard let row = rows[videoID]?.first(where: {
+                $0.isTranslation && $0.language == settings.language
+                    && $0.startTime <= line.sourceStart && $0.endTime >= line.sourceEnd
+            }) else { continue }
+            result[index].takeSource = DubTakeSource(videoID: videoID, transcriptionKey: row.transcriptionKey ?? "",
+                rowStart: row.startTime, rowEnd: row.endTime, language: row.language, text: row.text, wordsJSON: row.wordsJSON)
+            result[index].plannedText = line.text
+            result[index].plannedSpeaker = line.speakerKey
+        }
+        return result
     }
 
     /// UIDs are session-local. A reopened document finds the audible source at the line's absolute time.

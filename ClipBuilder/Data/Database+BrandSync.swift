@@ -445,7 +445,8 @@ extension Database {
                        serverWinsThrough: Int64? = nil, advanceCursor: Bool = true) throws -> Bool {
         guard !rows.isEmpty else { return false }
         guard try syncScope() == scope else { throw SyncError.scopeMismatch }
-        return try connection.transaction {
+        var dubFilesToRemove: [String] = []
+        let changed = try connection.transaction {
             var changed = false
             var fightVideos = Set<Int64>()
             /// Waits for a parent row that has not arrived; retrySyncParents applies it later.
@@ -568,9 +569,29 @@ extension Database {
                         continue
                     }
                     if try !connection.query("SELECT 1 FROM \(table.name) WHERE sync_id = ?", [.text(id)]).isEmpty { changed = true }
+                    if table.name == "dub_takes", let file = try connection.query(
+                        "SELECT audio_file FROM dub_takes WHERE sync_id = ?", [.text(id)]).first?["audio_file"]?.stringValue {
+                        dubFilesToRemove.append(file)
+                    } else if table.name == "videos", let videoID = try connection.query(
+                        "SELECT id FROM videos WHERE sync_id = ?", [.text(id)]).first?["id"]?.intValue {
+                        dubFilesToRemove += try dubTakeAudioFiles(videoIDs: [videoID])
+                    }
                     try connection.execute("DELETE FROM \(table.name) WHERE sync_id = ?", [.text(id)])
                 } else {
                     let existing = try connection.query("SELECT * FROM \(table.name) WHERE sync_id = ?", [.text(id)]).first
+                    if table.name == "dub_takes" {
+                        guard let file = local["audio_file"]?.stringValue, !file.isEmpty,
+                              file == URL(fileURLWithPath: file).lastPathComponent else {
+                            throw SyncError.invalidRow("dub take audio_file")
+                        }
+                        // A content-key row can be edited in place. Its old bytes
+                        // must not be mistaken for the teammate's new wording.
+                        if let existing, ["text", "audio_file", "alignment_json", "drive_file_id"].contains(where: {
+                            existing[$0]?.stringValue != local[$0]?.stringValue
+                        }), let oldFile = existing["audio_file"]?.stringValue {
+                            dubFilesToRemove.append(oldFile)
+                        }
+                    }
                     if table.name == "analysis_runs", existing == nil, let video = local["video_id"]?.intValue,
                        try connection.query("SELECT 1 FROM analysis_runs WHERE video_id = ? LIMIT 1", [.integer(video)]).isEmpty {
                         try connection.execute("INSERT OR IGNORE INTO sync_run_defaults(video_id) VALUES (?)", [.integer(video)])
@@ -667,6 +688,8 @@ extension Database {
             try connection.execute("UPDATE sync_control SET suspended = 0 WHERE id = 1")
             return changed
         }
+        try deleteDubTakeAudioFiles(dubFilesToRemove)
+        return changed
     }
 
     func retrySyncParents(scope: SyncScope, table: SyncTable) throws -> Bool {

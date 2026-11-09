@@ -89,7 +89,7 @@ nonisolated enum SyncMapping {
         guard UUID(uuidString: syncID) != nil else { throw SyncError.invalidRow("sync_id") }
         if table.name == "profile_documents", UUID(uuidString: syncID) != scope.profileID { throw SyncError.invalidRow("profile identity") }
         var result = preserved.mapValues(portableJSON)
-        if table.name != "ig_comments" { result.removeValue(forKey: "id") }
+        if !table.columns.contains("id") { result.removeValue(forKey: "id") }
         result.removeValue(forKey: "server_updated_at")
         result.removeValue(forKey: "updated_by")
         for key in result.keys where isLocalField(key) {

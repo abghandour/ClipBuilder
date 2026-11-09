@@ -41,7 +41,7 @@ struct ElevenLabsDubSynthesizerTests {
         }
         #expect(urls.0 == urls.1 && urls.0 != urls.2 && urls.0 != urls.3)
         #expect(urls.0.lastPathComponent == (try DubSynthesizer.cacheName(language: "elevenlabs",
-            voice: Self.voice + "#eleven_multilingual_v2", rate: 1, text: "Olá")))
+            voice: DubTake.cacheVoice(Self.voice, settings: ElevenLabsSettings()), rate: 1, text: "Olá")))
         #expect(await stub.requests.count == 2)
         let plainDuration = try DubSynthesizer.fileDuration(of: urls.0)
         let fastDuration = try DubSynthesizer.fileDuration(of: urls.2)
@@ -56,7 +56,7 @@ struct ElevenLabsDubSynthesizerTests {
         #expect(conversions[1].contains("atempo=1.2500"))
         #expect(conversions[1].contains(urls.0.path))
         #expect(messages.withLock { $0 } == ["ElevenLabs request: 3 characters",
-            "ElevenLabs request: 5 characters", "ElevenLabs: 8 characters"])
+            "ElevenLabs request: 5 characters", "ElevenLabs: 3 characters reused · 8 characters requested"])
         let files = try FileManager.default.contentsOfDirectory(at: directory, includingPropertiesForKeys: nil)
         // The listing resolves /var to /private/var; compare names, not URLs.
         #expect(Set(files.map(\.lastPathComponent)) == Set([urls.0, urls.2, urls.3].map(\.lastPathComponent)))
@@ -66,7 +66,7 @@ struct ElevenLabsDubSynthesizerTests {
             log: { message in messages.withLock { $0.append(message) } }) {
             try await synthesizer.synthesize(text: "Olá", voice: Self.voice, rate: 1.25)
         }
-        #expect(messages.withLock { $0 } == ["ElevenLabs: 0 characters"])
+        #expect(messages.withLock { $0 } == ["ElevenLabs: 0 characters reused · 0 characters requested"])
         #expect(await stub.requests.count == 2)
     }
 
@@ -168,7 +168,7 @@ struct ElevenLabsDubSynthesizerTests {
                 #expect(error.localizedDescription == expected.userMessage)
             }
             #expect(await stub.requests.count == 1)
-            #expect(messages.withLock { $0 } == ["ElevenLabs request: 5 characters", "ElevenLabs: 5 characters"])
+            #expect(messages.withLock { $0 } == ["ElevenLabs request: 5 characters", "ElevenLabs: 0 characters reused · 5 characters requested"])
             #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
         }
     }
@@ -206,5 +206,31 @@ struct ElevenLabsDubSynthesizerTests {
         await #expect(throws: CancellationError.self) { try await task.value }
         #expect(requests.withLock { $0 } == 1)
         #expect(try FileManager.default.contentsOfDirectory(atPath: directory.path).isEmpty)
+    }
+}
+
+extension ElevenLabsDubSynthesizerTests {
+    @Test(.enabled(if: FFmpeg.isAvailable))
+    func flashDraftUsesSameVoiceAndSeparateModelCache() async throws {
+        let temp = try TempDirectory()
+        let bytes = try await Self.fixtureMP3(directory: temp.url)
+        let stub = ElevenLabsTransportStub([(200, bytes), (200, bytes)])
+        let synth = Self.synthesizer(stub)
+        let draft = try await synth.synthesize(text: "Hello", voice: Self.voice, rate: 1,
+            directory: temp.url, model: "eleven_flash_v2_5")
+        let again = try await synth.synthesize(text: "Hello", voice: Self.voice, rate: 1,
+            directory: temp.url, model: "eleven_flash_v2_5")
+        let final = try await synth.synthesize(text: "Hello", voice: Self.voice, rate: 1, directory: temp.url)
+        #expect(draft == again && draft != final)
+        let requests = await stub.requests
+        #expect(requests.count == 2)
+        var models: [String] = []
+        for request in requests {
+            #expect(request.url?.path.hasSuffix("/fixture-voice") == true)
+            let body = try #require(request.httpBody)
+            let json = try #require(try JSONSerialization.jsonObject(with: body) as? [String: Any])
+            models.append(try #require(json["model_id"] as? String))
+        }
+        #expect(models == ["eleven_flash_v2_5", "eleven_multilingual_v2"])
     }
 }

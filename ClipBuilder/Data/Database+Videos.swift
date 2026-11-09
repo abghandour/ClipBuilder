@@ -70,20 +70,28 @@ extension Database {
     /// The Sources page's remove: the row leaves every list and every
     /// project, but its scenes, transcripts, batches and people stay, so the
     /// same file added again (same content hash) comes back analyzed.
-    func retireVideos(_ ids: [Int64]) throws {
+    @discardableResult
+    func retireVideos(_ ids: [Int64]) throws -> [String] {
+        let files = try dubTakeAudioFiles(videoIDs: ids)
         try connection.transaction {
             for id in ids {
                 try connection.execute("UPDATE videos SET hidden = 1 WHERE id = ?", [.integer(id)])
                 try connection.execute("DELETE FROM project_videos WHERE video_id = ?", [.integer(id)])
+                try deleteDubTakes(videoIDs: [id])
             }
         }
+        return files
     }
 
     /// Remove source rows outright; every dependent table cascades.
     func deleteVideos(_ ids: [Int64]) throws {
-        for id in ids {
-            try connection.execute("DELETE FROM videos WHERE id = ?", [.integer(id)])
+        let files = try dubTakeAudioFiles(videoIDs: ids)
+        try connection.transaction {
+            for id in ids {
+                try connection.execute("DELETE FROM videos WHERE id = ?", [.integer(id)])
+            }
         }
+        try deleteDubTakeAudioFiles(files)
     }
 
     // MARK: - Video notes (timestamped analysis guidance)

@@ -839,8 +839,12 @@ actor Database {
             Self.backUp(connection, path: path, stamped: stamped, folder: folder)
         }
         try connection.executeScript(Self.schema)
+        try connection.executeScript(Self.dubTakesSchema)
         if stamped != Self.schemaVersion {
             try Self.migrate(connection)
+            if try !connection.columnNames(of: "dub_takes").contains("drive_file_id") {
+                try connection.execute("ALTER TABLE dub_takes ADD COLUMN drive_file_id TEXT")
+            }
             try connection.execute("""
                 CREATE TABLE IF NOT EXISTS person_tag_fields (
                     person_key TEXT NOT NULL REFERENCES people(key) ON DELETE CASCADE ON UPDATE CASCADE,
@@ -943,6 +947,11 @@ actor Database {
                         """)
                 }
                 try Self.migrateBrandSync(connection)
+                if stamped < 49 {
+                    try Self.seedFootageSync(connection, tables: SyncTable.footage.filter {
+                        ["dub_takes", "dub_speaker_overrides"].contains($0.name)
+                    })
+                }
                 if stamped < 28 { try Self.seedFootageSync(connection) }
                 // Schema 45: one scene per range on videos without a run (see
                 // Database+SceneIdentity). Needs the sync triggers above.
@@ -975,7 +984,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 47
+    static let schemaVersion: Int64 = 49
 
     /// The library was last opened by a build with a newer schema.
     nonisolated struct NewerLibrary: LocalizedError, Equatable {

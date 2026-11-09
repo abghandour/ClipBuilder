@@ -46,12 +46,13 @@ extension AppStore {
     func reviewTimelineDub() {
         guard let settings = builder.document.dub, let lines = builder.document.dubLines, !lines.isEmpty else { return }
         let document = builder.document, scenes = builder.scenes
+        let database = database
         let names = Dictionary(uniqueKeysWithValues: people.map { ($0.key, $0.displayName) })
         let target = DubReview.Target.builder(timelineID: openTimelineID, revision: builder.revision)
         let generation = profileGeneration
         jobs.start(.dub, title: "Review dub", project: activeProject, profileGeneration: generation) { _ in
             let prepared = await DubPreparation.reopening(document: document, scenes: scenes,
-                                                         settings: settings, lines: lines, speakerNames: names)
+                                                         settings: settings, lines: lines, speakerNames: names, database: database)
             return .dub(DubReview(prepared: prepared, target: target, profileGeneration: generation))
         }
     }
@@ -59,16 +60,22 @@ extension AppStore {
     /// Re-prepares every line whose text, speaker or voice changed in the
     /// review, in one background job. Voices are per speaker: `settings.voices`
     /// decides each line's voice, so a voice change re-fits all that speaker's lines.
+    /// Returns the update job's ID so an open review sheet can follow it and
+    /// adopt the result in place (`AppJobs.adoptReviewInPlace`).
+    @discardableResult
     func updateDubReview(_ review: DubReview, jobID: UUID, lines: [DubLine], settings: DubSettings,
-                         speech: DubPreparation.Speech? = nil) {
-        guard review.profileGeneration == profileGeneration else { return }
+                         speech: DubPreparation.Speech? = nil) -> UUID? {
+        guard review.profileGeneration == profileGeneration else { return nil }
         let jobs = jobs
+        let database = database
         let speech = speech ?? .forEngine(settings.engine)
-        jobs.start(.dub, title: "Update dub lines", project: activeProject, profileGeneration: profileGeneration,
+        return jobs.start(.dub, title: "Update dub lines", project: activeProject, profileGeneration: profileGeneration,
                    subjectID: jobID.uuidString) { log in
             var updated = review
+            let installed = try await DubPreparation.includingReusableVoices(await speech.voices(settings.language),
+                lines: lines, settings: settings, genders: review.prepared.speakerGenders, database: database)
             let settings = try DubPreparation.assigningVoices(lines: lines, settings: settings,
-                                                              installed: await speech.voices(settings.language),
+                                                              installed: installed,
                                                               genders: review.prepared.speakerGenders)
             updated.prepared.settings = settings
             let previous = Dictionary(uniqueKeysWithValues: review.prepared.lines.map { ($0.id, $0) })
@@ -79,12 +86,19 @@ extension AppStore {
                 for (index, var line) in lines.enumerated() {
                     try Task.checkCancellation()
                     line.voice = settings.voices[line.speakerKey] ?? line.voice
-                    if let old = previous[line.id], old.text == line.text, old.voice == line.voice, old.audio != nil {
+                    if let old = previous[line.id], old.text == line.text, old.voice == line.voice,
+                       let audio = old.audio,
+                       (!ElevenLabsVoices.isElevenLabs(line.voice)
+                        || DubTakeStore.hasAudio(DubSynthesizer.cacheDirectory.appendingPathComponent(audio))) {
                         line = old; line.speakerKey = lines[index].speakerKey
+                        if ElevenLabsVoices.isElevenLabs(line.voice) {
+                            ElevenLabsDubUsage.current?.reuse(characters: line.text.count)
+                        }
                     } else {
                         log("Dub line \(index + 1) of \(lines.count)")
                         line = try await DubPreparation.fit(line, slot: slots[line.id] ?? 0,
-                            overlapping: overlaps.contains(line.id), speech: speech)
+                            overlapping: overlaps.contains(line.id), speech: speech, database: database,
+                            preview: settings.engine == .elevenLabs)
                     }
                     result.append(line)
                     log("PROGRESS: \(Double(index + 1) / Double(lines.count))")
@@ -93,13 +107,56 @@ extension AppStore {
             }
             try Task.checkCancellation()
             if case .render(let id) = review.target, !self.dubReviews.isPending(id) { throw CancellationError() }
+            // Reviewed wording is remembered on Apply only, so Cancel discards it.
             jobs.markReviewed(jobID)
             return .dub(updated)
         }
     }
 
     @discardableResult
-    func applyDubReview(_ review: DubReview, jobID: UUID, remember: Bool = true) -> Bool {
+    func applyDubReview(_ review: DubReview, jobID: UUID, remember: Bool = true,
+                        speech: DubPreparation.Speech? = nil) -> Bool {
+        guard review.profileGeneration == profileGeneration else { return false }
+        guard canApplyDubReview(review) else { return false }
+        if review.prepared.lines.contains(where: { $0.draft == true }) {
+            let database = database
+            let generation = profileGeneration
+            let project = activeProject
+            let finalJobID = jobs.start(.dub, title: "Finalize dub", project: project, profileGeneration: generation,
+                       subjectID: "apply-\(jobID)", cleanup: { [weak self] in
+                // Also covers Stop before the job body starts.
+                if case .render(let id) = review.target { self?.dubReviews.cancel(id) }
+            }) { [self] log in
+                let prepared = try await ElevenLabsDubUsage.withLogging(enabled: true, log: log) {
+                    try await DubPreparation.finalize(review.prepared, database: database, speech: speech, log: log)
+                }
+                try Task.checkCancellation()
+                guard profileGeneration == generation, self.database === database,
+                      canApplyDubReview(review) else { throw CancellationError() }
+                if let database { try await database.rememberDubReview(prepared.lines) }
+                try Task.checkCancellation()
+                guard profileGeneration == generation, self.database === database,
+                      canApplyDubReview(review) else { throw CancellationError() }
+                commitDubReview(review, prepared: prepared, remember: remember)
+                return nil
+            }
+            if case .render(let id) = review.target { dubReviews.finalizing(id, jobID: finalJobID) }
+            jobs.markReviewed(jobID)
+            return true
+        }
+        commitDubReview(review, prepared: review.prepared, remember: remember)
+        if let database {
+            let lines = review.prepared.lines
+            jobs.start(.dub, title: "Save reviewed dub", project: activeProject, profileGeneration: profileGeneration) { _ in
+                try await database.rememberDubReview(lines)
+                return nil
+            }
+        }
+        jobs.markReviewed(jobID)
+        return true
+    }
+
+    private func canApplyDubReview(_ review: DubReview) -> Bool {
         guard review.profileGeneration == profileGeneration else { return false }
         switch review.target {
         case let .builder(timelineID, revision):
@@ -107,21 +164,26 @@ extension AppStore {
                 presentError("The timeline changed while the dub was being reviewed. Start Dub again for the current edit.")
                 return false
             }
-            builder.setDub(settings: review.prepared.settings, lines: review.prepared.lines)
+            return true
+        case .render(let id): return dubReviews.isPending(id)
+        }
+    }
+
+    private func commitDubReview(_ review: DubReview, prepared: DubPreparation.Prepared, remember: Bool) {
+        switch review.target {
+        case .builder:
+            builder.setDub(settings: prepared.settings, lines: prepared.lines)
         case .render(let id):
-            guard dubReviews.isPending(id) else { return false }
-            dubReviews.apply(id, prepared: review.prepared)
+            dubReviews.apply(id, prepared: prepared)
         }
         if remember {
             var editing = editingDefaults
             var voices = editing.dubVoices ?? [:]
-            for (speaker, voice) in review.prepared.settings.voices { voices[speaker] = voice }
+            for (speaker, voice) in prepared.settings.voices { voices[speaker] = voice }
             editing.dubVoices = voices
             activeProfile.editing = editing
             saveActiveProfile()
         }
-        jobs.markReviewed(jobID)
-        return true
     }
 
     func cancelDubReview(_ review: DubReview) {

@@ -112,6 +112,7 @@ actor StubSyncServer {
 /// non-integer IDs, REAL values, and embedded local IDs in outcome JSON.
 nonisolated enum BrandSyncFixtures {
     static func seed(_ db: SQLiteConnection, includeDocument: Bool = true) throws {
+        try db.executeScript(Database.dubTakesSchema)
         for table in SyncTable.all {
             if table.name == "profile_documents" && !includeDocument { continue }
             let info = try db.query("PRAGMA table_info(\(table.name))")

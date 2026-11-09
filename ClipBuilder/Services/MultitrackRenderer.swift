@@ -313,7 +313,7 @@ actor MultitrackRenderer {
         let hasDub = preparedDocument.dub?.enabled == true && !(preparedDocument.dubLines ?? []).isEmpty
         if hasDub, let lines = preparedDocument.dubLines {
             emit("Preparing \(lines.count) dubbed line(s)…")
-            preparedDocument.dubLines = try await dubSynthesizer.restoringAudio(lines: lines)
+            preparedDocument.dubLines = try await dubSynthesizer.restoringAudio(lines: lines, database: database)
         }
         let document = preparedDocument
         var bumperSpans = document.videoTrack.filter(\.bumper).map { $0.startTime..<($0.startTime + $0.duration) }

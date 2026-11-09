@@ -61,7 +61,7 @@ actor DubSynthesizer {
 
     nonisolated static func cacheName(language: String, voice: String, rate: Double, text: String) throws -> String {
         // An encoded tuple avoids delimiter collisions in arbitrary text.
-        let data = try JSONEncoder().encode([language, voice, String(rate), text])
+        let data = try JSONEncoder().encode([language, voice, String(rate), DubTakeCutter.normalized(text)])
         return SHA256.hash(data: data).map { String(format: "%02x", $0) }.joined() + ".caf"
     }
 
@@ -142,7 +142,10 @@ actor DubSynthesizer {
 
     /// Reviewed lines retain text, voice and rate. A cleared cache does not
     /// require a new translation or review, and never silently omits speech.
-    func restoringAudio(lines: [DubLine]) async throws -> [DubLine] {
+    func restoringAudio(lines: [DubLine], database: Database? = nil) async throws -> [DubLine] {
+        guard !lines.contains(where: { $0.draft == true }) else {
+            throw ScriptError.invalid("Apply the dub review to finalize draft voices before rendering.")
+        }
         var result = lines
         for index in result.indices {
             try Task.checkCancellation()
@@ -154,6 +157,9 @@ actor DubSynthesizer {
             let url: URL
             if let cached, (try? duration(of: cached)) ?? 0 > 0 {
                 url = cached
+            } else if let database, let take = try await DubTakeStore.shared.audio(for: line, database: database, directory: directory) {
+                url = line.rate > 1 ? try await DubTakeStore.fitted(take.url, rate: line.rate, directory: directory) : take.url
+                result[index].takeID = take.line.takeID
             } else {
                 url = try await synthesize(text: line.text, voice: line.voice, rate: line.rate)
             }
