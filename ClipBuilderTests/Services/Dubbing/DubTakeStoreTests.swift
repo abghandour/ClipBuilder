@@ -189,7 +189,7 @@ struct DubTakeStoreTests {
         let upgraded = try await Task.detached { try Database(path: path) }.value
         #expect(try await upgraded.fetchVideos().contains { $0.id == id })
         #expect(try await upgraded.fetchDubTakes(videoID: id).isEmpty)
-        #expect(try raw.query("PRAGMA user_version").first?.values.first?.intValue == 49)
+        #expect(try raw.query("PRAGMA user_version").first?.values.first?.intValue == 50)
     }
 
     @Test func oldTimelineLinesDecodeWithoutTakeMetadata() throws {
