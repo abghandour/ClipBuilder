@@ -114,7 +114,7 @@ struct MiniWizardView: View {
     /// The List tab: drops reorder the reel, Delete takes a clip out of it.
     private var previewListConfig: WizardPreviewListConfig {
         WizardPreviewListConfig(onReorder: { store.reorderMiniReel($0) },
-                                canReorder: !store.isWizardRunning,
+                                canReorder: !store.isWizardRunning && !store.isMiniUndoing,
                                 onDelete: { store.removeMiniReelItem(clipID: $0) },
                                 onDeleteAll: { store.removeAllMiniReelItems() },
                                 onSelect: { store.revealMiniReelItem(clipID: $0) },
@@ -510,15 +510,26 @@ struct MiniWizardView: View {
 
     @ViewBuilder
     private var footageControls: some View {
+        // Fight picks have no history.
+        let undoKind = flow.effectiveFootageKind == .fightMetrics ? nil : flow.effectiveFootageKind
         if flow.showsFootageKind {
             MiniRow("Footage") {
-                Picker("Footage", selection: $footageKind) {
-                    ForEach(flow.footageKinds, id: \.self) { kind in
-                        Text(kind.label).lineLimit(1).fixedSize().tag(kind)
+                HStack(spacing: Theme.spaceS) {
+                    Picker("Footage", selection: $footageKind) {
+                        ForEach(flow.footageKinds, id: \.self) { kind in
+                            Text(kind.label).lineLimit(1).fixedSize().tag(kind)
+                        }
                     }
+                    .pickerStyle(.segmented)
+                    .accessibilityLabel("Footage")
+                    Spacer(minLength: Theme.spaceS)
+                    if let undoKind { MiniUndoButtons(kind: undoKind) }
                 }
-                .pickerStyle(.segmented)
-                .accessibilityLabel("Footage")
+            }
+        } else if let undoKind {
+            HStack {
+                Spacer()
+                MiniUndoButtons(kind: undoKind)
             }
         }
         if flow.showsLength {

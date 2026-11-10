@@ -451,6 +451,30 @@ extension AppStore {
         }
     }
 
+    // MARK: - Voice fingerprints
+
+    /// Which people speaker mapping can recognise by voice.
+    func refreshVoiceFingerprints() async {
+        guard let database, let counts = try? await database.voiceFingerprintCounts(),
+              self.database === database else { return }
+        if counts != voiceFingerprintCounts { voiceFingerprintCounts = counts }
+    }
+
+    /// Forgets what one video (or, with nil, every video) taught about a
+    /// person's voice. A later speaker map of their footage learns it again.
+    func forgetVoiceFingerprint(personKey: String, videoID: Int64? = nil) {
+        guard let database else { return }
+        Task {
+            do {
+                try await database.forgetVoiceFingerprint(personKey: personKey, videoID: videoID)
+                noteVoiceFingerprintsChanged()
+                await refreshVoiceFingerprints()
+            } catch {
+                presentError("Could not forget the voice", error)
+            }
+        }
+    }
+
     /// Re-read the registry after a per-person value changed outside the
     /// people actions (a tag position picked in a wizard's people editor).
     func reloadPeople() async {

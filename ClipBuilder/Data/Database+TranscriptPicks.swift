@@ -83,6 +83,55 @@ extension Database {
         }
     }
 
+    /// Undo and Redo: makes this project's list for the video match `picks`
+    /// (order, range, check mark). Picks not listed are deleted; a listed
+    /// pick that is gone comes back, under its old row id when that is free.
+    /// Rows that already match are not written, so nothing is queued for
+    /// sync without a change. Returns the list and any ids that changed.
+    ///
+    /// `expected` is the list the caller believes is stored. If the rows
+    /// differ (a Team Sync pull the screen never showed), nothing is
+    /// written and `TranscriptPickRestoreError.changed` carries the real
+    /// list: restoring would delete a pick the user never saw.
+    func restoreTranscriptPicks(projectID: Int64, videoID: Int64, expected: [TranscriptPick],
+                                picks: [TranscriptPick]) throws -> (picks: [TranscriptPick], remapped: [Int64: Int64]) {
+        try connection.transaction {
+            try adoptLegacyTranscriptPicks(projectID: projectID, videoID: videoID)
+            let current = try fetchTranscriptPicks(projectID: projectID, videoID: videoID)
+            let stored = current.map { TranscriptPickRestoreError.Row(id: $0.id, start: $0.start, end: $0.end, kept: $0.kept) }
+            let believed = expected.map { TranscriptPickRestoreError.Row(id: $0.id, start: $0.start, end: $0.end, kept: $0.kept) }
+            guard stored == believed else { throw TranscriptPickRestoreError.changed(current) }
+            let wanted = Set(picks.map(\.id))
+            for pick in current where !wanted.contains(pick.id) {
+                try connection.execute("DELETE FROM transcript_picks WHERE id = ? AND project_id = ?",
+                                       [.integer(pick.id), .integer(projectID)])
+            }
+            let existing = Dictionary(uniqueKeysWithValues: current.map { ($0.id, $0) })
+            var remapped: [Int64: Int64] = [:]
+            for (position, pick) in picks.enumerated() {
+                if let row = existing[pick.id] {
+                    guard row.position != position || row.start != pick.start || row.end != pick.end || row.kept != pick.kept else { continue }
+                    try connection.execute("""
+                        UPDATE transcript_picks SET position = ?, start_time = ?, end_time = ?, kept = ?
+                        WHERE id = ? AND project_id = ?
+                        """, [.integer(Int64(position)), .real(pick.start), .real(pick.end), .integer(pick.kept ? 1 : 0),
+                              .integer(pick.id), .integer(projectID)])
+                } else {
+                    // Another project's pick may have taken the id since.
+                    let free = try connection.query("SELECT 1 FROM transcript_picks WHERE id = ?", [.integer(pick.id)]).isEmpty
+                    try connection.execute("""
+                        INSERT INTO transcript_picks (id, video_id, project_id, position, start_time, end_time, original_start, original_end, kept)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        """, [free ? .integer(pick.id) : .null, .integer(videoID), .integer(projectID), .integer(Int64(position)),
+                              .real(pick.start), .real(pick.end), .real(pick.originalStart), .real(pick.originalEnd),
+                              .integer(pick.kept ? 1 : 0)])
+                    if !free { remapped[pick.id] = connection.lastInsertRowID }
+                }
+            }
+            return (try fetchTranscriptPicks(projectID: projectID, videoID: videoID), remapped)
+        }
+    }
+
     /// This project's list, including legacy picks it would adopt.
     func deleteTranscriptPicks(projectID: Int64, videoID: Int64) throws {
         try connection.execute("DELETE FROM transcript_picks WHERE video_id = ? AND (project_id = ? OR project_id IS NULL)",
@@ -172,5 +221,17 @@ extension Database {
                        sceneID: row["scene_id"]?.intValue,
                        projectID: row["project_id"]?.intValue,
                        kept: (row["kept"]?.intValue ?? 1) != 0)
+    }
+}
+
+nonisolated enum TranscriptPickRestoreError: Error {
+    /// The stored list is not the one Undo expected; it comes with the error.
+    case changed([TranscriptPick])
+
+    struct Row: Equatable {
+        var id: Int64
+        var start: Double
+        var end: Double
+        var kept: Bool
     }
 }

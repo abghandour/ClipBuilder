@@ -376,6 +376,7 @@ struct MainWindowView: View {
             handleRequestedSection(requested)
         }
         .modifier(AutoTranslationRunner())
+        .modifier(TranscriptionModelChoiceDialog())
         .onReceive(NotificationCenter.default.publisher(for: NSApplication.didBecomeActiveNotification)) { _ in
             Task { await store.refreshLanguageReadiness() }
         }

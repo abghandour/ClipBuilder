@@ -73,6 +73,28 @@ extension Database {
                                [key.map(SQLValue.text) ?? .null, .integer(videoID)])
     }
 
+    /// Deletes one transcript set of a video, or every set with a nil
+    /// `key` (which also takes rows from before sets existed), with what
+    /// was derived from it: translations, speaker turns, the re-cut backup,
+    /// topics, cut proposals and the voices learned from it. A pin on a
+    /// deleted set is cleared, so the newest remaining set becomes active.
+    /// Picks, scenes and dub takes are left alone.
+    func deleteTranscriptionSets(videoID: Int64, key: String?) throws {
+        try connection.transaction {
+            let filter = "video_id = ?" + (key == nil ? "" : " AND transcription_key = ?")
+            let values: [SQLValue] = [.integer(videoID)] + (key.map { [.text($0)] } ?? [])
+            try deleteVoiceProfiles(where: filter, values)
+            for table in ["transcripts", "speaker_turns", "transcript_backups", "transcript_features",
+                          "edit_proposals", "topic_ranges"] {
+                try connection.execute("DELETE FROM \(table) WHERE \(filter)", values)
+            }
+            for column in ["active_transcription_key", "podcast_transcription_key"] {
+                try connection.execute("UPDATE videos SET \(column) = NULL WHERE id = ? AND \(column) IS NOT NULL"
+                                       + (key == nil ? "" : " AND \(column) = ?"), values)
+            }
+        }
+    }
+
     private func transcriptionSetRows(videoID: Int64) throws -> [TranscriptionSet] {
         try connection.query("""
             SELECT transcription_key, MAX(transcription_created_at) AS created_at,

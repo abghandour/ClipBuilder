@@ -248,8 +248,10 @@ extension Database {
             var seen = Set<Int64>()
             let ordered = (sceneIDs.filter { current.contains($0) } + current).filter { seen.insert($0).inserted }
             for (position, sceneID) in ordered.enumerated() {
-                try connection.execute("UPDATE qa_picks SET position = ? WHERE project_id = ? AND video_id = ? AND scene_id = ?",
-                                       [.integer(Int64(position)), .integer(projectID), .integer(videoID), .integer(sceneID)])
+                // Only rows that move: an unchanged row is not queued for sync.
+                try connection.execute("UPDATE qa_picks SET position = ? WHERE project_id = ? AND video_id = ? AND scene_id = ? AND position != ?",
+                                       [.integer(Int64(position)), .integer(projectID), .integer(videoID), .integer(sceneID),
+                                        .integer(Int64(position))])
             }
         }
     }

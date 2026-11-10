@@ -636,6 +636,7 @@ private struct GeneralSettingsTab: View {
                 }
                 Toggle("Review podcast cuts before rendering",
                        isOn: $store.settings.podcast.reviewCutsByDefault)
+                WordTimingSettingsRows()
             }
 
             Section {

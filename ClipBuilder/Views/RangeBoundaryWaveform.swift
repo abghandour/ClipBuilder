@@ -5,8 +5,9 @@ import AVFoundation
 /// The selection's start and end, each over its own few seconds of the
 /// recording's sound wave, in the colour of the speaker talking there. Drag
 /// (or click) on a wave to move that edge to the hundredth of a second;
-/// Option snaps to the nearest word edge. Zoom narrows both windows.
-struct RangeBoundaryWaveforms: View {
+/// Option snaps to the nearest word edge. Zoom narrows both windows. Each
+/// wave is followed by `edgeFooter` for its edge (the step buttons).
+struct RangeBoundaryWaveforms<EdgeFooter: View>: View {
     let url: URL
     let range: ClosedRange<Double>
     let limits: ClosedRange<Double>
@@ -21,6 +22,7 @@ struct RangeBoundaryWaveforms: View {
     let playback: PodcastHighlightTrimPlayback
     /// Before a stretch plays (the owner stops Play All).
     let willPlay: () -> Void
+    @ViewBuilder let edgeFooter: (TranscriptQATrim.Edge) -> EdgeFooter
     @AppStorage("rangeReview.waveZoom") private var zoom = 0
 
     private var halfWidth: Double {
@@ -30,20 +32,30 @@ struct RangeBoundaryWaveforms: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceXS) {
             graph(.start)
-            graph(.end)
+            edgeFooter(.start)
+            // The two edges read as two sections.
+            graph(.end).padding(.top, Theme.spaceM)
+            edgeFooter(.end)
         }
     }
 
     private func graph(_ edge: TranscriptQATrim.Edge) -> some View {
         let time = edge == .start ? range.lowerBound : range.upperBound
-        let speaker = Self.speaker(at: edge == .start ? time + 0.05 : time - 0.05, lines: lines)
+        let speaker = RangeBoundary.speaker(at: edge == .start ? time + 0.05 : time - 0.05, lines: lines)
         return BoundaryWaveform(edge: edge, url: url, time: time, other: edge == .start ? range.upperBound : range.lowerBound,
                                 limits: limits, minimumSpan: minimumSpan, words: words, speaker: speaker,
                                 halfWidth: halfWidth, zoom: $zoom,
-                                onDrag: { onDrag(Self.range(range, edge: edge, to: $0), edge) },
-                                onRelease: { onRelease(Self.range(range, edge: edge, to: $0), edge) },
+                                onDrag: { onDrag(RangeBoundary.range(range, edge: edge, to: $0), edge) },
+                                onRelease: { onRelease(RangeBoundary.range(range, edge: edge, to: $0), edge) },
                                 playback: playback, willPlay: willPlay)
     }
+}
+
+/// Range arithmetic shared by the waves and their owner.
+nonisolated enum RangeBoundary {
+    /// The shortest selection a wave drag may leave: short enough for any
+    /// syllable, never empty (an empty range is "nothing selected").
+    static let shortestSpan = 0.05
 
     static func range(_ range: ClosedRange<Double>, edge: TranscriptQATrim.Edge, to time: Double) -> ClosedRange<Double> {
         edge == .start ? time...max(time, range.upperBound) : range.lowerBound...max(range.lowerBound, time)
@@ -116,14 +128,16 @@ private struct BoundaryWaveform: View {
     private var header: some View {
         HStack(spacing: Theme.spaceS) {
             let playing = playFrom != nil && playback.isPlaying
+            // Sized for the longer name so both play buttons line up.
+            Text("Start").hidden().overlay(alignment: .leading) { Text(title).lineLimit(1).fixedSize() }
+                .font(.caption).foregroundStyle(.secondary).fixedSize()
             Button(playing ? "Stop" : (edge == .start ? "Play From Start" : "Play To End"),
                    systemImage: playing ? "stop.fill" : "play.fill") {
                 if playing { playback.pause() } else { playStretch(around: time) }
             }
-            .labelStyle(.iconOnly).buttonStyle(.borderless).controlSize(.small)
-            .frame(width: 22, height: 20).contentShape(Rectangle())
+            // Bordered like the arrows below, so it reads as a button.
+            .labelStyle(.iconOnly).controlSize(.small).fixedSize()
             .help(edge == .start ? "Play from the start to the end of this box" : "Play from the start of this box to the end")
-            Text(title).font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
             if let speaker {
                 SpeakerPill(speaker: speaker, font: .caption2.weight(.semibold)).fixedSize()
             }
@@ -188,7 +202,7 @@ private struct BoundaryWaveform: View {
         .frame(height: 66)
         .background(Color.secondary.opacity(0.08), in: RoundedRectangle(cornerRadius: Theme.chipRadius))
         .clipShape(RoundedRectangle(cornerRadius: Theme.chipRadius))
-        .help("\(title): drag or click on the wave to move it; hold Option to snap to a word edge. Pinch to zoom.")
+        .help("\(title): drag or click on the wave to move it; hold Option to snap to a word edge. Pinch to zoom. The grey marker is the \(edge == .start ? "end" : "start"), moved in its own box.")
         .accessibilityElement()
         .accessibilityLabel("\(title) of the selection")
         .accessibilityValue(Self.timecode(time))
@@ -232,13 +246,17 @@ private struct BoundaryWaveform: View {
         let band = Self.wordBand
         let mid = band + (height - band) / 2
         let marker = AudioPeaks.x(for: time, in: window, width: width)
+        // The selection's other edge, when this box reaches it.
+        let otherVisible = window.contains(other)
+        let otherMarker = AudioPeaks.x(for: other, in: window, width: width)
+        let selected = min(time, other)...max(time, other)
         // The words along the top, each from where it starts; a word that
         // would overlap the one before it is left out.
         var lastRight = -Double.infinity
         for word in words where word.end > window.lowerBound && word.start < window.upperBound {
             let x = max(1, AudioPeaks.x(for: word.start, in: window, width: width))
             guard x > lastRight + 3 else { continue }
-            let inside = edge == .start ? word.mid >= time : word.mid <= time
+            let inside = selected.contains(word.mid)
             let label = context.resolve(Text(word.text).font(.system(size: 10))
                 .foregroundStyle(inside ? Color.primary : Color.secondary))
             let measured = label.measure(in: CGSize(width: width, height: band))
@@ -256,7 +274,9 @@ private struct BoundaryWaveform: View {
             let columns = peaks.columns(Int(width / step), window: window)
             for (index, level) in columns.enumerated() {
                 let x = Double(index) * step
-                let inside = edge == .start ? x + step / 2 >= marker : x + step / 2 <= marker
+                let middle = x + step / 2
+                let inside = edge == .start ? middle >= marker && (!otherVisible || middle <= otherMarker)
+                    : middle <= marker && (!otherVisible || middle >= otherMarker)
                 let amplitude = max(1, Double(level) * ((height - band) / 2 - 4))
                 let bar = CGRect(x: x, y: mid - amplitude, width: step - 0.5, height: amplitude * 2)
                 context.fill(Path(bar), with: .color(inside ? color : color.opacity(0.28)))
@@ -264,15 +284,25 @@ private struct BoundaryWaveform: View {
         } else {
             context.fill(Path(CGRect(x: 0, y: mid - 0.5, width: width, height: 1)), with: .color(.secondary.opacity(0.4)))
         }
-        // The edge: a bar with a grip at the top.
-        context.fill(Path(CGRect(x: marker - 1, y: band, width: 2, height: height - band)), with: .color(.primary))
-        var grip = Path()
-        grip.move(to: CGPoint(x: marker - 5, y: band))
-        grip.addLine(to: CGPoint(x: marker + 5, y: band))
-        grip.addLine(to: CGPoint(x: marker, y: band + 6))
-        grip.closeSubpath()
-        context.fill(grip, with: .color(.primary))
+        // The other edge, for reference only: it is moved in its own box.
+        // Drawn first so this box's edge stays on top where they meet.
+        if otherVisible { drawMarker(in: &context, x: otherMarker, band: band, height: height, color: Self.otherEdgeColor) }
+        drawMarker(in: &context, x: marker, band: band, height: height, color: .primary)
     }
+
+    /// An edge: a bar with a grip at the top.
+    private func drawMarker(in context: inout GraphicsContext, x: Double, band: Double, height: Double, color: Color) {
+        context.fill(Path(CGRect(x: x - 1, y: band, width: 2, height: height - band)), with: .color(color))
+        var grip = Path()
+        grip.move(to: CGPoint(x: x - 5, y: band))
+        grip.addLine(to: CGPoint(x: x + 5, y: band))
+        grip.addLine(to: CGPoint(x: x, y: band + 6))
+        grip.closeSubpath()
+        context.fill(grip, with: .color(color))
+    }
+
+    /// Dark grey: present, clearly not the edge this box moves.
+    static let otherEdgeColor = Color(white: 0.42)
 
     /// The strip above the wave that holds the words.
     static let wordBand = 14.0

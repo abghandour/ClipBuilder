@@ -316,6 +316,13 @@ final class AppStore {
         }
     }
     var pendingAnalysisDuplicate: AnalysisDuplicatePrompt?
+    /// How many videos taught each person's voice fingerprint, by people.key.
+    /// Loaded by the People page (refreshVoiceFingerprints).
+    var voiceFingerprintCounts: [String: Int] = [:]
+    /// Bumped whenever stored voices may have changed (a forget, a Team
+    /// Sync pull): views showing them reload, also when no count moved.
+    private(set) var voiceFingerprintVersion = 0
+    func noteVoiceFingerprintsChanged() { voiceFingerprintVersion &+= 1 }
     private(set) var videoPeopleVersion = 0
     /// Roster rows changed outside the counts refresh (extensions cannot set the version).
     func noteVideoPeopleChanged() { videoPeopleVersion &+= 1 }
@@ -387,6 +394,13 @@ final class AppStore {
     // Transcription job
     var transcribingVideoIDs: Set<Int64> = []
     var transcriptionTasks: [Int64: Task<Void, Never>] = [:]
+    /// A Transcribe the user started on videos that can use more than one
+    /// word timing; the root view asks which before it runs.
+    var transcriptionChoiceRequest: TranscriptionChoiceRequest?
+    /// The profile generation the word timing model was last fetched unasked in.
+    var wordTimingAutoInstallGeneration: Int?
+    /// Whether the model download in flight started by itself.
+    @ObservationIgnored var wordTimingInstallAutomatic = false
     /// Video hashes the language detection job already listened to this
     /// session, so files without clear speech are not sampled on every refresh.
     var languageDetectionTried: Set<String> = []
@@ -486,6 +500,19 @@ final class AppStore {
         set { miniRuns[miniFootageKind] = newValue }
     }
     var isLoadingMiniFootage = false
+    /// Undo and Redo per Express Footage section, by batch id; in memory
+    /// only, so it lasts while the app is open (AppStore+MiniUndo).
+    var miniUndoStacks: [String: MiniUndoStack] = [:]
+    /// An Undo or Redo is restoring a section; its controls wait.
+    var isMiniUndoing = false
+    @ObservationIgnored var isRestoringMiniUndo = false
+    @ObservationIgnored var miniUndoSettleTask: Task<Void, Never>?
+    /// The Undo or Redo step under way; Team Sync waits for it before pulling.
+    @ObservationIgnored var miniUndoStepTask: Task<Void, Never>?
+    @ObservationIgnored var miniUndoSettlesPending = 0
+    /// Bumped whenever a take's plan is edited by hand, so Undo can tell two
+    /// plans apart without comparing them (AppStore+MiniUndo).
+    @ObservationIgnored var miniPlanRevisions: [Int64: Int] = [:]
     var miniFootageRevision = 0
     var miniFootageStage: String?
     @ObservationIgnored var miniFootageTask: Task<Void, Never>?
@@ -804,8 +831,11 @@ final class AppStore {
     }
 
     /// Each run captures this profile's cleanup policy before leaving the UI.
-    var transcription: TranscriptionService {
-        TranscriptionService(podcastSettings: podcastEditingSettings, spokenLocales: projectLanguages.spoken)
+    var transcription: TranscriptionService { transcription(wordTiming: nil) }
+    /// `wordTiming` is the user's choice for this run; nil uses the default from Settings.
+    func transcription(wordTiming: WordTiming?) -> TranscriptionService {
+        TranscriptionService(podcastSettings: podcastEditingSettings, spokenLocales: projectLanguages.spoken,
+                             wordTiming: wordTiming ?? settings.wordTimingChoice)
     }
     let analyzer: Analyzer
     let podcastAnalysis: PodcastAnalysisService
@@ -1134,7 +1164,15 @@ final class AppStore {
         SettingsStore.saveActiveProfileName(name)
         scriptPrerequisites?.cancelAll()
         profileGeneration &+= 1
+        // The word timing model belongs to the Mac, not the profile, but its
+        // download is a job and every job stops here: start it again.
+        let restartWordTimingInstall = jobs.hasLiveTask(kind: .wordTimingModel) && !WordAlignerModel.isInstalled
         jobs.profileDidChange()
+        if restartWordTimingInstall { installWordTimingModel(automatic: wordTimingInstallAutomatic) }
+        transcriptionChoiceRequest = nil
+        // Row ids belong to the profile's database.
+        miniUndoStacks = [:]
+        miniPlanRevisions = [:]
         videos = []
         scenes = []
         historyScenes = []

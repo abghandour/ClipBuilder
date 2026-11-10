@@ -759,7 +759,8 @@ extension AppStore {
         let analyzer = Analyzer(ai: ai)
         let transcription = TranscriptionService(
             cacheDirectory: SettingsStore.cacheDirectory.appendingPathComponent("transcripts", isDirectory: true),
-            podcastSettings: podcastEditingSettings, strictEnrichment: true, spokenLocales: projectLanguages.spoken)
+            podcastSettings: podcastEditingSettings, strictEnrichment: true, spokenLocales: projectLanguages.spoken,
+            wordTiming: settings.wordTimingChoice)
         let language = transcriptionLanguage()
         let languages = projectLanguages
         let probe = languageProbe
@@ -817,6 +818,18 @@ extension AppStore {
             })
     }
 
+    /// Deletes one transcript set of a video, or all of them with a nil key
+    /// (Database.deleteTranscriptionSets says what goes with it).
+    func deleteTranscriptSets(video: VideoRecord, key: String?) async throws {
+        guard let database else { return }
+        try await database.deleteTranscriptionSets(videoID: video.id, key: key)
+        guard self.database === database else { return }
+        appendLog(\.analysisLog, ["\(video.filename): \(key == nil ? "all transcripts" : "one transcript set") deleted"])
+        invalidatePersonReferences(videoID: video.id)
+        noteVoiceFingerprintsChanged()
+        await refreshAllNow()
+    }
+
     func transcriptEditCount(videoID: Int64) async -> Int {
         guard let database else { return 0 }
         return (try? await database.editedTranscriptCount(videoID: videoID)) ?? 0
@@ -848,11 +861,13 @@ extension AppStore {
         }
     }
 
-    func transcribe(video: VideoRecord, force: Bool = false) {
+    /// `wordTiming` nil uses the default from Settings. Never asks: a
+    /// control the user pressed goes through `requestTranscription`.
+    func transcribe(video: VideoRecord, force: Bool = false, wordTiming: WordTiming? = nil) {
         guard video.isPresent else { presentError(VideoRecord.notPresentReason); return }
         guard let database, !transcribingVideoIDs.contains(video.id) else { return }
         transcribingVideoIDs.insert(video.id)
-        let transcription = transcription
+        let transcription = transcription(wordTiming: wordTiming)
         let language = transcriptionLanguage(for: video)
         let languages = projectLanguages
         let generation = profileGeneration

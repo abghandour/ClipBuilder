@@ -18,6 +18,12 @@ nonisolated struct AppSettings: Codable, Sendable {
     var transcribeModel: String = ""
     var transcribeHint: String = ""
     var transcribeLanguage: String = ""          // empty = auto/current locale
+    /// `WordTiming` raw value; nil = the recognizer's own word times.
+    var wordTiming: String?
+    var wordTimingChoice: WordTiming {
+        get { wordTiming.flatMap(WordTiming.init(rawValue:)) ?? .recognizer }
+        set { wordTiming = newValue == .recognizer ? nil : newValue.rawValue }
+    }
     var theme: String = "default"
     var ai: AIConfig = AIConfig()
     var instagram: InstagramSettings = InstagramSettings()
@@ -33,6 +39,7 @@ nonisolated struct AppSettings: Codable, Sendable {
         case transcribeModel = "transcribe_model"
         case transcribeHint = "transcribe_hint"
         case transcribeLanguage = "whisper_language"
+        case wordTiming = "word_timing"
         case theme
         case ai
         case instagram
@@ -55,6 +62,7 @@ nonisolated struct AppSettings: Codable, Sendable {
         transcribeModel = try container.decodeIfPresent(String.self, forKey: .transcribeModel) ?? ""
         transcribeHint = try container.decodeIfPresent(String.self, forKey: .transcribeHint) ?? ""
         transcribeLanguage = try container.decodeIfPresent(String.self, forKey: .transcribeLanguage) ?? ""
+        wordTiming = try container.decodeIfPresent(String.self, forKey: .wordTiming)
         theme = try container.decodeIfPresent(String.self, forKey: .theme) ?? "default"
         ai = try container.decodeIfPresent(AIConfig.self, forKey: .ai) ?? AIConfig()
         instagram = try container.decodeIfPresent(InstagramSettings.self, forKey: .instagram) ?? InstagramSettings()

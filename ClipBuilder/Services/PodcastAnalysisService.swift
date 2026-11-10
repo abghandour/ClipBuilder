@@ -275,6 +275,9 @@ actor PodcastAnalysisService {
         let profiles = VoiceProfiles.learned(videoID: video.id, tiles: tiles, enrollment: enrollment)
         do {
             try await database.replaceVoiceProfiles(videoID: video.id, transcriptionKey: transcriptionKey, profiles: profiles)
+            // Every speaker map ends here, from whichever screen it started:
+            // the People page hears this and reloads its voice fingerprints.
+            NotificationCenter.default.post(name: VoiceProfiles.didChange, object: nil)
             if profiles.isEmpty {
                 if let enrollment, enrollment.featureKind == .embedding, enrollment.trust < VoiceProfiles.storeTrust {
                     log(String(format: "Voices not remembered: audio trusted %.0f%%, below the %.0f%% needed", enrollment.trust * 100, VoiceProfiles.storeTrust * 100))

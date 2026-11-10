@@ -350,6 +350,9 @@ final class TeamSyncState {
         let scope = SyncScope(teamID: team, profileID: profile)
         syncing = true
         status = "Syncing…"
+        // Undo and Redo wait from here until the pulled rows are on screen
+        // (AppStore.stepMiniUndo); one already under way finishes first.
+        await store.miniUndoStepTask?.value
         defer {
             if captured == generation {
                 syncing = false
@@ -376,6 +379,8 @@ final class TeamSyncState {
             signedIn = true
             let changed = await engine.changedTables
             guard captured == generation else { throw CancellationError() }
+            // A teammate's picks or trims arrived: stepping back would undo them.
+            if !Set(changed).isDisjoint(with: ["transcript_picks", "qa_picks", "scenes"]) { store.forgetAllMiniUndo() }
             if changed.contains("wizard_lessons") {
                 await store.refreshLessons(from: db, generation: store.profileGeneration)
             }
@@ -385,6 +390,10 @@ final class TeamSyncState {
                 store.people = people
             }
             if changed.contains("library_asset_metadata") { assetMetadataRevision += 1 }
+            if changed.contains("voice_profiles") {
+                store.noteVoiceFingerprintsChanged()
+                await store.refreshVoiceFingerprints()
+            }
             if changed.contains(where: { name in SyncTable.footage.contains { $0.name == name } }) {
                 await store.refreshAllNow()
                 let defaults = try await db.consumeSyncedRunDefaults()
@@ -415,10 +424,23 @@ final class TeamSyncState {
             }
         } catch {
             guard captured == generation else { throw error }
+            // Rows may have been applied before it stopped, and nothing
+            // above got to reload them: no Undo history can be trusted.
+            store.forgetAllMiniUndo()
             if case SyncError.needsUpdate = error { status = "Sync needs update" }
             else if error is CancellationError || Task.isCancelled { status = paused ? "Sync paused" : "Sync stopped" }
             else if error is URLError { online = false; await showOffline() }
             else { status = "Sync needs attention" }
+            // Voices pulled before it stopped are not reported again by the next sync.
+            store.noteVoiceFingerprintsChanged()
+            await store.refreshVoiceFingerprints()
+            // Likewise scenes (a teammate's Q&A trim) and picks: an Express
+            // section left showing the old state would let an edit, and
+            // then its Undo, write that old state back.
+            _ = try? await store.sceneEditSaveTask?.value
+            await store.refreshAllNow()
+            store.refreshMiniQASections()
+            await store.refreshMiniPicksAfterSync(changedTables: ["transcript_picks", "fight_picks", "qa_picks"])
             throw error
         }
     }

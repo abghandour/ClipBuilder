@@ -104,7 +104,7 @@ struct SyncDubTakeTests {
         try raw.execute("PRAGMA user_version = 48")
         let path = temp.path
         let upgraded = try await Task.detached { try Database(path: path) }.value
-        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == 49)
+        #expect(try raw.query("PRAGMA user_version").first?["user_version"]?.intValue == Database.schemaVersion)
         #expect(try raw.columnNames(of: "dub_takes").contains("drive_file_id"))
         #expect(try await upgraded.fetchDubTakes(videoID: id).count == 1)
         for name in ["dub_takes", "dub_speaker_overrides"] {

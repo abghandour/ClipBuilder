@@ -1,3 +1,4 @@
+import Combine
 import SwiftUI
 
 /// People: every distinct person the analyzer has detected across the
@@ -264,6 +265,14 @@ struct PeopleView: View {
                         .frame(minWidth: 420, maxWidth: .infinity, maxHeight: .infinity)
                 }
             }
+        }
+        // Mapping speakers, a merge or a team pull can all change who has a voice.
+        .task(id: "\(pageVisible)|\(store.profileGeneration)|\(store.people.count)|\(store.videoPeopleVersion)|\(store.voiceFingerprintVersion)") {
+            if pageVisible { await store.refreshVoiceFingerprints() }
+        }
+        // A speaker map anywhere can replace a voice without moving a count.
+        .onReceive(NotificationCenter.default.publisher(for: VoiceProfiles.didChange).receive(on: RunLoop.main)) { _ in
+            store.noteVoiceFingerprintsChanged()
         }
         // Another screen asked for a person (the avatar popover's Open in
         // People): select them once, then forget the request.
@@ -596,6 +605,13 @@ struct PeopleView: View {
                         Spacer()
                     }
                     .padding(.horizontal)
+                    HStack {
+                        Text("Voice fingerprint").font(.headline).lineLimit(1).fixedSize()
+                        VoiceFingerprintControls(store: store, personKey: person.key, name: person.displayName)
+                            .id("\(store.profileGeneration)|\(person.key)")
+                        Spacer()
+                    }
+                    .padding(.horizontal)
                     PersonTagFieldsView(person: person)
                         .id(person.key)
                         .padding(.horizontal)
@@ -844,10 +860,19 @@ private struct PersonRow: View {
                         name = confirmed
                         store.renamePerson(person, to: confirmed)
                     }
-                Text((person.category.map { "\($0.label) · " } ?? "")
-                     + "\(sceneCount) scene\(sceneCount == 1 ? "" : "s") · \(videoCount) video\(videoCount == 1 ? "" : "s")")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
+                HStack(spacing: Theme.spaceXS) {
+                    Text((person.category.map { "\($0.label) · " } ?? "")
+                         + "\(sceneCount) scene\(sceneCount == 1 ? "" : "s") · \(videoCount) video\(videoCount == 1 ? "" : "s")")
+                        .font(.caption)
+                        .foregroundStyle(.secondary)
+                    if let voiced = store.voiceFingerprintCounts[person.key], voiced > 0 {
+                        Image(systemName: "waveform")
+                            .font(.caption2)
+                            .foregroundStyle(.secondary)
+                            .help("Voice fingerprint: \(VoiceFingerprintControls.summary(voiced).lowercased())")
+                            .accessibilityLabel("Has a voice fingerprint")
+                    }
+                }
                 if !person.descriptor.isEmpty {
                     Text(person.descriptor)
                         .font(.caption2)

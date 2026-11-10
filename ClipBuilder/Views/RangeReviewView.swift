@@ -742,10 +742,21 @@ struct RangeReviewView<Footer: View>: View {
                 }
                 if canTrim, !isEmptyRange {
                     RangeBoundaryWaveforms(url: item.video.url, range: shownRange, limits: limits,
-                                           minimumSpan: min(policy.minimumSpan, max(0, limits.upperBound - limits.lowerBound)),
+                                           // Picks and Q&A shrink as far as the user wants (the step
+                                           // buttons already do); only an empty range is kept out.
+                                           minimumSpan: min(policy == .wizard ? policy.minimumSpan : RangeBoundary.shortestSpan,
+                                                            max(0, limits.upperBound - limits.lowerBound)),
                                            lines: visibleTranscript.lines, words: visibleTranscript.words,
                                            onDrag: dragEdge, onRelease: releaseEdge,
-                                           playback: playback, willPlay: { playingAll = false })
+                                           playback: playback, willPlay: { playingAll = false }) { edge in
+                        // Each edge's step buttons sit under its own wave.
+                        if policy != .wizard, !visibleTranscript.words.isEmpty {
+                            RangeEdgeStepRow(edge: edge, range: editRange, transcript: visibleTranscript,
+                                             spans: speakerSpans.filter { $0.videoID == nil || $0.videoID == contextVideo?.id },
+                                             limits: limits, actions: stepActions.update(apply: apply, split: splitAtPlayhead))
+                                .equatable()
+                        }
+                    }
                         .id(item.id)
                 }
                 if canTrim, !isEmptyRange, policy != .wizard, !visibleTranscript.words.isEmpty {
@@ -755,6 +766,7 @@ struct RangeReviewView<Footer: View>: View {
                                       canSplit: onSplit != nil && !item.isDraft && item.id.cutIndex == nil,
                                       playback: playback, actions: stepActions.update(apply: apply, split: splitAtPlayhead))
                         .equatable()
+                        .padding(.top, Theme.spaceS)
                 }
                 HStack(alignment: .firstTextBaseline, spacing: Theme.spaceS) {
                     let hint = spanSelection ? Self.spanHint : (trimHint ?? Self.trimHint)
@@ -986,9 +998,14 @@ struct RangeReviewView<Footer: View>: View {
     }
 
     private func moving(_ edge: TranscriptQATrim.Edge, to word: TranscriptQATrim.Word) -> ClosedRange<Double> {
+        // Picks and Q&A shrink to a single word, as a click and the step
+        // buttons already allow; a wizard cut keeps its own minimum.
+        if policy != .wizard {
+            return TranscriptQATrim.range(editRange, moving: edge, to: word, words: visibleTranscript.words, limits: limits)
+        }
         switch edge {
-        case .start: policy.setting(.start, at: word.start, in: editRange, limits: limits)
-        case .end: policy.setting(.end, at: word.end, in: editRange, limits: limits)
+        case .start: return policy.setting(.start, at: word.start, in: editRange, limits: limits)
+        case .end: return policy.setting(.end, at: word.end, in: editRange, limits: limits)
         }
     }
 
@@ -1171,7 +1188,7 @@ final class RangeStepActions {
     }
 }
 
-/// The kinds of one-click move; the control shows one at a time.
+/// The kinds of one-click move; each edge's row shows one at a time.
 nonisolated enum RangeStepKind: String, CaseIterable, Identifiable, Sendable {
     case word, sentence, speaker, nudge
     var id: String { rawValue }
@@ -1185,12 +1202,79 @@ nonisolated enum RangeStepKind: String, CaseIterable, Identifiable, Sendable {
     }
 }
 
-/// One-click adjustments under the filmstrip: a Step-by picker (word,
-/// sentence, speaker turn, tenth of a second) with a Start and an End pair,
-/// then the whole-range actions. Four buttons instead of twenty; the keys
-/// still reach every move. Equatable and re-rendered only when its inputs
-/// change: the targets scan the whole transcript, and the parent's body
-/// runs on every drag step and playhead tick.
+/// One edge's one-click moves, under that edge's wave: what to step by
+/// (word, sentence, speaker turn, tenth of a second), then earlier and
+/// later. The wave's header above names the edge. Each edge remembers its own step. Equatable for the
+/// same reason as `RangeStepControls`.
+struct RangeEdgeStepRow: View, Equatable {
+    let edge: TranscriptQATrim.Edge
+    let range: ClosedRange<Double>
+    let transcript: TranscriptQATrim.Transcript
+    let spans: [TranscriptQATrim.SpeakerSpan]
+    let limits: ClosedRange<Double>
+    let actions: RangeStepActions
+    @AppStorage private var kind: RangeStepKind
+
+    init(edge: TranscriptQATrim.Edge, range: ClosedRange<Double>, transcript: TranscriptQATrim.Transcript,
+         spans: [TranscriptQATrim.SpeakerSpan], limits: ClosedRange<Double>, actions: RangeStepActions) {
+        self.edge = edge
+        self.range = range
+        self.transcript = transcript
+        self.spans = spans
+        self.limits = limits
+        self.actions = actions
+        // The start keeps the key the single picker used.
+        _kind = AppStorage(wrappedValue: .word, edge == .start ? "rangeReview.stepKind" : "rangeReview.stepKind.end")
+    }
+
+    nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
+        lhs.edge == rhs.edge && lhs.range == rhs.range && lhs.transcript == rhs.transcript
+            && lhs.spans == rhs.spans && lhs.limits == rhs.limits
+    }
+
+    private var title: String { edge == .start ? "Start" : "End" }
+
+    /// The move that takes this edge earlier, and the one that takes it later.
+    private var moves: (earlier: RangeAdjustment, later: RangeAdjustment) {
+        switch (kind, edge) {
+        case (.word, .start): (.step(.wordBefore), .step(.dropFirstWord))
+        case (.word, .end): (.step(.dropLastWord), .step(.wordAfter))
+        case (.sentence, .start): (.step(.sentenceBefore), .step(.dropFirstSentence))
+        case (.sentence, .end): (.step(.dropLastSentence), .step(.sentenceAfter))
+        case (.speaker, .start): (.turn(.start, grow: true), .turn(.start, grow: false))
+        case (.speaker, .end): (.turn(.end, grow: false), .turn(.end, grow: true))
+        case (.nudge, .start): (.nudge(.start, -0.1), .nudge(.start, 0.1))
+        case (.nudge, .end): (.nudge(.end, -0.1), .nudge(.end, 0.1))
+        }
+    }
+
+    var body: some View {
+        HStack(spacing: Theme.spaceXS) {
+            Picker("\(title) steps by", selection: $kind) {
+                ForEach(RangeStepKind.allCases) { kind in
+                    Text(kind.label).tag(kind)
+                }
+            }
+            .pickerStyle(.menu).labelsHidden().fixedSize()
+            .help("What the \(title) arrows move by")
+            .accessibilityLabel("\(title) steps by")
+            moveButton(moves.earlier, icon: "arrow.left.to.line")
+            moveButton(moves.later, icon: "arrow.right.to.line")
+        }
+        .controlSize(.small)
+    }
+
+    private func moveButton(_ adjustment: RangeAdjustment, icon: String) -> some View {
+        Button { actions.apply(adjustment) } label: { Image(systemName: icon) }
+            .disabled(RangeAdjustment.target(adjustment, range: range, words: transcript.words, spans: spans, limits: limits) == nil)
+            .help("\(title): \(adjustment.label)")
+            .accessibilityLabel("\(title): \(adjustment.label)")
+    }
+}
+
+/// The whole-range actions under the waves. Equatable and re-rendered only
+/// when its inputs change: the targets scan the whole transcript, and the
+/// parent's body runs on every drag step and playhead tick.
 struct RangeStepControls: View, Equatable {
     let range: ClosedRange<Double>
     let transcript: TranscriptQATrim.Transcript
@@ -1202,7 +1286,6 @@ struct RangeStepControls: View, Equatable {
     let canSplit: Bool
     let playback: PodcastHighlightTrimPlayback
     let actions: RangeStepActions
-    @AppStorage("rangeReview.stepKind") private var kind = RangeStepKind.word
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.range == rhs.range && lhs.transcript == rhs.transcript && lhs.spans == rhs.spans
@@ -1214,92 +1297,23 @@ struct RangeStepControls: View, Equatable {
         RangeAdjustment.target(adjustment, range: range, words: transcript.words, spans: spans, limits: limits)
     }
 
-    private var moves: (start: (shrink: RangeAdjustment, grow: RangeAdjustment), end: (shrink: RangeAdjustment, grow: RangeAdjustment)) {
-        switch kind {
-        case .word: ((.step(.dropFirstWord), .step(.wordBefore)), (.step(.dropLastWord), .step(.wordAfter)))
-        case .sentence: ((.step(.dropFirstSentence), .step(.sentenceBefore)), (.step(.dropLastSentence), .step(.sentenceAfter)))
-        case .speaker: ((.turn(.start, grow: false), .turn(.start, grow: true)), (.turn(.end, grow: false), .turn(.end, grow: true)))
-        case .nudge: ((.nudge(.start, 0.1), .nudge(.start, -0.1)), (.nudge(.end, -0.1), .nudge(.end, 0.1)))
-        }
-    }
-
     var body: some View {
-        VStack(alignment: .leading, spacing: Theme.spaceS) {
-            ViewThatFits(in: .horizontal) {
-                HStack(spacing: Theme.spaceM) {
-                    stepPicker(.segmented)
-                    edgePairs
-                }
-                VStack(alignment: .leading, spacing: Theme.spaceS) {
-                    stepPicker(.segmented)
-                    edgePairs
-                }
-                // Narrowest column: a menu instead of the four segments.
-                VStack(alignment: .leading, spacing: Theme.spaceS) {
-                    stepPicker(.menu)
-                    edgePairs
-                }
+        FlowLayout(spacing: Theme.spaceS) {
+            adjustmentButton(.step(.pauseAfter), "Keep Pause",
+                             help: "Keep the pause after the last word: extend the end through the silence, up to the next word")
+            adjustmentButton(.trimSilence, "Trim Silence", help: "Start at the first word and end at the last word")
+            if canSplit {
+                SplitButton(range: range, minimum: policy.minimumSpan, playback: playback, split: { actions.split() })
             }
-            FlowLayout(spacing: Theme.spaceS) {
-                adjustmentButton(.step(.pauseAfter), "Keep Pause",
-                                 help: "Keep the pause after the last word: extend the end through the silence, up to the next word")
-                adjustmentButton(.trimSilence, "Trim Silence", help: "Start at the first word and end at the last word")
-                if canSplit {
-                    SplitButton(range: range, minimum: policy.minimumSpan, playback: playback, split: { actions.split() })
-                }
-                Button {
-                    if let lastAdjustment { actions.apply(lastAdjustment) }
-                } label: {
-                    Text("Repeat Last").lineLimit(1).fixedSize()
-                }
-                .disabled(lastAdjustment.flatMap { target($0) } == nil)
-                .help(lastAdjustment.map { "Repeat: \($0.label)" } ?? "Repeat the last adjustment on this selection")
+            Button {
+                if let lastAdjustment { actions.apply(lastAdjustment) }
+            } label: {
+                Text("Repeat Last").lineLimit(1).fixedSize()
             }
+            .disabled(lastAdjustment.flatMap { target($0) } == nil)
+            .help(lastAdjustment.map { "Repeat: \($0.label)" } ?? "Repeat the last adjustment on this selection")
         }
         .controlSize(.small)
-    }
-
-    private enum PickerKind { case segmented, menu }
-
-    @ViewBuilder
-    private func stepPicker(_ style: PickerKind) -> some View {
-        let picker = Picker("Step by", selection: $kind) {
-            ForEach(RangeStepKind.allCases) { kind in
-                Text(kind.label).lineLimit(1).fixedSize().tag(kind)
-            }
-        }
-        .help("What the Start and End buttons move by")
-        .accessibilityLabel("Step by")
-        switch style {
-        case .segmented: picker.pickerStyle(.segmented).labelsHidden().fixedSize()
-        case .menu: picker.pickerStyle(.menu).fixedSize()
-        }
-    }
-
-    private var edgePairs: some View {
-        HStack(spacing: Theme.spaceM) {
-            edgePair("Start", moves.start.shrink, moves.start.grow)
-            edgePair("End", moves.end.shrink, moves.end.grow)
-        }
-    }
-
-    /// Shrink and grow one edge by the chosen step.
-    private func edgePair(_ title: String, _ shrink: RangeAdjustment, _ grow: RangeAdjustment) -> some View {
-        HStack(spacing: Theme.spaceXS) {
-            Text(title).font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
-            Button { actions.apply(shrink) } label: {
-                Image(systemName: title == "Start" ? "arrow.right.to.line" : "arrow.left.to.line")
-            }
-            .disabled(target(shrink) == nil)
-            .help("\(title): \(shrink.label)")
-            .accessibilityLabel("\(title): \(shrink.label)")
-            Button { actions.apply(grow) } label: {
-                Image(systemName: title == "Start" ? "arrow.left.to.line" : "arrow.right.to.line")
-            }
-            .disabled(target(grow) == nil)
-            .help("\(title): \(grow.label)")
-            .accessibilityLabel("\(title): \(grow.label)")
-        }
     }
 
     private func adjustmentButton(_ adjustment: RangeAdjustment, _ title: String, help: String) -> some View {

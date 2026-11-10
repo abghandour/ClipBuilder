@@ -104,6 +104,7 @@ next to it, not inline in a store or view.
 - `docs/Async-AI-Actions-Plan.md`: the jobs pattern, implemented in 1.88.
 - `docs/Builder-Scripting-Reference.md`: the Builder script language.
 - `docs/Critic-Brief-Plan.md`: draft, not implemented.
+- `docs/Selection-Sync-Revert-Plan.md`: shelved 2026-11-10, not implemented.
 - `docs/TESTING-PLAN.md`: the original test strategy, written before the suite
   existed; the conventions still hold, the "no tests yet" framing does not.
 - `docs/Performance-*.md`: results of the 2026-09 performance work; history,

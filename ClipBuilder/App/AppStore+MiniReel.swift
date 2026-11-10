@@ -135,7 +135,7 @@ extension AppStore {
 
     /// A List drop: `clipIDs` is the whole list in its new order.
     func reorderMiniReel(_ clipIDs: [String]) {
-        guard miniReelLoaded, !isWizardRunning, !isLoadingMiniFootage else { return }
+        guard miniReelLoaded, !isWizardRunning, !isLoadingMiniFootage, !miniEditsBlocked else { return }
         let items = MiniReelRules.reordered(miniReelItems, clipIDs: clipIDs)
         guard items != miniReelItems else { return }
         miniReelItems = items
@@ -147,7 +147,7 @@ extension AppStore {
     func removeMiniReelItem(clipID: String) {
         // Not while a section loads: a load that already read its picks
         // would publish the item again and the reconcile would restore it.
-        guard miniReelLoaded, !isWizardRunning, !isLoadingMiniFootage, let key = miniReelKey,
+        guard miniReelLoaded, !isWizardRunning, !isLoadingMiniFootage, !miniEditsBlocked, let key = miniReelKey,
               let item = MiniReelRules.item(miniReelItems, clipID: clipID), let database else { return }
         let run = miniRuns[item.kind].flatMap { $0.projectID == key.projectID && $0.video.id == key.videoID ? $0 : nil }
         let generation = profileGeneration
@@ -279,7 +279,8 @@ extension AppStore {
     /// The Highlights candidates' kept set; remembered per batch next to
     /// their order, as before the reel.
     func setMiniHighlightsKept(_ kept: Set<Int64>, batchID: String) {
-        guard let run = miniRuns[.highlights], run.batchID == batchID, !isWizardRunning else { return }
+        guard !miniEditsBlocked, let run = miniRuns[.highlights], run.batchID == batchID, !isWizardRunning else { return }
+        if kept != MiniHighlightReview.keptIDs(run.candidates) { recordMiniUndo(.highlights) }
         miniRuns[.highlights]?.candidates = MiniHighlightReview.settingKept(kept, in: run.candidates)
         UserDefaults.standard.set(kept.sorted().map(String.init), forKey: "mini.kept.\(batchID)")
     }

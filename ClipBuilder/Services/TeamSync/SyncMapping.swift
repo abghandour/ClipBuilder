@@ -64,6 +64,8 @@ nonisolated enum SyncError: Error, LocalizedError, Equatable {
     case serverNotReady
     case alreadySyncing
     case http(Int)
+    /// No stored Team session, or one that can no longer be renewed.
+    case signedOut
 
     var errorDescription: String? {
         switch self {
@@ -73,6 +75,7 @@ nonisolated enum SyncError: Error, LocalizedError, Equatable {
         case .serverNotReady: return "The Team server needs its Phase 2 migration. Local work is still available."
         case .alreadySyncing: return "Team sync is already running."
         case .http(let code): return "Team sync request failed (HTTP \(code))."
+        case .signedOut: return "Sign in to Team sync (Settings, Team) to keep syncing. Local work is still available."
         }
     }
 }

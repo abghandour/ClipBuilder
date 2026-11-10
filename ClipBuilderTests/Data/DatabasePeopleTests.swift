@@ -197,3 +197,49 @@ struct DatabasePeopleTests {
         #expect(fallback.box.w == 1 && fallback.box.h == 1)
     }
 }
+
+struct VoiceFingerprintTests {
+    @Test func thePeoplePageListsCountsAndForgetsVoices() async throws {
+        let temp = try await TempDatabase()
+        let first = try await temp.seedVideo(), second = try await temp.seedVideo()
+        for video in [first, second] {
+            try await temp.database.replaceVoiceProfiles(videoID: video, transcriptionKey: nil, profiles: [
+                VoiceProfile(personKey: "host", videoID: video, vector: [1, 0], windows: 12, correctionWindows: 3),
+                VoiceProfile(personKey: "guest", videoID: video, vector: [0, 1], windows: 8)
+            ])
+        }
+        #expect(try await temp.database.voiceFingerprintCounts() == ["host": 2, "guest": 2])
+        let sources = try await temp.database.voiceFingerprintSources(personKey: "host")
+        #expect(Set(sources.map(\.videoID)) == [first, second])
+        #expect(sources.allSatisfy { !$0.filename.isEmpty && $0.windows == 12 && $0.correctionWindows == 3 })
+        #expect(try await temp.database.voiceFingerprintSources(personKey: "nobody").isEmpty)
+
+        // One video's contribution goes; the other video and the other person stay.
+        try await temp.database.forgetVoiceFingerprint(personKey: "host", videoID: first)
+        #expect(try await temp.database.voiceFingerprintSources(personKey: "host").map(\.videoID) == [second])
+        #expect(try await temp.database.voiceFingerprintCounts() == ["host": 1, "guest": 2])
+        #expect(try await temp.database.fetchVoiceProfiles(excludingVideoID: second).map(\.personKey) == ["guest"])
+
+        try await temp.database.forgetVoiceFingerprint(personKey: "host", videoID: nil)
+        #expect(try await temp.database.voiceFingerprintCounts() == ["guest": 2])
+        #expect(VoiceFingerprintControls.summary(1) == "Learned from 1 video")
+        #expect(VoiceFingerprintControls.summary(3) == "Learned from 3 videos")
+    }
+
+    @Test func forgettingAVoiceReachesTheTeam() async throws {
+        let temp = try await TempDatabase()
+        let video = try await temp.seedVideo()
+        let scope = SyncScope(teamID: UUID(), profileID: UUID())
+        try await temp.database.bindSync(to: scope)
+        let table = try SyncTable.named("voice_profiles")
+        try await temp.database.replaceVoiceProfiles(videoID: video, transcriptionKey: nil,
+            profiles: [VoiceProfile(personKey: "host", videoID: video, vector: [1, 0], windows: 12)])
+        let pushed = try await temp.database.pendingSyncChanges(scope: scope, limit: 10, table: table)
+        try await temp.database.acknowledgeSyncChanges(pushed)
+        try await temp.database.forgetVoiceFingerprint(personKey: "host", videoID: nil)
+        let removal = try await temp.database.pendingSyncChanges(scope: scope, limit: 10, table: table)
+        #expect(removal.count == 1)
+        #expect(removal.first?.syncID == pushed.first?.syncID)
+        #expect(removal.first.map { SyncMapping.isDeleted($0.wire) } == true)
+    }
+}

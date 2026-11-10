@@ -60,7 +60,7 @@ struct MiniFootageCard: View {
                 .id(run.batchID)
                 .frame(maxWidth: .infinity)
                 .frame(height: reviewHeight)
-                .disabled(store.isWizardRunning)
+                .disabled(store.isWizardRunning || store.isMiniUndoing)
             resizeHandle
         }
         // Keep 644 pt for the columns even in a 700 pt detail pane:
@@ -120,7 +120,7 @@ struct MiniFootageCard: View {
                     set: { kept in store.setMiniQAKept(kept, batchID: run.batchID) }),
                 selection: $qaSelection,
                 preferredTranslationLanguage: store.activeProfile.captionLanguages.first, playAll: true) { scene, start, end in
-                        store.setSceneEditRange(scene, start: start, end: end)
+                        store.setMiniQASceneRange(scene, start: start, end: end)
                     }
             resizable(review)
                 .onMiniReelReveal(.qa, contains: { id in qa.sections.contains { $0.id == id } }) { qaSelection = $0 }
@@ -132,5 +132,26 @@ struct MiniFootageCard: View {
             .disabled(store.isWizardRunning)
             .sheet(isPresented: $showTranscript) { TranscriptSheet(video: run.video) }
         }
+    }
+}
+
+/// Undo and Redo for a Footage section's manual changes (picks, check
+/// marks, order, trims); the history lasts while the app is open. Shown at
+/// the right end of the Footage row.
+struct MiniUndoButtons: View {
+    @Environment(AppStore.self) private var store
+    let kind: MiniWizardFlow.FootageKind
+
+    var body: some View {
+        HStack(spacing: Theme.spaceS) {
+            Button("Undo", systemImage: "arrow.uturn.backward") { store.undoMini(kind) }
+                .disabled(!store.canUndoMini(kind))
+                .help("Undo the last manual change in this section")
+            Button("Redo", systemImage: "arrow.uturn.forward") { store.redoMini(kind) }
+                .disabled(!store.canRedoMini(kind))
+                .help("Redo the change that was undone")
+        }
+        .labelStyle(.iconOnly).controlSize(.small).fixedSize()
+        .disabled(store.isWizardRunning || store.isMiniUndoing)
     }
 }

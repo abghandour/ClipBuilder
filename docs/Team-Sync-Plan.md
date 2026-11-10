@@ -105,7 +105,7 @@ until the footage is present. This rule is a pure function with tests.
 | 2. Footage analysis | `videos` (hash, name, duration, size, layout; not path), `analysis_runs`, `scenes`, `scene_tags`, `moments`, `transcripts`, `speaker_turns`, `transcript_features`, `topic_ranges`, `video_people`, `person_markers`, `video_subjects`, `video_notes`, `grades`, `fight_*`, `wizard_research` | Analysis is paid for once. Rows for footage a Mac lacks still arrive, shown as "not on this Mac". |
 | 3. Work | `projects`, `project_videos`, `timelines`, `generated_videos` (record, caption, publish state; file via Drive), `generated_video_traits`, `generation_reviews`, `clip_reviews`, `wizard_feedback`, `wizard_preferences`, `edit_proposals` | Uses the timeline rules above. |
 
-Never synced: `analysis_checkpoints`, `transcript_backups`, `voice_profiles`,
+Never synced: `analysis_checkpoints`, `transcript_backups`,
 `center_stage_hints` (local frame paths), `builder_prerequisites`,
 `imported_externals.local_path`, `ui_state_json` and `view_state_json`,
 `drive_settings`, `app_settings.json`, caches, thumbnails, Keychain items.
@@ -170,8 +170,9 @@ Tables (see "What syncs"): `videos`, `analysis_runs`, `scenes`, `scene_tags`,
   Mac (server-independent tie-break by sync ID). A nullable `run_key` is
   assigned once per run; it joins video and creation time in the natural key
   so independent runs started in the same second cannot collapse.
-  `analysis_checkpoints`, `transcript_backups`, `voice_profiles` and
-  `center_stage_hints` stay local.
+  `analysis_checkpoints`, `transcript_backups` and `center_stage_hints`
+  stay local. `voice_profiles` sync since schema 13
+  (docs/Voice-Profile-Sync-Plan.md).
 - **Upgrade.** Local schema v28 rebuilds `videos` with a nullable path and
   preserves its unique hash, IDs, children and local-only columns. Existing
   attached profiles queue Phase 2 rows and reconcile the new tables before

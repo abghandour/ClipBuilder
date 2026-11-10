@@ -319,6 +319,26 @@ nonisolated enum TranscriptQATrim {
         setting(.end, at: word.end, in: range, limits: limits)
     }
 
+    /// A transcript anchor dragged onto `word`. An anchor only lands on word
+    /// edges, so the shortest result is one word, not the 1 s a free drag
+    /// keeps: the end stops at the first selected word's end, the start at
+    /// the last selected word's start. A selection is never emptied.
+    /// `words` are in time order.
+    static func range(_ range: ClosedRange<Double>, moving edge: Edge, to word: Word, words: [Word],
+                      limits: ClosedRange<Double>) -> ClosedRange<Double> {
+        switch edge {
+        case .start:
+            // With no word starting inside the selection (it sits in one
+            // long word or in silence) there is no word edge to stop at:
+            // the start stays, or moves earlier.
+            let last = words.last { $0.start < range.upperBound - 0.001 }?.start ?? range.lowerBound
+            return setting(.start, at: min(word.start, max(range.lowerBound, last)), in: range, limits: limits, minimum: 0)
+        case .end:
+            let first = words.first { $0.end > range.lowerBound + 0.001 }?.end ?? range.upperBound
+            return setting(.end, at: max(word.end, min(range.upperBound, first)), in: range, limits: limits, minimum: 0)
+        }
+    }
+
     static func nearestEdge(for word: Word, in range: ClosedRange<Double>) -> Edge {
         abs(word.mid - range.lowerBound) <= abs(word.mid - range.upperBound) ? .start : .end
     }

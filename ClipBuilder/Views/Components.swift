@@ -2,32 +2,59 @@ import SwiftUI
 import AVKit
 import Vision
 
-/// Shared by the analysis re-run controls. A zero count proceeds immediately.
+/// Shared by the analysis re-run controls. With no edits to lose and one
+/// word timing to use it proceeds immediately; otherwise it asks, with one
+/// button per timing in `options` (the default from Settings first).
 struct ConfirmTranscriptLoss: ViewModifier {
     @Binding var isRequested: Bool
     let count: Int
-    let action: () -> Void
+    var options: [WordTiming] = [.recognizer]
+    let action: (WordTiming?) -> Void
 
     static func message(count: Int) -> String {
         "This transcript has \(count) edited lines. Re-transcribing makes a new transcript set; the edited set stays in the sets list but stops being active."
     }
 
+    private var asks: Bool { count > 0 || options.count > 1 }
+
     func body(content: Content) -> some View {
         content
             .onChange(of: isRequested) { _, requested in
-                if requested && count == 0 {
+                if requested && !asks {
                     isRequested = false
-                    action()
+                    action(nil)
                 }
             }
             .confirmationDialog("Re-transcribe this video?", isPresented: Binding(
-                get: { isRequested && count > 0 }, set: { isRequested = $0 }
+                get: { isRequested && asks }, set: { isRequested = $0 }
             )) {
-                Button("Discard Transcript and Re-transcribe", role: .destructive, action: action)
+                RetranscribeButtons(options: options, destructive: count > 0, action: action)
                 Button("Cancel", role: .cancel) {}
             } message: {
-                Text(Self.message(count: count))
+                Text([count > 0 ? Self.message(count: count) : nil,
+                      options.count > 1 ? TranscriptionModelChoiceDialog.message : nil]
+                    .compactMap { $0 }.joined(separator: " "))
             }
+    }
+}
+
+/// The confirming buttons of a re-transcribe dialog: one per word timing
+/// when there is a choice (the default from Settings first), otherwise the
+/// single discard button. `destructive` marks the per-timing buttons when
+/// confirming also throws something away.
+struct RetranscribeButtons: View {
+    let options: [WordTiming]
+    let destructive: Bool
+    let action: (WordTiming?) -> Void
+
+    var body: some View {
+        if options.count > 1 {
+            ForEach(options) { timing in
+                Button("Re-transcribe with \(timing.label)", role: destructive ? .destructive : nil) { action(timing) }
+            }
+        } else {
+            Button("Discard Transcript and Re-transcribe", role: .destructive) { action(nil) }
+        }
     }
 }
 

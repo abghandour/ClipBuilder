@@ -611,12 +611,22 @@ extension Database {
     func replaceVoiceProfiles(videoID: Int64, transcriptionKey: String?, profiles: [VoiceProfile]) throws {
         try connection.transaction {
             // A re-map replaces the video's whole contribution, whichever set produced it.
-            try connection.execute("DELETE FROM voice_profiles WHERE video_id = ?", [.integer(videoID)])
-            for profile in profiles where profile.videoID == videoID {
+            // A person who is still heard keeps their row (and its sync identity),
+            // so a teammate receives one update instead of a delete and an insert.
+            let kept = profiles.filter { $0.videoID == videoID }
+            let stale = try connection.query("SELECT person_key FROM voice_profiles WHERE video_id = ?", [.integer(videoID)])
+                .compactMap { $0["person_key"]?.stringValue }.filter { key in !kept.contains { $0.personKey == key } }
+            for key in stale {
+                try deleteVoiceProfiles(where: "video_id = ? AND person_key = ?", [.integer(videoID), .text(key)])
+            }
+            for profile in kept {
                 let json = String(decoding: try JSONEncoder().encode(profile.vector), as: UTF8.self)
                 try connection.execute("""
                     INSERT INTO voice_profiles (person_key, video_id, vector_json, windows, correction_windows, transcription_key)
                     VALUES (?, ?, ?, ?, ?, ?)
+                    ON CONFLICT(person_key, video_id) DO UPDATE SET vector_json = excluded.vector_json,
+                        windows = excluded.windows, correction_windows = excluded.correction_windows,
+                        transcription_key = excluded.transcription_key, updated_at = datetime('now')
                     """, [.text(profile.personKey), .integer(videoID), .text(json),
                           .integer(Int64(profile.windows)), .integer(Int64(profile.correctionWindows)), transcriptionKey.map(SQLValue.text) ?? .null])
             }

@@ -876,9 +876,13 @@ extension AppStore {
             return
         }
         if steps.contains(.people) { detectPeople(in: [video]) }
-        if steps.contains(.transcript) { transcribe(video: video) }
+        // When the transcript step stops to ask which model, speaker names
+        // wait for the answer: they belong to the transcript it makes.
+        let namesSpeakers = steps.contains(.speakerNames)
+        let asked = steps.contains(.transcript)
+            && !requestTranscription(videos: [video], thenNameSpeakers: namesSpeakers)
         if steps.contains(.fightScore) { scoreFightAction(video: video) }
-        if steps.contains(.speakerNames) { nameSpeakers(video: video) }
+        if namesSpeakers, !asked { nameSpeakers(video: video) }
     }
 
     /// An in-place analysis step with the same visible Stop row as a manual map.
@@ -1006,13 +1010,14 @@ extension AppStore {
     /// Run one stage of a video's analysis again with the given model. The
     /// tagging and podcast stages land in a new analyze batch like a full
     /// run; people detection and transcription update the video in place.
-    func rerun(_ stage: AnalysisStage, video: VideoRecord, provider: String? = nil, model: String? = nil) {
+    func rerun(_ stage: AnalysisStage, video: VideoRecord, provider: String? = nil, model: String? = nil,
+               wordTiming: WordTiming? = nil) {
         guard video.isPresent else { presentError(VideoRecord.notPresentReason); return }
         switch stage {
         case .people:
             detectPeople(in: [video], provider: provider, model: model)
         case .transcript:
-            transcribe(video: video, force: true)
+            transcribe(video: video, force: true, wordTiming: wordTiming)
         case .analysis, .exchanges:
             guard let database, !isAnalyzing else { return }
             let podcast = video.type?.usesPodcastPass == true || stage == .exchanges

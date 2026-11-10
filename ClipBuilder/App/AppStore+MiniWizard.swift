@@ -226,8 +226,10 @@ extension AppStore {
     }
 
     func saveMiniCandidatePlan(_ plan: WizardPlan, selectionID: Int64, takeID: Int64) {
-        guard !isWizardRunning, miniRun?.projectID == activeProjectID,
+        guard !isWizardRunning, !miniEditsBlocked, miniRun?.projectID == activeProjectID,
               let index = miniRun?.candidates.firstIndex(where: { $0.id == selectionID && $0.take.id == takeID }) else { return }
+        if miniFootageKind == .highlights { recordMiniUndo(.highlights) }
+        miniPlanRevisions[takeID, default: 0] += 1
         miniRun?.candidates[index].take.plan = plan
         miniRun?.candidates[index].take.criticScore = nil
         miniRun?.candidates[index].take.criticNotes = nil
@@ -332,8 +334,9 @@ extension AppStore {
     /// toggled scenes' qa_picks rows), never a rewrite of the whole list,
     /// so kept exchanges a teammate synced in are not deleted.
     func setMiniQAKept(_ kept: Set<Int64>, batchID: String) {
-        guard let run = miniRuns[.qa], run.batchID == batchID,
+        guard !miniEditsBlocked, let run = miniRuns[.qa], run.batchID == batchID,
               run.projectID == activeProjectID, let qa = run.qa, let database else { return }
+        if kept != qa.kept { recordMiniUndo(.qa) }
         miniRuns[.qa]?.qa?.kept = kept
         let sectionIDs = qa.sections.map(\.id)
         // Already-kept exchanges keep their list order; new ticks join in
@@ -364,11 +367,12 @@ extension AppStore {
 
     /// `ids` is the kept list in its new order; a rewrite of qa_picks.
     func reorderMiniQAKept(_ ids: [Int64], batchID: String) {
-        guard let run = miniRuns[.qa], run.batchID == batchID,
+        guard !miniEditsBlocked, let run = miniRuns[.qa], run.batchID == batchID,
               run.projectID == activeProjectID, let qa = run.qa, let database, !isWizardRunning else { return }
         let ordered = ids.filter(qa.kept.contains) + qa.keptOrder.filter { !ids.contains($0) }
             + qa.kept.subtracting(ids).subtracting(qa.keptOrder).sorted()
         guard ordered != qa.keptOrder else { return }
+        recordMiniUndo(.qa)
         miniRuns[.qa]?.qa?.keptOrder = ordered
         let projectID = run.projectID
         let videoID = run.video.id
@@ -387,10 +391,12 @@ extension AppStore {
 
     /// Reorders the Highlights candidates; remembered next to their kept state.
     func reorderMiniHighlightCandidates(_ ids: [Int64], batchID: String) {
-        guard let run = miniRun, run.batchID == batchID, run.footageKind == .highlights, !isWizardRunning else { return }
+        guard !miniEditsBlocked, let run = miniRun, run.batchID == batchID, run.footageKind == .highlights,
+              !isWizardRunning else { return }
         let byID = Dictionary(run.candidates.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let ordered = ids.compactMap { byID[$0] } + run.candidates.filter { !ids.contains($0.id) }
         guard ordered.map(\.id) != run.candidates.map(\.id) else { return }
+        recordMiniUndo(.highlights)
         miniRun?.candidates = ordered
         UserDefaults.standard.set(ordered.map { String($0.id) }, forKey: MiniWizardMemory.highlightOrderKey(batchID))
     }
@@ -400,6 +406,7 @@ extension AppStore {
     /// local writes have finished. A write queued meanwhile wins: the run is
     /// left alone and the next pull reloads it.
     func refreshMiniPicksAfterSync(changedTables: Set<String>) async {
+        if !changedTables.isDisjoint(with: ["transcript_picks", "qa_picks", "scenes"]) { forgetAllMiniUndo() }
         guard let database, !isWizardRunning else { return }
         let generation = profileGeneration
         if changedTables.contains("transcript_picks"), let run = miniRuns[.transcript], run.transcript != nil {

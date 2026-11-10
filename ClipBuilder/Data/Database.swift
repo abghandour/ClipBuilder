@@ -952,6 +952,20 @@ actor Database {
                         ["dub_takes", "dub_speaker_overrides"].contains($0.name)
                     })
                 }
+                // Schema 50: voice profiles join team sync, so every Mac names
+                // speakers from the same remembered voices.
+                // An attached profile queues the rows it already has. This does
+                // not reopen the join pass (seedFootageSync): that pass lets the
+                // server win over unsent edits in every table, and this table
+                // is small enough to queue here.
+                if stamped < 50 {
+                    try connection.execute("""
+                        INSERT INTO sync_outbox("table", sync_id, op)
+                        SELECT 'voice_profiles', v.sync_id, 'upsert' FROM voice_profiles v
+                        WHERE EXISTS (SELECT 1 FROM sync_binding)
+                            AND NOT EXISTS (SELECT 1 FROM sync_outbox o WHERE o."table" = 'voice_profiles' AND o.sync_id = v.sync_id)
+                        """)
+                }
                 if stamped < 28 { try Self.seedFootageSync(connection) }
                 // Schema 45: one scene per range on videos without a run (see
                 // Database+SceneIdentity). Needs the sync triggers above.
@@ -984,7 +998,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 49
+    static let schemaVersion: Int64 = 50
 
     /// The library was last opened by a build with a newer schema.
     nonisolated struct NewerLibrary: LocalizedError, Equatable {

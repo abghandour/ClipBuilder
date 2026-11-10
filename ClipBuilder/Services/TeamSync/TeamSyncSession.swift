@@ -66,9 +66,9 @@ actor TeamSyncSession {
     }
 
     func client() async throws -> SupabaseClient {
-        guard var value = try restore() else { throw SyncError.invalidRow("Sign in to Team sync") }
+        guard var value = try restore() else { throw SyncError.signedOut }
         if (value.expires_at ?? 0) < Date().timeIntervalSince1970 + 60 {
-            guard let token = value.refresh_token else { throw SyncError.invalidRow("Sign in again") }
+            guard let token = value.refresh_token else { throw SyncError.signedOut }
             let capturedGeneration = generation
             let task: Task<SupabaseClient.Session, Error>
             if let refresh { task = refresh }

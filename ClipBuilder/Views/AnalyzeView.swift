@@ -48,6 +48,8 @@ struct AnalyzeView: View {
     /// the prompt asks whether to resume or start over.
     @State private var resumePrompt: ResumePrompt?
     @State private var typePrompt: TypePrompt?
+    /// Continue's work, held until the type prompt sheet has closed.
+    @State private var afterTypePrompt: (() -> Void)?
     @State private var showingImporter = false
     @State private var showingProjectVideoPicker = false
     @State private var showingProjectFromSelection = false
@@ -421,9 +423,19 @@ struct AnalyzeView: View {
             DispatchPlanSheet(operation: pending.operation, videos: pending.videos,
                               onStart: pending.run)
         }
-        .sheet(item: $typePrompt) { prompt in
+        // What Continue starts may present its own dialog (the transcription
+        // model question); it runs once this sheet has gone, or AppKit can
+        // drop that presentation.
+        .sheet(item: $typePrompt, onDismiss: {
+            let run = afterTypePrompt
+            afterTypePrompt = nil
+            run?()
+        }) { prompt in
             VideoTypePromptSheet(videos: prompt.untyped,
-                                 onContinue: { typePrompt = nil; prompt.continue($0) },
+                                 onContinue: { confirmed in
+                                     afterTypePrompt = { prompt.continue(confirmed) }
+                                     typePrompt = nil
+                                 },
                                  onCancel: { typePrompt = nil })
         }
         .sheet(isPresented: $showingProjectVideoPicker) {
@@ -1192,9 +1204,16 @@ struct AnalyzeView: View {
                 }
             }
             Button("Transcribe") {
-                for video in store.videos.filter({ ids.contains($0.id) }) {
-                    store.transcribe(video: video)
+                store.requestTranscription(videos: store.videos.filter { ids.contains($0.id) })
+            }
+            // Transcribe reuses a stored transcript; this makes a new set
+            // and keeps the old one in the transcript's sets list.
+            let transcribed = store.videos.filter { ids.contains($0.id) && (store.transcriptCounts[$0.id] ?? 0) > 0 }
+            if !transcribed.isEmpty {
+                Button("Re-transcribe") {
+                    store.requestTranscription(videos: transcribed, force: true)
                 }
+                .disabled(transcribed.allSatisfy { store.transcribingVideoIDs.contains($0.id) })
             }
             Button("Generate Video…") {
                 selection = ids
@@ -1673,7 +1692,7 @@ private struct VideoPreviewPane: View {
                         }
                     }
                     Spacer()
-                    Button("Change…", systemImage: "text.quote") {
+                    Button("Edit…", systemImage: "text.quote") {
                         showTranscript = true
                     }
                     .controlSize(.small)

@@ -156,7 +156,7 @@ extension Database {
             // Lines attributed to them by hand go back to the automatic label.
             try connection.execute("UPDATE transcripts SET speaker_key = NULL WHERE speaker_key = ?",
                                    [.text(person.key)])
-            try connection.execute("DELETE FROM voice_profiles WHERE person_key = ?", [.text(person.key)])
+            try deleteVoiceProfiles(where: "person_key = ?", [.text(person.key)])
             try connection.execute("DELETE FROM scene_tags WHERE tag = ?", [.text(person.tag)])
             try connection.execute("UPDATE person_markers SET person_id = NULL WHERE person_id = ?",
                                    [.integer(person.id)])
@@ -204,9 +204,7 @@ extension Database {
                                    [.text(target.key), .text(source.key)])
         }
         // The target's own voice from a file wins over the source's.
-        try connection.execute("UPDATE OR IGNORE voice_profiles SET person_key = ? WHERE person_key = ?",
-                               [.text(target.key), .text(source.key)])
-        try connection.execute("DELETE FROM voice_profiles WHERE person_key = ?", [.text(source.key)])
+        try moveVoiceProfiles(from: source.key, to: target.key, videoID: nil)
         try connection.execute("UPDATE OR IGNORE scene_tags SET tag = ? WHERE tag = ?",
                                [.text(target.tag), .text(source.tag)])
         // Rows whose retag collided with an existing target tag remain.
@@ -306,8 +304,7 @@ extension Database {
 
             // Remove voices that moved to the survivor, then put both sides back.
             for videoID in Set(snapshot.voiceProfiles.compactMap { $0["video_id"]?.intValue }) {
-                try connection.execute("DELETE FROM voice_profiles WHERE person_key = ? AND video_id = ?",
-                                       [.text(survivor.key), .integer(videoID)])
+                try deleteVoiceProfiles(where: "person_key = ? AND video_id = ?", [.text(survivor.key), .integer(videoID)])
             }
             for row in snapshot.voiceProfiles + snapshot.survivorVoiceProfiles {
                 try restorePeopleMergeRow(row, table: "voice_profiles")
@@ -340,6 +337,65 @@ extension Database {
                                        [.text(entry.key), .integer(entry.id)])
             }
         }
+    }
+
+    // MARK: - Voice fingerprints (People page)
+
+    /// Videos whose speaker map taught this person's voice, newest first.
+    /// Matches what the next map is seeded with (fetchVoiceProfiles).
+    func voiceFingerprintSources(personKey: String) throws -> [VoiceFingerprintSource] {
+        try connection.query("""
+            SELECT voice_profiles.video_id, videos.filename, voice_profiles.windows, voice_profiles.correction_windows
+            FROM voice_profiles JOIN videos ON videos.id = voice_profiles.video_id
+            WHERE voice_profiles.person_key = ? AND \(Self.activeDerivedPredicate(table: "voice_profiles"))
+            ORDER BY voice_profiles.updated_at DESC, voice_profiles.video_id DESC
+            """, [.text(personKey)]).compactMap { row in
+                guard let videoID = row["video_id"]?.intValue else { return nil }
+                return VoiceFingerprintSource(videoID: videoID, filename: row["filename"]?.stringValue ?? "",
+                                              windows: Int(row["windows"]?.intValue ?? 0),
+                                              correctionWindows: Int(row["correction_windows"]?.intValue ?? 0))
+            }
+    }
+
+    /// How many videos taught each person's voice, by people.key.
+    func voiceFingerprintCounts() throws -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for row in try connection.query("""
+            SELECT person_key, COUNT(*) AS n FROM voice_profiles
+            WHERE \(Self.activeDerivedPredicate(table: "voice_profiles")) GROUP BY person_key
+            """) {
+            if let key = row["person_key"]?.stringValue { counts[key] = Int(row["n"]?.intValue ?? 0) }
+        }
+        return counts
+    }
+
+    /// Forgets what one video (nil: every video, whichever transcription set
+    /// produced it) taught about a person's voice.
+    func forgetVoiceFingerprint(personKey: String, videoID: Int64?) throws {
+        try connection.transaction {
+            if let videoID {
+                try deleteVoiceProfiles(where: "person_key = ? AND video_id = ?", [.text(personKey), .integer(videoID)])
+            } else {
+                try deleteVoiceProfiles(where: "person_key = ?", [.text(personKey)])
+            }
+        }
+    }
+
+    /// Hands one person's voice to another (nil drops it), in one video or all.
+    /// The moved voice is a new row and the old one a deletion: on Team Sync a
+    /// voice profile's identity stands for its (person, video), so renaming a
+    /// row in place would leave two identities for one voice across the team.
+    private func moveVoiceProfiles(from source: String, to target: String?, videoID: Int64?) throws {
+        let scope = videoID == nil ? "" : " AND video_id = ?"
+        let video: [SQLValue] = videoID.map { [.integer($0)] } ?? []
+        if let target {
+            try connection.execute("""
+                INSERT OR IGNORE INTO voice_profiles (person_key, video_id, vector_json, windows, correction_windows, updated_at, transcription_key)
+                SELECT ?, video_id, vector_json, windows, correction_windows, updated_at, transcription_key
+                FROM voice_profiles WHERE person_key = ?\(scope)
+                """, [.text(target), .text(source)] + video)
+        }
+        try deleteVoiceProfiles(where: "person_key = ?\(scope)", [.text(source)] + video)
     }
 
     /// Only called with table names above and columns captured by SELECT *.
@@ -424,13 +480,7 @@ extension Database {
             }
 
             // Keep the target's own voice if both people had one in this video.
-            if let to {
-                try connection.execute("""
-                    UPDATE OR IGNORE voice_profiles SET person_key = ? WHERE person_key = ? AND video_id = ?
-                    """, [.text(to.key), .text(from.key), .integer(videoID)])
-            }
-            try connection.execute("DELETE FROM voice_profiles WHERE person_key = ? AND video_id = ?",
-                                   [.text(from.key), .integer(videoID)])
+            try moveVoiceProfiles(from: from.key, to: to?.key, videoID: videoID)
             try connection.execute("UPDATE person_markers SET person_id = ? WHERE video_id = ? AND person_id = ?",
                                    [to.map { .integer($0.id) } ?? .null, .integer(videoID), .integer(from.id)])
 

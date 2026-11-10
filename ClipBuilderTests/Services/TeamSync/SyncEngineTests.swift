@@ -10,7 +10,7 @@ struct SyncEngineTests {
         let fixture = try await Fixtures.personCorrection(in: temp)
         try await temp.database.bindSync(to: SyncScope(teamID: UUID(), profileID: UUID()))
         let raw = try SQLiteConnection(path: temp.path.path)
-        let tables = ["scene_tags", "speaker_turns", "transcripts", "topic_ranges", "person_markers", "video_people"]
+        let tables = ["scene_tags", "speaker_turns", "transcripts", "topic_ranges", "person_markers", "video_people", "voice_profiles"]
         var changedIDs: [String: Set<String>] = [:]
         var otherIDs: [String: Set<String>] = [:]
         for table in tables {
@@ -33,11 +33,12 @@ struct SyncEngineTests {
         for table in tables {
             let ids = Set(pending.filter { $0["table"]?.stringValue == table }.compactMap { $0["sync_id"]?.stringValue })
             #expect(!ids.isEmpty, "Missing outbox rows for \(table)")
-            #expect(ids == changedIDs[table])
+            // A moved voice is a new row plus the old one's deletion.
+            if table == "voice_profiles" { #expect(ids.isSuperset(of: changedIDs[table] ?? ["missing"])) }
+            else { #expect(ids == changedIDs[table]) }
             #expect(ids.isDisjoint(with: otherIDs[table] ?? []))
         }
         #expect(try await temp.database.syncPendingCount() > 0)
-        #expect(!pending.contains { $0["table"]?.stringValue == "voice_profiles" })
     }
 
     private func engine(_ folder: SyncTestFolder, _ server: StubSyncServer, _ scope: SyncScope) -> SyncEngine {

@@ -16,6 +16,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
     case openInEditor
     case roughCut
     case voiceClone
+    case wordTimingModel
 
     var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief || self == .generateImage }
     /// Routine cycles finish quietly; the outcome goes to the activity log only.
@@ -64,6 +65,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .openInEditor: "Open in Editor"
         case .roughCut: "Rough Cut"
         case .voiceClone: "Voice Clone"
+        case .wordTimingModel: "Word Timing Model"
         }
     }
 
@@ -74,7 +76,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .instagramPublish, .report: "instagram"
         case .socialExport, .dub, .generateImage, .trackImage, .builderAssistant, .hookVariants, .fightStory: "builder"
         case .profileStarter, .overlayTemplate, .imageSearch, .resourceExport, .resourceImport,
-             .evaluateReelModel, .publishLessons, .teamSync: "app"
+             .evaluateReelModel, .publishLessons, .teamSync, .wordTimingModel: "app"
         case .criticBrief, .evaluateCritic, .postText, .openInEditor, .roughCut: "wizard"
         default: "analysis"
         }

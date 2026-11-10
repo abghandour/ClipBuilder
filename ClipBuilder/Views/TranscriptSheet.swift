@@ -41,7 +41,11 @@ struct TranscriptSheet: View {
     @State private var compareMode = false
     @State private var hoveredRowID: Int64?
     @State private var confirmRevertAll = false
+    @State private var confirmDeleteSet = false
+    @State private var confirmDeleteAllSets = false
     @State private var retranscribeEditCount = 0
+    /// The word timings offered by the re-transcribe dialog, read when it opens.
+    @State private var retranscribeOptions: [WordTiming] = [.recognizer]
     @State private var confirmUndoRecut = false
     @State private var undoRecutEditCount = 0
     @State private var showsQA = false
@@ -273,6 +277,16 @@ struct TranscriptSheet: View {
                     Button("Use automatic") { changePin(nil) }
                         .lineLimit(1).fixedSize()
                         .disabled(pinnedTranscriptionKey == nil)
+                    Menu {
+                        Button("Delete This Transcript…", role: .destructive) { confirmDeleteSet = true }
+                            .disabled(selectedTranscriptionKey.isEmpty)
+                        Button("Delete All Transcripts…", role: .destructive) { confirmDeleteAllSets = true }
+                    } label: {
+                        Label("Delete", systemImage: "trash").lineLimit(1).fixedSize()
+                    }
+                    .fixedSize()
+                    .disabled(store.transcribingVideoIDs.contains(video.id))
+                    .help("Delete the selected transcript set, or every transcript of this video")
                 }
                 .disabled(hasChanges || isSaving)
                 if missingTranscriptionPin {
@@ -280,6 +294,22 @@ struct TranscriptSheet: View {
                         .font(.caption).foregroundStyle(.secondary)
                 }
             }
+        }
+    }
+
+    /// Deletes the set shown (or, with nil, every transcript of the video).
+    /// With nothing left there is nothing to edit, so the sheet closes.
+    private func deleteSets(_ key: String?) {
+        isSaving = true
+        Task {
+            defer { isSaving = false }
+            do {
+                try await store.deleteTranscriptSets(video: video, key: key)
+                let remaining = (try? await store.database?.transcriptionSets(videoID: video.id)) ?? []
+                if remaining.isEmpty { dismiss(); return }
+                selectedTranscriptionKey = ""
+                await load()
+            } catch { store.presentError("Could not delete the transcript", error) }
         }
     }
 
@@ -443,16 +473,33 @@ struct TranscriptSheet: View {
         .onDisappear { stopPlayback(releasePlayer: true) }
         .sheet(isPresented: $showTools) { TranscriptToolsSheet(video: video) }
         .confirmationDialog("Re-transcribe this video?", isPresented: $confirmRetranscribe) {
-            Button("Discard Transcript and Re-transcribe", role: .destructive) {
-                store.transcribe(video: video, force: true)
+            // Always destructive here: confirming drops unsaved changes and closes the sheet.
+            RetranscribeButtons(options: retranscribeOptions, destructive: true) { timing in
+                store.transcribe(video: video, force: true, wordTiming: timing)
                 dismiss()
             }
             Button("Cancel", role: .cancel) {}
         } message: {
-            Text(retranscribeEditCount > 0
+            Text((retranscribeEditCount > 0
                  ? ConfirmTranscriptLoss.message(count: retranscribeEditCount)
                     + (hasChanges ? " Unsaved changes will be discarded." : "")
                  : "This makes a new transcript set, discards any unsaved changes, and closes this sheet. The previous set stays in the sets list.")
+                 + (retranscribeOptions.count > 1 ? " " + TranscriptionModelChoiceDialog.message : ""))
+        }
+        .confirmationDialog("Delete this transcript?", isPresented: $confirmDeleteSet) {
+            Button("Delete Transcript", role: .destructive) { deleteSets(selectedTranscriptionKey) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Deletes the selected transcript set with its edits, translations, speaker map and topics"
+                 + (transcriptionSets.count > 1 ? "; the newest remaining set becomes active." : ". This video will have no transcript.")
+                 + " Picks and clips already made from it stay. This cannot be undone.")
+        }
+        .confirmationDialog("Delete all transcripts of this video?", isPresented: $confirmDeleteAllSets) {
+            Button("Delete All \(transcriptionSets.count) Transcripts", role: .destructive) { deleteSets(nil) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Deletes every transcript set of this video with its edits, translations, speaker maps and topics, "
+                 + "and closes this sheet. Picks and clips already made from them stay. This cannot be undone.")
         }
         .confirmationDialog("Undo re-cut?", isPresented: $confirmUndoRecut) {
             Button("Undo Re-cut", role: .destructive) { undoRecut() }
@@ -523,6 +570,7 @@ struct TranscriptSheet: View {
                     Button("Re-transcribe…") {
                         Task {
                             retranscribeEditCount = await store.transcriptEditCount(videoID: video.id)
+                            retranscribeOptions = store.transcriptionTimingOptions(for: [video], force: true)
                             confirmRetranscribe = true
                         }
                     }

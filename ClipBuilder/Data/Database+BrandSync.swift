@@ -231,20 +231,7 @@ extension Database {
                                 try connection.execute("UPDATE library_asset_metadata SET asset_id = ? WHERE rowid = ?",
                                                        [.text(asset), row["local_rowid"] ?? .null])
                             }
-                            // Home has its own shared identity (canonicalizeHomeIdentity).
-                            let isHome = table.name == "projects" && row["is_home"]?.intValue == 1
-                            if !isHome, isPortableSyncRow(row, table: table), let portable = try portableSyncRow(row, table: table),
-                               let old = row["sync_id"]?.stringValue {
-                                var key = table.naturalKey.map { column -> String in
-                                    let value = portable[column]?.stringValue ?? "<null>"
-                                    return column == "username" ? value.lowercased() : value
-                                }
-                                // These keys have no local UNIQUE constraint. Preserve
-                                // each row, including two equal-time events/segments.
-                                if table.preservesDuplicateKeys { key.append(old) }
-                                let canonical = SyncMapping.stableID([scope.teamID.uuidString, scope.profileID.uuidString, table.name] + key)
-                                if old != canonical { try rekeySyncRow(table: table, old: old, new: canonical) }
-                            }
+                            try canonicalizeSyncIdentity(of: row, table: table, scope: scope)
                             try connection.execute("RELEASE sync_identity_row")
                         } catch {
                             try connection.execute("ROLLBACK TO sync_identity_row")
@@ -261,6 +248,68 @@ extension Database {
                 await Task.yield()
             }
         }
+    }
+
+    /// Caller holds a transaction with sync_control suspended.
+    private func canonicalizeSyncIdentity(of row: SQLRow, table: SyncTable, scope: SyncScope) throws {
+        // Home has its own shared identity (canonicalizeHomeIdentity).
+        let isHome = table.name == "projects" && row["is_home"]?.intValue == 1
+        guard !isHome, isPortableSyncRow(row, table: table), let portable = try portableSyncRow(row, table: table),
+              let old = row["sync_id"]?.stringValue else { return }
+        var key = table.naturalKey.map { column -> String in
+            let value = portable[column]?.stringValue ?? "<null>"
+            return column == "username" ? value.lowercased() : value
+        }
+        // These keys have no local UNIQUE constraint. Preserve
+        // each row, including two equal-time events/segments.
+        if table.preservesDuplicateKeys { key.append(old) }
+        let canonical = SyncMapping.stableID([scope.teamID.uuidString, scope.profileID.uuidString, table.name] + key)
+        if old != canonical { try rekeySyncRow(table: table, old: old, new: canonical) }
+    }
+
+    /// Deletes voice profiles so the team follows. A voice learned since the
+    /// last push still carries a random identity; it takes the shared one for
+    /// its (person, video) first, or the deletion would name a row no teammate
+    /// has and a copy they learned themselves would come back. Caller holds a
+    /// transaction.
+    func deleteVoiceProfiles(where predicate: String, _ values: [SQLValue]) throws {
+        if let scope = try syncScope() {
+            /// Rows of `name` matching `filter` that still wait for a shared identity.
+            func unsettled(_ name: String, _ filter: String) throws -> [SQLRow] {
+                try connection.query("""
+                    SELECT * FROM \(name) WHERE (\(filter)) AND substr(sync_id, 15, 1) != '5'
+                        AND sync_id IN (SELECT sync_id FROM sync_outbox WHERE "table" = '\(name)')
+                        AND sync_id NOT IN (SELECT sync_id FROM sync_wire_rows WHERE "table" = '\(name)')
+                    """, values)
+            }
+            if try !unsettled("voice_profiles", predicate).isEmpty {
+                try connection.execute("UPDATE sync_control SET suspended = 1 WHERE id = 1")
+                // The voice's identity is built on its video's, so a video that
+                // has not been pushed either takes its shared identity first.
+                let videos = try SyncTable.named("videos"), voices = try SyncTable.named("voice_profiles")
+                /// As in canonicalizeSyncIdentities: a row that cannot take
+                /// its shared identity is skipped, never a reason to fail
+                /// the caller's delete, merge or speaker map.
+                func settle(_ row: SQLRow, _ table: SyncTable) throws {
+                    try connection.execute("SAVEPOINT voice_identity_row")
+                    do {
+                        try canonicalizeSyncIdentity(of: row, table: table, scope: scope)
+                        try connection.execute("RELEASE voice_identity_row")
+                    } catch {
+                        try connection.execute("ROLLBACK TO voice_identity_row")
+                        try connection.execute("RELEASE voice_identity_row")
+                        if error is CancellationError { throw error }
+                        NSLog("Team Sync: skipping identity in %@: %@", table.name, error.localizedDescription)
+                    }
+                }
+                for row in try unsettled("videos", "id IN (SELECT video_id FROM voice_profiles WHERE \(predicate))") {
+                    try settle(row, videos)
+                }
+                for row in try unsettled("voice_profiles", predicate) { try settle(row, voices) }
+                try connection.execute("UPDATE sync_control SET suspended = 0 WHERE id = 1")
+            }
+        }
+        try connection.execute("DELETE FROM voice_profiles WHERE \(predicate)", values)
     }
 
     /// Home is one shared project per profile: every Mac's Home carries the
@@ -522,6 +571,14 @@ extension Database {
                             // collide and abort the whole pull.
                             if try connection.query("SELECT 1 FROM \(table.name) WHERE sync_id = ?", [.text(id)]).isEmpty {
                                 try rekeySyncRow(table: table, old: old, new: id)
+                            } else if table.name == "voice_profiles" {
+                                // (person_key, video_id) is the primary key here, so the
+                                // upsert below would move this identity onto a key another
+                                // row holds and abort the whole pull. No client renames a
+                                // voice in place (moveVoiceProfiles), so this should not
+                                // arrive; if it does, keep both local rows as they are.
+                                NSLog("Team Sync: ignoring a voice profile renamed onto %@", old)
+                                continue rowLoop
                             } else {
                                 NSLog("Team Sync: %@ already holds %@; leaving %@ as a local duplicate", table.name, id, old)
                             }

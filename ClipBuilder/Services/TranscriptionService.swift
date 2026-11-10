@@ -29,10 +29,13 @@ actor TranscriptionService {
     private let capturedPodcastSettings: PodcastSettings?
     private let strictEnrichment: Bool
     private let spokenLocales: [String]
+    private let wordTiming: WordTiming
 
     init(cacheDirectory: URL = SettingsStore.cacheDirectory.appendingPathComponent("transcripts", isDirectory: true),
-         podcastSettings: PodcastSettings? = nil, strictEnrichment: Bool = false, spokenLocales: [String] = []) {
+         podcastSettings: PodcastSettings? = nil, strictEnrichment: Bool = false, spokenLocales: [String] = [],
+         wordTiming: WordTiming = .recognizer) {
         self.spokenLocales = spokenLocales
+        self.wordTiming = wordTiming
         capturedPodcastSettings = podcastSettings
         self.strictEnrichment = strictEnrichment
         self.cacheDirectory = cacheDirectory
@@ -124,9 +127,13 @@ actor TranscriptionService {
         let segments: [TranscriptSegment]
         let transcriptionKey: String
         if stored.isEmpty || otherLanguage {
+            // The cache holds the recognizer's times; precise timing is
+            // applied to what gets stored, so the setting can change later.
+            let refined = try await refineTiming(cached.segments, language: cached.detectedLanguage, video: video, log: log)
+            try Task.checkCancellation()
             transcriptionKey = try await Self.storeOriginal(videoID: video.id, language: cached.detectedLanguage,
-                segments: cached.segments, database: database)
-            segments = cached.segments
+                segments: refined.segments, database: database, model: refined.model)
+            segments = refined.segments
         } else {
             guard let key = stored.first?.transcriptionKey else { throw ScriptError.invalid("The stored transcript has no set key.") }
             transcriptionKey = key
@@ -357,8 +364,11 @@ actor TranscriptionService {
         }
 
         try Task.checkCancellation()
+        let refined = try await refineTiming(segments, language: languageTag, video: video, log: log)
+        try Task.checkCancellation()
+        segments = refined.segments
         let transcriptionKey = try await Self.storeOriginal(videoID: video.id, language: languageTag,
-            segments: segments, database: database, seconds: seconds)
+            segments: segments, database: database, seconds: seconds, model: refined.model)
         do { try await enrich(segments, transcriptionKey: transcriptionKey, video: video, database: database) }
         catch {
             if strictEnrichment { throw error }
@@ -405,11 +415,41 @@ actor TranscriptionService {
     /// A completed recognizer result always starts a new set. Cache hits that
     /// reuse stored rows bypass this write and retain their existing key.
     static func storeOriginal(videoID: Int64, language: String, segments: [TranscriptSegment],
-                              database: Database, seconds: TimeInterval? = nil) async throws -> String {
+                              database: Database, seconds: TimeInterval? = nil,
+                              model: String = modelName) async throws -> String {
         let key = UUID().uuidString.lowercased()
         return try await database.replaceTranscripts(videoID: videoID, transcriptionKey: key,
             language: language, isTranslation: false, segments: segments,
-            provider: providerName, model: modelName, seconds: seconds)
+            provider: providerName, model: model, seconds: seconds)
+    }
+
+    /// Precise word timing, when the user chose it and the aligner covers
+    /// this language. The recognizer's text is never changed, and a failure
+    /// here keeps the recognizer's times: a transcript is worth more than
+    /// its timing.
+    private func refineTiming(_ segments: [TranscriptSegment], language: String, video: VideoRecord,
+                              log: @Sendable (String) -> Void) async throws -> (segments: [TranscriptSegment], model: String) {
+        guard WordAlignerModel.applies(timing: wordTiming, language: language) else { return (segments, Self.modelName) }
+        guard WordAlignerModel.isInstalled else {
+            log("Precise word timing is on but its model is not installed; keeping the recognizer's times. Install it in Settings → Transcription.")
+            return (segments, Self.modelName)
+        }
+        do {
+            log("Refining word timing for \(video.filename)...")
+            let started = ContinuousClock.now
+            let audioURL = try await NormalizedAudioCache.shared.audio(source: video.url)
+            // Progress lines belong to the caller's own job, not this step.
+            let result = try await WordAligner.shared.retime(segments: segments, audioURL: audioURL) { _ in }
+            log("Word timing refined in \(AIProvenance.durationLabel((ContinuousClock.now - started).seconds)): \(result.aligned) words placed, \(result.kept) left on recognizer time")
+            // Nothing placed means the times are still the recognizer's: say so.
+            return (result.segments, result.aligned > 0 ? WordAlignerModel.provenanceModel : Self.modelName)
+        } catch is CancellationError {
+            throw CancellationError()
+        } catch {
+            try Task.checkCancellation()
+            log("Precise word timing failed, keeping the recognizer's times: \(error)")
+            return (segments, Self.modelName)
+        }
     }
 
     /// Rebuild inexpensive derived records on this service actor, never on the UI actor.

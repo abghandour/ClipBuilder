@@ -43,6 +43,7 @@ extension AppStore {
         }
         projectLanguageAssets = results
         languageAssets = projectID.flatMap { results[$0] } ?? []
+        autoInstallWordTimingModelIfNeeded()
         await refreshRecognizerStates()
     }
 

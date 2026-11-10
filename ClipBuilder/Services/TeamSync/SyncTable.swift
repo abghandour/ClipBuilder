@@ -156,6 +156,12 @@ nonisolated struct SyncTable: Sendable, Equatable {
             columns: ["video_id", "person_id", "portrait_at", "portrait_json", "ranges_json", "detected_at", "vip", "vip_source"],
             integers: ["video_id", "person_id", "vip"], reals: ["portrait_at"],
             naturalKey: ["video_id", "person_id"], references: ["video_id": "videos", "person_id": "people"]),
+        // What each file taught about a person's voice. person_key is the
+        // portable people.key, like speaker_turns.person_key.
+        SyncTable(name: "voice_profiles",
+            columns: ["person_key", "video_id", "vector_json", "windows", "correction_windows", "updated_at", "transcription_key"],
+            integers: ["video_id", "windows", "correction_windows"], reals: [],
+            naturalKey: ["person_key", "video_id"], references: ["video_id": "videos"]),
         SyncTable(name: "person_markers",
             columns: ["video_id", "at_time", "x", "y", "width", "height", "person_id", "ignored", "created_at"],
             integers: ["video_id", "person_id", "ignored"], reals: ["at_time", "x", "y", "width", "height"],

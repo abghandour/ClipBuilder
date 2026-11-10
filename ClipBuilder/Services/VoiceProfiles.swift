@@ -13,11 +13,23 @@ nonisolated struct VoiceProfile: Codable, Sendable, Equatable {
     var correctionWindows: Int = 0
 }
 
+/// One video's contribution to a person's voice fingerprint, for the People page.
+nonisolated struct VoiceFingerprintSource: Sendable, Equatable, Identifiable {
+    var videoID: Int64
+    var filename: String
+    var windows: Int
+    var correctionWindows: Int
+    var id: Int64 { videoID }
+}
+
 /// Voices remembered across files. A finished map stores a profile per
 /// named tile; the next map seeds its enrollment with the people in the
 /// tiles, and names a tile the face pass left unnamed when its voice is
 /// one the app already knows.
 nonisolated enum VoiceProfiles {
+    /// Posted after a speaker map stored (or replaced) a video's voices.
+    static let didChange = Notification.Name("ClipBuilder.VoiceProfiles.didChange")
+
     /// The audio has to be trusted this much before a file's profiles are
     /// worth remembering.
     static let storeTrust = 0.8

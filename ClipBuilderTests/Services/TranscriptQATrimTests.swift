@@ -322,6 +322,23 @@ struct TranscriptQATrimTests {
         #expect(TranscriptQATrim.range(10...20, movingEndTo: word(2, 3), limits: limits) == 10...11)
     }
 
+    @Test func anAnchorDragShrinksToOneWordNotOneSecond() {
+        // "Alice Pereira, muito" is about a second; dropping "muito" must work.
+        let words = [word(0.12, 0.48), word(0.48, 0.9), word(0.9, 1.12), word(1.12, 1.6)]
+        let limits = 0.0...30.0
+        #expect(TranscriptQATrim.range(0.12...1.12, moving: .end, to: words[1], words: words, limits: limits) == 0.12...0.9)
+        #expect(TranscriptQATrim.range(0.12...1.12, moving: .end, to: words[0], words: words, limits: limits) == 0.12...0.48)
+        #expect(TranscriptQATrim.range(0.12...1.12, moving: .start, to: words[2], words: words, limits: limits) == 0.9...1.12)
+        // Past the other edge it stops at the last word on that side, never empty.
+        #expect(TranscriptQATrim.range(0.48...1.12, moving: .end, to: words[0], words: words, limits: limits) == 0.48...0.9)
+        #expect(TranscriptQATrim.range(0.12...0.9, moving: .start, to: words[3], words: words, limits: limits) == 0.48...0.9)
+        // A sliver inside one long word has no word edge to stop at: it is never emptied.
+        #expect(TranscriptQATrim.range(0.2...0.3, moving: .start, to: words[3], words: words, limits: limits) == 0.2...0.3)
+        #expect(TranscriptQATrim.range(0.2...0.3, moving: .end, to: words[0], words: words, limits: limits) == 0.2...0.48)
+        // Growing is unchanged.
+        #expect(TranscriptQATrim.range(0.12...0.9, moving: .end, to: words[3], words: words, limits: limits) == 0.12...1.6)
+    }
+
     @Test func recordingBoundsAndOneSecondMinimumStillApply() {
         #expect(TranscriptQATrim.range(10...11, movingStartTo: word(10.2, 10.8), limits: 10...20) == 10...11)
         #expect(TranscriptQATrim.range(10...11, movingEndTo: word(10, 10.4), limits: 0...11) == 10...11)

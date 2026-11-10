@@ -77,6 +77,12 @@ struct WizardPreviewList: View {
     private var header: some View {
         HStack(spacing: Theme.spaceS) {
             SectionLabel(rows.count == 1 ? "1 clip" : "\(rows.count) clips")
+            if !rows.isEmpty {
+                // Everything in the reel, end to end.
+                durationLabel(rows.reduce(0) { $0 + $1.duration })
+                    .help("Total length of the clips in the reel")
+                    .accessibilityLabel("Total length \(Self.clock(rows.reduce(0) { $0 + $1.duration }))")
+            }
             Spacer(minLength: 0)
             // One toggle: expands while any clip is collapsed, else collapses.
             let expandable = Set(rows.filter { !$0.text.isEmpty }.map(\.id))
@@ -172,12 +178,15 @@ struct WizardPreviewList: View {
                     } else if !row.segments.isEmpty {
                         speakerTurns(row, expanded: isExpanded)
                     } else {
-                        Text(row.text)
-                            .font(.body)
-                            .foregroundStyle(row.textKind == .description ? .secondary : .primary)
-                            .italic(row.textKind == .description)
-                            .lineLimit(isExpanded ? nil : Self.collapsedLines)
-                            .fixedSize(horizontal: false, vertical: true)
+                        VStack(alignment: .leading, spacing: Theme.spaceXS) {
+                            durationLabel(row.duration).frame(maxWidth: .infinity, alignment: .trailing)
+                            Text(row.text)
+                                .font(.body)
+                                .foregroundStyle(row.textKind == .description ? .secondary : .primary)
+                                .italic(row.textKind == .description)
+                                .lineLimit(isExpanded ? nil : Self.collapsedLines)
+                                .fixedSize(horizontal: false, vertical: true)
+                        }
                     }
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -215,7 +224,15 @@ struct WizardPreviewList: View {
             ForEach(turns.indices, id: \.self) { index in
                 let turn = turns[index]
                 VStack(alignment: .leading, spacing: Theme.spaceXS) {
-                    if let speaker = turn.speaker {
+                    // The clip's length sits on its first speaker's line, at
+                    // the row's right edge.
+                    if index == 0 {
+                        HStack(spacing: Theme.spaceS) {
+                            if let speaker = turn.speaker { SpeakerPill(speaker: speaker) }
+                            Spacer(minLength: Theme.spaceS)
+                            durationLabel(row.duration)
+                        }
+                    } else if let speaker = turn.speaker {
                         SpeakerPill(speaker: speaker)
                     }
                     // Collapsed with later turns hidden: the shown turn ends
@@ -227,6 +244,17 @@ struct WizardPreviewList: View {
                 }
             }
         }
+    }
+
+    private func durationLabel(_ seconds: Double) -> some View {
+        Text(Self.clock(seconds))
+            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+            .lineLimit(1).fixedSize()
+    }
+
+    /// Minutes and seconds to the nearest second ("0:12").
+    static func clock(_ seconds: Double) -> String {
+        WizardPreviewClips.clock(max(0, seconds).rounded())
     }
 
     private func toggleExpanded(_ row: WizardPreviewRow) {

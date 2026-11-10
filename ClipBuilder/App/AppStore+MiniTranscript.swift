@@ -62,7 +62,7 @@ extension AppStore {
 
     private func currentTranscriptRun() -> MiniWizardRun? {
         guard let run = miniRuns[.transcript], run.projectID == activeProjectID,
-              run.transcript != nil, !isWizardRunning else { return nil }
+              run.transcript != nil, !isWizardRunning, !miniEditsBlocked else { return nil }
         return run
     }
 
@@ -88,6 +88,7 @@ extension AppStore {
 
     func addMiniTranscriptPick(range: ClosedRange<Double>) {
         guard let run = currentTranscriptRun() else { return }
+        recordMiniUndo(.transcript)
         let videoID = run.video.id
         let projectID = run.projectID
         let batchID = run.batchID
@@ -117,6 +118,7 @@ extension AppStore {
         let pick = picks[index]
         let minimum = TranscriptQATrim.minimumSpan
         guard time - pick.start >= minimum, pick.end - time >= minimum else { return }
+        recordMiniUndo(.transcript)
         setMiniTranscriptPickRange(id, start: pick.start, end: time)
         let videoID = run.video.id
         let projectID = run.projectID
@@ -153,6 +155,7 @@ extension AppStore {
     func setMiniTranscriptPickRange(_ id: Int64, start: Double, end: Double) {
         guard let run = currentTranscriptRun(), end > start,
               let index = run.transcript?.picks.firstIndex(where: { $0.id == id }) else { return }
+        recordMiniUndo(.transcript)
         miniRuns[.transcript]?.transcript?.picks[index].start = start
         miniRuns[.transcript]?.transcript?.picks[index].end = end
         let projectID = run.projectID
@@ -167,6 +170,7 @@ extension AppStore {
         let byID = Dictionary(uniqueKeysWithValues: picks.map { ($0.id, $0) })
         let ordered = ids.compactMap { byID[$0] } + picks.filter { !ids.contains($0.id) }
         guard ordered.map(\.id) != picks.map(\.id) else { return }
+        recordMiniUndo(.transcript)
         miniRuns[.transcript]?.transcript?.picks = ordered.enumerated().map { position, pick in
             var pick = pick
             pick.position = position
@@ -185,6 +189,7 @@ extension AppStore {
         guard let run = currentTranscriptRun(), let picks = run.transcript?.picks else { return }
         let changed = picks.filter { $0.kept != ids.contains($0.id) }
         guard !changed.isEmpty else { return }
+        recordMiniUndo(.transcript)
         miniRuns[.transcript]?.transcript?.picks = picks.map { pick in
             var pick = pick
             pick.kept = ids.contains(pick.id)
@@ -201,6 +206,7 @@ extension AppStore {
 
     func deleteMiniTranscriptPick(_ id: Int64) {
         guard let run = currentTranscriptRun(), run.transcript?.picks.contains(where: { $0.id == id }) == true else { return }
+        recordMiniUndo(.transcript)
         miniRuns[.transcript]?.transcript?.picks.removeAll { $0.id == id }
         let projectID = run.projectID
         enqueueTranscriptPickWrite("Could not delete the pick", batchID: run.batchID) { database in
@@ -210,6 +216,7 @@ extension AppStore {
 
     func deleteAllMiniTranscriptPicks() {
         guard let run = currentTranscriptRun(), run.transcript?.picks.isEmpty == false else { return }
+        recordMiniUndo(.transcript)
         miniRuns[.transcript]?.transcript?.picks = []
         let videoID = run.video.id
         let projectID = run.projectID

@@ -46,15 +46,15 @@ struct AudioPeaksTests {
 
     @Test("A boundary drag moves only its own edge, and the speaker is the line playing there")
     func boundaryHelpers() {
-        #expect(RangeBoundaryWaveforms.range(10...20, edge: .start, to: 12) == 12...20)
-        #expect(RangeBoundaryWaveforms.range(10...20, edge: .end, to: 18.5) == 10...18.5)
+        #expect(RangeBoundary.range(10...20, edge: .start, to: 12) == 12...20)
+        #expect(RangeBoundary.range(10...20, edge: .end, to: 18.5) == 10...18.5)
         let lines = [
             TranscriptQATrim.Line(id: 0, start: 0, end: 5, speaker: "Alice", words: []),
             TranscriptQATrim.Line(id: 1, start: 6, end: 9, speaker: "Marcello", words: []),
         ]
-        #expect(RangeBoundaryWaveforms.speaker(at: 2, lines: lines) == "Alice")
-        #expect(RangeBoundaryWaveforms.speaker(at: 5.8, lines: lines) == "Marcello")
-        #expect(RangeBoundaryWaveforms.speaker(at: 20, lines: lines) == "Marcello")
-        #expect(RangeBoundaryWaveforms.speaker(at: 1, lines: []) == nil)
+        #expect(RangeBoundary.speaker(at: 2, lines: lines) == "Alice")
+        #expect(RangeBoundary.speaker(at: 5.8, lines: lines) == "Marcello")
+        #expect(RangeBoundary.speaker(at: 20, lines: lines) == "Marcello")
+        #expect(RangeBoundary.speaker(at: 1, lines: []) == nil)
     }
 }
