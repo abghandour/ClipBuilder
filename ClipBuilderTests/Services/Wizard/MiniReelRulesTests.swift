@@ -17,6 +17,55 @@ struct MiniReelRulesTests {
         return MiniWizardCandidate(selection: selection, take: take, kept: kept)
     }
 
+    @Test func picksOfOneUnitShareItsPlaceAndColour() {
+        func pick(_ id: Int64, _ group: String?) -> TranscriptPick {
+            TranscriptPick(id: id, videoID: 1, position: Int(id), start: 0, end: 1, originalStart: 0, originalEnd: 1,
+                           sceneID: nil, groupKey: group)
+        }
+        let run = MiniWizardRun(projectID: 1, video: Fixtures.video(), footageKind: .transcript, length: .automatic,
+                                batchID: "t", candidates: [], options: WizardOptions(),
+                                transcript: MiniWizardTranscript(rows: [], labels: [:],
+                                                                 picks: [pick(1, nil), pick(2, "g"), pick(3, "g"), pick(4, nil)]))
+        let places = [1, 2, 3, 4].map { MiniReelRules.sectionIndex(of: item(.transcript, $0), runs: [.transcript: run]) }
+        #expect(places == [0, 1, 1, 2])
+    }
+
+    @Test func unitPassagesStayTogetherAndTakeTheReelsOrder() {
+        let unit: [[Int64]] = [[1, 2, 3]]
+        func ids(_ items: [MiniReelItem]) -> [String] { items.map { "\($0.kind == .transcript ? "t" : "q")\($0.itemID)" } }
+        // Passage 3 dragged above 1 inside the block: the pick's order becomes 3, 1, 2.
+        let inside = [item(.transcript, 3), item(.transcript, 1), item(.transcript, 2), item(.qa, 9)]
+        let moved = MiniReelRules.unitOrders(inside, units: unit)
+        #expect(moved == [[3, 1, 2]])
+        #expect(ids(MiniReelRules.groupingUnits(inside, units: moved)) == ["t3", "t1", "t2", "q9"])
+        // Passage 1 dragged below another clip: it rejoins the block, now last.
+        let outside = [item(.transcript, 2), item(.transcript, 3), item(.qa, 9), item(.transcript, 1)]
+        let after = MiniReelRules.unitOrders(outside, units: unit)
+        #expect(after == [[2, 3, 1]])
+        #expect(ids(MiniReelRules.groupingUnits(outside, units: after)) == ["t2", "t3", "t1", "q9"])
+        // Another clip dropped among the passages ends up beside the block.
+        let split = [item(.transcript, 1), item(.transcript, 2), item(.qa, 9), item(.transcript, 3)]
+        #expect(ids(MiniReelRules.groupingUnits(split, units: unit)) == ["t1", "t2", "t3", "q9"])
+        // An unchecked passage is not in the reel and keeps its place after the shown ones.
+        #expect(MiniReelRules.unitOrders([item(.transcript, 3), item(.transcript, 1)], units: unit) == [[3, 1, 2]])
+        // A drag of another clip leaves a pick with an unchecked passage as it was.
+        #expect(MiniReelRules.unitOrders([item(.qa, 9), item(.transcript, 2), item(.transcript, 3)], units: unit) == [[1, 2, 3]])
+        // A two-passage pick: the passage dragged away comes back; the block stays put.
+        let pair: [[Int64]] = [[1, 2]]
+        let old = [item(.qa, 9), item(.transcript, 1), item(.transcript, 2)]
+        let dragged = [item(.transcript, 2), item(.qa, 9), item(.transcript, 1)]
+        let which = MiniReelRules.movedItem(from: old, to: dragged, units: pair)
+        #expect(which == .init(kind: .transcript, itemID: 2))
+        let order = MiniReelRules.unitOrders(dragged, units: pair)
+        #expect(ids(MiniReelRules.groupingUnits(dragged, units: order, moved: which)) == ["q9", "t2", "t1"])
+        // A clip that swapped places with a passage is the one that moved.
+        #expect(MiniReelRules.movedItem(from: old, to: [item(.transcript, 1), item(.qa, 9), item(.transcript, 2)], units: pair)
+                == .init(kind: .qa, itemID: 9))
+        // The list's order wins for a reel that still has the old one.
+        #expect(ids(MiniReelRules.groupingUnits([item(.transcript, 1), item(.transcript, 2), item(.transcript, 3)],
+                                                units: [[2, 1, 3]])) == ["t2", "t1", "t3"])
+    }
+
     @Test func replacedHighlightBatchLeavesTheReel() {
         let reel = [item(.highlights, 1065), item(.transcript, 1065), item(.highlights, 1071), item(.qa, 3)]
         // 1065 was a candidate of the batch that Generate replaced.

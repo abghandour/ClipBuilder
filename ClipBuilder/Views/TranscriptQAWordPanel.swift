@@ -28,6 +28,19 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     /// click commits an empty range on its way to the word and must not jump.
     var followsEmptyAnchor = false
     var onSpanPreview: ((ClosedRange<Double>) -> Void)? = nil
+    /// The other passages of a selection made of several (span selection
+    /// only); `range` is the one being edited.
+    var draftSpans: [TranscriptDraftSpan] = []
+    /// False when the passages are saved items that `otherRanges` already paints.
+    var paintsDraftSpans = true
+    /// The number of `range` among them; nil while it is the only passage.
+    var currentSpanNumber: Int? = nil
+    /// A press with Shift held: the next span is another passage, not a
+    /// change to the current one.
+    var onBeginSpan: (() -> Void)? = nil
+    /// A click on another passage makes it the one being edited.
+    var onSelectSpan: ((Int) -> Void)? = nil
+    var onDeleteSpan: ((Int) -> Void)? = nil
     /// Shown after the Follow / Translation controls (Express puts its Add button here).
     var accessory: AnyView? = nil
     /// A row pinned under the words (the range review puts Add / Clear / Reset here).
@@ -44,6 +57,8 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     /// The first word on each wrapped line of each saved pick, from the measured frames.
     @State private var lineActions = TranscriptQALineActions()
     @State private var spanMoved = false
+    /// The span under way began with Shift held: it is a new passage.
+    @State private var spanAdds = false
     @State private var pointer: CGPoint?
     @State private var dragFrame: CGRect?
     @State private var scrollDirection = 0
@@ -173,7 +188,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                                     columnWidth: columnWidth,
                                     selection: TranscriptQATrim.selectionRange(range, in: line),
                                     startEdgeWordIDs: spanSelection ? [] : TranscriptQATrim.startEdgeWordIDs(in: line, range: range),
-                                    otherRanges: otherRanges.filter { TranscriptQATrim.touches($0.range, line: line) },
+                                    otherRanges: paintedRanges.filter { TranscriptQATrim.touches($0.range, line: line) },
                                     spokenWordID: spokenWordID.flatMap { id in line.words.contains { $0.id == id } ? id : nil },
                                     showsTranslation: showsTranslation,
                                     translation: translationLanguage.flatMap { translationsByLanguage[$0]?[line.id] },
@@ -204,7 +219,8 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                     .onChange(of: store.frames) { _, _ in previewAtPointer() }
                     anchor(.start, word: firstWord, viewportHeight: geometry.size.height)
                     anchor(.end, word: lastWord, viewportHeight: geometry.size.height)
-                    TranscriptOverviewMarks(transcript: transcript, range: range, otherRanges: otherRanges)
+                    ForEach(numberedSpans, id: \.number) { spanControls($0, among: numberedSpans) }
+                    TranscriptOverviewMarks(transcript: transcript, range: range, otherRanges: paintedRanges)
                         .frame(width: TranscriptOverviewMarks.width, height: geometry.size.height)
                         .frame(maxWidth: .infinity, alignment: .trailing)
                         .allowsHitTesting(false)
@@ -216,7 +232,14 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                 .onChange(of: sectionID) { _, _ in
                     // A word click on another item selects it with that word;
                     // the new range arrives with the next update, so scroll then.
-                    Task { @MainActor in scrollToSelection(proxy) }
+                    // Once more a moment later: a passage far down the lazy
+                    // stack has no row yet on the first try, and the scroll
+                    // stops short of it.
+                    Task { @MainActor in
+                        scrollToSelection(proxy)
+                        try? await Task.sleep(for: .milliseconds(120))
+                        if dragging == nil, spanAnchor == nil { scrollToSelection(proxy) }
+                    }
                 }
                 .onChange(of: range) { old, new in
                     // With nothing selected the range is an empty anchor on the
@@ -310,6 +333,69 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
         }
     }
 
+    /// Saved items' passages plus the selection's other passages.
+    private var paintedRanges: [RangeReviewMarkedRange] {
+        guard paintsDraftSpans else { return otherRanges }
+        return otherRanges + draftSpans.map { RangeReviewMarkedRange(range: $0.range, paletteIndex: RangeReviewMarkedRange.draftSlot) }
+    }
+
+    /// Every passage of a selection made of several, the current one included.
+    private var numberedSpans: [TranscriptDraftSpan] {
+        guard spanSelection, !draftSpans.isEmpty else { return [] }
+        let current = currentSpanNumber.flatMap { number in
+            range.upperBound > range.lowerBound ? TranscriptDraftSpan(number: number, range: range) : nil
+        }
+        return (draftSpans + [current].compactMap { $0 }).sorted { $0.number < $1.number }
+    }
+
+    /// "#2" at the passage's first word and a delete button at its last.
+    @ViewBuilder
+    private func spanControls(_ span: TranscriptDraftSpan, among spans: [TranscriptDraftSpan]) -> some View {
+        let firstWord = transcript.words.first { TranscriptQATrim.contains($0, in: span.range) }
+        let lastWord = transcript.words.last { TranscriptQATrim.contains($0, in: span.range) }
+        let first = firstWord.flatMap { frames[$0.id] }
+        let last = lastWord.flatMap { frames[$0.id] }
+        // Overlapping passages can start or end on the same word: their
+        // controls sit side by side, in number order, not on top of each other.
+        let earlier = spans.filter { $0.number < span.number }
+        let badgeShift = CGFloat(earlier.filter { other in
+            transcript.words.first { TranscriptQATrim.contains($0, in: other.range) }?.id == firstWord?.id
+        }.count) * 26
+        let deleteShift = CGFloat(earlier.filter { other in
+            transcript.words.last { TranscriptQATrim.contains($0, in: other.range) }?.id == lastWord?.id
+        }.count) * 20
+        let isCurrent = span.number == currentSpanNumber
+        if let first {
+            Button { onSelectSpan?(span.number) } label: {
+                Text("#\(span.number)")
+                    .font(.caption2.weight(.bold)).monospacedDigit().lineLimit(1).fixedSize()
+                    .foregroundStyle(.white)
+                    .padding(.horizontal, 4).padding(.vertical, 1)
+                    .background(isCurrent ? Color.accentColor : Color.secondary, in: .capsule)
+            }
+            .buttonStyle(.plain)
+            .position(x: first.minX + 4 + badgeShift, y: first.minY - 5)
+            .disabled(!isEnabled || !canTrim)
+            .help(isCurrent ? "Selection \(span.number): the one being adjusted" : "Adjust selection \(span.number)")
+            .accessibilityLabel("Selection \(span.number)")
+        }
+        if let last, let onDeleteSpan {
+            Button { onDeleteSpan(span.number) } label: {
+                Image(systemName: "xmark.circle.fill")
+                    .font(.system(size: 13))
+                    .symbolRenderingMode(.palette)
+                    .foregroundStyle(.white, isCurrent ? Color.accentColor : Color.secondary)
+            }
+            .buttonStyle(.plain)
+            .frame(width: 18, height: 18)
+            .contentShape(Rectangle())
+            .position(x: last.maxX + 12 + deleteShift, y: last.minY - 5)
+            .disabled(!isEnabled || !canTrim)
+            .help("Remove selection \(span.number)")
+            .accessibilityLabel("Remove selection \(span.number)")
+        }
+    }
+
     private func previewAtPointer() {
         guard isEnabled, let pointer,
               let id = TranscriptQATrim.nearestWord(at: pointer, frames: frames), id != lastPreviewedWord,
@@ -336,6 +422,10 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                     guard dragging == nil,
                           let id = TranscriptQATrim.nearestWord(at: value.startLocation, frames: frames)
                             ?? TranscriptQATrim.nearestWord(at: value.location, frames: frames) else { return }
+                    // Shift adds a passage to the selection; without it the
+                    // span replaces the current passage.
+                    spanAdds = onBeginSpan != nil && NSEvent.modifierFlags.contains(.shift) && range.upperBound > range.lowerBound
+                    if spanAdds { onBeginSpan?() }
                     spanAnchor = id
                     spanMoved = false
                     lastPreviewedWord = nil
@@ -349,11 +439,18 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
             .onEnded { value in
                 guard let anchor = spanAnchor else { return }
                 let moved = spanMoved
+                let added = spanAdds
                 clearDrag()
                 guard isEnabled, transcript.words.indices.contains(anchor) else { onCancel(); return }
                 let word = transcript.words[anchor]
                 if moved {
                     onCommit()
+                } else if !added, let onSelectSpan,
+                          let other = draftSpans.filter({ TranscriptQATrim.contains(word, in: $0.range) })
+                            .min(by: { ($0.range.upperBound - $0.range.lowerBound) < ($1.range.upperBound - $1.range.lowerBound) }) {
+                    // A click on another passage of the selection edits that one.
+                    onSelectSpan(other.number)
+                    onCancel()
                 } else if word.end > word.start {
                     // A click, inside or outside the current selection, drops
                     // it and starts a new one at this word; Clear empties it.
@@ -386,6 +483,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
         dragging = nil
         spanAnchor = nil
         spanMoved = false
+        spanAdds = false
         pointer = nil
         dragFrame = nil
         scrollDirection = 0
@@ -408,6 +506,12 @@ enum TranscriptQAWordCursor {
 
     /// The accent toned down over the window background, opaque so adjoining
     /// word rectangles join without seams.
+    /// The selection's other passages: lighter than the one being edited.
+    static var draftColor: Color {
+        Color(nsColor: NSColor.controlAccentColor.blended(withFraction: 0.85, of: .windowBackgroundColor)
+              ?? NSColor.controlAccentColor.withAlphaComponent(0.15))
+    }
+
     static var selectionColor: Color {
         Color(nsColor: NSColor.controlAccentColor.blended(withFraction: 0.7, of: .windowBackgroundColor)
               ?? NSColor.controlAccentColor.withAlphaComponent(0.3))
@@ -524,7 +628,7 @@ private struct TranscriptQALineView: View, Equatable {
                 }
                 // One accessibility element per line, not per word.
                 .accessibilityElement(children: .combine)
-                .help(spanSelection ? "Click a word to start a selection there, or press and drag to select a passage"
+                .help(spanSelection ? "Click a word to start a selection there, or press and drag to select a passage. Hold Shift to add another passage to the selection."
                       : "Click to select just this word; drag an anchor or use the Start / End buttons to extend")
                 .onGeometryChange(for: CGPoint.self, of: { $0.frame(in: .named("qaWordViewport")).origin }) {
                     store.move(line: line.id, to: $0)

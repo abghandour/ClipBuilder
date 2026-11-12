@@ -70,6 +70,7 @@ struct WizardPreviewList: View {
         // Transcript edits and re-transcriptions bump the counts version.
         .task(id: "\(videoIDs) \(store.transcriptCountsVersion)") { await loadLines() }
         .onChange(of: clips, initial: true) { _, _ in rebuildRows() }
+        .speakerColors(for: Set(rows.flatMap { $0.segments.compactMap(\.speaker) }))
         .onChange(of: linesVersion) { _, _ in rebuildRows() }
         .onChange(of: rows.map(\.id)) { _, ids in expanded.formIntersection(ids) }
     }

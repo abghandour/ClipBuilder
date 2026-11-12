@@ -403,24 +403,48 @@ struct SpeakerPill: View {
 
 /// One color per speaker name, stable across launches, so the outline on
 /// the picture and the name in the transcript column read as the same
-/// person. "Unknown" stays grey.
+/// person. Speakers shown together never share one (see
+/// `SpeakerColorAssignment`). "Unknown" stays grey.
 enum SpeakerColors {
     static let palette: [Color] = [.orange, .green, .pink, .cyan, .yellow, .purple, .mint, .indigo]
 
     static func color(for label: String) -> Color {
         if label == TranscriptSpeakers.unknownLabel { return .gray }
-        return palette[Int(SpeakerColors.index(for: label))]
+        return palette[SpeakerColorBook.shared.assignment.slot(label, count: palette.count)]
+    }
+}
+
+/// The remembered colour of every speaker name, one for the whole app so a
+/// name reads the same in every list and transcript.
+@Observable
+final class SpeakerColorBook {
+    static let shared = SpeakerColorBook()
+    private static let slotsKey = "speakerColors.slots"
+    private static let peersKey = "speakerColors.peers"
+    private(set) var assignment: SpeakerColorAssignment
+
+    private init() {
+        let defaults = UserDefaults.standard
+        let slots = defaults.dictionary(forKey: Self.slotsKey) as? [String: Int] ?? [:]
+        let peers = (defaults.dictionary(forKey: Self.peersKey) as? [String: [String]] ?? [:]).mapValues(Set.init)
+        assignment = SpeakerColorAssignment(slots: slots, peers: peers)
     }
 
-    /// FNV-1a over the label, folded into the palette — `hashValue` is
-    /// seeded per process and would shuffle the colors on every launch.
-    static func index(for label: String) -> UInt64 {
-        var hash: UInt64 = 0xcbf2_9ce4_8422_2325
-        for byte in label.utf8 {
-            hash ^= UInt64(byte)
-            hash = hash &* 0x0000_0100_0000_01b3
-        }
-        return hash % UInt64(palette.count)
+    /// These names are on screen together and must not share a colour.
+    func register(_ names: Set<String>) {
+        var updated = assignment
+        updated.register(names.subtracting([TranscriptSpeakers.unknownLabel]), count: SpeakerColors.palette.count)
+        guard updated != assignment else { return }
+        assignment = updated
+        UserDefaults.standard.set(updated.slots, forKey: Self.slotsKey)
+        UserDefaults.standard.set(updated.peers.mapValues { $0.sorted() }, forKey: Self.peersKey)
+    }
+}
+
+extension View {
+    /// The speakers this view names: each gets a colour of its own.
+    func speakerColors(for names: Set<String>) -> some View {
+        onChange(of: names, initial: true) { _, names in SpeakerColorBook.shared.register(names) }
     }
 }
 
@@ -543,6 +567,7 @@ struct PlayerSheet: View {
             speakerRoster = speakers.roster
             speakerLabels = TranscriptSpeakers.labels(for: sceneTranscript, turns: speakers.turns,
                                                       roster: speakers.roster, people: store.people)
+            SpeakerColorBook.shared.register(Set(speakerLabels.values))
         }
         .task(id: url) {
             // Each await can outlive the view (dismissed while Drive fetches):

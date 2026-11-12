@@ -66,6 +66,9 @@ nonisolated struct RangeReviewItem: Identifiable, Sendable {
     var trimPolicy: TrimPolicy
     var isAvailable = true
     var children: [RangeReviewItem] = []
+    /// A cut's identity that survives a change of its place among its
+    /// siblings (`id` names a cut by position); the selection follows it.
+    var stableID: Int64? = nil
     /// The span being composed (Transcript picks): not movable or deletable, shown apart.
     var isDraft = false
     /// Rows show this many lines of the title; 0 wraps the whole title.

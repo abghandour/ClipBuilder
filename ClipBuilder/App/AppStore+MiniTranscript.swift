@@ -180,6 +180,80 @@ extension AppStore {
         }
     }
 
+    /// One passage is a pick; several become one unit, played in this order.
+    func addMiniTranscriptPicks(ranges: [ClosedRange<Double>]) {
+        let ranges = ranges.filter { $0.upperBound > $0.lowerBound }
+        guard let first = ranges.first else { return }
+        guard ranges.count > 1 else { addMiniTranscriptPick(range: first); return }
+        guard let run = currentTranscriptRun(), let database else { return }
+        recordMiniUndo(.transcript)
+        let videoID = run.video.id
+        let projectID = run.projectID
+        let batchID = run.batchID
+        let shownSet = TranscriptPickSet.shown(run.transcript?.setKey)
+        let previous = transcriptPickSaveTask
+        let generation = profileGeneration
+        transcriptPickSaveTask = Task {
+            _ = try? await previous?.value
+            let picks: [TranscriptPick]
+            do {
+                picks = try await database.addTranscriptPickGroup(projectID: projectID, videoID: videoID,
+                                                                  ranges: ranges, set: shownSet)
+            } catch {
+                if generation == profileGeneration { presentError("Could not add the pick", error) }
+                throw error
+            }
+            guard generation == profileGeneration, miniRuns[.transcript]?.batchID == batchID else { return }
+            miniRuns[.transcript]?.transcript?.picks.append(contentsOf: picks)
+        }
+    }
+
+    /// Link: the picks (in this order) become one pick at the first one's
+    /// place. Unlink: each goes back to being a pick of its own. The list
+    /// changes at once and the write follows, like every other edit, so an
+    /// edit made meanwhile is never overwritten by this one's result.
+    func setMiniTranscriptPicksLinked(_ ids: [Int64], linked: Bool) {
+        guard let run = currentTranscriptRun(), let picks = run.transcript?.picks else { return }
+        let key = linked ? UUID().uuidString.lowercased() : nil
+        let updated = TranscriptPickUnits.linking(picks, ids: ids, key: key)
+        guard updated != picks else { return }
+        recordMiniUndo(.transcript)
+        miniRuns[.transcript]?.transcript?.picks = updated
+        let videoID = run.video.id
+        let projectID = run.projectID
+        enqueueTranscriptPickWrite(linked ? "Could not link the picks" : "Could not unlink the pick", batchID: run.batchID) { database in
+            try await database.setTranscriptPicksLinked(projectID: projectID, videoID: videoID, ids: ids, key: key)
+        }
+    }
+
+    /// Another passage for a saved pick (`unit` = its pick ids), played last.
+    /// The new pick joins the list as it is when the write lands: edits
+    /// made meanwhile stay.
+    func addMiniTranscriptPassage(to unit: [Int64], range: ClosedRange<Double>) {
+        guard range.upperBound > range.lowerBound, !unit.isEmpty, let run = currentTranscriptRun(), let database else { return }
+        recordMiniUndo(.transcript)
+        let videoID = run.video.id
+        let projectID = run.projectID
+        let batchID = run.batchID
+        let shownSet = TranscriptPickSet.shown(run.transcript?.setKey)
+        let previous = transcriptPickSaveTask
+        let generation = profileGeneration
+        transcriptPickSaveTask = Task {
+            _ = try? await previous?.value
+            let added: TranscriptPick
+            do {
+                added = try await database.addTranscriptPassage(projectID: projectID, videoID: videoID, unit: unit,
+                                                                range: range, set: shownSet)
+            } catch {
+                if generation == profileGeneration { presentError("Could not add the passage", error) }
+                throw error
+            }
+            guard generation == profileGeneration, miniRuns[.transcript]?.batchID == batchID,
+                  let picks = miniRuns[.transcript]?.transcript?.picks else { return }
+            miniRuns[.transcript]?.transcript?.picks = TranscriptPickUnits.adding(added, to: picks, unit: unit)
+        }
+    }
+
     func addMiniTranscriptPick(range: ClosedRange<Double>) {
         guard let run = currentTranscriptRun() else { return }
         recordMiniUndo(.transcript)
@@ -314,6 +388,19 @@ extension AppStore {
         let projectID = run.projectID
         enqueueTranscriptPickWrite("Could not delete the pick", batchID: run.batchID) { database in
             try await database.deleteTranscriptPick(projectID: projectID, id: id)
+        }
+    }
+
+    /// A unit's picks leave together, as one step to undo.
+    func deleteMiniTranscriptPicks(_ ids: [Int64]) {
+        guard let run = currentTranscriptRun(), let picks = run.transcript?.picks else { return }
+        let ids = ids.filter { id in picks.contains { $0.id == id } }
+        guard !ids.isEmpty else { return }
+        recordMiniUndo(.transcript)
+        miniRuns[.transcript]?.transcript?.picks.removeAll { ids.contains($0.id) }
+        let projectID = run.projectID
+        enqueueTranscriptPickWrite("Could not delete the pick", batchID: run.batchID) { database in
+            for id in ids { try await database.deleteTranscriptPick(projectID: projectID, id: id) }
         }
     }
 

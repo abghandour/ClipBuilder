@@ -29,6 +29,11 @@ struct KeptClipsPlayer: View {
     /// Play All is running: a clip's end goes on to the next one.
     @State private var playsAll = false
     @State private var scrubbing: Double?
+    /// A clip is being put in the player: until its seek lands the playhead
+    /// still reads the clip before, which must not end the new one (a clip
+    /// from earlier in the recording was skipped by Play All).
+    @State private var loading = 0
+    @State private var settled = 0
     @State private var timeObserver: Any?
     @AppStorage(PlaybackSpeed.key) private var speed = 1.0
 
@@ -169,7 +174,7 @@ struct KeptClipsPlayer: View {
     }
 
     private func tick(_ seconds: Double, player observed: AVPlayer) {
-        guard observed === player, seconds.isFinite, scrubbing == nil else { return }
+        guard observed === player, seconds.isFinite, scrubbing == nil, settled == loading else { return }
         time = seconds
         guard isPlaying else { return }
         switch KeptClipsPlayback.step(time: seconds, index: index, clips: clips, playsAll: playsAll) {
@@ -211,10 +216,16 @@ struct KeptClipsPlayer: View {
             }
         }
         time = clip.start
+        loading += 1
+        let request = loading
         player.seek(to: CMTime(seconds: clip.start, preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero) { finished in
-            guard finished, play else { return }
-            Task { @MainActor in player.play() }
+            Task { @MainActor in
+                // A seek a newer one replaced reports unfinished; the newest settles.
+                guard request == loading else { return }
+                settled = request
+                if finished, play { player.play() }
+            }
         }
         if !play { player.pause() }
     }

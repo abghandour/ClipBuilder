@@ -219,7 +219,7 @@ nonisolated struct SyncTable: Sendable, Equatable {
             naturalKey: [], references: ["project_id": "projects", "parent_id": "wizard_highlights"]),
         SyncTable(name: "transcript_picks",
             columns: ["video_id", "project_id", "position", "start_time", "end_time", "original_start", "original_end", "scene_id", "kept",
-                      "transcription_key"],
+                      "transcription_key", "group_key"],
             integers: ["video_id", "project_id", "position", "scene_id", "kept"], reals: ["start_time", "end_time", "original_start", "original_end"],
             naturalKey: [], references: ["video_id": "videos", "project_id": "projects", "scene_id": "scenes"]),
         SyncTable(name: "fight_picks",

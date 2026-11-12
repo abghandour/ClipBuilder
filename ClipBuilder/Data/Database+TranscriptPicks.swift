@@ -12,11 +12,14 @@ extension Database {
             return try connection.query("SELECT * FROM transcript_picks WHERE video_id = ? ORDER BY position, id",
                                         [.integer(videoID)]).map(Self.transcriptPick)
         }
-        return try connection.query("""
+        // A unit's picks come back together even when a sync left another
+        // unit's between them: the list, the reel and the footage all read
+        // the picks in this order.
+        return TranscriptPickUnits.contiguous(try connection.query("""
             SELECT * FROM transcript_picks WHERE video_id = ? AND (project_id = ? OR project_id IS NULL)
                 AND \(Self.activeSetPickPredicate)
             ORDER BY position, id
-            """, [.integer(videoID), .integer(projectID)]).map(Self.transcriptPick)
+            """, [.integer(videoID), .integer(projectID)]).map(Self.transcriptPick))
     }
 
     /// What Express's Transcript tab shows, read in one call: the active
@@ -112,6 +115,77 @@ extension Database {
         }
     }
 
+    /// Several passages added as one unit, in the order given: consecutive
+    /// picks at the end of the list sharing a new group key. All or nothing.
+    func addTranscriptPickGroup(projectID: Int64, videoID: Int64, ranges: [ClosedRange<Double>],
+                                set: TranscriptPickSet = .active) throws -> [TranscriptPick] {
+        try connection.transaction {
+            let setKey = try requireShownSet(set, videoID: videoID)
+            try adoptLegacyTranscriptPicks(projectID: projectID, videoID: videoID)
+            let first = (try connection.query(
+                "SELECT MAX(position) AS n FROM transcript_picks WHERE video_id = ? AND project_id = ?",
+                [.integer(videoID), .integer(projectID)]).first?["n"]?.intValue ?? -1) + 1
+            let group: SQLValue = ranges.count > 1 ? .text(UUID().uuidString.lowercased()) : .null
+            var picks: [TranscriptPick] = []
+            for (offset, range) in ranges.enumerated() {
+                try connection.execute("""
+                    INSERT INTO transcript_picks (video_id, project_id, position, start_time, end_time, original_start, original_end, kept, transcription_key, group_key)
+                    VALUES (?, ?, ?, ?, ?, ?, ?, 1, ?, ?)
+                    """, [.integer(videoID), .integer(projectID), .integer(first + Int64(offset)),
+                          .real(range.lowerBound), .real(range.upperBound), .real(range.lowerBound), .real(range.upperBound),
+                          setKey.map(SQLValue.text) ?? .null, group])
+                guard let pick = try transcriptPick(id: connection.lastInsertRowID) else { throw WizardSelectionError.missingSelection }
+                picks.append(pick)
+            }
+            return picks
+        }
+    }
+
+    /// Link (`key` set) or unlink (nil) `ids`: see `TranscriptPickUnits.linking`.
+    /// Only rows that change are written.
+    func setTranscriptPicksLinked(projectID: Int64, videoID: Int64, ids: [Int64], key: String?) throws {
+        try connection.transaction {
+            try adoptLegacyTranscriptPicks(projectID: projectID, videoID: videoID)
+            let current = try fetchTranscriptPicks(projectID: projectID, videoID: videoID)
+            try writeTranscriptPickOrder(TranscriptPickUnits.linking(current, ids: ids, key: key), over: current)
+        }
+    }
+
+    private func writeTranscriptPickOrder(_ picks: [TranscriptPick], over current: [TranscriptPick]) throws {
+        let before = Dictionary(current.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        for pick in picks where before[pick.id]?.position != pick.position || before[pick.id]?.groupKey != pick.groupKey {
+            try connection.execute("UPDATE transcript_picks SET position = ?, group_key = ? WHERE id = ?",
+                                   [.integer(Int64(pick.position)), pick.groupKey.map(SQLValue.text) ?? .null, .integer(pick.id)])
+        }
+    }
+
+    /// One more passage for a unit (`unit` = its pick ids): a new pick right
+    /// after the unit's last, sharing its group key; a pick that stood alone
+    /// gets a key first. Checked like the unit. Returns the new pick.
+    func addTranscriptPassage(projectID: Int64, videoID: Int64, unit: [Int64], range: ClosedRange<Double>,
+                              set: TranscriptPickSet = .active) throws -> TranscriptPick {
+        try connection.transaction {
+            let setKey = try requireShownSet(set, videoID: videoID)
+            try adoptLegacyTranscriptPicks(projectID: projectID, videoID: videoID)
+            let current = try fetchTranscriptPicks(projectID: projectID, videoID: videoID)
+            let members = current.filter { unit.contains($0.id) }
+            guard !members.isEmpty else { throw WizardSelectionError.missingSelection }
+            let key = members.compactMap(\.groupKey).first ?? UUID().uuidString.lowercased()
+            try connection.execute("""
+                INSERT INTO transcript_picks (video_id, project_id, position, start_time, end_time, original_start, original_end, kept, transcription_key, group_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                """, [.integer(videoID), .integer(projectID), .integer(Int64(current.count)),
+                      .real(range.lowerBound), .real(range.upperBound), .real(range.lowerBound), .real(range.upperBound),
+                      .integer(members.contains(where: \.kept) ? 1 : 0), setKey.map(SQLValue.text) ?? .null, .text(key)])
+            let id = connection.lastInsertRowID
+            guard let added = try transcriptPick(id: id) else { throw WizardSelectionError.missingSelection }
+            let ordered = TranscriptPickUnits.adding(added, to: current, unit: members.map(\.id))
+            try writeTranscriptPickOrder(ordered, over: current + [added])
+            guard let stored = try transcriptPick(id: id) else { throw WizardSelectionError.missingSelection }
+            return stored
+        }
+    }
+
     /// Split: the pick keeps `start...time` and a new pick with
     /// `time...end` lands at `index` of `order`, all or nothing. In separate
     /// writes, a set change between them left only the shortened half.
@@ -126,11 +200,12 @@ extension Database {
             }
             try connection.execute("UPDATE transcript_picks SET start_time = ?, end_time = ? WHERE id = ? AND project_id = ?",
                                    [.real(start), .real(time), .integer(id), .integer(projectID)])
+            // The second half stays in the unit the pick belongs to.
             try connection.execute("""
-                INSERT INTO transcript_picks (video_id, project_id, position, start_time, end_time, original_start, original_end, kept, transcription_key)
-                VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)
+                INSERT INTO transcript_picks (video_id, project_id, position, start_time, end_time, original_start, original_end, kept, transcription_key, group_key)
+                VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?, (SELECT group_key FROM transcript_picks WHERE id = ?))
                 """, [.integer(videoID), .integer(projectID), .real(time), .real(end),
-                      .real(time), .real(end), .integer(kept ? 1 : 0), setKey.map(SQLValue.text) ?? .null])
+                      .real(time), .real(end), .integer(kept ? 1 : 0), setKey.map(SQLValue.text) ?? .null, .integer(id)])
             let added = connection.lastInsertRowID
             var ids = order
             ids.insert(added, at: min(ids.count, max(0, index)))
@@ -209,21 +284,23 @@ extension Database {
             var remapped: [Int64: Int64] = [:]
             for (position, pick) in picks.enumerated() {
                 if let row = existing[pick.id] {
-                    guard row.position != position || row.start != pick.start || row.end != pick.end || row.kept != pick.kept else { continue }
+                    guard row.position != position || row.start != pick.start || row.end != pick.end || row.kept != pick.kept
+                            || row.groupKey != pick.groupKey else { continue }
                     try connection.execute("""
-                        UPDATE transcript_picks SET position = ?, start_time = ?, end_time = ?, kept = ?
+                        UPDATE transcript_picks SET position = ?, start_time = ?, end_time = ?, kept = ?, group_key = ?
                         WHERE id = ? AND project_id = ?
                         """, [.integer(Int64(position)), .real(pick.start), .real(pick.end), .integer(pick.kept ? 1 : 0),
-                              .integer(pick.id), .integer(projectID)])
+                              pick.groupKey.map(SQLValue.text) ?? .null, .integer(pick.id), .integer(projectID)])
                 } else {
                     // Another project's pick may have taken the id since.
                     let free = try connection.query("SELECT 1 FROM transcript_picks WHERE id = ?", [.integer(pick.id)]).isEmpty
                     try connection.execute("""
-                        INSERT INTO transcript_picks (id, video_id, project_id, position, start_time, end_time, original_start, original_end, kept, transcription_key)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO transcript_picks (id, video_id, project_id, position, start_time, end_time, original_start, original_end, kept, transcription_key, group_key)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """, [free ? .integer(pick.id) : .null, .integer(videoID), .integer(projectID), .integer(Int64(position)),
                               .real(pick.start), .real(pick.end), .real(pick.originalStart), .real(pick.originalEnd),
-                              .integer(pick.kept ? 1 : 0), setKey.map(SQLValue.text) ?? .null])
+                              .integer(pick.kept ? 1 : 0), setKey.map(SQLValue.text) ?? .null,
+                              pick.groupKey.map(SQLValue.text) ?? .null])
                     if !free { remapped[pick.id] = connection.lastInsertRowID }
                 }
             }
@@ -323,7 +400,8 @@ extension Database {
                        originalEnd: row["original_end"]?.doubleValue ?? 0,
                        sceneID: row["scene_id"]?.intValue,
                        projectID: row["project_id"]?.intValue,
-                       kept: (row["kept"]?.intValue ?? 1) != 0)
+                       kept: (row["kept"]?.intValue ?? 1) != 0,
+                       groupKey: row["group_key"]?.stringValue)
     }
 }
 

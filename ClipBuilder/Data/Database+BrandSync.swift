@@ -44,7 +44,9 @@ extension Database {
             // this Mac's whole copy over whatever a teammate changed since.
             // A trigger naming a column the table lacks fails every update,
             // so a table still missing one (a later migration adds it) keeps
-            // the unguarded trigger until the next open.
+            // the unguarded trigger until the next migration runs this again.
+            // This runs only when the schema version changes: a change here
+            // needs a version bump to reach existing libraries (52 did it).
             let present = try db.columnNames(of: name)
             let changed = table.columns.allSatisfy(present.contains)
                 ? " AND (" + table.columns.map { "OLD.\"\($0)\" IS NOT NEW.\"\($0)\"" }.joined(separator: " OR ") + ")" : ""
@@ -487,6 +489,23 @@ extension Database {
     func acknowledgeSyncChange(_ change: SyncPendingChange) throws {
         try connection.execute("DELETE FROM sync_outbox WHERE \"table\" = ? AND sync_id = ? AND sequence <= ?",
                                [.text(change.table.name), .text(change.syncID), .integer(change.sequence)])
+        // The server now holds what was sent: that is the copy a later merge
+        // measures this Mac's changes against. Left at the copy from before,
+        // an edit made after this upload that returns a column to its old
+        // value would look like no change and lose to the upload's own echo.
+        guard Self.mergedOnPull.contains(change.table.name), !SyncMapping.isDeleted(change.wire) else { return }
+        var seen = change.wire
+        if let cached = try connection.query("SELECT wire_json FROM sync_wire_rows WHERE \"table\" = ? AND sync_id = ?",
+                                             [.text(change.table.name), .text(change.syncID)]).first?["wire_json"]?.stringValue,
+           let known = try? JSONDecoder().decode(SyncMapping.WireRow.self, from: Data(cached.utf8)), !SyncMapping.isDeleted(known) {
+            seen = known
+            for column in change.table.columns { if let value = change.wire[column] { seen[column] = value } }
+        }
+        let json = String(decoding: try JSONEncoder().encode(seen), as: UTF8.self)
+        try connection.execute("""
+            INSERT INTO sync_wire_rows("table", sync_id, wire_json) VALUES (?, ?, ?)
+            ON CONFLICT("table", sync_id) DO UPDATE SET wire_json = excluded.wire_json
+            """, [.text(change.table.name), .text(change.syncID), .text(json)])
     }
 
     func syncCursor(table: SyncTable = .lessons) throws -> SyncCursor? {
@@ -800,10 +819,19 @@ extension Database {
               let row = try connection.query("SELECT * FROM \(table.name) WHERE sync_id = ?", [.text(id)]).first,
               let portable = (try? portableSyncRow(row, table: table)) ?? nil,
               let mine = try? SyncMapping.wire(local: portable, syncID: id, scope: scope, table: table) else { return nil }
-        return table.columns.filter {
+        var changed = Set(table.columns.filter {
             !SyncMapping.sameWireValue(mine[$0] ?? .null, seen[$0] ?? .null, json: $0.hasSuffix("_json"))
+        })
+        // A range is one value: this Mac's start with a teammate's end can
+        // be a range that ends before it starts.
+        for pair in Self.mergedTogether where !changed.isDisjoint(with: pair) {
+            changed.formUnion(pair.filter(table.columns.contains))
         }
+        return table.columns.filter(changed.contains)
     }
+
+    /// Columns that only mean something together.
+    private nonisolated static let mergedTogether: [Set<String>] = [["start_time", "end_time"], ["edit_start", "edit_end"]]
 
     /// Whether changes to this table wait to be pushed.
     func syncPending(table: SyncTable) throws -> Bool {

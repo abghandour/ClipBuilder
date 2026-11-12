@@ -40,13 +40,15 @@ enum RangeReviewPalette {
 
     /// The bar colour for `slot`.
     static func bar(_ slot: Int) -> Color {
-        Color(nsColor: hue(slot))
+        if slot == RangeReviewMarkedRange.draftSlot { return .accentColor }
+        return Color(nsColor: hue(slot))
     }
 
     /// The block behind a saved pick's words: the slot's hue toned down
     /// over the window background, the same colour as its list row's bar.
     /// Opaque, so adjoining word rectangles join without seams.
     static func block(_ slot: Int) -> Color {
+        if slot == RangeReviewMarkedRange.draftSlot { return TranscriptQAWordCursor.draftColor }
         let hue = hue(slot)
         return Color(nsColor: hue.blended(withFraction: 0.7, of: .windowBackgroundColor) ?? hue.withAlphaComponent(0.3))
     }
@@ -75,4 +77,27 @@ enum RangeReviewPalette {
 nonisolated struct RangeReviewMarkedRange: Hashable, Sendable {
     var range: ClosedRange<Double>
     var paletteIndex: Int
+
+    /// Not a saved item: another passage of the selection being composed.
+    static let draftSlot = -1
+}
+
+/// One passage of a selection made of several (Transcript picks, Shift-drag),
+/// numbered from 1 in the order they were marked.
+nonisolated struct TranscriptDraftSpan: Hashable, Sendable {
+    var number: Int
+    var range: ClosedRange<Double>
+}
+
+/// A draft item made of several passages: the others beside the one being
+/// adjusted, and what the transcript's controls do to them.
+struct RangeReviewDraftSpans {
+    var others: [TranscriptDraftSpan]
+    /// The adjusted passage's number; nil while it is the only one.
+    var currentNumber: Int?
+    /// Shift pressed in the transcript: the next span is another passage.
+    var begin: () -> Void
+    var select: (Int) -> Void
+    var delete: (Int) -> Void
+    var clear: () -> Void
 }

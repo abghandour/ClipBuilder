@@ -114,7 +114,11 @@ actor Database {
         kept INTEGER NOT NULL DEFAULT 1,
         -- The transcript set the pick was made on; synced. NULL (a pick from
         -- before schema 51) shows under every set.
-        transcription_key TEXT
+        transcription_key TEXT,
+        -- Picks added together as one unit (several passages played back to
+        -- back) share a key and sit next to each other in `position` order;
+        -- synced. NULL is a pick on its own.
+        group_key TEXT
     );
 
     -- A name the user gave a transcript set. Local, not synced.
@@ -957,6 +961,12 @@ actor Database {
                                 AND t.transcription_key IS (\(activeKey)))
                         """)
                 }
+                // Schema 52: a transcript pick can be one of several passages
+                // added as a unit (see the table). Before the sync triggers
+                // are rebuilt, so they name the column from this open on.
+                if stamped < 52, try !connection.columnNames(of: "transcript_picks").contains("group_key") {
+                    try connection.execute("ALTER TABLE transcript_picks ADD COLUMN group_key TEXT")
+                }
                 try Self.migrateBrandSync(connection)
                 if stamped < 49 {
                     try Self.seedFootageSync(connection, tables: SyncTable.footage.filter {
@@ -1028,7 +1038,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 51
+    static let schemaVersion: Int64 = 52
 
     /// The library was last opened by a build with a newer schema.
     nonisolated struct NewerLibrary: LocalizedError, Equatable {

@@ -16,6 +16,30 @@ struct RangeReviewView<Footer: View>: View {
     var palette: RangeReviewPalette.Family = .qa
     var preferredTranslationLanguage: String? = nil
     var selection: Binding<Int64?>? = nil
+    /// The cut of the `selection` owner to show (the reel's Select names one
+    /// passage of a pick made of several); taken once, then cleared.
+    var requestedCut: Binding<Int?>? = nil
+    /// Remove one cut of a saved multi-cut item: its passages then carry
+    /// their number and a delete button in the transcript, as while composing.
+    /// Gets the cut to remove and the selected one; returns the row to select
+    /// afterwards (cuts are named by position, so the ones after it move up).
+    var onDeleteCut: ((RangeReviewItem, RangeReviewItem.ID) -> RangeReviewItem.ID?)? = nil
+    /// Drag a cut of a multi-cut item among its siblings: gets the owner,
+    /// the cuts' old indices in their new order and the selected row;
+    /// returns the row to select afterwards.
+    var onMoveCut: ((RangeReviewItem, [Int], RangeReviewItem.ID?) -> RangeReviewItem.ID?)? = nil
+    /// Split also applies to a cut of a multi-cut item (`onSplit` gets the cut).
+    /// Turns an item made of several passages back into separate items; a
+    /// chain button on its row.
+    var onUnlink: ((RangeReviewItem) -> Void)? = nil
+    /// Joins the highlighted rows (Shift-click) into one item: receives
+    /// their owner ids in list order. A chain button in the list's footer.
+    var onLink: (([Int64]) -> Void)? = nil
+    /// A passage marked in the words while a saved item's row is selected
+    /// (or with Shift from one of its passages) joins that item: receives
+    /// the item and the range, returns the new passage's id.
+    var onAddCut: ((RangeReviewItem, ClosedRange<Double>) -> RangeReviewItem.ID?)? = nil
+    var splitsCuts = false
     var emptyTitle = "Select a Q&A section"
     var emptyMessage = "Choose an exchange to watch it and adjust its start and end."
     var resetTitle = "Reset to Original"
@@ -36,6 +60,9 @@ struct RangeReviewView<Footer: View>: View {
     @State private var confirmingDeleteAll = false
     /// Draft items select by pressing a word and dragging; an empty range means nothing selected.
     var spanSelection = false
+    /// The draft item is made of several passages (Shift-drag adds one):
+    /// the draft's range is the one being adjusted, these are the others.
+    var draftSpans: RangeReviewDraftSpans? = nil
     /// A Play All button under the list plays every item in order.
     var playAll = false
     /// Replaces the transcript words column (Fight metrics shows its action grid there).
@@ -55,6 +82,14 @@ struct RangeReviewView<Footer: View>: View {
     @ViewBuilder var footer: (RangeReviewItem) -> Footer
 
     @State private var selectedID: RangeReviewItem.ID?
+    /// The selected cut's `stableID`, to find it again after its siblings moved.
+    @State private var selectedStable: Int64?
+    /// A span being marked is a new passage of the selected item (Shift-drag).
+    @State private var addingCut = false
+    /// Rows highlighted together for Link, by owner id (Shift- or Command-click).
+    @State private var highlighted: Set<Int64> = []
+    /// The passage just added, selected when its row arrives.
+    @State private var pendingCut: RangeReviewItem.ID?
     /// The user clicked the selected row to clear it; nothing is auto-selected until they pick again.
     @State private var userCleared = false
     /// A span dragged while nothing was selected: applied once the draft item is selected.
@@ -142,13 +177,15 @@ struct RangeReviewView<Footer: View>: View {
     /// the kept items (none when nothing is kept), or every item in a list
     /// without keep boxes, selection or not. The selected item paints itself
     /// through `range`; its sibling cuts paint here.
-    private func markedRanges(excluding selectedID: RangeReviewItem.ID?, video: VideoRecord) -> [RangeReviewMarkedRange] {
-        let painted = RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: selectedID?.ownerID, kept: kept?.wrappedValue)
+    private func markedRanges(excluding selectedID: RangeReviewItem.ID?, owner: Int64? = nil,
+                              video: VideoRecord) -> [RangeReviewMarkedRange] {
+        let ownerID = owner ?? selectedID?.ownerID
+        let painted = RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: ownerID, kept: kept?.wrappedValue)
         return items.flatMap { owner in
             (owner.children.isEmpty ? [owner] : owner.children).compactMap { item -> RangeReviewMarkedRange? in
                 // The selected cut paints through `range`; its sibling cuts
                 // (the other clips of a multi-cut reel) still mark themselves.
-                let sibling = selectedID != nil && owner.id.ownerID == selectedID?.ownerID
+                let sibling = ownerID != nil && owner.id.ownerID == ownerID
                 guard painted.contains(owner.id.ownerID) || sibling, item.id != selectedID, item.video.id == video.id,
                       let index = paletteIndex(owner) else { return nil }
                 return RangeReviewMarkedRange(range: item.range, paletteIndex: index)
@@ -224,6 +261,9 @@ struct RangeReviewView<Footer: View>: View {
         }
         .onAppear { reconcileSelection(); selectItem() }
         .onChange(of: selectedID) { _, _ in
+            // The user went elsewhere: a passage still being added no longer takes the selection.
+            pendingCut = nil
+            selectedStable = stableID(of: selectedID)
             selection?.wrappedValue = selectedID?.ownerID
             selectItem()
             applyPendingDraft()
@@ -246,10 +286,12 @@ struct RangeReviewView<Footer: View>: View {
             guard playingAll, !advancingPlayAll else { return }
             advancePlayAll()
         }
-        .onChange(of: items.flatMap { [$0.id] + $0.children.map(\.id) }) { _, _ in reconcileSelection() }
+        .onChange(of: rowIdentities) { _, _ in reconcileSelection() }
+        .speakerColors(for: Set(labels.values).union(speakerSpans.map(\.label)))
         .onChange(of: selection?.wrappedValue) { _, ownerID in
-            if ownerID != selectedID?.ownerID { reconcileSelection() }
+            if ownerID != selectedID?.ownerID { reconcileSelection() } else { applyRequestedCut() }
         }
+        .onChange(of: requestedCut?.wrappedValue, initial: true) { _, _ in applyRequestedCut() }
         .onChange(of: range) { _, range in
             guard let range else { return }
             if let draft, abs(draft.start - range.lowerBound) < 0.05, abs(draft.end - range.upperBound) < 0.05 {
@@ -292,6 +334,47 @@ struct RangeReviewView<Footer: View>: View {
         }
     }
 
+    /// The owner did not ask for another row since the cut was selected.
+    private func followsSelection(_ match: RangeReviewItem) -> Bool {
+        guard let asked = selection?.wrappedValue else { return selection == nil }
+        return asked == match.id.ownerID || asked == selectedID?.ownerID
+    }
+
+    private func stableID(of id: RangeReviewItem.ID?) -> Int64? {
+        guard let id else { return nil }
+        for item in items {
+            if item.id == id { return item.stableID }
+            if let child = item.children.first(where: { $0.id == id }) { return child.stableID }
+        }
+        return nil
+    }
+
+    /// The row standing for `stable`: a cut, or an item that is one cut
+    /// alone (a cut becomes one when its item is unlinked, and back).
+    private func cut(stable: Int64) -> RangeReviewItem? {
+        for item in items {
+            if let child = item.children.first(where: { $0.stableID == stable }) { return child }
+        }
+        return items.first { $0.stableID == stable }
+    }
+
+    private struct RowIdentity: Equatable {
+        var id: RangeReviewItem.ID
+        var stable: Int64?
+    }
+
+    /// Every row, with what a cut stands for: cuts are named by position, so
+    /// a reorder (here, in the reel, by Undo) leaves every id in place while
+    /// the cuts behind them changed.
+    private var rowIdentities: [RowIdentity] {
+        var result: [RowIdentity] = []
+        for item in items {
+            result.append(RowIdentity(id: item.id, stable: item.stableID))
+            for child in item.children { result.append(RowIdentity(id: child.id, stable: child.stableID)) }
+        }
+        return result
+    }
+
     nonisolated static func columnWidths(available: CGFloat, list: CGFloat = 220,
                                          transcript: CGFloat = 360) -> (list: CGFloat, transcript: CGFloat) {
         TranscriptQAColumns.widths(available: available, list: list, transcript: transcript)
@@ -304,7 +387,14 @@ struct RangeReviewView<Footer: View>: View {
     private func wordPanel(selected: RangeReviewItem, video: VideoRecord, inactive: Bool = false) -> some View {
         // Nothing marked, but the words open on the first painted (kept)
         // passage so the highlights are in view, else on `selected`.
-        let marked = markedRanges(excluding: inactive ? nil : selected.id, video: video)
+        // The row of an item made of several passages is selected, not one
+        // of them: none is the one being adjusted, and a passage marked now
+        // is a new one. Shift-drag adds one from any saved passage.
+        let wholeItem = !inactive && !selected.isDraft && onAddCut != nil && selectedID?.cutIndex == nil
+            && selected.id.cutIndex != nil
+        let adding = !inactive && (wholeItem || addingCut)
+        let marked = markedRanges(excluding: inactive || adding ? nil : selected.id,
+                                  owner: adding ? selected.id.ownerID : nil, video: video)
         let anchor = inactive ? marked.map(\.range.lowerBound).min() ?? selected.range.lowerBound : selected.range.lowerBound
         let emptyRange = anchor...anchor
         let contextCanTrim = inactive ? selected.isAvailable : canTrim
@@ -328,18 +418,28 @@ struct RangeReviewView<Footer: View>: View {
             }
             userCleared = false
         }
+        // A saved item made of several passages shows them numbered, like the
+        // selection it was added from.
+        let siblings: [RangeReviewItem] = !inactive && !selected.isDraft && onDeleteCut != nil && selected.id.cutIndex != nil
+            ? (items.first { $0.id.ownerID == selected.id.ownerID }?.children ?? []).filter { $0.video.id == video.id } : []
+        let numbered = siblings.count > 1
+        func sibling(_ number: Int) -> RangeReviewItem? { siblings.first { $0.id.cutIndex == number - 1 } }
         return TranscriptQAWordPanel(transcript: visibleTranscript, videoID: video.id,
                               translationLanguages: transcriptVideoID == video.id ? translationLanguages : [],
                               translationsByLanguage: transcriptVideoID == video.id ? translationsByLanguage : [:],
                               preferredTranslationLanguage: preferredTranslationLanguage,
                               sectionID: selected.id,
-                              range: inactive ? emptyRange : editRange,
+                              range: inactive || (adding && draft == nil) ? emptyRange : editRange,
                               otherRanges: marked,
                               playback: playback, canTrim: contextCanTrim,
                               onSelect: inactive ? { activate(at: $0) } : selectWord,
                               onPreview: inactive ? { _, word in activate(at: word) } : previewWord,
-                              onCommit: { if inactive { pendingCommit = pendingDraft != nil } else { commitDraft(snap: false) } },
-                              onCancel: { draft = nil; anchorDrag = nil },
+                              onCommit: {
+                                  if inactive { pendingCommit = pendingDraft != nil }
+                                  else if wholeItem || addingCut { commitNewCut() }
+                                  else { commitDraft(snap: false) }
+                              },
+                              onCancel: { draft = nil; anchorDrag = nil; addingCut = false },
                               spanSelection: spanSelection,
                               followsEmptyAnchor: inactive,
                               onSpanPreview: { span in
@@ -351,8 +451,51 @@ struct RangeReviewView<Footer: View>: View {
                                       draft = (span.lowerBound, span.upperBound)
                                   }
                               },
+                              draftSpans: selected.isDraft ? draftSpans?.others ?? []
+                                  : numbered ? siblings.filter { adding || $0.id != selected.id }.compactMap { item in
+                                      item.id.cutIndex.map { TranscriptDraftSpan(number: $0 + 1, range: item.range) }
+                                  } : [],
+                              paintsDraftSpans: selected.isDraft,
+                              currentSpanNumber: selected.isDraft ? draftSpans?.currentNumber
+                                  : numbered && !adding ? selected.id.cutIndex.map { $0 + 1 } : nil,
+                              onBeginSpan: selected.isDraft ? draftSpans.map { spans in { dropDraft(); spans.begin() } }
+                                  : onAddCut != nil && !inactive ? { dropDraft(); addingCut = true } : nil,
+                              onSelectSpan: selected.isDraft ? draftSpans.map { spans in
+                                  { number in
+                                      dropDraft()
+                                      spans.select(number)
+                                      if inactive { activate() }
+                                  }
+                              } : numbered ? { number in
+                                  guard let item = sibling(number), item.id != selectedID else { addingCut = false; return }
+                                  dropDraft()
+                                  selectedID = item.id
+                              } : nil,
+                              onDeleteSpan: selected.isDraft ? draftSpans.map { spans in { dropDraft(); spans.delete($0) } }
+                                  : numbered ? onDeleteCut.map { delete in
+                                      { number in
+                                          guard let item = sibling(number) else { return }
+                                          dropDraft()
+                                          if let next = delete(item, selected.id) {
+                                              userCleared = false
+                                              selectedID = next
+                                          }
+                                      }
+                                  } : nil,
                               accessory: inactive ? nil : transcriptAccessory?(selected),
                               footer: AnyView(rangeActions(selected, inactive: inactive)))
+    }
+
+    /// The passage being adjusted changes under the view: an edit in flight
+    /// belongs to the one before and must not land on the next.
+    private func dropDraft() {
+        addingCut = false
+        pendingCut = nil
+        draft = nil
+        anchorDrag = nil
+        pendingDraft = nil
+        pendingCommit = false
+        draftGeneration += 1
     }
 
     /// Add for a marked draft, Clear, and Reset, pinned under the words. The
@@ -372,7 +515,11 @@ struct RangeReviewView<Footer: View>: View {
         Button {
             draft = nil
             anchorDrag = nil
-            if spanSelection, item.isDraft, canTrim, let range, !isEmptyRange {
+            if item.isDraft, let draftSpans {
+                // Every passage of the selection goes, not only the current one.
+                draftGeneration += 1
+                draftSpans.clear()
+            } else if spanSelection, item.isDraft, canTrim, let range, !isEmptyRange {
                 commit(range.lowerBound...range.lowerBound)
             }
             selectedID = nil
@@ -428,7 +575,8 @@ struct RangeReviewView<Footer: View>: View {
                     ForEach(visibleItems) { item in
                         itemRow(item)
                             .id(item.id)
-                            .background(item.id == selectedID ? Color.accentColor.opacity(0.16) : Color.clear,
+                            .background(item.id == selectedID ? Color.accentColor.opacity(0.16)
+                                        : highlighted.contains(item.id.ownerID) ? Color.accentColor.opacity(0.09) : Color.clear,
                                         in: RoundedRectangle(cornerRadius: 6))
                             .padding(.horizontal, Theme.spaceXS)
                             .background(GeometryReader { geometry in
@@ -497,6 +645,20 @@ struct RangeReviewView<Footer: View>: View {
                         .accessibilityLabel(playingAll ? "Stop" : playsSelected ? "Play the selection" : "Play all")
                     }
                     Spacer(minLength: 0)
+                    if let onLink {
+                        let owners = linkableOwners
+                        Button("Link", systemImage: "link") {
+                            dropDraft()
+                            highlighted = []
+                            selectedID = owners.first.map { .init(ownerID: $0) }
+                            userCleared = false
+                            onLink(owners)
+                        }
+                        .labelStyle(.iconOnly).fixedSize()
+                        .disabled(!isEnabled || owners.count < 2)
+                        .help(owners.count < 2 ? "Link items into one: Shift-click rows to highlight several, then press this"
+                              : "Link the \(owners.count) highlighted items into one, in list order")
+                    }
                     if let kept {
                         let allKept = RangeReviewItem.allKept(kept.wrappedValue, items: items)
                         Button(allKept ? "Deselect All" : "Select All") {
@@ -524,6 +686,35 @@ struct RangeReviewView<Footer: View>: View {
                 .padding(Theme.spaceS)
             }
         }
+    }
+
+    /// The highlighted rows that still exist, in list order.
+    private var linkableOwners: [Int64] {
+        items.filter { !$0.isDraft && highlighted.contains($0.id.ownerID) }.map(\.id.ownerID)
+    }
+
+    /// Shift-click highlights from the selected row to this one;
+    /// Command-click adds or removes this one. False = an ordinary click.
+    private func highlight(_ item: RangeReviewItem) -> Bool {
+        let flags = NSEvent.modifierFlags
+        guard onLink != nil, !item.isDraft, flags.contains(.shift) || flags.contains(.command) else { return false }
+        let owners = items.filter { !$0.isDraft }.map(\.id.ownerID)
+        let anchor = selectedID.flatMap { id in owners.contains(id.ownerID) ? id.ownerID : nil }
+        guard let anchor else {
+            dropDraft()
+            selectedID = .init(ownerID: item.id.ownerID)
+            userCleared = false
+            highlighted = [item.id.ownerID]
+            return true
+        }
+        if flags.contains(.shift), let from = owners.firstIndex(of: anchor), let to = owners.firstIndex(of: item.id.ownerID) {
+            highlighted.formUnion(owners[min(from, to)...max(from, to)])
+        } else if highlighted.contains(item.id.ownerID), item.id.ownerID != anchor {
+            highlighted.remove(item.id.ownerID)
+        } else {
+            highlighted.formUnion([anchor, item.id.ownerID])
+        }
+        return true
     }
 
     private var playableItems: [RangeReviewItem] {
@@ -580,16 +771,29 @@ struct RangeReviewView<Footer: View>: View {
 
     private func isDragging(_ item: RangeReviewItem) -> Bool {
         guard let draggingID else { return false }
-        return item.id == draggingID || (item.id.ownerID == draggingID.ownerID && item.id.cutIndex != nil)
+        // An owner drags its cuts along; a cut drags alone.
+        return item.id == draggingID
+            || (draggingID.cutIndex == nil && item.id.ownerID == draggingID.ownerID && item.id.cutIndex != nil)
     }
 
     private func canReorder(_ item: RangeReviewItem) -> Bool {
-        onMove != nil && !item.isDraft && item.id.cutIndex == nil
+        guard !item.isDraft else { return false }
+        if item.id.cutIndex != nil { return onMoveCut != nil && siblings(of: item.id).count > 1 }
+        return onMove != nil
+    }
+
+    /// The cuts of the owner a cut belongs to.
+    private func siblings(of id: RangeReviewItem.ID) -> [RangeReviewItem] {
+        items.first { $0.id.ownerID == id.ownerID }?.children ?? []
     }
 
     /// Reorderable owners with the frame of their row plus their child cuts, in list order.
     private var reorderBlocks: [(owner: RangeReviewItem, frame: CGRect)] {
-        visibleItems.filter(canReorder).compactMap { owner in
+        // While a cut is dragged the blocks are its siblings.
+        if let draggingID, draggingID.cutIndex != nil {
+            return siblings(of: draggingID).compactMap { cut in rowFrames[cut.id].map { (cut, $0) } }
+        }
+        return visibleItems.filter { canReorder($0) && $0.id.cutIndex == nil }.compactMap { owner in
             guard var frame = rowFrames[owner.id] else { return nil }
             for child in owner.children { if let f = rowFrames[child.id] { frame = frame.union(f) } }
             return (owner, frame)
@@ -621,6 +825,22 @@ struct RangeReviewView<Footer: View>: View {
             }
             .onEnded { _ in
                 defer { draggingID = nil; dragTranslation = 0; dropSlot = nil }
+                if item.id.cutIndex != nil {
+                    guard isEnabled, let onMoveCut, let slot = dropSlot,
+                          let owner = items.first(where: { $0.id.ownerID == item.id.ownerID }) else { return }
+                    let cuts = reorderBlocks.compactMap { $0.owner.id.cutIndex }
+                    guard let cut = item.id.cutIndex, let from = cuts.firstIndex(of: cut), cuts.count == owner.children.count else { return }
+                    var order = cuts
+                    order.remove(at: from)
+                    order.insert(cut, at: min(order.count, max(0, slot > from ? slot - 1 : slot)))
+                    guard order != cuts else { return }
+                    dropDraft()
+                    if let next = onMoveCut(owner, order, selectedID) {
+                        userCleared = false
+                        selectedID = next
+                    }
+                    return
+                }
                 guard isEnabled, let onMove, let slot = dropSlot else { return }
                 var ids = reorderBlocks.map { $0.owner.id.ownerID }
                 guard let from = ids.firstIndex(of: item.id.ownerID) else { return }
@@ -637,6 +857,8 @@ struct RangeReviewView<Footer: View>: View {
         return ZStack(alignment: .topLeading) {
             // Clicking the selected row clears the selection.
             Button {
+                if highlight(item) { return }
+                highlighted = []
                 if selectedID == item.id {
                     selectedID = nil
                     userCleared = true
@@ -663,7 +885,8 @@ struct RangeReviewView<Footer: View>: View {
                 }
                 // A keep box is 18 wide at 8 in; the text starts 5 past it.
                 .padding(.leading, (isChild ? 42 : kept != nil ? 15 : 0) + (item.isDraft ? 0 : RangeReviewPalette.barWidth + Theme.spaceXS))
-                .padding(.trailing, onDelete != nil && !item.isDraft && !isChild ? 30 : 0)
+                .padding(.trailing, onDelete != nil && !item.isDraft && !isChild
+                         ? (onUnlink != nil && !item.children.isEmpty ? 56 : 30) : 0)
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .padding(.vertical, Theme.spaceS)
                 .padding(.horizontal, Theme.spaceS)
@@ -683,7 +906,21 @@ struct RangeReviewView<Footer: View>: View {
             .highPriorityGesture(reorderGesture(item), including: canReorder(item) ? .all : .subviews)
             .help(canReorder(item) ? "Drag up or down to reorder" : "")
             if let onDelete, !item.isDraft, !isChild {
-                deleteButton(item, onDelete: onDelete)
+                HStack(spacing: Theme.spaceXS) {
+                    if let onUnlink, !item.children.isEmpty {
+                        Button("Unlink", systemImage: "link") {
+                            dropDraft()
+                            onUnlink(item)
+                        }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderless)
+                        .controlSize(.small)
+                        .fixedSize()
+                        .disabled(!isEnabled)
+                        .help("Unlink: its \(item.children.count) passages become separate items")
+                    }
+                    deleteButton(item, onDelete: onDelete)
+                }
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .padding(.vertical, Theme.spaceS)
                     .padding(.trailing, Theme.spaceXS)
@@ -763,7 +1000,7 @@ struct RangeReviewView<Footer: View>: View {
                     RangeStepControls(range: editRange, transcript: visibleTranscript,
                                       spans: speakerSpans.filter { $0.videoID == nil || $0.videoID == contextVideo?.id },
                                       limits: limits, policy: policy, lastAdjustment: lastAdjustment,
-                                      canSplit: onSplit != nil && !item.isDraft && item.id.cutIndex == nil,
+                                      canSplit: onSplit != nil && !item.isDraft && (splitsCuts || item.id.cutIndex == nil),
                                       playback: playback, actions: stepActions.update(apply: apply, split: splitAtPlayhead))
                         .equatable()
                         .padding(.top, Theme.spaceS)
@@ -875,7 +1112,7 @@ struct RangeReviewView<Footer: View>: View {
     }
 
     private var canSplit: Bool {
-        guard onSplit != nil, let selected, !selected.isDraft, selected.id.cutIndex == nil, canTrim, !isEmptyRange else { return false }
+        guard onSplit != nil, let selected, !selected.isDraft, splitsCuts || selected.id.cutIndex == nil, canTrim, !isEmptyRange else { return false }
         let minimum = policy.minimumSpan
         let time = playback.time
         return time - editRange.lowerBound >= minimum && editRange.upperBound - time >= minimum
@@ -941,11 +1178,45 @@ struct RangeReviewView<Footer: View>: View {
 
     private func reconcileSelection() {
         // A cleared selection stays cleared until the user picks a row or the owner asks for one.
+        if let pending = pendingCut, items.contains(where: { $0.children.contains { $0.id == pending } }) {
+            pendingCut = nil
+            selectedID = pending
+            return
+        }
         if selectedID == nil, userCleared, selection?.wrappedValue == nil { return }
+        // The selected cut moved among its siblings (or its owner is now
+        // named by another cut): follow it, unless the owner asked for
+        // another row meanwhile.
+        if let stable = selectedStable, selectedID != nil,
+           let match = cut(stable: stable),
+           // An item selected as a whole stays so when it gains cuts (Link).
+           !(selectedID?.cutIndex == nil && match.id.cutIndex != nil && match.id.ownerID == selectedID?.ownerID),
+           followsSelection(match) {
+            if selectedID != match.id {
+                dropDraft()
+                selectedID = match.id
+            }
+            applyRequestedCut()
+            return
+        }
         let ownerID = selection?.wrappedValue ?? selectedID?.ownerID
         let parent = items.first { $0.id.ownerID == ownerID } ?? items.first
-        if let parent, selectedID == parent.id || parent.children.contains(where: { $0.id == selectedID }) { return }
+        if let parent, selectedID == parent.id || parent.children.contains(where: { $0.id == selectedID }) {
+            applyRequestedCut()
+            return
+        }
         selectedID = parent?.id
+        applyRequestedCut()
+    }
+
+    /// The owner asked for one cut of its selection: show that one, not the first.
+    private func applyRequestedCut() {
+        guard let cut = requestedCut?.wrappedValue, let ownerID = selection?.wrappedValue,
+              let parent = items.first(where: { $0.id.ownerID == ownerID }) else { return }
+        requestedCut?.wrappedValue = nil
+        guard let child = parent.children.first(where: { $0.id.cutIndex == cut }) else { return }
+        userCleared = false
+        selectedID = child.id
     }
 
     private func selectItem() {
@@ -969,6 +1240,17 @@ struct RangeReviewView<Footer: View>: View {
 
     private func recenter(_ range: ClosedRange<Double>) {
         window = ProposedCutTrim.window(for: range, scene: limits)
+    }
+
+    /// The span just marked becomes a new passage of the selected item,
+    /// which is selected once it is stored.
+    private func commitNewCut() {
+        guard isEnabled, canTrim, let current = draft, let parent = selectedParent else { dropDraft(); return }
+        let updated = policy.clamp(current.start...max(current.start, current.end), limits: limits)
+        dropDraft()
+        guard updated.upperBound > updated.lowerBound, let id = onAddCut?(parent, updated) else { return }
+        pendingCut = id
+        userCleared = false
     }
 
     private func commitDraft(snap: Bool) {

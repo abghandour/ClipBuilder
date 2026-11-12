@@ -467,6 +467,8 @@ final class AppStore {
     /// sections not loaded yet so the List can colour every row as its
     /// section does; a loaded section's live order wins.
     var miniReelSectionOrder: [MiniReelRules.Key: Int] = [:]
+    /// The Transcript section's units (pick ids) as last read for the reel, for while it is not loaded.
+    @ObservationIgnored var miniReelCachedUnits: [[Int64]]?
     /// The preview's List has keyboard focus: its Delete key removes a reel
     /// item, so the Footage review's window-wide key monitor leaves Delete alone.
     @ObservationIgnored var miniReelListFocused = false

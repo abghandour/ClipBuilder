@@ -21,6 +21,7 @@ extension AppStore {
         miniReelLoaded = false
         miniReelItems = []
         miniReelSectionOrder = [:]
+        miniReelCachedUnits = nil
         miniReelHighlightBatch = nil
         guard let database else { return }
         let generation = profileGeneration
@@ -65,6 +66,7 @@ extension AppStore {
             // Sections whose whole list was read: an item of theirs that is
             // not in it names something the source no longer has.
             var whole: Set<MiniWizardFlow.FootageKind> = []
+            var transcriptUnits: [[Int64]]?
             // Every candidate of the remembered Highlights batches, or nil
             // when one could not be read (then nothing is known to be gone).
             var highlightIDs: Set<Int64>? = kinds.contains(.highlights) && factsRead ? [] : nil
@@ -83,7 +85,12 @@ extension AppStore {
             }
             if kinds.contains(.transcript),
                let picks = try? await database.fetchTranscriptPicks(projectID: key.projectID, videoID: key.videoID) {
-                record(.transcript, picks.map(\.id))
+                // The list's rows are units: a unit's picks share its place.
+                let units = TranscriptPickUnits.units(picks)
+                for (index, unit) in units.enumerated() {
+                    for pick in unit { order[.init(kind: .transcript, itemID: pick.id)] = index }
+                }
+                transcriptUnits = units.map { $0.map(\.id) }
                 whole.insert(.transcript)
             }
             if kinds.contains(.fightMetrics),
@@ -105,6 +112,7 @@ extension AppStore {
             // again): these lists may be of a set that is no longer in use.
             guard generation == profileGeneration, miniReelKey == key, read == miniReelSectionRead else { return }
             miniReelSectionOrder = order
+            miniReelCachedUnits = transcriptUnits
             // Exchanges and transcript picks belong to a transcript set.
             // After a change of set (now, or while this project was closed)
             // the reel may still list the old set's: removing one there
@@ -160,6 +168,8 @@ extension AppStore {
             let known: Set<Int64>? = kind == .highlights ? Set(run.candidates.map(\.id)) : nil
             items = MiniReelRules.reconcile(items, kind: kind, kept: MiniReelRules.kept(run: run), known: known)
         }
+        // A pick made of several passages plays back to back, in its own order.
+        if let units = miniReelTranscriptUnits(key: key) { items = MiniReelRules.groupingUnits(items, units: units) }
         // Another Highlights batch came on screen (generated again, opened
         // from the history): the reel may hold the batch it replaced.
         let batch = miniRuns[.highlights].flatMap {
@@ -198,10 +208,53 @@ extension AppStore {
     /// A List drop: `clipIDs` is the whole list in its new order.
     func reorderMiniReel(_ clipIDs: [String]) {
         guard miniReelLoaded, !isWizardRunning, !isLoadingMiniFootage, !miniEditsBlocked else { return }
-        let items = MiniReelRules.reordered(miniReelItems, clipIDs: clipIDs)
-        guard items != miniReelItems else { return }
-        miniReelItems = items
-        saveMiniReel()
+        var items = MiniReelRules.reordered(miniReelItems, clipIDs: clipIDs)
+        // A passage dragged among its pick's passages changes their order
+        // in the pick itself (the list, the numbers in the transcript); the
+        // pick's passages stay together wherever it was dropped.
+        var pickOrder: [Int64]?
+        if let key = miniReelKey, let units = miniReelTranscriptUnits(key: key) {
+            let dragged = MiniReelRules.movedItem(from: miniReelItems, to: items, units: units)
+            let moved = MiniReelRules.unitOrders(items, units: units)
+            items = MiniReelRules.groupingUnits(items, units: moved, moved: dragged)
+            if moved != units { pickOrder = moved.flatMap { $0 } }
+        }
+        guard items != miniReelItems || pickOrder != nil else { return }
+        if items != miniReelItems {
+            miniReelItems = items
+            saveMiniReel()
+        }
+        guard let pickOrder, let key = miniReelKey else { return }
+        if miniReelLoadedTranscript(key: key) != nil {
+            reorderMiniTranscriptPicks(pickOrder)
+        } else if let database {
+            // The Transcript section is not on the page: its picks take the
+            // order in the table, or loading it later would put the reel back.
+            miniReelCachedUnits = MiniReelRules.unitOrders(items, units: miniReelCachedUnits ?? [])
+            let previous = transcriptPickSaveTask
+            let generation = profileGeneration
+            transcriptPickSaveTask = Task {
+                _ = try? await previous?.value
+                do {
+                    try await database.reorderTranscriptPicks(projectID: key.projectID, videoID: key.videoID, ids: pickOrder)
+                } catch {
+                    if generation == profileGeneration { presentError("Could not reorder the picks", error) }
+                    throw error
+                }
+            }
+        }
+    }
+
+    private func miniReelLoadedTranscript(key: MiniReelKey) -> [TranscriptPick]? {
+        guard let run = miniRuns[.transcript], run.projectID == key.projectID, run.video.id == key.videoID else { return nil }
+        return run.transcript?.picks
+    }
+
+    /// The Transcript section's units as pick ids: from the loaded section,
+    /// else as last read for the reel; nil when neither is known.
+    private func miniReelTranscriptUnits(key: MiniReelKey) -> [[Int64]]? {
+        if let picks = miniReelLoadedTranscript(key: key) { return TranscriptPickUnits.units(picks).map { $0.map(\.id) } }
+        return miniReelCachedUnits
     }
 
     /// Delete on a List row: the item leaves the reel and is unselected in

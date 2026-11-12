@@ -132,6 +132,61 @@ nonisolated enum MiniReelRules {
         return renumbered(named + rest)
     }
 
+    /// The reel with every transcript unit's items next to each other, in
+    /// the unit's order (`units`: each unit's pick ids). The block sits
+    /// where most of its items already are (the longest run; the first on a
+    /// tie), so one passage dragged away comes back to its pick and a clip
+    /// dropped among the passages ends up beside the block.
+    /// `moved` is the item a drag just placed: the block stays with the
+    /// unit's other items, so a passage dragged away never takes its pick
+    /// along (and undoing the pick's order puts the reel back as it was).
+    static func groupingUnits(_ items: [MiniReelItem], units: [[Int64]], moved: Key? = nil) -> [MiniReelItem] {
+        var result = items
+        for unit in units where unit.count > 1 {
+            let rank = Dictionary(unit.enumerated().map { ($1, $0) }, uniquingKeysWith: { first, _ in first })
+            let indices = result.indices.filter { result[$0].kind == .transcript && rank[result[$0].itemID] != nil }
+            guard indices.count > 1 else { continue }
+            let staying = indices.filter { result[$0].key != moved }
+            var best = (start: staying[0], length: 1), run = (start: staying[0], length: 1)
+            for (previous, index) in zip(staying, staying.dropFirst()) {
+                run = index == previous + 1 ? (run.start, run.length + 1) : (index, 1)
+                if run.length > best.length { best = run }
+            }
+            let inUnit = Set(indices)
+            let members = indices.map { result[$0] }.sorted { (rank[$0.itemID] ?? 0) < (rank[$1.itemID] ?? 0) }
+            let at = (0..<best.start).filter { !inUnit.contains($0) }.count
+            var rest = result.indices.filter { !inUnit.contains($0) }.map { result[$0] }
+            rest.insert(contentsOf: members, at: at)
+            result = rest
+        }
+        return result.map(\.key) == items.map(\.key) ? items : renumbered(result)
+    }
+
+    /// Each unit's pick ids in the order the reel now shows them; picks the
+    /// reel does not hold (unchecked ones) follow in the order they had.
+    /// A unit whose shown picks kept their order is left exactly as it was.
+    static func unitOrders(_ items: [MiniReelItem], units: [[Int64]]) -> [[Int64]] {
+        units.map { unit in
+            guard unit.count > 1 else { return unit }
+            let members = Set(unit)
+            let shown = items.filter { $0.kind == .transcript && members.contains($0.itemID) }.map(\.itemID)
+            guard shown != unit.filter(shown.contains) else { return unit }
+            return shown + unit.filter { !shown.contains($0) }
+        }
+    }
+
+    /// The one item a drag moved between two orders of the same items: the
+    /// one without which both read the same. Two neighbours that swapped
+    /// both qualify; the one outside every unit is taken, so a clip dragged
+    /// into a pick's passages is what moves, not the passage it passed.
+    static func movedItem(from old: [MiniReelItem], to new: [MiniReelItem], units: [[Int64]]) -> Key? {
+        let before = old.map(\.key), after = new.map(\.key)
+        guard before != after, Set(before) == Set(after) else { return nil }
+        let inUnits = Set(units.filter { $0.count > 1 }.flatMap { $0 })
+        let candidates = after.filter { key in before.filter { $0 != key } == after.filter { $0 != key } }
+        return candidates.first { !($0.kind == .transcript && inUnits.contains($0.itemID)) } ?? candidates.first
+    }
+
     static func removing(_ items: [MiniReelItem], clipID: String) -> [MiniReelItem] {
         guard let key = key(of: clipID) else { return items }
         return renumbered(items.filter { $0.key != key })
@@ -144,7 +199,9 @@ nonisolated enum MiniReelRules {
         guard let run = runs[item.kind] else { return nil }
         switch item.kind {
         case .qa: return run.qa?.sections.firstIndex { $0.id == item.itemID }
-        case .transcript: return run.transcript?.picks.firstIndex { $0.id == item.itemID }
+        // Picks added as one unit share its row in the list, so its colour.
+        case .transcript:
+            return run.transcript.flatMap { TranscriptPickUnits.units($0.picks).firstIndex { $0.contains { $0.id == item.itemID } } }
         case .fightMetrics: return run.fight?.picks.firstIndex { $0.id == item.itemID }
         case .highlights: return run.candidates.firstIndex { $0.id == item.itemID }
         }
