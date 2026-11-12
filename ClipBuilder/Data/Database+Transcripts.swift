@@ -233,10 +233,20 @@ extension Database {
                 // Only an overwrite of this set invalidates its re-cut backup.
                 try connection.execute("DELETE FROM transcript_backups WHERE video_id = ? AND transcription_key = ?", [.integer(videoID), .text(key)])
             }
-            try connection.execute("DELETE FROM transcripts WHERE video_id = ? AND language = ? AND is_translation = ? AND transcription_key IS ?",
-                                   [.integer(videoID), .text(language), .integer(isTranslation ? 1 : 0), .text(key)])
+            // A translation line corrected by hand (it carries the machine's
+            // text as its original) is kept; the new pass fills in the rest.
+            let kept = isTranslation ? Set(try connection.query("""
+                SELECT start_time, end_time FROM transcripts WHERE video_id = ? AND language = ? AND is_translation = 1
+                    AND transcription_key IS ? AND original_text IS NOT NULL
+                """, [.integer(videoID), .text(language), .text(key)]).map {
+                    "\($0["start_time"]?.doubleValue ?? 0)|\($0["end_time"]?.doubleValue ?? 0)"
+                }) : []
+            try connection.execute("""
+                DELETE FROM transcripts WHERE video_id = ? AND language = ? AND is_translation = ? AND transcription_key IS ?
+                    AND (is_translation = 0 OR original_text IS NULL)
+                """, [.integer(videoID), .text(language), .integer(isTranslation ? 1 : 0), .text(key)])
             let encoder = JSONEncoder()
-            for segment in segments {
+            for segment in segments where !kept.contains("\(segment.start)|\(segment.end)") {
                 let wordsJSON = segment.words.flatMap { try? encoder.encode($0) }.flatMap { String(data: $0, encoding: .utf8) }
                 try connection.execute("""
                     INSERT INTO transcripts (video_id, language, is_translation, start_time, end_time, text, words, provider, model, technique, seconds, transcription_key, transcription_created_at)
@@ -390,24 +400,40 @@ extension Database {
     func storeDubTranslations(videoID: Int64, transcriptionKey: String, originals: [TranscriptRow],
                               target: String, answered: [Int64: String], provider: String?, model: String?) throws {
         try connection.transaction {
+            // The set was deleted while its translation was on the way:
+            // writing now would bring it back as translations alone.
+            guard try !connection.query("""
+                SELECT 1 FROM transcripts WHERE video_id = ? AND transcription_key = ? AND is_translation = 0 LIMIT 1
+                """, [.integer(videoID), .text(transcriptionKey)]).isEmpty else { return }
             for row in originals {
                 guard let text = answered[row.id] else { continue }
                 let values: [SQLValue] = [.integer(videoID), .text(transcriptionKey), .text(target),
                                          .real(row.startTime), .real(row.endTime)]
                 let existing = try connection.query("""
-                    SELECT speaker_key FROM transcripts WHERE video_id = ? AND transcription_key = ?
-                        AND language = ? AND is_translation = 1 AND start_time = ? AND end_time = ?
-                    """, values).first
-                let speaker = existing?["speaker_key"]?.stringValue ?? row.speakerKey
-                try connection.execute("""
-                    DELETE FROM transcripts WHERE video_id = ? AND transcription_key = ?
+                    SELECT id, original_text FROM transcripts WHERE video_id = ? AND transcription_key = ?
                         AND language = ? AND is_translation = 1 AND start_time = ? AND end_time = ?
                     """, values)
+                // Corrected by hand in the transcript editor: never overwritten.
+                if existing.contains(where: { $0["original_text"]?.stringValue != nil }) { continue }
+                if let id = existing.first?["id"]?.intValue {
+                    // In place: the row keeps its id (an edit being typed in
+                    // the transcript editor is held by it) and its speaker.
+                    try connection.execute("""
+                        UPDATE transcripts SET text = ?, words = NULL, provider = ?, model = ?,
+                            technique = 'numbered-translation-batch' WHERE id = ?
+                        """, [.text(text), provider.map(SQLValue.text) ?? .null, model.map(SQLValue.text) ?? .null, .integer(id)])
+                    for extra in existing.dropFirst() {
+                        if let extraID = extra["id"]?.intValue {
+                            try connection.execute("DELETE FROM transcripts WHERE id = ?", [.integer(extraID)])
+                        }
+                    }
+                    continue
+                }
                 try connection.execute("""
                     INSERT INTO transcripts (video_id, transcription_key, language, is_translation,
                         start_time, end_time, text, speaker_key, provider, model, technique, transcription_created_at)
                     VALUES (?, ?, ?, 1, ?, ?, ?, ?, ?, ?, 'numbered-translation-batch', ?)
-                    """, values + [.text(text), speaker.map(SQLValue.text) ?? .null,
+                    """, values + [.text(text), row.speakerKey.map(SQLValue.text) ?? .null,
                                    provider.map(SQLValue.text) ?? .null, model.map(SQLValue.text) ?? .null,
                                    row.transcriptionCreatedAt.map(SQLValue.text) ?? .null])
             }

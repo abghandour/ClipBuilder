@@ -742,6 +742,8 @@ final class AppStore {
     var autoTranslateQueue: [Int64] = []
     /// Pending edited row IDs, coalesced per video and source set while translation runs.
     var transcriptTranslationEdits: [String: Set<Int64>] = [:]
+    /// Languages Add Translation asked for, per "video:set", until the set's translation job takes them.
+    var transcriptTranslationAdds: [String: [String]] = [:]
 
     /// The video a runner has claimed (checking or translating it), so two
     /// windows' runners never work the same head.
@@ -1236,6 +1238,7 @@ final class AppStore {
         isRefreshingTeachingQueue = false
         autoTranslateQueue = []
         transcriptTranslationEdits = [:]
+        transcriptTranslationAdds = [:]
         autoTranslateInFlight = nil
         pendingPeopleReview = nil
         pendingRenameReview = nil

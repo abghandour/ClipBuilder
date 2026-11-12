@@ -30,6 +30,17 @@ struct TranscriptSheet: View {
     /// Edited text per segment id; only segments whose text differs from
     /// the stored row are written on Apply.
     @State private var drafts: [Int64: String] = [:]
+    /// Each line's translations, shown under it (by original row id).
+    @State private var translationsByRow: [Int64: [TranscriptRow]] = [:]
+    /// The languages the pills turned off; never all of them.
+    @State private var hiddenLanguages: Set<TranscriptTranslationRows.Language> = []
+    private var languages: [TranscriptTranslationRows.Language] { TranscriptTranslationRows.languages(rows) }
+    private var missingLanguages: [String] {
+        TranscriptTranslationRows.missing(captions: store.projectLanguages.captions, rows: rows)
+    }
+    private func shows(_ row: TranscriptRow) -> Bool {
+        !hiddenLanguages.contains(.init(code: row.language, isTranslation: row.isTranslation))
+    }
     /// Who says a line, as changed here and not yet applied.
     @State private var speakerDrafts: [Int64: TranscriptRow.SpeakerAttribution] = [:]
     @State private var isLoading = true
@@ -167,8 +178,10 @@ struct TranscriptSheet: View {
 
     /// The lines on show: all of them, or those under the tag filter.
     private var visibleRows: [TranscriptRow] {
+        // A translation shows under its line, never as a row of its own.
+        let rows = rows.filter { !$0.isTranslation }
         if tagFilter.isEmpty { return rows }
-        if tagFilter == Self.editedFilter { return rows.filter { !$0.isTranslation && $0.originalText != nil } }
+        if tagFilter == Self.editedFilter { return rows.filter { $0.originalText != nil } }
         if tagFilter == Self.changedByMapFilter { return rows.filter { changedByMap[$0.id] != nil } }
         return rows.filter { lineTags[$0.id]?.contains(tagFilter) == true }
     }
@@ -254,8 +267,49 @@ struct TranscriptSheet: View {
 
     /// Language shown per segment only when the transcript mixes languages
     /// (a translation stored alongside the original).
-    private var showsLanguage: Bool {
-        Set(rows.map { "\($0.language)|\($0.isTranslation)" }).count > 1
+    private var showsLanguage: Bool { false }
+
+    /// Right of the set picker: Add Translation while a project caption
+    /// language has none, and one pill per language once there are several.
+    @ViewBuilder
+    private var translationControls: some View {
+        let missing = missingLanguages
+        let running = translationJob?.status == .running
+        if running {
+            ProgressView().controlSize(.small)
+                .help(translationJob?.statusLine ?? "Translating…")
+        } else if !missing.isEmpty, !rows.isEmpty {
+            Button("Add Translation", systemImage: "translate") {
+                store.addTranscriptTranslations(videoID: video.id, transcriptionKey: selectedTranscriptionKey, languages: missing)
+            }
+            .lineLimit(1).fixedSize()
+            .disabled(selectedTranscriptionKey.isEmpty)
+            .help("Translate this transcript into \(missing.map(DubLanguageChoices.name).joined(separator: ", ")), the project's caption languages it does not have yet. Runs in the background; edit the result with Edit.")
+        }
+        let all = languages
+        if all.count > 1 {
+            HStack(spacing: 4) {
+                ForEach(all, id: \.self) { language in
+                    let shown = !hiddenLanguages.contains(language)
+                    Button {
+                        hiddenLanguages = TranscriptTranslationRows.toggling(language, hidden: hiddenLanguages, all: all)
+                    } label: {
+                        Text(DubLanguageChoices.name(language.code))
+                            .font(.caption.weight(.medium)).lineLimit(1).fixedSize()
+                            .padding(.horizontal, 9).padding(.vertical, 3)
+                            .foregroundStyle(shown ? Color.white : Color.secondary)
+                            .background(shown ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary), in: Capsule())
+                            .contentShape(Capsule())
+                    }
+                    .buttonStyle(.plain)
+                    .help(shown ? "Hide the \(DubLanguageChoices.name(language.code)) \(language.isTranslation ? "translation" : "text")"
+                          : "Show the \(DubLanguageChoices.name(language.code)) \(language.isTranslation ? "translation" : "text")")
+                    .accessibilityAddTraits(shown ? .isSelected : [])
+                }
+            }
+            .fixedSize()
+            .accessibilityLabel("Languages shown")
+        }
     }
 
     @ViewBuilder
@@ -277,6 +331,7 @@ struct TranscriptSheet: View {
                             Task { transcriptionSets = (try? await store.database?.transcriptionSets(videoID: video.id)) ?? transcriptionSets }
                         }
                     }
+                    translationControls
                     Button("Pin this set") { changePin(selectedTranscriptionKey) }
                         .lineLimit(1).fixedSize()
                         .disabled(selectedTranscriptionKey.isEmpty || pinnedTranscriptionKey == selectedTranscriptionKey)
@@ -784,7 +839,9 @@ struct TranscriptSheet: View {
             }
 
             VStack(alignment: .leading, spacing: 4) {
-                if editMode && !row.isTranslation {
+                if !shows(row) {
+                    EmptyView()
+                } else if editMode && !row.isTranslation {
                     HStack(alignment: .top, spacing: 4) {
                         TextField("Segment text", text: Binding(
                             get: { drafts[row.id] ?? row.text },
@@ -806,7 +863,7 @@ struct TranscriptSheet: View {
                         .textSelection(.enabled)
                         .frame(maxWidth: .infinity, alignment: .leading)
                 }
-                if compareMode && isCompared(row) {
+                if shows(row), compareMode && isCompared(row) {
                     if !editMode || row.isTranslation {
                         Text(comparedText(row, original: false)).textSelection(.enabled)
                     }
@@ -814,6 +871,9 @@ struct TranscriptSheet: View {
                         .font(.callout).foregroundStyle(.secondary)
                         .textSelection(.enabled)
                         .accessibilityLabel("Transcriber's original: \(row.originalText ?? row.text)")
+                }
+                ForEach((translationsByRow[row.id] ?? []).filter(shows)) { translation in
+                    translationLine(translation)
                 }
                 if showTags, let tags = lineTags[row.id], !tags.isEmpty {
                     tagLine(row, tags: tags)
@@ -833,6 +893,41 @@ struct TranscriptSheet: View {
         .padding(.bottom, grouped ? 2 : 6)
         .background(current || (drafts[row.id] ?? row.text) != row.text
                     ? Color.accentColor.opacity(current ? 0.16 : 0.08) : Color.clear)
+    }
+
+    /// A line's translation, under the line: editable with Edit like the line itself.
+    private func translationLine(_ row: TranscriptRow) -> some View {
+        HStack(alignment: .top, spacing: 6) {
+            Text(ProjectLanguageResolver.languageCode(row.language).uppercased())
+                .font(.caption2.weight(.semibold)).lineLimit(1).fixedSize()
+                .padding(.horizontal, 6).padding(.vertical, 2)
+                .foregroundStyle(.secondary)
+                .background(.quaternary, in: Capsule())
+                .help("\(DubLanguageChoices.name(row.language)) translation\(row.originalText != nil ? ", edited by hand" : "")")
+                .padding(.top, editMode ? 6 : 1)
+            if editMode {
+                TextField("\(DubLanguageChoices.name(row.language)) translation", text: Binding(
+                    get: { drafts[row.id] ?? row.text },
+                    set: { drafts[row.id] = $0 }
+                ), axis: .vertical)
+                .textFieldStyle(.plain)
+                .lineLimit(1...8)
+                .disabled(isSaving)
+                .padding(6)
+                .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
+            } else {
+                Text(drafts[row.id] ?? row.text)
+                    .foregroundStyle(.secondary)
+                    .textSelection(.enabled)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            }
+            if row.originalText != nil {
+                Button("Revert") { revert(row) }
+                    .controlSize(.mini).lineLimit(1).fixedSize()
+                    .disabled(isSaving)
+                    .help("Restore the machine translation of this line")
+            }
+        }
     }
 
     private func isCompared(_ row: TranscriptRow) -> Bool {
@@ -1370,6 +1465,11 @@ struct TranscriptSheet: View {
         }
         if focusSetsPicker { setsPickerFocused = true }
         rows = loadedRows
+        translationsByRow = TranscriptTranslationRows.attached(loadedRows)
+        // Another set may have fewer languages: one always stays on show.
+        let loadedLanguages = TranscriptTranslationRows.languages(loadedRows)
+        hiddenLanguages.formIntersection(loadedLanguages)
+        if hiddenLanguages.count >= loadedLanguages.count { hiddenLanguages = [] }
         turns = loadedTurns
         roster = loadedRoster
         let people = store.people
@@ -1406,7 +1506,7 @@ struct TranscriptSheet: View {
     private func save(thenDismiss: Bool) {
         guard let database = store.database else { return }
         let changes = rows.compactMap { row -> (id: Int64, text: String)? in
-            guard !row.isTranslation, let draft = drafts[row.id] else { return nil }
+            guard let draft = drafts[row.id] else { return nil }
             let trimmed = draft.trimmingCharacters(in: .whitespacesAndNewlines)
             return trimmed != row.text ? (row.id, trimmed) : nil
         }

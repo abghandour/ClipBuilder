@@ -526,34 +526,67 @@ extension AppStore {
         autoTranslateQueue.append(videoID)
     }
 
-    /// Edits refresh every existing language, even when automatic translation is off.
-    /// Coalesce further saves into the running job so they cannot be lost to job deduplication.
-    func enqueueAutoTranslation(videoID: Int64, transcriptionKey: String, rowIDs: [Int64]) {
-        guard let database, !rowIDs.isEmpty else { return }
+    /// The transcript editor's Add Translation: the whole set into each
+    /// language. Lines corrected by hand are kept.
+    func addTranscriptTranslations(videoID: Int64, transcriptionKey: String, languages: [String]) {
+        guard !languages.isEmpty, !transcriptionKey.isEmpty else { return }
         let subject = "\(videoID):\(transcriptionKey)"
-        transcriptTranslationEdits[subject, default: []].formUnion(rowIDs)
+        transcriptTranslationAdds[subject] = ProjectLanguageResolver.unique((transcriptTranslationAdds[subject] ?? []) + languages)
+        startTranscriptTranslation(videoID: videoID, transcriptionKey: transcriptionKey, title: "Translate Transcript")
+    }
+
+    /// Edits refresh every existing language, even when automatic translation is off.
+    func enqueueAutoTranslation(videoID: Int64, transcriptionKey: String, rowIDs: [Int64]) {
+        guard !rowIDs.isEmpty else { return }
+        transcriptTranslationEdits["\(videoID):\(transcriptionKey)", default: []].formUnion(rowIDs)
+        startTranscriptTranslation(videoID: videoID, transcriptionKey: transcriptionKey, title: "Refresh Transcript Translations")
+    }
+
+    /// One worker per transcript set does both: new languages first, then
+    /// the lines edited since. Requests made while it runs join it (the
+    /// job list keeps one job per set), so none is lost.
+    private func startTranscriptTranslation(videoID: Int64, transcriptionKey: String, title: String) {
+        guard let database else { return }
+        let subject = "\(videoID):\(transcriptionKey)"
         let generation = profileGeneration
         let ai = ai
-        jobs.start(.transcriptTranslation, title: "Refresh Transcript Translations", project: activeProject,
+        jobs.start(.transcriptTranslation, title: title, project: activeProject,
                    profileGeneration: generation, subjectID: subject) { [self] log in
             defer {
-                if generation == profileGeneration { transcriptTranslationEdits[subject] = nil }
+                if generation == profileGeneration {
+                    transcriptTranslationEdits[subject] = nil
+                    transcriptTranslationAdds[subject] = nil
+                }
             }
-            while let ids = transcriptTranslationEdits.removeValue(forKey: subject), !ids.isEmpty {
+            while true {
                 try Task.checkCancellation()
                 guard generation == profileGeneration else { throw CancellationError() }
+                let added = transcriptTranslationAdds.removeValue(forKey: subject) ?? []
+                let ids = added.isEmpty ? transcriptTranslationEdits.removeValue(forKey: subject) ?? [] : []
+                guard !added.isEmpty || !ids.isEmpty else { break }
                 let rows = try await database.fetchTranscripts(videoID: videoID, transcriptionKey: transcriptionKey)
-                let originals = rows.filter { !$0.isTranslation && ids.contains($0.id) }
-                let languages = Set(rows.filter(\.isTranslation).map(\.language)).sorted()
-                for language in languages {
-                    log("Refreshing edited lines in \(language)…")
-                    _ = try await TranscriptTranslator.translateBatched(videoID: videoID, originals: originals,
-                        target: language, ai: ai, database: database, log: { log($0) })
+                if !added.isEmpty {
+                    // The whole set as it reads now, so the pass includes edits applied so far.
+                    let originals = rows.filter { !$0.isTranslation }
+                    for language in added {
+                        try Task.checkCancellation()
+                        log("Translating \(originals.count) lines into \(DubLanguageChoices.name(language))…")
+                        _ = try await TranscriptTranslator.translateBatched(videoID: videoID, originals: originals,
+                            target: language, ai: ai, database: database, log: { log($0) })
+                    }
+                } else {
+                    let originals = rows.filter { !$0.isTranslation && ids.contains($0.id) }
+                    let languages = Set(rows.filter(\.isTranslation).map(\.language)).sorted()
+                    for language in languages {
+                        log("Refreshing edited lines in \(language)…")
+                        _ = try await TranscriptTranslator.translateBatched(videoID: videoID, originals: originals,
+                            target: language, ai: ai, database: database, log: { log($0) })
+                    }
                 }
                 guard generation == profileGeneration else { throw CancellationError() }
                 transcriptEdited(videoID: videoID)
             }
-            log("Transcript translations refreshed.")
+            log("Transcript translations up to date.")
             return nil
         }
     }
