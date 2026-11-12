@@ -1188,6 +1188,10 @@ struct SchemaVersionGateTests {
     @Test func previousVersionGainsTimingColumns() async throws {
         let temp = try await TempDatabase()
         let raw = try SQLiteConnection(path: temp.path.path)
+        // The build being simulated had an update trigger that named no column;
+        // SQLite refuses to drop a column a trigger names.
+        try raw.execute("DROP TRIGGER videos_sync_update")
+        try raw.execute("DROP TRIGGER transcripts_sync_update")
         for column in ["people_seconds", "speech_seconds"] {
             try raw.execute("ALTER TABLE videos DROP COLUMN \(column)")
         }

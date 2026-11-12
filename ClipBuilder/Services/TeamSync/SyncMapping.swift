@@ -186,6 +186,23 @@ nonisolated enum SyncMapping {
         return result
     }
 
+    /// Whether two wire values say the same thing: numbers within rounding
+    /// (a real goes through text on its way to the server and back) and JSON
+    /// text by its portable content, not its spelling.
+    static func sameWireValue(_ lhs: SyncJSON, _ rhs: SyncJSON, json: Bool) -> Bool {
+        switch (lhs, rhs) {
+        case (.number(let a), .number(let b)):
+            let x = NSDecimalNumber(decimal: a).doubleValue, y = NSDecimalNumber(decimal: b).doubleValue
+            return abs(x - y) <= max(1, abs(x), abs(y)) * 1e-12
+        case (.string(let a), .string(let b)) where json:
+            guard let x = try? JSONDecoder().decode(SyncJSON.self, from: Data(a.utf8)),
+                  let y = try? JSONDecoder().decode(SyncJSON.self, from: Data(b.utf8)) else { return a == b }
+            return portableJSON(x) == portableJSON(y)
+        default:
+            return lhs == rhs
+        }
+    }
+
     /// Restore only local file fields, matching array elements by stable identity.
     /// A teammate's path can never overwrite a path on this Mac.
     static func applyingPortableJSON(_ remote: SyncJSON, to local: SyncJSON?) -> SyncJSON {

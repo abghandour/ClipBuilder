@@ -106,6 +106,14 @@ nonisolated enum MiniReelRules {
         return renumbered(result)
     }
 
+    /// The reel without the Highlights items that `live` (every candidate of
+    /// the batches still remembered and of the run on screen) does not hold:
+    /// candidates of a batch that was generated again.
+    static func droppingHighlights(_ items: [MiniReelItem], notIn live: Set<Int64>) -> [MiniReelItem] {
+        let kept = items.filter { $0.kind != .highlights || live.contains($0.itemID) }
+        return kept.count == items.count ? items : renumbered(kept)
+    }
+
     static func renumbered(_ items: [MiniReelItem]) -> [MiniReelItem] {
         items.enumerated().map { position, item in
             var item = item

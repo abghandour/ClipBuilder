@@ -17,6 +17,16 @@ struct MiniReelRulesTests {
         return MiniWizardCandidate(selection: selection, take: take, kept: kept)
     }
 
+    @Test func replacedHighlightBatchLeavesTheReel() {
+        let reel = [item(.highlights, 1065), item(.transcript, 1065), item(.highlights, 1071), item(.qa, 3)]
+        // 1065 was a candidate of the batch that Generate replaced.
+        let result = MiniReelRules.droppingHighlights(reel, notIn: [1071, 1072])
+        #expect(result.map(\.key) == [.init(kind: .transcript, itemID: 1065), .init(kind: .highlights, itemID: 1071),
+                                      .init(kind: .qa, itemID: 3)])
+        #expect(result.map(\.position) == [0, 1, 2])
+        #expect(MiniReelRules.droppingHighlights(reel, notIn: [1065, 1071]) == reel)
+    }
+
     @Test func reconcileDropsUnkeptAppendsNewAndRefreshesSnapshots() {
         let reel = [item(.qa, 1, title: "Q1"), item(.transcript, 7, start: 10, end: 20), item(.qa, 2, title: "Q2")]
         // Q&A now keeps 2 and 3 (1 was unticked); 2's range moved.

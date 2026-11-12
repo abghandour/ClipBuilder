@@ -8,6 +8,9 @@ struct SyncMigrationTests {
         let folder = try SyncTestFolder()
         let path = folder.url.appendingPathComponent("profile.db").path
         let raw = try SQLiteConnection(path: path)
+        // A schema-35 file's update trigger did not name the synced columns;
+        // SQLite refuses to drop a column a trigger names.
+        try raw.execute("DROP TRIGGER video_people_sync_update")
         try raw.execute("ALTER TABLE video_people DROP COLUMN vip")
         try raw.execute("ALTER TABLE video_people DROP COLUMN vip_source")
         try raw.execute("PRAGMA user_version = 35")

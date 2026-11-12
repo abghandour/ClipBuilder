@@ -38,6 +38,16 @@ extension Database {
                     substr('89ab', abs(random() % 4) + 1, 1) || substr(lower(hex(randomblob(2))), 2) || '-' ||
                     lower(hex(randomblob(6))) WHERE sync_id IS NULL
                 """)
+            // Only a change to a column that travels queues the row. A write
+            // that leaves them as they were (a rescan touching a local path,
+            // a save that stores the same value again) would otherwise push
+            // this Mac's whole copy over whatever a teammate changed since.
+            // A trigger naming a column the table lacks fails every update,
+            // so a table still missing one (a later migration adds it) keeps
+            // the unguarded trigger until the next open.
+            let present = try db.columnNames(of: name)
+            let changed = table.columns.allSatisfy(present.contains)
+                ? " AND (" + table.columns.map { "OLD.\"\($0)\" IS NOT NEW.\"\($0)\"" }.joined(separator: " OR ") + ")" : ""
             let runIdentity = name == "analysis_runs" ? "UPDATE analysis_runs SET run_key = lower(hex(randomblob(16))) WHERE rowid = NEW.rowid AND run_key IS NULL;" : ""
             try db.executeScript("""
                 CREATE UNIQUE INDEX IF NOT EXISTS \(name)_sync_id ON \(name)(sync_id);
@@ -63,7 +73,7 @@ extension Database {
                 END;
                 CREATE TRIGGER \(name)_sync_update AFTER UPDATE ON \(name)
                 WHEN OLD.sync_id IS NOT NULL AND (SELECT suspended FROM sync_control WHERE id = 1) = 0
-                    AND EXISTS (SELECT 1 FROM sync_binding)\(portableNew)
+                    AND EXISTS (SELECT 1 FROM sync_binding)\(portableNew)\(changed)
                 BEGIN
                     DELETE FROM sync_outbox WHERE "table" = '\(name)' AND sync_id = NEW.sync_id;
                     INSERT INTO sync_outbox("table", sync_id, op) VALUES ('\(name)', NEW.sync_id, 'upsert');
@@ -585,6 +595,9 @@ extension Database {
                         }
                     }
                 }
+                // What the server held when this Mac last saw the row.
+                let base = try connection.query("SELECT wire_json FROM sync_wire_rows WHERE \"table\" = ? AND sync_id = ?",
+                                                [.text(table.name), .text(id)]).first?["wire_json"]?.stringValue
                 let json = String(decoding: try JSONEncoder().encode(wire), as: UTF8.self)
                 try connection.execute("""
                     INSERT INTO sync_wire_rows("table", sync_id, wire_json) VALUES (?, ?, ?)
@@ -606,7 +619,29 @@ extension Database {
                     }
                 }
                 if try !connection.query("SELECT 1 FROM sync_outbox WHERE \"table\" = ? AND sync_id = ? LIMIT 1",
-                                         [.text(table.name), .text(id)]).isEmpty { continue }
+                                         [.text(table.name), .text(id)]).isEmpty {
+                    // A change to this row is still waiting to be pushed.
+                    if SyncMapping.isDeleted(wire), base != nil {
+                        // A teammate deleted a row both Macs knew. The delete
+                        // wins: pushing the waiting edit would bring the row
+                        // back for everyone.
+                        try connection.execute("DELETE FROM sync_outbox WHERE \"table\" = ? AND sync_id = ?",
+                                               [.text(table.name), .text(id)])
+                    } else if !SyncMapping.isDeleted(wire),
+                              let mine = try locallyChangedColumns(table: table, id: id, base: base, scope: scope),
+                              let current = try connection.query("SELECT * FROM \(table.name) WHERE sync_id = ?", [.text(id)]).first {
+                        // Field by field: what this Mac changed since it last
+                        // saw the row stays and is pushed; every other column
+                        // takes the teammate's value.
+                        for column in mine { local[column] = current[column] ?? .null }
+                        if mine.isEmpty {
+                            try connection.execute("DELETE FROM sync_outbox WHERE \"table\" = ? AND sync_id = ?",
+                                                   [.text(table.name), .text(id)])
+                        }
+                    } else {
+                        continue
+                    }
+                }
                 if table.name == "fight_events" {
                     let previous = try connection.query("SELECT * FROM fight_events WHERE sync_id = ?", [.text(id)]).first
                     let eventChanged = SyncMapping.isDeleted(wire) ? previous != nil :
@@ -747,6 +782,32 @@ extension Database {
         }
         try deleteDubTakeAudioFiles(dubFilesToRemove)
         return changed
+    }
+
+    /// Rows of these tables are edited a field at a time on several Macs
+    /// (a trim here, the transcript in use there), so a pull merges into a
+    /// row that has a change waiting instead of skipping it.
+    private nonisolated static let mergedOnPull: Set<String> = ["videos", "scenes", "transcript_picks", "fight_picks"]
+
+    /// The synced columns of a local row that differ from `base`, the
+    /// server's copy as this Mac last saw it: the ones changed here since.
+    /// Nil when the row cannot be merged (another table, no such copy, no
+    /// local row), which leaves the waiting change to win as a whole.
+    private func locallyChangedColumns(table: SyncTable, id: String, base: String?, scope: SyncScope) throws -> [String]? {
+        guard Self.mergedOnPull.contains(table.name), let base,
+              let seen = try? JSONDecoder().decode(SyncMapping.WireRow.self, from: Data(base.utf8)),
+              !SyncMapping.isDeleted(seen),
+              let row = try connection.query("SELECT * FROM \(table.name) WHERE sync_id = ?", [.text(id)]).first,
+              let portable = (try? portableSyncRow(row, table: table)) ?? nil,
+              let mine = try? SyncMapping.wire(local: portable, syncID: id, scope: scope, table: table) else { return nil }
+        return table.columns.filter {
+            !SyncMapping.sameWireValue(mine[$0] ?? .null, seen[$0] ?? .null, json: $0.hasSuffix("_json"))
+        }
+    }
+
+    /// Whether changes to this table wait to be pushed.
+    func syncPending(table: SyncTable) throws -> Bool {
+        try !connection.query("SELECT 1 FROM sync_outbox WHERE \"table\" = ? LIMIT 1", [.text(table.name)]).isEmpty
     }
 
     func retrySyncParents(scope: SyncScope, table: SyncTable) throws -> Bool {

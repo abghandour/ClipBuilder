@@ -36,6 +36,9 @@ struct AnalysisRequestStorageTests {
         _ = try await temp.seedVideo()
         let raw = try SQLiteConnection(path: temp.path.path)
         // Simulate the previous schema after dropping the new columns.
+        // The build being simulated had an update trigger that named no column;
+        // SQLite refuses to drop a column a trigger names.
+        try raw.execute("DROP TRIGGER analysis_runs_sync_update")
         try raw.execute("ALTER TABLE analysis_runs DROP COLUMN request_hash")
         try raw.execute("ALTER TABLE analysis_runs DROP COLUMN request_json")
         try raw.execute("PRAGMA user_version = 33")

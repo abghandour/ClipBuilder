@@ -226,15 +226,16 @@ extension AppStore {
             miniFootageLength = length
             MiniWizardRunCache.retain(&miniRuns, projectID: projectID, videoID: video.id, length: length)
             let candidate = MiniWizardCandidate(selection: selection, take: take)
-            miniRuns[.highlights] = MiniWizardRun(projectID: projectID, video: video, footageKind: .highlights,
-                length: length, batchID: batch, candidates: [candidate], options: options,
-                selectedSelectionID: candidate.id)
             // Filed under the transcript in use, whichever the entry was made
             // on: the run and its reel item live on this page, and restoring
             // the page or generating looks the batch up by the active set.
+            // Before the run: the reel reads the remembered batches when it lands.
             MiniWizardMemory.rememberHighlightBatch(batch, profileName: activeProfile.profileName,
                 projectID: projectID, videoID: video.id, length: length,
                 setKey: transcriptFacts[video.id]?.transcriptionKey ?? "")
+            miniRuns[.highlights] = MiniWizardRun(projectID: projectID, video: video, footageKind: .highlights,
+                length: length, batchID: batch, candidates: [candidate], options: options,
+                selectedSelectionID: candidate.id)
             openedHighlightBatches[id] = batch
             highlightOpenWarnings[id] = nil
             appendLog(\.wizardLog, ["Express: opened \(HighlightHistoryNavigation.label(for: record))."])

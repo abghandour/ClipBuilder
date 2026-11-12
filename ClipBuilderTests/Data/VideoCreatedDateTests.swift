@@ -50,6 +50,9 @@ struct VideoCreatedDateTests {
         let url = temp.directory.url.appendingPathComponent("old.mp4")
         try Data("old".utf8).write(to: url)
         let fileDate = try #require(url.resourceValues(forKeys: [.creationDateKey]).creationDate)
+        // The build being simulated had an update trigger that named no column;
+        // SQLite refuses to drop a column a trigger names.
+        try raw.execute("DROP TRIGGER videos_sync_update")
         try raw.execute("ALTER TABLE videos DROP COLUMN created_at")
         try raw.execute("PRAGMA user_version = 5")
         let before = try raw.columnNames(of: "videos")

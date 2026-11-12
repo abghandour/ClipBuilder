@@ -537,6 +537,8 @@ final class AppStore {
     @ObservationIgnored var miniReelHighlightDrops: [Int64: Int] = [:]
     /// The newest section-order read of the reel; an older one must not prune by its lists.
     @ObservationIgnored var miniReelSectionRead = 0
+    /// The Highlights batch the reel last reconciled with; another one means a batch was replaced.
+    @ObservationIgnored var miniReelHighlightBatch: String?
     /// Serial fight-pick writes; Mini waits for the latest before recording takes.
     var fightPickSaveTask: Task<Void, Error>?
     /// Serial Q&A kept-exchange writes; Mini waits for the latest before recording takes.

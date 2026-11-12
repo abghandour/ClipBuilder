@@ -21,6 +21,7 @@ extension AppStore {
         miniReelLoaded = false
         miniReelItems = []
         miniReelSectionOrder = [:]
+        miniReelHighlightBatch = nil
         guard let database else { return }
         let generation = profileGeneration
         let previous = miniReelSaveTask
@@ -54,6 +55,9 @@ extension AppStore {
         let kinds = Set(miniReelItems.map(\.kind))
         let generation = profileGeneration
         let batches = rememberedHighlightBatches(key: key)
+        // Before the library's transcript facts are read the active set is
+        // unknown, and so is which batch is the remembered one.
+        let factsRead = transcriptFactsScope == "\(profileGeneration).\(key.projectID)"
         miniReelSectionRead &+= 1
         let read = miniReelSectionRead
         Task {
@@ -61,6 +65,9 @@ extension AppStore {
             // Sections whose whole list was read: an item of theirs that is
             // not in it names something the source no longer has.
             var whole: Set<MiniWizardFlow.FootageKind> = []
+            // Every candidate of the remembered Highlights batches, or nil
+            // when one could not be read (then nothing is known to be gone).
+            var highlightIDs: Set<Int64>? = kinds.contains(.highlights) && factsRead ? [] : nil
             func record(_ kind: MiniWizardFlow.FootageKind, _ ids: [Int64]) {
                 for (index, id) in ids.enumerated() { order[.init(kind: kind, itemID: id)] = index }
             }
@@ -87,7 +94,8 @@ extension AppStore {
                 for batch in batches.sorted() {
                     // The same candidates the section restores (a selection needs a take).
                     guard let ids = try? await database.miniSavedCandidates(projectID: key.projectID, miniBatch: batch)
-                        .map(\.id) else { continue }
+                        .map(\.id) else { highlightIDs = nil; continue }
+                    highlightIDs?.formUnion(ids)
                     let saved = UserDefaults.standard.stringArray(forKey: MiniWizardMemory.highlightOrderKey(batch))?
                         .compactMap(Int64.init) ?? []
                     record(.highlights, WizardPreviewRows.merging(saved, into: ids))
@@ -105,8 +113,19 @@ extension AppStore {
             let stale = whole.filter { kind in
                 !(miniRuns[kind].map { $0.projectID == key.projectID && $0.video.id == key.videoID && $0.hasFootage } ?? false)
             }
-            let items = miniReelItems.filter {
+            var items = miniReelItems.filter {
                 !stale.contains($0.kind) || order[.init(kind: $0.kind, itemID: $0.itemID)] != nil
+            }
+            // Generating again replaces a Length's batch. The run on screen
+            // speaks only for its own batch (see `reconcileMiniReel`), so the
+            // replaced batch's items would stay listed beside the new ones.
+            // The batches are looked up again: one remembered while this
+            // read was under way is not in its lists.
+            if let highlightIDs, rememberedHighlightBatches(key: key) == batches {
+                let loaded = miniRuns[.highlights].flatMap {
+                    $0.projectID == key.projectID && $0.video.id == key.videoID ? $0.candidates.map(\.id) : nil
+                } ?? []
+                items = MiniReelRules.droppingHighlights(items, notIn: highlightIDs.union(loaded))
             }
             guard miniReelLoaded, items != miniReelItems else { return }
             miniReelItems = items
@@ -141,6 +160,15 @@ extension AppStore {
             let known: Set<Int64>? = kind == .highlights ? Set(run.candidates.map(\.id)) : nil
             items = MiniReelRules.reconcile(items, kind: kind, kept: MiniReelRules.kept(run: run), known: known)
         }
+        // Another Highlights batch came on screen (generated again, opened
+        // from the history): the reel may hold the batch it replaced.
+        let batch = miniRuns[.highlights].flatMap {
+            $0.projectID == key.projectID && $0.video.id == key.videoID && $0.hasFootage ? $0.batchID : nil
+        }
+        let replaced = batch != nil && batch != miniReelHighlightBatch
+            && items.contains { $0.kind == .highlights }
+        if let batch { miniReelHighlightBatch = batch }
+        defer { if replaced { loadMiniReelSectionOrder(key: key) } }
         guard items != miniReelItems else { return }
         miniReelItems = items
         saveMiniReel()

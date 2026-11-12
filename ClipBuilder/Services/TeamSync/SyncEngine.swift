@@ -72,6 +72,11 @@ actor SyncEngine {
                     changedTables.insert(table.name)
                 }
                 log("Syncing \(table.name)…")
+                // With changes waiting, read the teammates' first: the pull
+                // merges them into the waiting rows (and lets their deletes
+                // win), so the push below does not write an older copy over
+                // what they changed.
+                if try await database.syncPending(table: table) { try await pull(table) }
                 while true {
                     try Task.checkCancellation()
                     let changes = try await database.pendingSyncChanges(scope: scope, limit: batchSize, table: table)

@@ -71,6 +71,9 @@ struct MiniWizardView: View {
     }
 
     @State private var transcriptSets: [TranscriptionSet] = []
+    /// Transcript picks of this source kept off the list because they were
+    /// made on another transcript, counted per transcript set.
+    @State private var otherSetPicks: [String: Int] = [:]
     private var selectedVideo: VideoRecord? { projectVideos.first { $0.path == videoPath } }
 
     private var currentRun: MiniWizardRun? {
@@ -374,8 +377,13 @@ struct MiniWizardView: View {
         // Express cards part their rows with space, not rules.
         .environment(\.settingsRowDividers, false)
         .task(id: transcriptSetsKey) {
-            guard let videoID = selectedVideo?.id else { transcriptSets = []; return }
+            guard let videoID = selectedVideo?.id, let projectID = store.activeProjectID else {
+                transcriptSets = []
+                otherSetPicks = [:]
+                return
+            }
             transcriptSets = (try? await store.database?.transcriptionSets(videoID: videoID)) ?? []
+            otherSetPicks = (try? await store.database?.transcriptPickCountsOnOtherSets(projectID: projectID, videoID: videoID)) ?? [:]
         }
     }
 
@@ -438,6 +446,7 @@ struct MiniWizardView: View {
                     MiniTranscriptSetControl(videoID: video.id, sets: transcriptSets)
                 }
                 footageControls.disabled(store.isWizardRunning)
+                if flow.effectiveFootageKind == .transcript { otherSetPicksNotice(video) }
                 // Space, not a rule, parts the controls from the review.
                 footageReviews(pageHeight: pageHeight)
                     .padding(.top, Theme.spaceS)
@@ -475,6 +484,28 @@ struct MiniWizardView: View {
                     FormCaption(selectedVideo == nil ? "Pick a source in \(stepLabel(.source)) first."
                         : "Choose and keep footage in \(stepLabel(.footage)) first.")
                 }
+            }
+        }
+    }
+
+    /// Picks made on another transcript of this source (a teammate's, after
+    /// a sync, or this Mac's before a new transcription) are not listed
+    /// while this one is in use. Says so, with the way to them.
+    @ViewBuilder
+    private func otherSetPicksNotice(_ video: VideoRecord) -> some View {
+        ForEach(transcriptSets.filter { !$0.isActive && (otherSetPicks[$0.id] ?? 0) > 0 }) { set in
+            let count = otherSetPicks[set.id] ?? 0
+            HStack(spacing: Theme.spaceS) {
+                FormCaption("\(count == 1 ? "1 pick was" : "\(count) picks were") made on another transcript (\(TranscriptSetSwitch.label(set))) and \(count == 1 ? "is" : "are") not listed here.",
+                            tone: .warning)
+                Button {
+                    store.setMiniTranscriptSet(videoID: video.id, key: set.id)
+                } label: {
+                    Text("Use That Transcript").lineLimit(1).fixedSize()
+                }
+                .controlSize(.small)
+                .disabled(store.isWizardRunning || store.miniEditsBlocked)
+                .help("Switch this source to the transcript those picks were made on")
             }
         }
     }
@@ -694,10 +725,15 @@ struct MiniWizardView: View {
 
     private func autoLoad(_ key: AutoLoadKey) {
         guard let selectedVideo, !isLoading else { return }
+        // One snapshot of the form decides and is what runs. The key can be a
+        // change behind the form (the transcript check lands between the two),
+        // and Highlights must never generate from here: that spends a model
+        // call and saves a new batch on a source pick.
+        let flow = flow
         store.selectMiniFootage(flow: flow)
-        guard key.kind != nil, !key.hasRun, selectedVideo.isPresent,
+        guard key.kind != nil, !flow.footageKinds.isEmpty, !key.hasRun, selectedVideo.isPresent,
               !store.isWizardRunning else { return }
-        if key.kind == .highlights { store.restoreMiniHighlights(flow: flow) }
+        if flow.effectiveFootageKind == .highlights { store.restoreMiniHighlights(flow: flow) }
         else { store.generateMiniFootage(flow: flow) }
     }
 

@@ -41,6 +41,22 @@ extension Database {
                 AND t.transcription_key = transcript_picks.transcription_key))
         """
 
+    /// How many of the video's picks in this project each other transcript
+    /// set holds: the ones `activeSetPickPredicate` keeps off the list. A
+    /// teammate's picks arrive stamped with the set they were made on, which
+    /// need not be the one in use on this Mac.
+    func transcriptPickCountsOnOtherSets(projectID: Int64, videoID: Int64) throws -> [String: Int] {
+        var counts: [String: Int] = [:]
+        for row in try connection.query("""
+            SELECT transcription_key AS set_key, COUNT(*) AS n FROM transcript_picks
+            WHERE video_id = ? AND (project_id = ? OR project_id IS NULL) AND NOT \(Self.activeSetPickPredicate)
+            GROUP BY transcription_key
+            """, [.integer(videoID), .integer(projectID)]) {
+            if let key = row["set_key"]?.stringValue, let n = row["n"]?.intValue { counts[key] = Int(n) }
+        }
+        return counts
+    }
+
     /// The set the caller's screen shows must still be the active one:
     /// the lists below are read through it, and a pin changed elsewhere
     /// (Team Sync, the Transcript sheet) would aim a write at picks the

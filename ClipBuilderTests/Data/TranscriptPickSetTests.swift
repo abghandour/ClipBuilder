@@ -139,6 +139,9 @@ struct TranscriptPickSetTests {
         // The library as a build before schema 51 left it, attached to a team.
         let raw = try SQLiteConnection(path: temp.path.path)
         try raw.execute("UPDATE transcript_picks SET transcription_key = NULL")
+        // The build being simulated had an update trigger that named no column;
+        // SQLite refuses to drop a column a trigger names.
+        try raw.execute("DROP TRIGGER transcript_picks_sync_update")
         try raw.execute("ALTER TABLE transcript_picks DROP COLUMN transcription_key")
         try raw.execute("""
             CREATE TABLE transcript_pick_sets (
