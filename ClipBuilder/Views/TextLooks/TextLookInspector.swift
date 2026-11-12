@@ -27,6 +27,29 @@ struct TextLookInspector<Controls: View>: View {
     @ViewBuilder var controls: Controls
     @Environment(AppStore.self) private var store
     @State private var clipboardTick = 0
+    @AppStorage(TextLookSectionState.key("Look")) private var lookCollapsed = false
+    @AppStorage(TextLookSectionState.key("Font")) private var fontCollapsed = false
+    @AppStorage(TextLookSectionState.key("Colour")) private var colourCollapsed = false
+    @AppStorage(TextLookSectionState.key("Effects")) private var effectsCollapsed = false
+    @AppStorage(TextLookSectionState.key("Spacing")) private var spacingCollapsed = false
+
+    /// A box-only state shows only Look and Effects, so the others do not count.
+    private var anyExpanded: Bool {
+        let visible = boxOnly ? [lookCollapsed, effectsCollapsed]
+            : [lookCollapsed, fontCollapsed, colourCollapsed, effectsCollapsed, spacingCollapsed]
+        return visible.contains(false)
+    }
+
+    /// Icon only: it shares the row with the state picker in a 320 pt pane.
+    private var sectionsToggle: some View {
+            Button(anyExpanded ? "Collapse All" : "Expand All",
+                   systemImage: anyExpanded ? "rectangle.compress.vertical" : "rectangle.expand.vertical") {
+                let collapse = anyExpanded
+                withAnimation(.easeInOut(duration: 0.15)) { TextLookSectionState.setAll(collapsed: collapse) }
+            }
+            .labelStyle(.iconOnly).controlSize(.small).fixedSize()
+            .help(anyExpanded ? "Collapse all sections" : "Expand all sections")
+    }
 
     private var state: TextLookSurface.State { surface.selected }
     private var decor: TextDecor? {
@@ -53,6 +76,21 @@ struct TextLookInspector<Controls: View>: View {
     private func isUsing(_ named: NamedTextStyle) -> Bool {
         if let sharedStyleID { return sharedStyleID.wrappedValue == named.id.uuidString }
         return decor == named.decor && (boxOnly || fontFamily == named.fontFamily)
+    }
+
+    /// One tick at most: styles holding the same values would otherwise all read as chosen.
+    private var usedStyleID: UUID? { namedStyles.first(where: isUsing)?.id }
+
+    private var savePayload: TextStylePayload {
+        TextStyleClipboard.payload(
+            stored: decor, inherited: inherited, fontFamily: fontFamily,
+            sharedStyleID: nil, source: sourceLabel)
+    }
+
+    /// The named style that already holds exactly this look, if any.
+    private var savedTwin: NamedTextStyle? {
+        let payload = savePayload
+        return namedStyles.first { $0.decor == payload.look && $0.fontFamily == payload.fontFamily }
     }
 
     private func use(_ named: NamedTextStyle) {
@@ -90,10 +128,11 @@ struct TextLookInspector<Controls: View>: View {
                     help: "No shared style; this element keeps only its own values."
                 ) { sharedStyleID.wrappedValue = nil })
         }
+        let used = usedStyleID
         choices += namedStyles.map { named in
             LookChoice(
                 id: named.id.uuidString, name: named.name, decor: named.decor, fontFamily: named.fontFamily,
-                isSelected: isUsing(named), help: "Use \(named.name)"
+                isSelected: named.id == used, help: "Use \(named.name)"
             ) { use(named) }
         }
         choices += CaptionPresets.styles.map { preset in
@@ -120,8 +159,14 @@ struct TextLookInspector<Controls: View>: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceL) {
             // A single-state surface (an overlay, a named style) has nothing to switch.
-            if surface.states.count > 1 {
+            if surface.states.count <= 1 {
+                HStack {
+                    Spacer(minLength: 0)
+                    sectionsToggle
+                }
+            } else {
                 VStack(alignment: .leading, spacing: Theme.spaceS) {
+                    HStack(spacing: Theme.spaceS) {
                     Picker("State", selection: surface.selection) {
                         ForEach(surface.states) { state in
                             Text(state.id).lineLimit(1).tag(state.id)
@@ -133,6 +178,8 @@ struct TextLookInspector<Controls: View>: View {
                     .controlSize(.small)
                     .labelsHidden()
                     .help("Choose which text state to edit. Other states keep their own overrides.")
+                    sectionsToggle
+                    }
                     Text(hint).font(.caption).foregroundStyle(.secondary)
                         .fixedSize(horizontal: false, vertical: true)
                 }
@@ -185,9 +232,8 @@ struct TextLookInspector<Controls: View>: View {
     }
 
     private func saveAsNamedStyle() {
-        let payload = TextStyleClipboard.payload(
-            stored: decor, inherited: inherited, fontFamily: fontFamily,
-            sharedStyleID: nil, source: sourceLabel)
+        guard savedTwin == nil else { return }
+        let payload = savePayload
         let existing = Set((store.activeProfile.textStyles ?? []).map(\.name))
         var name = "\(sourceLabel.prefix(1).uppercased())\(sourceLabel.dropFirst()) style"
         var number = 2
@@ -226,7 +272,10 @@ struct TextLookInspector<Controls: View>: View {
             .help(clipboard.map { "Paste the style copied from \($0.source). Placement is never pasted." } ?? "Copy a style first.")
             Button("Save as Named Text Style", systemImage: "square.and.arrow.down", action: saveAsNamedStyle)
                 .lineLimit(1).fixedSize()
-                .help("Add this look to the profile's Named Text Styles so any caption, name tag or overlay can share it")
+                .disabled(savedTwin != nil)
+                .help(
+                    savedTwin.map { "Already saved as \($0.name)." }
+                        ?? "Add this look to the profile's Named Text Styles so any caption, name tag or overlay can share it")
         }
         .labelStyle(.iconOnly)
         .onAppear { clipboardTick += 1 }

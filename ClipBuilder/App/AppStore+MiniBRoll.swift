@@ -25,9 +25,15 @@ extension AppStore {
         guard let video = flow.video, let projectID = activeProjectID, let database, !isWizardRunning else { return }
         selectMiniFootage(flow: flow)
         guard miniRuns[.highlights] == nil, !isLoadingMiniFootage else { return }
-        let key = MiniWizardMemory.batchKey(profileName: activeProfile.profileName, projectID: projectID,
-            videoID: video.id, kind: .highlights, length: flow.length)
-        guard let batch = UserDefaults.standard.string(forKey: key) else { return }
+        let profileName = activeProfile.profileName
+        let setKey = transcriptFacts[video.id]?.transcriptionKey ?? ""
+        let length = flow.length
+        guard let batch = MiniWizardMemory.highlightBatch(profileName: profileName, projectID: projectID,
+            videoID: video.id, length: length, setKey: setKey) else { return }
+        let forget = {
+            MiniWizardMemory.forgetHighlightBatch(batch, profileName: profileName, projectID: projectID,
+                                                  videoID: video.id, length: length, setKey: setKey)
+        }
         let generation = profileGeneration
         var options = WizardOptions()
         options.projectID = projectID
@@ -43,7 +49,7 @@ extension AppStore {
             do {
                 var candidates = try await database.miniSavedCandidates(projectID: projectID, miniBatch: batch)
                 guard !Task.isCancelled, generation == profileGeneration, activeProjectID == projectID else { return }
-                guard !candidates.isEmpty else { UserDefaults.standard.removeObject(forKey: key); return }
+                guard !candidates.isEmpty else { forget(); return }
                 if let kept = UserDefaults.standard.stringArray(forKey: "mini.kept.\(batch)") {
                     candidates = MiniHighlightReview.settingKept(Set(kept.compactMap(Int64.init)), in: candidates)
                 }
@@ -60,7 +66,7 @@ extension AppStore {
                 // Switching source or tab must not remove the remembered batch.
             } catch {
                 guard !Task.isCancelled, miniFootageLoadID == loadID, generation == profileGeneration else { return }
-                UserDefaults.standard.removeObject(forKey: key)
+                forget()
                 presentError("Could not restore Express footage", error)
             }
         }

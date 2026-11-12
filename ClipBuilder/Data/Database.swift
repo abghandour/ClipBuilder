@@ -111,7 +111,18 @@ actor Database {
         scene_id INTEGER REFERENCES scenes(id) ON DELETE SET NULL,
         created_at TEXT DEFAULT (datetime('now')),
         project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE,
-        kept INTEGER NOT NULL DEFAULT 1
+        kept INTEGER NOT NULL DEFAULT 1,
+        -- The transcript set the pick was made on; synced. NULL (a pick from
+        -- before schema 51) shows under every set.
+        transcription_key TEXT
+    );
+
+    -- A name the user gave a transcript set. Local, not synced.
+    CREATE TABLE IF NOT EXISTS transcription_set_names (
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        transcription_key TEXT NOT NULL,
+        name TEXT NOT NULL,
+        PRIMARY KEY (video_id, transcription_key)
     );
 
     CREATE TABLE IF NOT EXISTS fight_picks (
@@ -975,6 +986,25 @@ actor Database {
                 if stamped < 46, try !connection.columnNames(of: "transcript_picks").contains("kept") {
                     try connection.execute("ALTER TABLE transcript_picks ADD COLUMN kept INTEGER NOT NULL DEFAULT 1")
                 }
+                // Schema 51: a pick records the transcript set it was made on in
+                // a synced column, so another Mac lists and removes one set's
+                // picks, not every set's. Unreleased builds kept the link in
+                // a local side table; its rows move over (the update trigger
+                // queues them on an attached profile) and the table goes.
+                if stamped < 51 {
+                    if try !connection.columnNames(of: "transcript_picks").contains("transcription_key") {
+                        try connection.execute("ALTER TABLE transcript_picks ADD COLUMN transcription_key TEXT")
+                    }
+                    if try !connection.query("SELECT 1 FROM sqlite_master WHERE type = 'table' AND name = 'transcript_pick_sets'").isEmpty {
+                        try connection.execute("""
+                            UPDATE transcript_picks SET transcription_key =
+                                (SELECT s.transcription_key FROM transcript_pick_sets s WHERE s.pick_id = transcript_picks.id)
+                            WHERE transcription_key IS NULL
+                                AND EXISTS (SELECT 1 FROM transcript_pick_sets s WHERE s.pick_id = transcript_picks.id)
+                            """)
+                        try connection.execute("DROP TABLE transcript_pick_sets")
+                    }
+                }
                 // Schema 41: projects and highlight history join team sync.
                 if stamped < 41 { try Self.seedFootageSync(connection, tables: SyncTable.history) }
                 // Legacy orphan data must not prevent opening the profile.
@@ -998,7 +1028,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 50
+    static let schemaVersion: Int64 = 51
 
     /// The library was last opened by a build with a newer schema.
     nonisolated struct NewerLibrary: LocalizedError, Equatable {

@@ -145,10 +145,19 @@ struct DriveFetchIndicator: View {
 
     var body: some View {
         if let job = store.googleDrive.activeFetchJob(for: media, profile: store.activeProfile.profileName) {
-            ProgressView()
-                .controlSize(.mini)
-                .help(job.status == .reconnect ? "Waiting for Google Drive to reconnect" : "Downloading from Drive…")
-                .accessibilityLabel("Downloading from Drive")
+            // A spinner means bytes are moving. A download that waits for
+            // sign-in is not progress and must not look like it.
+            if job.status == .reconnect || store.googleDrive.states[job.profile]?.isConnected != true {
+                Image(systemName: "exclamationmark.icloud")
+                    .foregroundStyle(.orange)
+                    .help(DriveDownloadPresentation.pausedText)
+                    .accessibilityLabel(DriveDownloadPresentation.pausedText)
+            } else {
+                ProgressView()
+                    .controlSize(.mini)
+                    .help(DriveDownloadPresentation.runningText(job))
+                    .accessibilityLabel("Downloading from Drive")
+            }
         }
     }
 }
@@ -222,17 +231,79 @@ struct MissingFootageDownloadButton: View {
 
     var body: some View {
         if video.driveFileID != nil {
-            Button("Download", systemImage: "icloud.and.arrow.down") {
-                let profile = store.activeProfile.profileName
-                Task {
-                    do {
-                        _ = try await store.googleDrive.fetch(video.driveMedia, profile: profile)
-                        store.refreshAll()
-                    } catch { store.presentError("Download failed", error) }
+            let profile = store.activeProfile.profileName
+            let state = store.googleDrive.states[profile]
+            let job = store.googleDrive.activeFetchJob(for: video.driveMedia, profile: profile)
+            if state == .notConfigured {
+                Text("Google Drive isn't available in this copy of Clip Builder.")
+                    .font(.caption).lineLimit(2)
+            } else if state?.isConnected != true || job?.status == .reconnect {
+                // Signed out: a download cannot start, and one already asked
+                // for waits. Say so and offer the way out instead of a dead button.
+                Label(job == nil ? DriveDownloadPresentation.signedOutText : DriveDownloadPresentation.pausedText,
+                      systemImage: "exclamationmark.icloud")
+                    .font(.caption).foregroundStyle(.orange).lineLimit(2)
+                // A scene card is 180 points wide: the row stacks when it cannot fit.
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Theme.spaceXS) { pausedActions(job) }
+                    VStack(alignment: .leading, spacing: Theme.spaceXS) { pausedActions(job) }
+                    // The full title alone is wider than a scene card.
+                    VStack(alignment: .leading, spacing: Theme.spaceXS) { pausedActions(job, short: true) }
                 }
+            } else if let job {
+                ViewThatFits(in: .horizontal) {
+                    HStack(spacing: Theme.spaceXS) { runningParts(job) }
+                    VStack(alignment: .leading, spacing: Theme.spaceXS) { runningParts(job) }
+                }
+            } else {
+                Button("Download", systemImage: "icloud.and.arrow.down") {
+                    Task {
+                        do {
+                            _ = try await store.googleDrive.fetch(
+                                video.driveMedia, profile: profile, name: video.filename)
+                            store.refreshAll()
+                        } catch is CancellationError {
+                            // Stop or Cancel was the user's own choice.
+                        } catch { store.presentError("Download failed", error) }
+                    }
+                }
+                .lineLimit(1).fixedSize()
             }
-            .lineLimit(1).fixedSize()
-            .disabled(store.googleDrive.activeFetchJob(for: video.driveMedia, profile: store.activeProfile.profileName) != nil)
         }
+    }
+}
+
+extension MissingFootageDownloadButton {
+    @ViewBuilder fileprivate func pausedActions(_ job: DriveTransfer?, short: Bool = false) -> some View {
+        OpenGoogleDriveSettingsButton(title: short ? "Drive Settings" : "Open Google Drive Settings")
+            .lineLimit(1).fixedSize()
+            .help("Open Google Drive settings to sign in")
+        if let job {
+            Button("Cancel") { store.googleDrive.cancel(job.id) }
+                .lineLimit(1).fixedSize()
+                .help("Forget this download")
+        }
+    }
+
+    @ViewBuilder fileprivate func runningParts(_ job: DriveTransfer) -> some View {
+        ProgressView(value: job.progress).frame(width: 80)
+            .accessibilityLabel("Download progress")
+        Text(DriveDownloadPresentation.runningText(job))
+            .font(.caption).monospacedDigit().lineLimit(1).fixedSize()
+        Button("Stop") { store.googleDrive.stop(job.id) }
+            .lineLimit(1).fixedSize()
+            .help("Stop this download; Transfers in the status bar can resume it")
+    }
+}
+
+/// The words for a footage download's state, shared by the row glyph and
+/// the Download control.
+nonisolated enum DriveDownloadPresentation {
+    static let signedOutText = "Sign in to Google Drive to download this file"
+    static let pausedText = "Download paused. Sign in to Google Drive to continue"
+
+    static func runningText(_ job: DriveTransfer) -> String {
+        if job.status == .waiting { return "Waiting to download" }
+        return job.progress > 0 ? "Downloading \(Int(job.progress * 100))%" : "Downloading from Drive…"
     }
 }

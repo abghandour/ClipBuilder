@@ -23,6 +23,12 @@ struct OverlayTemplatesView: View {
     @State private var renameText = ""
     @State private var deleteTarget: String?
     @State private var operationError: String?
+    /// Undo, Redo and Discard for the open template; it starts over when
+    /// another template is opened. Edits save as they are made.
+    @State private var history: EditHistory<OverlayComposition>?
+    /// A composition this view is about to put in place itself (opening a
+    /// template, a restore): the change it causes is not an edit.
+    @State private var placing: OverlayComposition?
 
     var body: some View {
         Group {
@@ -59,7 +65,14 @@ struct OverlayTemplatesView: View {
                         .rememberedPaneWidth("pane.textLooks.list", min: 200, initial: 232, max: 300)
                         .frame(maxHeight: .infinity)
                     if let selectedName, templates.contains(where: { $0.name == selectedName }) {
-                        OverlayTemplateEditor(name: selectedName, composition: $composition, selection: $itemSelection)
+                        OverlayTemplateEditor(
+                            name: selectedName, composition: $composition, selection: $itemSelection,
+                            historyBar: EditHistoryBar(
+                                canUndo: history?.canUndo == true, canRedo: history?.canRedo == true,
+                                canDiscard: history?.canDiscard(composition) == true,
+                                undo: { place(history?.undo(from: composition)) },
+                                redo: { place(history?.redo(from: composition)) },
+                                discard: { place(history?.discard(from: composition)) }))
                             .frame(minWidth: 560, maxWidth: .infinity, maxHeight: .infinity)
                     } else {
                         ContentUnavailableView("Select a Template", systemImage: "square.on.square",
@@ -115,7 +128,13 @@ struct OverlayTemplatesView: View {
             itemSelection = nil
             loadComposition(named: name)
         }
-        .onChange(of: composition) {
+        .onChange(of: composition) { old, new in
+            if placing == new {
+                placing = nil
+            } else {
+                placing = nil
+                history?.record(before: old, changingTo: new)
+            }
             scheduleSave()
         }
     }
@@ -183,18 +202,43 @@ struct OverlayTemplatesView: View {
     // MARK: - Actions
 
     private func refresh() {
+        let known = templates.first(where: { $0.name == selectedName })?.composition
         OverlayTemplateStore.invalidateCache()
         templates = OverlayTemplateStore.list()
         if let selectedName, !templates.contains(where: { $0.name == selectedName }) {
             self.selectedName = nil
+        }
+        // The open template's file changed under the editor (asset sync,
+        // another window): the history was a path from the old file, and
+        // Undo or Discard along it would write the old file back. It starts
+        // over from what is on disk; an edit still waiting to be saved stays
+        // on screen and Discard returns to the new file.
+        if let known, let disk = templates.first(where: { $0.name == selectedName })?.composition,
+           disk != known, disk != composition, disk != pendingSave?.composition {
+            history = EditHistory(baseline: disk)
+            if pendingSave == nil { place(disk) }
         }
     }
 
     private func loadComposition(named name: String?) {
         guard let name else { return }
         for template in templates where template.name == name {
-            composition = template.composition
+            history = EditHistory(baseline: template.composition)
+            place(template.composition)
             return
+        }
+    }
+
+    /// Puts a composition in place without recording it as an edit. An item
+    /// selected in the editor may not exist in it, so the selection is checked.
+    private func place(_ value: OverlayComposition?) {
+        guard let value, value != composition else { return }
+        placing = value
+        composition = value
+        switch itemSelection {
+        case .text(let id) where !value.texts.contains(where: { $0.uid == id }): itemSelection = nil
+        case .image(let id) where !value.images.contains(where: { $0.uid == id }): itemSelection = nil
+        default: break
         }
     }
 
@@ -307,13 +351,18 @@ struct OverlayTemplateEditor: View {
     let name: String
     @Binding var composition: OverlayComposition
     @Binding var selection: OverlayItemSelection?
+    let historyBar: EditHistoryBar
 
     var body: some View {
         HSplitView {
             TextLooksStage(composition: $composition, selection: $selection)
                 .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
-            TextLooksOverlayInspector(composition: $composition, selection: $selection)
-                .frame(width: 320).frame(maxHeight: .infinity)
+            VStack(spacing: 0) {
+                TextLooksOverlayInspector(composition: $composition, selection: $selection)
+                    .frame(maxHeight: .infinity)
+                historyBar
+            }
+            .frame(width: 320).frame(maxHeight: .infinity)
         }
         .id(name)
     }

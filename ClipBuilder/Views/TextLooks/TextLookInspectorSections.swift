@@ -238,7 +238,7 @@ struct TextLookInspectorSections: View {
         }
         if !boxOnly {
             TextLookSection("Spacing") {
-                number("Letter spacing", \.letterSpacing, "letterSpacing", -2...6)
+                number("Letter spacing", \.letterSpacing, "letterSpacing", TextDecor.letterSpacingRange)
                 number("Line height", \.lineHeight, "lineHeight", 0.8...2)
                 choices("Alignment", \.alignment, "alignment", [("leading", "Left"), ("center", "Center"), ("trailing", "Right")])
                 number("Max width", \.maxWidthFrac, "maxWidthFrac", 0.2...1)
@@ -289,27 +289,57 @@ struct OverrideLabel: View {
     }
 }
 
+/// Where each collapsible section remembers whether it is collapsed.
+nonisolated enum TextLookSectionState {
+    /// The sections every text inspector shows.
+    static let shared = ["Look", "Font", "Colour", "Effects", "Spacing"]
+    /// The overlay item sections follow Expand All / Collapse All too.
+    static let all = shared + ["Text Item", "Image Item"]
+    static func key(_ title: String) -> String { "textLooks.section.\(title).collapsed" }
+    static func setAll(collapsed: Bool, defaults: UserDefaults = .standard) {
+        for title in all { defaults.set(collapsed, forKey: key(title)) }
+    }
+}
+
 /// A flat section: a small tracked uppercase header, then the rows. The
 /// optional trailing view sits on the header line (the Look row's buttons).
+/// The header collapses the section; the choice is remembered per title.
 struct TextLookSection<Content: View, Trailing: View>: View {
     let title: String
     @ViewBuilder var trailing: Trailing
     @ViewBuilder var content: Content
+    @AppStorage private var collapsed: Bool
 
     init(_ title: String, @ViewBuilder trailing: () -> Trailing, @ViewBuilder content: () -> Content) {
         self.title = title
         self.trailing = trailing()
         self.content = content()
+        _collapsed = AppStorage(wrappedValue: false, TextLookSectionState.key(title))
     }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceS) {
             HStack(spacing: Theme.spaceS) {
-                SectionLabel(title)
-                Spacer(minLength: 0)
-                trailing
+                Button {
+                    withAnimation(.easeInOut(duration: 0.15)) { collapsed.toggle() }
+                } label: {
+                    HStack(spacing: Theme.spaceS) {
+                        Image(systemName: "chevron.right")
+                            .font(.caption.weight(.semibold)).foregroundStyle(.secondary)
+                            .rotationEffect(.degrees(collapsed ? 0 : 90))
+                            .frame(width: 12)
+                        SectionLabel(title)
+                        Spacer(minLength: 0)
+                    }
+                    .contentShape(Rectangle())
+                }
+                .buttonStyle(.plain)
+                .accessibilityLabel(title)
+                .accessibilityValue(collapsed ? "collapsed" : "expanded")
+                .help(collapsed ? "Show \(title)" : "Hide \(title)")
+                if !collapsed { trailing }
             }
-            content
+            if !collapsed { content }
         }
     }
 }

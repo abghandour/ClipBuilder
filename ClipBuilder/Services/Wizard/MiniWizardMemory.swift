@@ -61,6 +61,60 @@ extension MiniWizardMemory {
         "mini.\(profileName).batch.\(projectID).\(videoID).\(kind.rawValue).\(length.rawValue)"
     }
 
+    // Highlights are found on one transcript set. A batch remembers the
+    // set it was found on, and only the active set's batch is offered.
+    static func highlightSetKey(_ batchID: String) -> String { "mini.batchset.\(batchID)" }
+
+    static func rememberHighlightBatch(_ batchID: String, profileName: String, projectID: Int64, videoID: Int64,
+                                       length: MiniWizardFlow.Length, setKey: String, current: Bool = true,
+                                       defaults: UserDefaults = .standard) {
+        let key = batchKey(profileName: profileName, projectID: projectID, videoID: videoID, kind: .highlights, length: length)
+        // `current` is false for a batch found on a set that is no longer
+        // active: it is filed under its own set and offered there only.
+        if current || setKey.isEmpty { defaults.set(batchID, forKey: key) }
+        guard !setKey.isEmpty else { return }
+        defaults.set(batchID, forKey: "\(key).set.\(setKey)")
+        defaults.set(setKey, forKey: highlightSetKey(batchID))
+    }
+
+    /// The batch to offer while `setKey` is active. A batch from before
+    /// sets were recorded has unknown provenance and is offered under any.
+    static func highlightBatch(profileName: String, projectID: Int64, videoID: Int64, length: MiniWizardFlow.Length,
+                               setKey: String, defaults: UserDefaults = .standard) -> String? {
+        let key = batchKey(profileName: profileName, projectID: projectID, videoID: videoID, kind: .highlights, length: length)
+        guard !setKey.isEmpty else { return defaults.string(forKey: key) }
+        if let own = defaults.string(forKey: "\(key).set.\(setKey)") { return own }
+        guard let last = defaults.string(forKey: key) else { return nil }
+        let found = defaults.string(forKey: highlightSetKey(last))
+        return found == nil || found == setKey ? last : nil
+    }
+
+    /// A batch that could not be restored is no longer offered.
+    static func forgetHighlightBatch(_ batchID: String, profileName: String, projectID: Int64, videoID: Int64,
+                                     length: MiniWizardFlow.Length, setKey: String, defaults: UserDefaults = .standard) {
+        let key = batchKey(profileName: profileName, projectID: projectID, videoID: videoID, kind: .highlights, length: length)
+        for candidate in [key, "\(key).set.\(setKey)"] where defaults.string(forKey: candidate) == batchID {
+            defaults.removeObject(forKey: candidate)
+        }
+    }
+
+    /// Before the set changes: every project's unrecorded Highlights batch
+    /// of the video was found on the set in use until now.
+    static func stampLegacyHighlightBatches(profileName: String, videoID: Int64, setKey: String,
+                                            defaults: UserDefaults = .standard) {
+        guard !setKey.isEmpty else { return }
+        let prefix = "mini.\(profileName).batch."
+        for (key, value) in defaults.dictionaryRepresentation() {
+            guard key.hasPrefix(prefix), !key.contains(".set."), let batchID = value as? String else { continue }
+            let parts = key.dropFirst(prefix.count).split(separator: ".", omittingEmptySubsequences: false)
+            guard parts.count == 4, parts[1] == String(videoID),
+                  parts[2] == MiniWizardFlow.FootageKind.highlights.rawValue,
+                  defaults.string(forKey: highlightSetKey(batchID)) == nil else { continue }
+            defaults.set(setKey, forKey: highlightSetKey(batchID))
+            defaults.set(batchID, forKey: "\(key).set.\(setKey)")
+        }
+    }
+
     static func batchID(profileName: String, projectID: Int64, videoID: Int64,
                         kind: MiniWizardFlow.FootageKind, defaults: UserDefaults = .standard) -> String {
         let key = batchKey(profileName: profileName, projectID: projectID, videoID: videoID, kind: kind)

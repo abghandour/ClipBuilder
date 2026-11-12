@@ -265,12 +265,18 @@ struct TranscriptSheet: View {
                 HStack {
                     Picker("Transcription", selection: $selectedTranscriptionKey) {
                         ForEach(transcriptionSets) { set in
-                            Text("\(set.createdAt) · \(set.model ?? "Transcription") · \(set.language ?? "—") · \(set.segmentCount) segments\(set.editedCount > 0 ? " · \(set.editedCount) edited" : "")\(set.hasTranslations ? " · translated" : "")\(set.isActive ? " · active" : "")\(set.isPinned ? " · pinned" : "")")
+                            Text("\(set.name.map { "\($0) · " } ?? "")\(set.createdAt) · \(set.model ?? "Transcription") · \(set.language ?? "—") · \(set.segmentCount) segments\(set.editedCount > 0 ? " · \(set.editedCount) edited" : "")\(set.hasTranslations ? " · translated" : "")\(set.isActive ? " · active" : "")\(set.isPinned ? " · pinned" : "")")
                                 .tag(set.id)
                         }
                     }
                     .focused($setsPickerFocused)
                     .lineLimit(1).fixedSize(horizontal: false, vertical: true)
+                    if let set = transcriptionSets.first(where: { $0.id == selectedTranscriptionKey })
+                        ?? transcriptionSets.first(where: \.isActive) {
+                        TranscriptSetRenameButton(videoID: video.id, set: set) {
+                            Task { transcriptionSets = (try? await store.database?.transcriptionSets(videoID: video.id)) ?? transcriptionSets }
+                        }
+                    }
                     Button("Pin this set") { changePin(selectedTranscriptionKey) }
                         .lineLimit(1).fixedSize()
                         .disabled(selectedTranscriptionKey.isEmpty || pinnedTranscriptionKey == selectedTranscriptionKey)
@@ -318,8 +324,8 @@ struct TranscriptSheet: View {
         Task {
             do {
                 try await database.setActiveTranscriptionKey(videoID: video.id, key: key)
-                store.invalidatePersonReferences(videoID: video.id)
-                await store.refreshAllNow()
+                // Express shows the rows, picks and Highlights of the active set.
+                await store.transcriptSetChanged(videoID: video.id)
                 selectedTranscriptionKey = ""
                 await load()
             } catch { store.presentError("Could not change the active transcript", error) }

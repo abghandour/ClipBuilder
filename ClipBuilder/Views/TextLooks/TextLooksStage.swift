@@ -131,7 +131,8 @@ struct TextLooksStage: View {
     }
 
     private var playbackControls: some View {
-        ControlGroup {
+        // Not a ControlGroup: it turns the speed menu into a dead, label-less segment.
+        HStack(spacing: Theme.spaceS) {
             Button(playing ? "Pause" : "Play", systemImage: playing ? "pause.fill" : "play.fill") {
                 pausedTime = time(at: .now)
                 started = .now
@@ -195,7 +196,46 @@ private struct TextLooksCaptionSample: View {
         var style: CaptionStyle
         var text: String
     }
+    private func swatches(fixedScale: Bool) -> some View {
+        HStack {
+            ForEach(states, id: \.0.id) { state, image in
+                Button {
+                    selectedState = state.kind.rawValue
+                } label: {
+                    Group {
+                        if fixedScale {
+                            let scale = min(swatchScale, 72 / max(1, state.image.size.height))
+                            Image(nsImage: image).resizable()
+                                .frame(width: state.image.size.width * scale, height: state.image.size.height * scale)
+                        } else {
+                            Image(nsImage: image).resizable().scaledToFit().frame(maxHeight: 36)
+                        }
+                    }
+                    .overlay { Rectangle().strokeBorder(selectedState == state.kind.rawValue ? Color.accentColor : .clear) }
+                }
+                .buttonStyle(.borderless)
+                .accessibilityLabel("Edit \(state.kind.rawValue)")
+                .help("Edit the \(state.kind.rawValue.lowercased()) word state")
+            }
+        }
+    }
+
+    /// Points per rendered pixel that draw the Text state's letters about 18 pt tall.
+    private var swatchScale: Double { 18 / max(1, input.style.resolvedSize(for: .text)) }
     private var input: Input { .init(style: style.applyingSharedStyle(store.activeProfile.textStyles ?? []), text: previewText) }
+
+    /// The frame under the playhead, shown while the rest of the loop is
+    /// still being drawn. It stands in for the whole loop until then; a
+    /// frame for a look that has since changed again is dropped.
+    private func showLead(_ lead: CaptionPreviewImage, for snapshot: Input) {
+        guard snapshot == input, let image = NSImage(data: lead.data) else { return }
+        var whole = lead
+        whole.start = 0
+        whole.end = .greatestFiniteMagnitude
+        frames = [whole]
+        images = [image]
+        error = nil
+    }
 
     var body: some View {
         GeometryReader { geo in
@@ -223,18 +263,12 @@ private struct TextLooksCaptionSample: View {
                     TextField("Sample phrase", text: $previewText, prompt: Text(CaptionPreviewImage.sampleText))
                         .textFieldStyle(.roundedBorder).help("Words used by the preview; blank uses the stock sample")
                     // Each word is rendered in its actual state and selects that state's inspector.
-                    HStack {
-                        ForEach(states, id: \.0.id) { state, image in
-                            Button {
-                                selectedState = state.kind.rawValue
-                            } label: {
-                                Image(nsImage: image).resizable().scaledToFit().frame(maxHeight: 36)
-                                    .overlay { Rectangle().strokeBorder(selectedState == state.kind.rawValue ? Color.accentColor : .clear) }
-                            }
-                            .buttonStyle(.borderless)
-                            .accessibilityLabel("Edit \(state.kind.rawValue)")
-                            .help("Edit the \(state.kind.rawValue.lowercased()) word state")
-                        }
+                    // A fixed scale, not a fixed height: effects widen the image's margin,
+                    // and fitting that into one height would shrink the letters. When the
+                    // three do not fit the stage side by side, they shrink to fit instead.
+                    ViewThatFits(in: .horizontal) {
+                        swatches(fixedScale: true)
+                        swatches(fixedScale: false)
                     }
                     if let error { FormCaption(error, tone: .warning) }
                 }.padding(12)
@@ -242,11 +276,17 @@ private struct TextLooksCaptionSample: View {
         }
         .task(id: input) {
             do {
-                try await Task.sleep(for: .milliseconds(200))
+                // Long enough to skip the ticks of a slider drag, short enough
+                // not to be felt: the frame on screen is drawn first (about
+                // 30 ms) and the rest of the loop follows.
+                try await Task.sleep(for: .milliseconds(60))
                 let snapshot = input
+                let leadTime = time
                 let worker = Task.detached(priority: .userInitiated) {
                     (
-                        try CaptionPreviewImage.frames(style: snapshot.style, text: snapshot.text),
+                        try CaptionPreviewImage.frames(style: snapshot.style, text: snapshot.text, leadTime: leadTime) { lead in
+                            Task { @MainActor in showLead(lead, for: snapshot) }
+                        },
                         try CaptionPreviewImage.wordStates(style: snapshot.style)
                     )
                 }

@@ -25,8 +25,7 @@ extension AppStore {
             do {
                 _ = try? await transcriptPickSaveTask?.value
                 try Task.checkCancellation()
-                let rows = try await miniTranscriptRows(videoID: video.id)
-                let picks = try await database.fetchTranscriptPicks(projectID: projectID, videoID: video.id)
+                let (setKey, rows, picks) = try await database.expressTranscript(projectID: projectID, videoID: video.id)
                 guard generation == profileGeneration, activeProjectID == projectID else { return }
                 let speakers = await speakerTurns(videoID: video.id)
                 try Task.checkCancellation()
@@ -39,7 +38,8 @@ extension AppStore {
                                                                  roster: speakers.roster, people: people)
                     }
                     return MiniWizardTranscript(rows: rows, labels: labels, picks: picks,
-                        speakerSpans: TranscriptSpeakers.spans(turns: namedTurns, roster: speakers.roster))
+                        speakerSpans: TranscriptSpeakers.spans(turns: namedTurns, roster: speakers.roster),
+                        setKey: setKey)
                 }.value
                 try Task.checkCancellation()
                 guard miniFootageLoadID == loadID, generation == profileGeneration else { return }
@@ -57,6 +57,100 @@ extension AppStore {
             } catch {
                 if !Task.isCancelled, miniFootageLoadID == loadID, generation == profileGeneration { presentError("Could not load the transcript", error) }
             }
+        }
+    }
+
+    /// Express: use another transcript set of the source. Picks, Q&A
+    /// sections and Highlights are those made on that set.
+    func setMiniTranscriptSet(videoID: Int64, key: String) {
+        Task { await changeMiniTranscriptSet(videoID: videoID, key: key) }
+    }
+
+    /// Returns once Express has been moved to the set; false when it could not.
+    @discardableResult
+    func changeMiniTranscriptSet(videoID: Int64, key: String) async -> Bool {
+        guard let database, !isWizardRunning, !miniEditsBlocked else { return false }
+        let generation = profileGeneration
+        _ = try? await transcriptPickSaveTask?.value
+        do {
+            _ = try await database.switchTranscriptionSet(videoID: videoID, key: key)
+            guard generation == profileGeneration else { return false }
+            await transcriptSetChanged(videoID: videoID)
+            return true
+        } catch {
+            presentError("Could not change the transcript", error)
+            return false
+        }
+    }
+
+    func renameTranscriptSet(videoID: Int64, key: String, name: String) async {
+        guard let database else { return }
+        do {
+            try await database.setTranscriptionSetName(videoID: videoID, key: key, name: name)
+            transcriptSetNamesVersion &+= 1
+        } catch { presentError("Could not rename the transcript", error) }
+    }
+
+    /// The pin was changed in the database (the Express row, the Transcript
+    /// sheet): refresh the library, which notices the move in
+    /// `transcriptSetsMoved` and reloads Express.
+    func transcriptSetChanged(videoID: Int64) async {
+        invalidatePersonReferences(videoID: videoID)
+        await refreshAllNow()
+    }
+
+    /// Called with every new set of transcript facts. Remembers, per
+    /// profile, the set each video was last seen on, and when a video shows
+    /// up on another one, the Highlights of the set it left go from every
+    /// project's reel. Kept in defaults because facts cover only the open
+    /// project: a set that changed while its project was closed is noticed
+    /// when the project comes back. `previous` (the same library's facts
+    /// before this refresh) stands in for videos not remembered yet.
+    func noteTranscriptSets(previous: [Int64: TranscriptFact]) {
+        let defaultsKey = "mini.activeSets.\(activeProfile.profileName)"
+        var known = UserDefaults.standard.dictionary(forKey: defaultsKey) as? [String: String] ?? [:]
+        var changed = false
+        for (videoID, fact) in transcriptFacts {
+            let now = fact.transcriptionKey
+            guard !now.isEmpty else { continue }
+            let id = String(videoID)
+            let old = known[id] ?? previous[videoID]?.transcriptionKey
+            if let old, !old.isEmpty, old != now {
+                MiniWizardMemory.stampLegacyHighlightBatches(profileName: activeProfile.profileName, videoID: videoID,
+                                                             setKey: old)
+                dropMiniReelHighlights(videoID: videoID)
+            }
+            if known[id] != now { known[id] = now; changed = true }
+        }
+        if changed { UserDefaults.standard.set(known, forKey: defaultsKey) }
+    }
+
+    /// Called when a library refresh brings new transcript facts for the
+    /// same profile and project. A video whose active set differs from the
+    /// one known before (a pin here or on a teammate's Mac, a new
+    /// transcription, a deleted set) leaves what Express read from the old
+    /// set behind: history, loaded sections, loads and opens in flight go,
+    /// and the page reloads. Runs synchronously with the new facts in
+    /// place, so nothing can restore the old set's Highlights in between.
+    func transcriptSetsMoved(from previous: [Int64: TranscriptFact]) {
+        // Facts list only videos with a transcript, so a video that gained
+        // its first set or lost its last one is on one side only.
+        for video in videos {
+            let videoID = video.id
+            let old = previous[videoID]?.transcriptionKey
+            let now = transcriptFacts[videoID]?.transcriptionKey
+            guard old != now else { continue }
+            // Transcript picks and exchanges of the set that was left go
+            // from the open reel, whichever tab is showing.
+            refreshMiniReelSections(videoID: videoID)
+            guard miniFootageVideoID == videoID || miniRuns.values.contains(where: { $0.video.id == videoID }) else { continue }
+            forgetAllMiniUndo()
+            cancelMiniFootageLoad()
+            // A history entry being opened would land under the new set.
+            highlightOpenToken += 1
+            if miniRuns[.highlights]?.video.id == videoID { miniRuns[.highlights] = nil }
+            transcriptEdited(videoID: videoID)
+            appendLog(\.wizardLog, ["Express: the source's transcript changed; footage reloaded."])
         }
     }
 
@@ -92,6 +186,7 @@ extension AppStore {
         let videoID = run.video.id
         let projectID = run.projectID
         let batchID = run.batchID
+        let shownSet = TranscriptPickSet.shown(run.transcript?.setKey)
         let previous = transcriptPickSaveTask
         let generation = profileGeneration
         guard let database else { return }
@@ -100,7 +195,7 @@ extension AppStore {
             let pick: TranscriptPick
             do {
                 pick = try await database.addTranscriptPick(projectID: projectID, videoID: videoID,
-                                                            start: range.lowerBound, end: range.upperBound)
+                                                            start: range.lowerBound, end: range.upperBound, set: shownSet)
             } catch {
                 if generation == profileGeneration { presentError("Could not add the pick", error) }
                 throw error
@@ -119,13 +214,14 @@ extension AppStore {
         let minimum = TranscriptQATrim.minimumSpan
         guard time - pick.start >= minimum, pick.end - time >= minimum else { return }
         recordMiniUndo(.transcript)
-        setMiniTranscriptPickRange(id, start: pick.start, end: time)
+        // The first half shows at once; both halves are written together.
+        miniRuns[.transcript]?.transcript?.picks[index].end = time
         let videoID = run.video.id
         let projectID = run.projectID
         let batchID = run.batchID
         let end = pick.end
         let kept = pick.kept
-        var order = picks.map(\.id)
+        let order = picks.map(\.id)
         let previous = transcriptPickSaveTask
         let generation = profileGeneration
         guard let database else { return }
@@ -133,11 +229,18 @@ extension AppStore {
             _ = try? await previous?.value
             let added: TranscriptPick
             do {
-                added = try await database.addTranscriptPick(projectID: projectID, videoID: videoID, start: time, end: end, kept: kept)
-                order.insert(added.id, at: min(order.count, index + 1))
-                try await database.reorderTranscriptPicks(projectID: projectID, videoID: videoID, ids: order)
+                added = try await database.splitTranscriptPick(projectID: projectID, videoID: videoID, id: id,
+                    start: pick.start, at: time, end: end, kept: kept, order: order, index: index + 1,
+                    set: .shown(run.transcript?.setKey))
             } catch {
-                if generation == profileGeneration { presentError("Could not split the pick", error) }
+                if generation == profileGeneration {
+                    // Nothing was written: the pick on the page is whole again.
+                    if miniRuns[.transcript]?.batchID == batchID,
+                       let at = miniRuns[.transcript]?.transcript?.picks.firstIndex(where: { $0.id == id }) {
+                        miniRuns[.transcript]?.transcript?.picks[at].end = end
+                    }
+                    presentError("Could not split the pick", error)
+                }
                 throw error
             }
             guard generation == profileGeneration, miniRuns[.transcript]?.batchID == batchID,
@@ -220,8 +323,9 @@ extension AppStore {
         miniRuns[.transcript]?.transcript?.picks = []
         let videoID = run.video.id
         let projectID = run.projectID
+        let shownSet = TranscriptPickSet.shown(run.transcript?.setKey)
         enqueueTranscriptPickWrite("Could not remove the picks", batchID: run.batchID) { database in
-            try await database.deleteTranscriptPicks(projectID: projectID, videoID: videoID)
+            try await database.deleteTranscriptPicks(projectID: projectID, videoID: videoID, set: shownSet)
         }
     }
 

@@ -71,7 +71,7 @@ struct AppStatusBar: View {
         .onChange(of: store.googleDrive.revision) { store.refreshAll() }
         .onChange(of: store.googleDrive.jobs.map { "\($0.id):\($0.status.rawValue)" }) { old, _ in
             for job in store.googleDrive.jobs where !old.contains("\(job.id):\(job.status.rawValue)") {
-                store.recordUnifiedLog(channel: "drive", text: "\(job.title): \(job.status.rawValue)")
+                store.recordUnifiedLog(channel: "drive", text: "\(job.title): \(job.statusLabel)")
             }
         }
         .onChange(of: store.builderWizard?.identityMatches) { _, matches in
@@ -82,6 +82,7 @@ struct AppStatusBar: View {
     private var header: some View {
         HStack(spacing: Theme.spaceS) {
             if AppChannel.current == .beta { Spacer().frame(width: 2) }
+            BuildMarkerBadge()
             ProviderStatusRow(compact: true)
             Divider().frame(height: 16)
             if let first = activities.first {

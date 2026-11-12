@@ -514,7 +514,7 @@ extension AppStore {
             let profile = activeProfile.profileName
             Task {
                 do {
-                    let local = try await googleDrive.fetch(video.driveMedia, profile: profile)
+                    let local = try await googleDrive.fetch(video.driveMedia, profile: profile, name: video.filename)
                     guard generation == profileGeneration else { return }
                     // Retry with the downloaded file: the record passed in still has no path.
                     var fetched = video

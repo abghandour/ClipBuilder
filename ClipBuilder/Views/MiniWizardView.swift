@@ -60,6 +60,7 @@ struct MiniWizardView: View {
         return videos
     }
 
+    @State private var transcriptSets: [TranscriptionSet] = []
     private var selectedVideo: VideoRecord? { projectVideos.first { $0.path == videoPath } }
 
     private var currentRun: MiniWizardRun? {
@@ -248,7 +249,13 @@ struct MiniWizardView: View {
             }
         }
         // Navigation from a finished step (generate, keep) reopens the page.
-        .onChange(of: currentRun?.requestedCard) { _, _ in collapsedCard = nil }
+        .onChange(of: currentRun?.requestedCard, initial: true) { _, requested in
+            collapsedCard = nil
+            // Remember the card the run had open: while the run is reloaded
+            // (a transcript change evicts it) the page falls back to
+            // `pendingCard`, which must not still say Source.
+            if let requested { pendingCard = requested }
+        }
         // `initial` so a request parked while this form was being re-created
         // (profile switch, page hidden) runs as soon as it is on screen.
         .onChange(of: store.pendingWizardAssistantRequest, initial: true) { _, request in
@@ -334,6 +341,11 @@ struct MiniWizardView: View {
         currentRun.map { MiniBRollRules.pieces($0).reduce(0) { $0 + $1.cuts.count } } ?? 0
     }
 
+    /// Reloaded with the source, and whenever its transcript or the library changes.
+    private var transcriptSetsKey: String {
+        "\(selectedVideo?.id ?? 0).\(store.miniFootageRevision).\(store.transcriptCountsVersion).\(store.transcriptSetNamesVersion).\(store.libraryRefreshes)"
+    }
+
     private var settingsColumn: some View {
         GeometryReader { page in
             ScrollView {
@@ -349,8 +361,9 @@ struct MiniWizardView: View {
                              summary: currentRun?.summary ?? flow.summary(for: .footage),
                              isOpen: !flow.isCollapsed(.footage),
                              headerTap: headerTap(.footage),
-                             accessory: historyScope.map { AnyView(historyBar($0)) }) {
-                        if let scope = historyScope { historyCaption(scope) }
+                             accessory: selectedVideo.map { video in
+                                 AnyView(MiniTranscriptSetControl(videoID: video.id, sets: transcriptSets))
+                             }) {
                         if !flow.isCollapsed(.footage) {
                             if selectedVideo == nil {
                                 FormCaption("Pick a source in 1 Source first.")
@@ -411,6 +424,10 @@ struct MiniWizardView: View {
         }
         // Express cards part their rows with space, not rules.
         .environment(\.settingsRowDividers, false)
+        .task(id: transcriptSetsKey) {
+            guard let videoID = selectedVideo?.id else { transcriptSets = []; return }
+            transcriptSets = (try? await store.database?.transcriptionSets(videoID: videoID)) ?? []
+        }
     }
 
     // MARK: - Highlight history
@@ -432,11 +449,34 @@ struct MiniWizardView: View {
             reRenderTitle: "Re-render",
             reRenderHelp: "Open this highlight and render it again with its settings",
             onSelect: { openHighlight($0) }, onOpen: { openHighlight($0) },
-            onReRender: { openHighlight($0, thenRender: true) })
+            onReRender: { openHighlight($0, thenRender: true) },
+            transcripts: transcriptSets)
+    }
+
+    /// The transcript the selected history entry was made on, when the
+    /// source has it and another one is in use.
+    private func otherTranscript(of scope: HighlightHistoryScope) -> TranscriptionSet? {
+        guard let record = store.selectedHighlight(scope), let key = TranscriptSetSwitch.transcriptKey(of: record) else { return nil }
+        return transcriptSets.first(where: { $0.id == key && !$0.isActive })
     }
 
     @ViewBuilder
     private func historyCaption(_ scope: HighlightHistoryScope) -> some View {
+        // Opening an entry leaves the transcript alone; this is the way to its own.
+        if let other = otherTranscript(of: scope), let video = selectedVideo {
+            HStack(spacing: Theme.spaceS) {
+                FormCaption("Made on another transcript (\(TranscriptSetSwitch.label(other))). It may not preview on the one in use.",
+                            tone: .warning)
+                Button {
+                    store.setMiniTranscriptSet(videoID: video.id, key: other.id)
+                } label: {
+                    Text("Use Its Transcript").lineLimit(1).fixedSize()
+                }
+                .controlSize(.small)
+                .disabled(store.isWizardRunning || store.miniEditsBlocked)
+                .help("Switch this source to the transcript the highlight was made on")
+            }
+        }
         if let id = store.selectedHighlightIDs[scope] {
             HighlightHistoryCaption(warning: store.highlightOpenWarnings[id],
                 detail: store.openedExpressBatch(for: id) != nil
@@ -454,6 +494,7 @@ struct MiniWizardView: View {
     private func openHighlight(_ id: Int64, thenRender: Bool = false) {
         guard let scope = historyScope, let video = selectedVideo else { return }
         Task {
+            // An entry opens on the transcript in use, whichever it was made on.
             // Re-render of the run on screen needs no Open.
             if !thenRender || store.openedExpressBatch(for: id) == nil {
                 guard let opened = await store.openExpressHighlight(id: id, scope: scope, video: video),
@@ -547,6 +588,16 @@ struct MiniWizardView: View {
         // and a model to choose. Q&A lists the exchanges analysis found.
         let usesAI = flow.effectiveFootageKind == .highlights
         if usesAI {
+            // Saved highlights belong to this tab alone.
+            if let scope = historyScope {
+                MiniRow("History") {
+                    HStack(spacing: Theme.spaceS) {
+                        historyBar(scope)
+                        Spacer(minLength: 0)
+                    }
+                }
+                historyCaption(scope)
+            }
             FormGroupHeader("Instructions for the AI")
             TextEditor(text: instructions)
                 .font(.body)

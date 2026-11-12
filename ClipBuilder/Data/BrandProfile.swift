@@ -426,7 +426,7 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
     var resolvedWeight: String { ["bold", "black"].contains(weight ?? "") ? weight! : "regular" }
     var resolvedStrokeWidth: Double { min(6, max(0, strokeWidth ?? 1)) }
     var resolvedShadow: Bool { shadow ?? false }
-    var resolvedLetterSpacing: Double { min(6, max(-2, letterSpacing ?? 0)) }
+    var resolvedLetterSpacing: Double { min(TextDecor.letterSpacingRange.upperBound, max(TextDecor.letterSpacingRange.lowerBound, letterSpacing ?? 0)) }
     var resolvedAnimation: String { ["pop", "bounce", "slide-up", "fade"].contains(animation ?? "") ? animation! : "none" }
     var resolvedReveal: String { reveal == "word" ? "word" : "none" }
     var resolvedRevealMotion: Bool { revealMotion ?? false }

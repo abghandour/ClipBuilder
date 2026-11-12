@@ -21,11 +21,22 @@ nonisolated struct DriveTransfer: Codable, Identifiable, Sendable {
     var assetOperation: AssetOperation?
     var assetPath: String?
     var groupID: UUID?
+    /// The record's name, for media that has no local path yet (a source
+    /// that was never on this Mac): the path cannot name it.
+    var name: String?
     var isAsset: Bool { assetOperation != nil }
     var isUpload: Bool { operation == .upload }
     /// A footage download from the transfer queue (not a preview fetch or asset).
     var isQueuedDownload: Bool { operation == .download && !isAsset }
-    var title: String { assetPath ?? file?.name ?? URL(fileURLWithPath: media?.path ?? "").lastPathComponent }
+    var title: String {
+        if let known = assetPath ?? file?.name ?? name { return known }
+        guard let path = media?.path, !path.isEmpty else { return "Drive file" }
+        return URL(fileURLWithPath: path).lastPathComponent
+    }
+    /// The status as the log shows it: "reconnect" alone reads like progress.
+    var statusLabel: String {
+        status == .reconnect ? "paused, sign in to Google Drive to continue" : status.rawValue
+    }
 }
 
 @MainActor @Observable
@@ -49,6 +60,8 @@ final class GoogleDriveTransfers {
     @ObservationIgnored private var tasks: [UUID: Task<URL, Error>] = [:]
     @ObservationIgnored private var reconnectWaiters: [UUID: CheckedContinuation<Void, Error>] = [:]
     @ObservationIgnored private var offlineRetries: [UUID: Task<Void, Never>] = [:]
+    /// Fetches whose caller went away; they leave the list once their task ends.
+    @ObservationIgnored private var abandoned: Set<UUID> = []
     @ObservationIgnored private var signIns: [String: GoogleDriveSignIn] = [:]
 
     struct Context {
@@ -91,12 +104,22 @@ final class GoogleDriveTransfers {
         if let json = try? await database.driveSetting("transferQueue"),
             let saved = try? JSONDecoder().decode([DriveTransfer].self, from: Data(json.utf8))
         {
-            for var job in saved
+            // Queues saved before fetches replaced their stale twin hold one
+            // stopped fetch per attempt; one per file is all Resume needs.
+            let restorable = Self.withoutRepeatedFetches(saved)
+            for var job in restorable
             where job.status != .complete && !job.isAsset && !jobs.contains(where: { $0.id == job.id }) {
                 job.status = .stopped
                 job.message = job.isAsset ? "Interrupted — Refresh to continue" : "Interrupted — Resume to continue"
+                // A fetch saved before transfers carried a name, of a source
+                // that has no local path: the record still knows its name.
+                if job.name == nil, let media = job.media, media.kind == .source, media.path.isEmpty,
+                   let video = try? await database.video(id: media.recordID) {
+                    job.name = video.filename
+                }
                 jobs.append(job)
             }
+            if restorable.count != saved.count { await persist(profile: name) }
         }
     }
 
@@ -177,6 +200,22 @@ final class GoogleDriveTransfers {
         }
     }
 
+    /// One fetch per profile and media, the newest: the partial file and its
+    /// checkpoint belong to the media, so an older fetch of the same file has
+    /// nothing of its own to resume. Other transfers pass through in order.
+    nonisolated static func withoutRepeatedFetches(_ jobs: [DriveTransfer]) -> [DriveTransfer] {
+        var seen = Set<String>()
+        var kept: [DriveTransfer] = []
+        for job in jobs.reversed() {
+            if job.operation == .fetch, !job.isAsset, let media = job.media,
+               !seen.insert("\(job.profile)\u{0}\(media.id)").inserted {
+                continue
+            }
+            kept.append(job)
+        }
+        return kept.reversed()
+    }
+
     nonisolated static func uploadCandidates(_ media: [DriveMedia]) -> [DriveMedia] {
         media.filter { $0.fileID == nil && !$0.path.isEmpty }
     }
@@ -208,7 +247,7 @@ final class GoogleDriveTransfers {
         }
     }
 
-    func fetch(_ media: DriveMedia, profile: String) async throws -> URL {
+    func fetch(_ media: DriveMedia, profile: String, name: String? = nil) async throws -> URL {
         if let existing = jobs.first(where: {
             $0.profile == profile && $0.media?.id == media.id && $0.operation == .fetch && tasks[$0.id] != nil
         }),
@@ -216,16 +255,43 @@ final class GoogleDriveTransfers {
         {
             return try await task.value
         }
+        // A stopped or failed fetch of the same file is superseded: the new
+        // one resumes from the same partial file, so the old row would only
+        // pile up in the Transfers menu and the saved queue.
+        for stale in jobs
+        where stale.profile == profile && stale.media?.id == media.id && stale.operation == .fetch
+            && !stale.isAsset && stale.status != .complete && tasks[stale.id] == nil {
+            offlineRetries.removeValue(forKey: stale.id)?.cancel()
+            jobs.removeAll { $0.id == stale.id }
+        }
         let job = DriveTransfer(
             profile: profile, projectName: profile, operation: .fetch, media: media,
-            message: "Fetching from Drive")
+            message: "Fetching from Drive", name: name)
         jobs.append(job)
         start(job.id)
         guard let task = tasks[job.id] else { throw GoogleDriveError.notFound }
         return try await withTaskCancellationHandler {
             try await task.value
         } onCancel: {
-            Task { @MainActor in self.stop(job.id) }
+            Task { @MainActor in self.abandon(job.id) }
+        }
+    }
+
+    /// The caller that asked for this fetch was cancelled (the view that
+    /// needed the file is gone, or its work was stopped). Nobody chose to
+    /// stop this transfer, so it leaves no stopped row behind. The partial
+    /// file stays, and the next fetch of the same media continues from it.
+    /// Stop on the transfer itself still keeps the row for Resume.
+    private func abandon(_ id: UUID) {
+        guard let job = jobs.first(where: { $0.id == id }), job.operation == .fetch, job.status != .complete
+        else { return }
+        if tasks[id] == nil {
+            stop(id)
+            jobs.removeAll { $0.id == id }
+            Task { await persist(profile: job.profile) }
+        } else {
+            abandoned.insert(id)
+            stop(id)
         }
     }
 
@@ -352,6 +418,7 @@ final class GoogleDriveTransfers {
         let task = Task<URL, Error> {
             defer {
                 tasks[id] = nil
+                abandoned.remove(id)
                 assetWork[id] = nil
                 pumpUploads()
             }
@@ -454,6 +521,7 @@ final class GoogleDriveTransfers {
                         ? (job.isAsset ? "Stopped — Refresh to continue" : "Stopped — Resume to continue")
                         : GoogleDriveError.message(for: error)
                 }
+                if abandoned.contains(id) { jobs.removeAll { $0.id == id } }
                 await persist(profile: job.profile)
                 if !job.isAsset && error as? GoogleDriveError == .offline {
                     offlineRetries[id] = Task {

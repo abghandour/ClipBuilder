@@ -26,4 +26,6 @@ nonisolated struct MiniWizardTranscript: Sendable {
     var labels: [Int64: String]
     var picks: [TranscriptPick]
     var speakerSpans: [TranscriptQATrim.SpeakerSpan] = []
+    /// The transcript set `rows` and `picks` were read from.
+    var setKey: String? = nil
 }

@@ -19,15 +19,19 @@ struct TextLooksOverlayInspector: View {
             if let index = composition.texts.firstIndex(where: { $0.uid == uid }) {
                 let binding = $composition.texts[index]
                 VStack(alignment: .leading, spacing: Theme.spaceM) {
-                    SectionLabel("Text Item")
-                    timingControls(
-                        start: binding.startTime, end: binding.endTime,
-                        transIn: binding.transIn, transOut: binding.transOut,
-                        unbounded: binding.unbounded)
-                    Toggle("AI Wizard may replace this text", isOn: binding.isDynamic)
-                        .help(
-                            "When on, the wizard writes its own copy into this text; static texts and images always render exactly as designed"
-                        )
+                    // The form below brings its own collapsible look sections.
+                    TextLookSection("Text Item") {
+                        VStack(alignment: .leading, spacing: Theme.spaceM) {
+                            timingControls(
+                                start: binding.startTime, end: binding.endTime,
+                                transIn: binding.transIn, transOut: binding.transOut,
+                                unbounded: binding.unbounded)
+                            Toggle("AI Wizard may replace this text", isOn: binding.isDynamic)
+                                .help(
+                                    "When on, the wizard writes its own copy into this text; static texts and images always render exactly as designed"
+                                )
+                        }
+                    }
                     TextOverlayForm(item: binding, showsPreview: false)
                 }
             }
@@ -35,12 +39,15 @@ struct TextLooksOverlayInspector: View {
             if let index = composition.images.firstIndex(where: { $0.uid == uid }) {
                 let binding = $composition.images[index]
                 VStack(alignment: .leading, spacing: Theme.spaceM) {
-                    SectionLabel("Image Item")
-                    timingControls(
-                        start: binding.startTime, end: binding.endTime,
-                        transIn: binding.transIn, transOut: binding.transOut,
-                        unbounded: binding.unbounded)
-                    ImageOverlayControls(item: binding, name: composition.images[index].displayName)
+                    TextLookSection("Image Item") {
+                        VStack(alignment: .leading, spacing: Theme.spaceM) {
+                            timingControls(
+                                start: binding.startTime, end: binding.endTime,
+                                transIn: binding.transIn, transOut: binding.transOut,
+                                unbounded: binding.unbounded)
+                            ImageOverlayControls(item: binding, name: composition.images[index].displayName)
+                        }
+                    }
                 }
             }
         case nil:

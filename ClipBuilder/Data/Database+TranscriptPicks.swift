@@ -5,6 +5,8 @@ extension Database {
 
     /// The video's picks in this project, plus legacy picks no project owns
     /// yet. `projectID == nil` reads every project's picks (id lookups).
+    /// With a project, only picks of the active transcript set (see
+    /// `activeSetPickPredicate`).
     func fetchTranscriptPicks(projectID: Int64?, videoID: Int64) throws -> [TranscriptPick] {
         guard let projectID else {
             return try connection.query("SELECT * FROM transcript_picks WHERE video_id = ? ORDER BY position, id",
@@ -12,8 +14,52 @@ extension Database {
         }
         return try connection.query("""
             SELECT * FROM transcript_picks WHERE video_id = ? AND (project_id = ? OR project_id IS NULL)
+                AND \(Self.activeSetPickPredicate)
             ORDER BY position, id
             """, [.integer(videoID), .integer(projectID)]).map(Self.transcriptPick)
+    }
+
+    /// What Express's Transcript tab shows, read in one call: the active
+    /// set's key, its rows and the picks made on it. Read apart, a pin
+    /// changed in between would pair one set's picks with another's key,
+    /// and the shown-set guard would then pass writes aimed at the wrong list.
+    func expressTranscript(projectID: Int64, videoID: Int64) throws -> (setKey: String?, rows: [TranscriptRow], picks: [TranscriptPick]) {
+        try connection.transaction {
+            let key = try activeTranscription(videoID: videoID).key
+            return (key, try fetchTranscripts(videoID: videoID, transcriptionKey: key),
+                    try fetchTranscriptPicks(projectID: projectID, videoID: videoID))
+        }
+    }
+
+    /// A pick belongs to the list unless it was made on another transcript
+    /// set that still exists. Picks with no recorded set, or whose set was
+    /// deleted, stay visible: unknown provenance is not wrong provenance.
+    static let activeSetPickPredicate = """
+        (transcript_picks.transcription_key IS NULL
+            OR transcript_picks.transcription_key IS (\(resolvedTranscriptionKeySQL(videoID: "transcript_picks.video_id")))
+            OR NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.video_id = transcript_picks.video_id
+                AND t.transcription_key = transcript_picks.transcription_key))
+        """
+
+    /// The set the caller's screen shows must still be the active one:
+    /// the lists below are read through it, and a pin changed elsewhere
+    /// (Team Sync, the Transcript sheet) would aim a write at picks the
+    /// user is not looking at. Returns the set to stamp new picks with.
+    private func requireShownSet(_ set: TranscriptPickSet, videoID: Int64) throws -> String? {
+        let active = try activeTranscription(videoID: videoID).key
+        if case .shown(let shown) = set, shown != active { throw TranscriptPickSetError.changed }
+        return active
+    }
+
+    /// Before the active set changes: picks nobody stamped (and picks of a
+    /// deleted set) were made on the set in use now, so they stay with it.
+    func claimTranscriptPicks(videoID: Int64, key: String) throws {
+        try connection.execute("""
+            UPDATE transcript_picks SET transcription_key = ? WHERE video_id = ?
+                AND (transcription_key IS NULL
+                    OR NOT EXISTS (SELECT 1 FROM transcripts t WHERE t.video_id = transcript_picks.video_id
+                        AND t.transcription_key = transcript_picks.transcription_key))
+            """, [.text(key), .integer(videoID)])
     }
 
     /// Legacy picks (from before picks were per project) join the first
@@ -31,19 +77,54 @@ extension Database {
 
     /// Appends at the end of the list. `kept` is false for the half of a split
     /// unchecked pick.
-    func addTranscriptPick(projectID: Int64, videoID: Int64, start: Double, end: Double, kept: Bool = true) throws -> TranscriptPick {
+    func addTranscriptPick(projectID: Int64, videoID: Int64, start: Double, end: Double, kept: Bool = true,
+                           set: TranscriptPickSet = .active) throws -> TranscriptPick {
         try connection.transaction {
+            let setKey = try requireShownSet(set, videoID: videoID)
             try adoptLegacyTranscriptPicks(projectID: projectID, videoID: videoID)
             let position = (try connection.query(
                 "SELECT MAX(position) AS n FROM transcript_picks WHERE video_id = ? AND project_id = ?",
                 [.integer(videoID), .integer(projectID)]).first?["n"]?.intValue ?? -1) + 1
             try connection.execute("""
-                INSERT INTO transcript_picks (video_id, project_id, position, start_time, end_time, original_start, original_end, kept)
-                VALUES (?, ?, ?, ?, ?, ?, ?, ?)
+                INSERT INTO transcript_picks (video_id, project_id, position, start_time, end_time, original_start, original_end, kept, transcription_key)
+                VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
                 """, [.integer(videoID), .integer(projectID), .integer(position), .real(start), .real(end),
-                      .real(start), .real(end), .integer(kept ? 1 : 0)])
+                      .real(start), .real(end), .integer(kept ? 1 : 0), setKey.map(SQLValue.text) ?? .null])
             let id = connection.lastInsertRowID
             guard let pick = try transcriptPick(id: id) else { throw WizardSelectionError.missingSelection }
+            return pick
+        }
+    }
+
+    /// Split: the pick keeps `start...time` and a new pick with
+    /// `time...end` lands at `index` of `order`, all or nothing. In separate
+    /// writes, a set change between them left only the shortened half.
+    func splitTranscriptPick(projectID: Int64, videoID: Int64, id: Int64, start: Double, at time: Double, end: Double,
+                             kept: Bool, order: [Int64], index: Int, set: TranscriptPickSet) throws -> TranscriptPick {
+        try connection.transaction {
+            let setKey = try requireShownSet(set, videoID: videoID)
+            try adoptLegacyTranscriptPicks(projectID: projectID, videoID: videoID)
+            guard try !connection.query("SELECT 1 FROM transcript_picks WHERE id = ? AND project_id = ?",
+                                        [.integer(id), .integer(projectID)]).isEmpty else {
+                throw WizardSelectionError.missingSelection
+            }
+            try connection.execute("UPDATE transcript_picks SET start_time = ?, end_time = ? WHERE id = ? AND project_id = ?",
+                                   [.real(start), .real(time), .integer(id), .integer(projectID)])
+            try connection.execute("""
+                INSERT INTO transcript_picks (video_id, project_id, position, start_time, end_time, original_start, original_end, kept, transcription_key)
+                VALUES (?, ?, 0, ?, ?, ?, ?, ?, ?)
+                """, [.integer(videoID), .integer(projectID), .real(time), .real(end),
+                      .real(time), .real(end), .integer(kept ? 1 : 0), setKey.map(SQLValue.text) ?? .null])
+            let added = connection.lastInsertRowID
+            var ids = order
+            ids.insert(added, at: min(ids.count, max(0, index)))
+            let current = try fetchTranscriptPicks(projectID: projectID, videoID: videoID).map(\.id)
+            let ordered = ids.filter { current.contains($0) } + current.filter { !ids.contains($0) }
+            for (position, pickID) in ordered.enumerated() {
+                try connection.execute("UPDATE transcript_picks SET position = ? WHERE id = ? AND project_id = ?",
+                                       [.integer(Int64(position)), .integer(pickID), .integer(projectID)])
+            }
+            guard let pick = try transcriptPick(id: added) else { throw WizardSelectionError.missingSelection }
             return pick
         }
     }
@@ -94,8 +175,10 @@ extension Database {
     /// written and `TranscriptPickRestoreError.changed` carries the real
     /// list: restoring would delete a pick the user never saw.
     func restoreTranscriptPicks(projectID: Int64, videoID: Int64, expected: [TranscriptPick],
-                                picks: [TranscriptPick]) throws -> (picks: [TranscriptPick], remapped: [Int64: Int64]) {
+                                picks: [TranscriptPick],
+                                set: TranscriptPickSet = .active) throws -> (picks: [TranscriptPick], remapped: [Int64: Int64]) {
         try connection.transaction {
+            let setKey = try requireShownSet(set, videoID: videoID)
             try adoptLegacyTranscriptPicks(projectID: projectID, videoID: videoID)
             let current = try fetchTranscriptPicks(projectID: projectID, videoID: videoID)
             let stored = current.map { TranscriptPickRestoreError.Row(id: $0.id, start: $0.start, end: $0.end, kept: $0.kept) }
@@ -120,11 +203,11 @@ extension Database {
                     // Another project's pick may have taken the id since.
                     let free = try connection.query("SELECT 1 FROM transcript_picks WHERE id = ?", [.integer(pick.id)]).isEmpty
                     try connection.execute("""
-                        INSERT INTO transcript_picks (id, video_id, project_id, position, start_time, end_time, original_start, original_end, kept)
-                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?)
+                        INSERT INTO transcript_picks (id, video_id, project_id, position, start_time, end_time, original_start, original_end, kept, transcription_key)
+                        VALUES (?, ?, ?, ?, ?, ?, ?, ?, ?, ?)
                         """, [free ? .integer(pick.id) : .null, .integer(videoID), .integer(projectID), .integer(Int64(position)),
                               .real(pick.start), .real(pick.end), .real(pick.originalStart), .real(pick.originalEnd),
-                              .integer(pick.kept ? 1 : 0)])
+                              .integer(pick.kept ? 1 : 0), setKey.map(SQLValue.text) ?? .null])
                     if !free { remapped[pick.id] = connection.lastInsertRowID }
                 }
             }
@@ -132,10 +215,14 @@ extension Database {
         }
     }
 
-    /// This project's list, including legacy picks it would adopt.
-    func deleteTranscriptPicks(projectID: Int64, videoID: Int64) throws {
-        try connection.execute("DELETE FROM transcript_picks WHERE video_id = ? AND (project_id = ? OR project_id IS NULL)",
-                               [.integer(videoID), .integer(projectID)])
+    /// This project's list for the active transcript set, including legacy
+    /// picks it would adopt. Picks of other sets are not on screen and stay.
+    func deleteTranscriptPicks(projectID: Int64, videoID: Int64, set: TranscriptPickSet = .active) throws {
+        try connection.transaction {
+            _ = try requireShownSet(set, videoID: videoID)
+            try connection.execute("DELETE FROM transcript_picks WHERE video_id = ? AND (project_id = ? OR project_id IS NULL) AND \(Self.activeSetPickPredicate)",
+                                   [.integer(videoID), .integer(projectID)])
+        }
     }
 
     func deleteTranscriptPick(projectID: Int64, id: Int64) throws {
@@ -222,6 +309,19 @@ extension Database {
                        projectID: row["project_id"]?.intValue,
                        kept: (row["kept"]?.intValue ?? 1) != 0)
     }
+}
+
+/// Which transcript set a pick write is meant for.
+nonisolated enum TranscriptPickSet: Sendable, Equatable {
+    /// Whatever set is active when the write runs.
+    case active
+    /// The set the caller's list was read from; the write fails if another is active by then.
+    case shown(String?)
+}
+
+nonisolated enum TranscriptPickSetError: LocalizedError {
+    case changed
+    var errorDescription: String? { "The video's transcript changed. The list was reloaded; nothing was written." }
 }
 
 nonisolated enum TranscriptPickRestoreError: Error {

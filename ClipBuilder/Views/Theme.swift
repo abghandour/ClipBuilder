@@ -67,7 +67,7 @@ private struct ScreenTitle: ViewModifier {
         content.background {
             if pageVisible {
                 Color.clear
-                    .navigationTitle("\(AppChannel.current.displayName) — \(store.activeProfile.profileName)")
+                    .navigationTitle("\(AppChannel.current.displayName) — \(store.activeProfile.profileName)\(BuildMarker.titleSuffix)")
                     .navigationSubtitle(subtitle.isEmpty ? screen : "\(screen) · \(subtitle)")
             }
         }

@@ -186,7 +186,7 @@ enum BugReporting {
         let previous = Dictionary(old.map { ($0.id, $0.status) }, uniquingKeysWith: { _, last in last })
         for job in current where previous[job.id] != job.status {
             // No URL, error message, account identity, or token-bearing transfer metadata.
-            BugReporter.log("drive", "\(job.title): \(job.status.rawValue)")
+            BugReporter.log("drive", "\(job.title): \(job.statusLabel)")
         }
     }
 }

@@ -14,6 +14,10 @@ import SwiftUI
 final class TerminationDelegate: NSObject, NSApplicationDelegate {
     weak var store: AppStore?
 
+    func applicationDidFinishLaunching(_ notification: Notification) {
+        BuildMarker.markDockIcon()
+    }
+
     func applicationShouldTerminate(_ sender: NSApplication) -> NSApplication.TerminateReply {
         guard let store, !store.hasFlushedForTermination else {
             BugReporter.markCleanExit()

@@ -523,6 +523,17 @@ final class AppStore {
     var sceneEditSaveTask: Task<Void, Error>?
     /// Serial transcript-pick writes; Mini waits for the latest before recording takes.
     var transcriptPickSaveTask: Task<Void, Error>?
+    /// Bumped when a transcript set is renamed, so lists of sets reload.
+    var transcriptSetNamesVersion = 0
+    /// Bumped by every library refresh. Lists that no other version covers
+    /// (a video's inactive transcript sets, which a sync can add) key on it.
+    var libraryRefreshes = 0
+    /// The profile generation and project `transcriptFacts` were last read for.
+    @ObservationIgnored var transcriptFactsScope: String?
+    /// Counts `dropMiniReelHighlights`, so a reel read in flight knows to drop them too.
+    @ObservationIgnored var miniReelHighlightDrops: [Int64: Int] = [:]
+    /// The newest section-order read of the reel; an older one must not prune by its lists.
+    @ObservationIgnored var miniReelSectionRead = 0
     /// Serial fight-pick writes; Mini waits for the latest before recording takes.
     var fightPickSaveTask: Task<Void, Error>?
     /// Serial Q&A kept-exchange writes; Mini waits for the latest before recording takes.
@@ -1080,7 +1091,10 @@ final class AppStore {
     /// are not errors and are dropped.
     func presentError(_ context: String, _ error: Error) {
         let appError = AppError.failure(context: context, error: error)
-        logEvent("error", "\(context): \(appError.details)")
+        // One line per failure: the error's type follows its message instead
+        // of taking a line of its own.
+        logEvent("error", appError.details.split(separator: "\n", maxSplits: 1).enumerated()
+            .map { $0.offset == 0 ? "\(context): \($0.element)" : "[\($0.element)]" }.joined(separator: " "))
         guard !(error is CancellationError) else { return }
         errorQueue.append(appError)
     }
@@ -1605,7 +1619,21 @@ final class AppStore {
         analysisPasses = snapshot.analysisPasses
         let runsChanged = analysisRuns != snapshot.analysisRuns
         if runsChanged { analysisRuns = snapshot.analysisRuns }
-        if transcriptFacts != snapshot.transcriptFacts { transcriptFacts = snapshot.transcriptFacts }
+        // The first facts of a profile or project are not a change from the
+        // ones before them: only a refresh of the same library can show a
+        // video moving to another transcript set.
+        let factsScope = "\(generation).\(activeProjectID ?? 0)"
+        let sameLibrary = transcriptFactsScope == factsScope
+        transcriptFactsScope = factsScope
+        if transcriptFacts != snapshot.transcriptFacts {
+            let previous = transcriptFacts
+            transcriptFacts = snapshot.transcriptFacts
+            // Every way a video can move to another transcript set ends in a
+            // library refresh, so this is the one place that notices it.
+            noteTranscriptSets(previous: sameLibrary ? previous : [:])
+            if sameLibrary { transcriptSetsMoved(from: previous) }
+        }
+        libraryRefreshes &+= 1
         if transcriptCounts != snapshot.transcriptCounts { transcriptCounts = snapshot.transcriptCounts }
         if speakerNamingSummaries != snapshot.speakerNamingSummaries { speakerNamingSummaries = snapshot.speakerNamingSummaries }
         if videoPeopleCounts != snapshot.videoPeopleCounts { videoPeopleCounts = snapshot.videoPeopleCounts }

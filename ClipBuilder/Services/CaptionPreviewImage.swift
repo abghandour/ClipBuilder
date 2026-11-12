@@ -59,7 +59,13 @@ nonisolated struct CaptionPreviewImage: Sendable {
         return frames.first { $0.start <= 0.3 && $0.end > 0.3 } ?? frames[0]
     }
 
-    static func frames(style: CaptionStyle, text custom: String? = nil) throws -> [Self] {
+    /// Every frame of the sample's loop. A look with an entrance animation
+    /// has a few dozen, and drawing them all takes most of a second, so the
+    /// frame on screen at `leadTime` is drawn first and handed to `onLead`
+    /// before the rest: the editor shows a change at once and the loop
+    /// follows.
+    static func frames(style: CaptionStyle, text custom: String? = nil,
+                       leadTime: Double? = nil, onLead: (@Sendable (Self) -> Void)? = nil) throws -> [Self] {
         let sampleText = text(custom)
         let length = duration(of: sampleText)
         let scratch = FileManager.default.temporaryDirectory.appendingPathComponent(UUID().uuidString)
@@ -72,7 +78,7 @@ nonisolated struct CaptionPreviewImage: Sendable {
             speakerTurns: [.init(videoID: 0, start: 0, end: length, cluster: 0, confidence: 1)])
         let plan = try CaptionOverlayPlan.plan(pages: pages, style: style)
         var cache: [CaptionOverlayPlan.Raster: Self] = [:]
-        return try plan.overlays.map { overlay in
+        func image(_ overlay: CaptionOverlayPlan.Overlay) throws -> Self {
             try Task.checkCancellation()
             if var hit = cache[overlay.raster] {
                 hit.start = overlay.start
@@ -89,5 +95,10 @@ nonisolated struct CaptionPreviewImage: Sendable {
             cache[raster] = image
             return image
         }
+        if let leadTime, let onLead,
+           let lead = plan.overlays.first(where: { $0.start <= leadTime && leadTime < $0.end }) {
+            onLead(try image(lead))
+        }
+        return try plan.overlays.map(image)
     }
 }

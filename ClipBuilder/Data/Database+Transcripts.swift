@@ -68,9 +68,30 @@ extension Database {
         return ActiveLayers.resolveTranscription(pinnedKey: pin, sets: try transcriptionSetRows(videoID: videoID))
     }
 
+    /// Changing the set also changes which Express transcript picks show:
+    /// picks nobody stamped stay with the set that was active until now.
     func setActiveTranscriptionKey(videoID: Int64, key: String?) throws {
-        try connection.execute("UPDATE videos SET active_transcription_key = ? WHERE id = ?",
-                               [key.map(SQLValue.text) ?? .null, .integer(videoID)])
+        try connection.transaction {
+            if let current = try activeTranscription(videoID: videoID).key { try claimTranscriptPicks(videoID: videoID, key: current) }
+            try connection.execute("UPDATE videos SET active_transcription_key = ? WHERE id = ?",
+                                   [key.map(SQLValue.text) ?? .null, .integer(videoID)])
+        }
+    }
+
+    /// Express: use `key` for the video and bring what was chosen on it.
+    /// The analysis batch built from that set (its Q&A sections and their
+    /// kept marks) becomes the active one when there is one. Returns the
+    /// key that was active before.
+    func switchTranscriptionSet(videoID: Int64, key: String) throws -> String? {
+        // Transactions do not nest: the pin (with its claim) commits first.
+        let previous = try activeTranscription(videoID: videoID).key
+        try setActiveTranscriptionKey(videoID: videoID, key: key)
+        let runs = try fetchAnalysisRuns().filter { $0.videoID == videoID }
+        if let runKey = TranscriptSetSwitch.runKey(for: key, runs: runs.map { ($0.id, $0.runKey, $0.requestJSON, $0.settingsJSON, $0.createdAt) },
+                                                  activeRunID: try activeAnalysisRun(videoID: videoID).run?.id) {
+            try setActiveRunKey(videoID: videoID, runKey: runKey)
+        }
+        return previous
     }
 
     /// Deletes one transcript set of a video, or every set with a nil
@@ -85,7 +106,7 @@ extension Database {
             let values: [SQLValue] = [.integer(videoID)] + (key.map { [.text($0)] } ?? [])
             try deleteVoiceProfiles(where: filter, values)
             for table in ["transcripts", "speaker_turns", "transcript_backups", "transcript_features",
-                          "edit_proposals", "topic_ranges"] {
+                          "edit_proposals", "topic_ranges", "transcription_set_names"] {
                 try connection.execute("DELETE FROM \(table) WHERE \(filter)", values)
             }
             for column in ["active_transcription_key", "podcast_transcription_key"] {
@@ -105,7 +126,9 @@ extension Database {
                 MAX(is_translation) AS has_translations,
                 (SELECT COUNT(*) FROM transcripts edited WHERE edited.video_id = transcripts.video_id
                     AND edited.transcription_key = transcripts.transcription_key
-                    AND edited.is_translation = 0 AND edited.original_text IS NOT NULL) AS edited_count
+                    AND edited.is_translation = 0 AND edited.original_text IS NOT NULL) AS edited_count,
+                (SELECT n.name FROM transcription_set_names n WHERE n.video_id = transcripts.video_id
+                    AND n.transcription_key = transcripts.transcription_key) AS set_name
             FROM transcripts WHERE video_id = ? AND transcription_key IS NOT NULL
             GROUP BY transcription_key ORDER BY created_at DESC, transcription_key DESC
             """, [.integer(videoID)]).compactMap { row in
@@ -114,8 +137,20 @@ extension Database {
                     model: row["model"]?.stringValue, provider: row["provider"]?.stringValue,
                     language: row["language"]?.stringValue, segmentCount: Int(row["segment_count"]?.intValue ?? 0),
                     hasTranslations: row["has_translations"]?.boolValue ?? false,
-                    editedCount: Int(row["edited_count"]?.intValue ?? 0))
+                    editedCount: Int(row["edited_count"]?.intValue ?? 0), name: row["set_name"]?.stringValue)
             }
+    }
+
+    /// A blank name removes it; the set then reads by date and model again.
+    func setTranscriptionSetName(videoID: Int64, key: String, name: String) throws {
+        let trimmed = name.trimmingCharacters(in: .whitespacesAndNewlines)
+        if trimmed.isEmpty {
+            try connection.execute("DELETE FROM transcription_set_names WHERE video_id = ? AND transcription_key = ?",
+                                   [.integer(videoID), .text(key)])
+        } else {
+            try connection.execute("INSERT OR REPLACE INTO transcription_set_names (video_id, transcription_key, name) VALUES (?, ?, ?)",
+                                   [.integer(videoID), .text(key), .text(trimmed)])
+        }
     }
 
     func transcriptionSets(videoID: Int64) throws -> [TranscriptionSet] {
@@ -172,6 +207,15 @@ extension Database {
         // delete + inserts must land atomically.
         try connection.transaction {
             let key = transcriptionKey
+            // A brand-new set becomes the active one on an unpinned video.
+            // Picks nobody stamped were made on the set in use until now and
+            // must be claimed for it before this insert changes the answer.
+            if !isTranslation,
+               try connection.query("SELECT 1 FROM transcripts WHERE video_id = ? AND transcription_key = ? LIMIT 1",
+                                    [.integer(videoID), .text(key)]).isEmpty,
+               let current = try activeTranscription(videoID: videoID).key, current != key {
+                try claimTranscriptPicks(videoID: videoID, key: current)
+            }
             let createdAt = try connection.query("SELECT transcription_created_at FROM transcripts WHERE video_id = ? AND transcription_key = ? LIMIT 1",
                 [.integer(videoID), .text(key)]).first?["transcription_created_at"]?.stringValue
                 ?? Date().ISO8601Format(.iso8601(timeZone: .gmt, includingFractionalSeconds: true))

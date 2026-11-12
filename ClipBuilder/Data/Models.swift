@@ -655,6 +655,8 @@ nonisolated struct TranscriptionSet: Identifiable, Sendable, Hashable {
     var editedCount = 0
     var isActive = false
     var isPinned = false
+    /// The user's name for the set; nil until they give one.
+    var name: String? = nil
 }
 
 nonisolated struct TranscriptRow: Identifiable, Sendable, Hashable, Codable {

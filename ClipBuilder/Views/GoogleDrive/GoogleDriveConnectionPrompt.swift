@@ -4,9 +4,11 @@ struct OpenGoogleDriveSettingsButton: View {
     @Environment(\.openSettings) private var openSettings
     @AppStorage("settings.selectedTab") private var selectedTab = "profile"
     var beforeOpening: () -> Void = {}
+    /// A shorter title for places too narrow for the full one.
+    var title = "Open Google Drive Settings"
 
     var body: some View {
-        Button("Open Google Drive Settings") {
+        Button(title) {
             selectedTab = "googleDrive"
             beforeOpening()
             openSettings()

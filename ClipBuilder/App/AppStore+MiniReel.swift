@@ -24,9 +24,10 @@ extension AppStore {
         guard let database else { return }
         let generation = profileGeneration
         let previous = miniReelSaveTask
+        let drops = miniReelHighlightDrops[videoID]
         Task {
             _ = try? await previous?.value
-            let items: [MiniReelItem]
+            var items: [MiniReelItem]
             do {
                 items = try await database.fetchExpressReelItems(projectID: projectID, videoID: videoID)
             } catch {
@@ -34,6 +35,9 @@ extension AppStore {
                 return
             }
             guard generation == profileGeneration, miniReelKey == key else { return }
+            // The video moved to another transcript set while this was read:
+            // the rows may still hold the old set's Highlights.
+            if drops != miniReelHighlightDrops[videoID] { items.removeAll { $0.kind == .highlights } }
             miniReelItems = items
             miniReelLoaded = true
             reconcileMiniReel()
@@ -50,8 +54,13 @@ extension AppStore {
         let kinds = Set(miniReelItems.map(\.kind))
         let generation = profileGeneration
         let batches = rememberedHighlightBatches(key: key)
+        miniReelSectionRead &+= 1
+        let read = miniReelSectionRead
         Task {
             var order: [MiniReelRules.Key: Int] = [:]
+            // Sections whose whole list was read: an item of theirs that is
+            // not in it names something the source no longer has.
+            var whole: Set<MiniWizardFlow.FootageKind> = []
             func record(_ kind: MiniWizardFlow.FootageKind, _ ids: [Int64]) {
                 for (index, id) in ids.enumerated() { order[.init(kind: kind, itemID: id)] = index }
             }
@@ -63,10 +72,12 @@ extension AppStore {
                     TranscriptQASections.sections(scenes: videoScenes, rows: rows, labels: [:]).map(\.id)
                 }.value
                 record(.qa, ids)
+                whole.insert(.qa)
             }
             if kinds.contains(.transcript),
                let picks = try? await database.fetchTranscriptPicks(projectID: key.projectID, videoID: key.videoID) {
                 record(.transcript, picks.map(\.id))
+                whole.insert(.transcript)
             }
             if kinds.contains(.fightMetrics),
                let picks = try? await database.fetchFightPicks(projectID: key.projectID, videoID: key.videoID) {
@@ -82,9 +93,32 @@ extension AppStore {
                     record(.highlights, WizardPreviewRows.merging(saved, into: ids))
                 }
             }
-            guard generation == profileGeneration, miniReelKey == key else { return }
+            // A newer read was started since (the transcript set changed
+            // again): these lists may be of a set that is no longer in use.
+            guard generation == profileGeneration, miniReelKey == key, read == miniReelSectionRead else { return }
             miniReelSectionOrder = order
+            // Exchanges and transcript picks belong to a transcript set.
+            // After a change of set (now, or while this project was closed)
+            // the reel may still list the old set's: removing one there
+            // would uncheck a pick of a set that is not on screen. A loaded
+            // section reconciles its own items.
+            let stale = whole.filter { kind in
+                !(miniRuns[kind].map { $0.projectID == key.projectID && $0.video.id == key.videoID && $0.hasFootage } ?? false)
+            }
+            let items = miniReelItems.filter {
+                !stale.contains($0.kind) || order[.init(kind: $0.kind, itemID: $0.itemID)] != nil
+            }
+            guard miniReelLoaded, items != miniReelItems else { return }
+            miniReelItems = items
+            saveMiniReel()
         }
+    }
+
+    /// The source's transcript set changed: read its sections' lists again
+    /// and drop the reel items that are no longer in them.
+    func refreshMiniReelSections(videoID: Int64) {
+        guard let key = miniReelKey, key.videoID == videoID, miniReelLoaded else { return }
+        loadMiniReelSectionOrder(key: key)
     }
 
     func clearMiniReel() {
@@ -248,10 +282,43 @@ extension AppStore {
     /// The Highlights batches remembered for this source, one per Length.
     private func rememberedHighlightBatches(key: MiniReelKey) -> Set<String> {
         let profileName = activeProfile.profileName
+        let setKey = transcriptFacts[key.videoID]?.transcriptionKey ?? ""
         return Set(MiniWizardFlow.Length.allCases.compactMap {
-            UserDefaults.standard.string(forKey: MiniWizardMemory.batchKey(profileName: profileName, projectID: key.projectID,
-                                                                            videoID: key.videoID, kind: .highlights, length: $0))
+            MiniWizardMemory.highlightBatch(profileName: profileName, projectID: key.projectID,
+                                            videoID: key.videoID, length: $0, setKey: setKey)
         })
+    }
+
+    /// The video moved to another transcript set: its Highlights reel items
+    /// name candidates of the set that was left, which Generate could no
+    /// longer resolve. They leave the reel (every project's); kept
+    /// candidates rejoin when that set's Highlights are loaded again.
+    /// The open reel is trimmed at once and saved as usual; only reels that
+    /// are not open are trimmed in the table, so a Highlights run restored
+    /// right after cannot lose the items it just added.
+    func dropMiniReelHighlights(videoID: Int64) {
+        miniReelHighlightDrops[videoID, default: 0] &+= 1
+        var openProject: Int64?
+        // Only a reel that has landed is saved by its owner; one still being
+        // read is trimmed in the table like the others, and by its reader.
+        if let key = miniReelKey, key.videoID == videoID, miniReelLoaded {
+            openProject = key.projectID
+            if miniReelItems.contains(where: { $0.kind == .highlights }) {
+                miniReelItems.removeAll { $0.kind == .highlights }
+                saveMiniReel()
+            }
+        }
+        guard let database else { return }
+        // Joins the save queue: a save still waiting for this video's reel
+        // (it was open a moment ago) would otherwise write the old
+        // Highlights back after the delete, and a reel loaded next waits for
+        // it. Nothing in it checks for cancellation, so the next save's
+        // cancel of its predecessor cannot skip it.
+        let previous = miniReelSaveTask
+        miniReelSaveTask = Task {
+            _ = try? await previous?.value
+            try? await database.deleteExpressReelItems(videoID: videoID, kind: .highlights, exceptProject: openProject)
+        }
     }
 
     /// The saved candidates of the remembered Highlights batches other than

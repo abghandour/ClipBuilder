@@ -304,9 +304,9 @@ nonisolated enum TextLookExtraction {
         let size = number(raw["size"]).map { min(120, max(24, $0)) }
         if let em = number(raw["letter_spacing_em"]) {
             // Tracking in em × the caption size gives the renderer's pixels at 1080p.
-            style.letterSpacing = min(6, max(-2, (em * (size ?? 49) * 10).rounded() / 10))
+            style.letterSpacing = min(TextDecor.letterSpacingRange.upperBound, max(TextDecor.letterSpacingRange.lowerBound, (em * (size ?? 49) * 10).rounded() / 10))
         } else {
-            style.letterSpacing = number(raw["letter_spacing"]).map { min(6, max(-2, $0)) }
+            style.letterSpacing = number(raw["letter_spacing"]).map { min(TextDecor.letterSpacingRange.upperBound, max(TextDecor.letterSpacingRange.lowerBound, $0)) }
         }
         style.highlight = pick(raw["highlight"], from: ["none", "color", "box", "scale"])
         style.highlightColor = color(raw["highlight_color"])

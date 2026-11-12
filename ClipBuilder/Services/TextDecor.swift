@@ -2,6 +2,8 @@ import Foundation
 
 /// Nil inherits; legacy payloads remain readable with synthesized decoding.
 nonisolated struct TextDecor: Codable, Hashable, Sendable {
+    /// Pixels at a 1080-wide canvas; the one limit every model, import and slider shares.
+    static let letterSpacingRange: ClosedRange<Double> = -20...20
     var color: String?
     var gradientOn: Bool?
     var fillEndColor: String?
@@ -143,7 +145,7 @@ nonisolated struct TextDecor: Codable, Hashable, Sendable {
         if let number = value.shadowX { value.shadowX = number.isFinite ? min(3, max(-3, number)) : Self.defaults.shadowX }
         if let number = value.shadowY { value.shadowY = number.isFinite ? min(3, max(-3, number)) : Self.defaults.shadowY }
         if let number = value.size { value.size = number.isFinite ? min(4, max(0.1, number)) : Self.defaults.size }
-        if let number = value.letterSpacing { value.letterSpacing = number.isFinite ? min(6, max(-2, number)) : Self.defaults.letterSpacing }
+        if let number = value.letterSpacing { value.letterSpacing = number.isFinite ? min(Self.letterSpacingRange.upperBound, max(Self.letterSpacingRange.lowerBound, number)) : Self.defaults.letterSpacing }
         if let number = value.lineHeight { value.lineHeight = number.isFinite ? min(2, max(0.8, number)) : Self.defaults.lineHeight }
         if let number = value.maxWidthFrac { value.maxWidthFrac = number.isFinite ? min(1, max(0.2, number)) : Self.defaults.maxWidthFrac }
         if value.gradientOn == false { value.fillEndColor = nil }

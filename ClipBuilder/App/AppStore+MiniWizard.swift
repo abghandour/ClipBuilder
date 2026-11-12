@@ -103,6 +103,10 @@ extension AppStore {
                 defer { finishWizardSelectionWork(generation: generation) }
                 do {
                     try await wizardSelectionSaveTask?.value
+                    // The set in use as the engine starts reading. Asked of
+                    // the database, not the cached facts, and again when the
+                    // engine is done: the same answer twice is the set it read.
+                    let setBefore = try await database.activeTranscription(videoID: video.id).key ?? ""
                     let batch: String
                     if flow.isPodcastOrInterview {
                         let review = try await wizard.findPodcastHighlights(options: options, settings: podcastSettings,
@@ -132,14 +136,30 @@ extension AppStore {
                     }
                     try Task.checkCancellation()
                     guard generation == profileGeneration, activeProjectID == projectID else { return }
-                    UserDefaults.standard.set(batch, forKey: MiniWizardMemory.batchKey(profileName: profile.profileName,
-                        projectID: projectID, videoID: video.id, kind: .highlights, length: flow.length))
-                    miniRuns[.highlights] = MiniWizardRun(projectID: projectID, video: video, footageKind: .highlights,
-                        length: flow.length, batchID: batch, candidates: candidates, options: options,
-                        selectedSelectionID: candidates.first?.id)
-                    appendLog(\.wizardLog, ["Express: \(candidates.count) candidates ready to review."])
+                    let setAfter = (try? await database.activeTranscription(videoID: video.id).key) ?? ""
+                    guard generation == profileGeneration, activeProjectID == projectID else { return }
+                    // A set that changed while the engine worked leaves the
+                    // result's set unknown: it is recorded without one.
+                    let readSet: String? = setBefore == setAfter ? setBefore : nil
+                    let stillActive = readSet != nil && (transcriptFacts[video.id]?.transcriptionKey ?? "") == readSet
+                    if let readSet {
+                        MiniWizardMemory.rememberHighlightBatch(batch, profileName: profile.profileName,
+                            projectID: projectID, videoID: video.id, length: flow.length,
+                            setKey: readSet, current: stillActive)
+                    }
+                    if stillActive {
+                        miniRuns[.highlights] = MiniWizardRun(projectID: projectID, video: video, footageKind: .highlights,
+                            length: flow.length, batchID: batch, candidates: candidates, options: options,
+                            selectedSelectionID: candidates.first?.id)
+                        appendLog(\.wizardLog, ["Express: \(candidates.count) candidates ready to review."])
+                    } else {
+                        appendLog(\.wizardLog, ["Express: the transcript changed while highlights were being found; they are in the history, not on the page."])
+                    }
+                    // Always recorded, shown or not: the history and Team Sync hold every result.
+                    var recorded = highlightSettings(options: options, length: flow.length)
+                    recorded.transcriptKey = readSet.flatMap { $0.isEmpty ? nil : $0 }
                     await recordHighlightCandidates(candidates, projectID: projectID, flow: .expressHighlights,
-                        batchID: batch, settings: highlightSettings(options: options, length: flow.length))
+                        batchID: batch, settings: recorded)
                     await refreshWizardSelections()
                 } catch is CancellationError {
                     if generation == profileGeneration { appendLog(\.wizardLog, ["Finding Express footage stopped."]) }

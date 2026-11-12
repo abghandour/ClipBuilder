@@ -15,7 +15,7 @@ struct SyncMigrationTests {
         #expect(try raw.columnNames(of: "video_people").isSuperset(of: ["vip", "vip_source"]))
         let table = try #require(SyncTable.footage.first { $0.name == "video_people" })
         #expect(table.columns.contains("vip_source"))
-        #expect(SyncEngine.understoodSchemaVersion == 13)
+        #expect(SyncEngine.understoodSchemaVersion == 14)
         let scope = SyncScope(teamID: UUID(), profileID: UUID())
         let wire: SyncMapping.WireRow = ["sync_id": .string(UUID().uuidString),
                                        "team_id": .string(scope.teamID.uuidString),

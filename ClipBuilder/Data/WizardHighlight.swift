@@ -98,6 +98,9 @@ nonisolated struct WizardHighlightSettings: Codable, Sendable {
     var qaKept: [HighlightFootageRef]?
     var aiRouting: HighlightAIRouting?
     var sourceProfile: String?
+    /// The transcript set of the single source this was made on; nil for
+    /// entries from before it was recorded and for several sources.
+    var transcriptKey: String? = nil
 
     init(options: WizardOptions, mini: MiniWizardSettings? = nil, length: String? = nil,
          outputMode: String? = nil, picks: [HighlightPickSnapshot]? = nil,

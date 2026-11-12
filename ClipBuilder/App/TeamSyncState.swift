@@ -331,7 +331,9 @@ final class TeamSyncState {
                 do { try await self.performCycle(log: log) }
                 catch {
                     if self.generation == captured {
-                        self.message = error.logged()
+                        // The job reports this failure to the Errors log; logging
+                        // it here too wrote every sync failure twice.
+                        self.message = error.localizedDescription
                         if error is CancellationError || Task.isCancelled { self.setPaused(true) }
                     }
                     throw error

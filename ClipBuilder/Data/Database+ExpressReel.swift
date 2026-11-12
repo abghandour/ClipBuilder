@@ -18,6 +18,13 @@ extension Database {
     }
 
     /// Rewrites the reel for one project and video; the list is short.
+    /// Every project's reel items of one section of a video, but for the
+    /// project whose reel is open (its owner saves that one itself).
+    func deleteExpressReelItems(videoID: Int64, kind: MiniWizardFlow.FootageKind, exceptProject: Int64?) throws {
+        try connection.execute("DELETE FROM express_reel_items WHERE video_id = ? AND kind = ? AND project_id IS NOT ?",
+                               [.integer(videoID), .text(kind.rawValue), exceptProject.map(SQLValue.integer) ?? .null])
+    }
+
     func replaceExpressReelItems(projectID: Int64, videoID: Int64, items: [MiniReelItem]) throws {
         try connection.transaction {
             try connection.execute("DELETE FROM express_reel_items WHERE project_id = ? AND video_id = ?",

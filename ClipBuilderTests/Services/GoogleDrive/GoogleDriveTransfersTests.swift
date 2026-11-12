@@ -75,4 +75,24 @@ struct GoogleDriveTransfersTests {
         fixture.transfers.resume(done.id)
         #expect(fixture.transfers.jobs.first { $0.id == done.id }?.status == .complete)
     }
+
+    @Test func repeatedFetchesOfOneFileKeepTheNewest() {
+        let media = DriveMedia(kind: .source, recordID: 7, path: "", fileID: "f")
+        let other = DriveMedia(kind: .source, recordID: 8, path: "/tmp/b.mp4", fileID: "g")
+        func fetch(_ media: DriveMedia, profile: String = "p") -> DriveTransfer {
+            DriveTransfer(profile: profile, projectName: profile, operation: .fetch, media: media)
+        }
+        let download = DriveTransfer(profile: "p", projectName: "Project", operation: .download)
+        let upload = DriveTransfer(profile: "p", projectName: "Project", operation: .upload, media: media)
+        let first = fetch(media), second = fetch(other), third = fetch(media), elsewhere = fetch(media, profile: "q")
+        let kept = GoogleDriveTransfers.withoutRepeatedFetches([first, download, second, upload, third, elsewhere])
+        #expect(kept.map(\.id) == [download.id, second.id, upload.id, third.id, elsewhere.id])
+    }
+
+    @Test func aFetchWithoutALocalPathIsTitledByItsName() {
+        let media = DriveMedia(kind: .source, recordID: 7, path: "", fileID: "f")
+        let named = DriveTransfer(profile: "p", projectName: "p", operation: .fetch, media: media, name: "AILIN HALF.mp4")
+        #expect(named.title == "AILIN HALF.mp4")
+        #expect(DriveTransfer(profile: "p", projectName: "p", operation: .fetch, media: media).title == "Drive file")
+    }
 }

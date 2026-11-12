@@ -65,18 +65,18 @@ struct TextLooksList: View {
 
     private func row(_ entry: Entry) -> some View {
         VStack(alignment: .leading, spacing: 4) {
-            HStack {
-                if let style = entry.captionStyle {
-                    CaptionPresetThumbnail(style: style)
-                } else {
-                    LookCard(name: entry.name, decor: entry.decor, fontFamily: entry.fontFamily, showsName: false)
-                }
-                Spacer(minLength: 0)
-                Text("\(entry.runs)").font(.caption.monospacedDigit()).lineLimit(1).fixedSize()
-                    .padding(4).background(.quaternary, in: .capsule)
-                    .help("\(entry.runs) Wizard runs reference this style")
+            if let style = entry.captionStyle {
+                CaptionPresetThumbnail(style: style)
+            } else {
+                LookCard(name: entry.name, decor: entry.decor, fontFamily: entry.fontFamily, showsName: false)
             }
-            Text(entry.name).lineLimit(1).fixedSize(horizontal: false, vertical: true)
+            HStack(spacing: Theme.spaceS) {
+                Text(entry.name).lineLimit(1).truncationMode(.tail)
+                Text("\(entry.runs)").font(.caption.monospacedDigit()).lineLimit(1).fixedSize()
+                    .padding(.horizontal, 6).padding(.vertical, 2).background(.quaternary, in: .capsule)
+                    .help("\(entry.runs) Wizard runs reference this style")
+                Spacer(minLength: 0)
+            }
             Text(entry.base).font(.caption).foregroundStyle(.secondary)
                 .lineLimit(1).fixedSize(horizontal: false, vertical: true)
         }.padding(.vertical, 4)

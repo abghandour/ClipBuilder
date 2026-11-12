@@ -19,6 +19,9 @@ struct HighlightHistoryBar: View {
     let onSelect: (Int64) -> Void
     let onOpen: (Int64) -> Void
     let onReRender: (Int64) -> Void
+    /// The source's transcript sets (Express): an entry's tooltip names the
+    /// one it was made on. Choosing an entry never changes the transcript.
+    var transcripts: [TranscriptionSet] = []
 
     private var currentIndex: Int? {
         selectedID.flatMap { id in entries.firstIndex { $0.id == id } }
@@ -100,14 +103,11 @@ struct HighlightHistoryBar: View {
             if entries.isEmpty {
                 Text("No highlights saved yet")
             }
-            ForEach(entries) { entry in
-                let missing = unavailable.contains(entry.id)
-                Toggle(isOn: Binding(get: { entry.id == selectedID }, set: { _ in onSelect(entry.id) })) {
-                    Text(HighlightHistoryNavigation.label(for: entry)).lineLimit(1)
-                }
-                .disabled(missing)
-                .help(missing ? AppStore.highlightNotInLibrary : HighlightHistoryNavigation.detail(for: entry))
-            }
+            // A MiniRow hides labels and makes toggles switches; inside a menu
+            // that leaves every entry a blank, disabled row.
+            ForEach(entries) { entryRow($0) }
+                .labelsVisibility(.visible)
+                .toggleStyle(.automatic)
         } label: {
             Label(title, systemImage: "clock.arrow.circlepath").lineLimit(1).fixedSize()
         }
@@ -116,12 +116,29 @@ struct HighlightHistoryBar: View {
         .accessibilityLabel("Highlight history")
     }
 
+    private func entryRow(_ entry: WizardHighlightRecord) -> some View {
+        let missing = unavailable.contains(entry.id)
+        return Toggle(isOn: Binding(get: { entry.id == selectedID }, set: { _ in onSelect(entry.id) })) {
+            Text(HighlightHistoryNavigation.label(for: entry)).lineLimit(1)
+        }
+        .disabled(missing)
+        .help(missing ? AppStore.highlightNotInLibrary
+              : [HighlightHistoryNavigation.detail(for: entry), madeOn(entry)].compactMap { $0 }.joined(separator: "\n"))
+    }
+
+    /// "Made on <transcript>" when the entry recorded one this Mac has.
+    private func madeOn(_ entry: WizardHighlightRecord) -> String? {
+        guard let key = TranscriptSetSwitch.transcriptKey(of: entry),
+              let set = transcripts.first(where: { $0.id == key }) else { return nil }
+        return "Made on transcript: " + TranscriptSetSwitch.label(set)
+    }
+
     private var menuHelp: String {
         guard let current else {
             return entries.isEmpty ? "Every generated highlight is saved here with its settings and author"
                 : "Choose a saved highlight to open"
         }
-        return [HighlightHistoryNavigation.label(for: current), HighlightHistoryNavigation.detail(for: current), currentHelp,
+        return [HighlightHistoryNavigation.label(for: current), HighlightHistoryNavigation.detail(for: current), madeOn(current), currentHelp,
                 unavailable.contains(current.id) ? AppStore.highlightNotInLibrary : nil]
             .compactMap { $0 }.joined(separator: "\n")
     }

@@ -180,13 +180,14 @@ extension AppStore {
         guard let run = miniRuns[.transcript], run.batchID == batchID, let database else { return false }
         let projectID = run.projectID
         let videoID = run.video.id
+        let shownSet = TranscriptPickSet.shown(run.transcript?.setKey)
         let generation = profileGeneration
         // In the same queue as every other pick write, so order is kept.
         let previous = transcriptPickSaveTask
         let write = Task { () throws -> (picks: [TranscriptPick], remapped: [Int64: Int64]) in
             _ = try? await previous?.value
             return try await database.restoreTranscriptPicks(projectID: projectID, videoID: videoID,
-                                                             expected: expected, picks: picks)
+                                                             expected: expected, picks: picks, set: shownSet)
         }
         transcriptPickSaveTask = Task { _ = try await write.value }
         do {

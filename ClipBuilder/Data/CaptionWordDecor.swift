@@ -19,7 +19,7 @@ nonisolated struct CaptionWordDecor: Codable, Sendable, Hashable {
 
     var resolvedWeight: String { ["bold", "black"].contains(weight ?? "") ? weight! : "regular" }
     var resolvedStrokeWidth: Double { min(6, max(0, strokeWidth ?? 1)) }
-    var resolvedLetterSpacing: Double { min(6, max(-2, letterSpacing ?? 0)) }
+    var resolvedLetterSpacing: Double { min(TextDecor.letterSpacingRange.upperBound, max(TextDecor.letterSpacingRange.lowerBound, letterSpacing ?? 0)) }
     var resolvedShadow: Bool { shadow ?? false }
 
     var resolvedItalic: Bool { italic ?? false }

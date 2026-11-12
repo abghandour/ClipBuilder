@@ -47,6 +47,21 @@ struct TextLooksView: View {
     /// A style the wizard just created, applied once the tab change lands
     /// (the tab handler otherwise resets the selection to the default).
     @State private var pendingSelection: String?
+    /// Undo, Redo and Discard for the look open in the inspector. Edits save
+    /// as they are made, so this is the only way back; it starts over when
+    /// another look, tab or profile is opened.
+    @State private var history: EditHistory<LookSnapshot>?
+    /// The look as this view last left it. When the look on screen differs,
+    /// something else changed it (Team sync, the wizard) and the history no
+    /// longer describes it: restoring from it would write over that change.
+    @State private var expected: LookSnapshot?
+
+    /// Everything the inspector can change about the selected look.
+    nonisolated private enum LookSnapshot: Equatable, Sendable {
+        case caption(String, CaptionStyle)
+        case tag(String, TagStyle)
+        case named(NamedTextStyle)
+    }
 
     init(tab: TextLooksTab) {
         initialTab = tab
@@ -75,12 +90,14 @@ struct TextLooksView: View {
                 }
             },
             set: { value in
+                let before = snapshot
                 switch tab {
                 case .captions: if let i = captionIndex { store.activeProfile.captionStyles?[i].name = value }
                 case .tags: if let i = tagIndex { store.activeProfile.tagStyles?[i].name = value }
                 case .named: if let i = namedIndex { store.activeProfile.textStyles?[i].name = value }
                 case .overlays, .fonts: break
                 }
+                noteEdit(from: before)
                 store.scheduleActiveProfileSave()
             })
     }
@@ -88,7 +105,9 @@ struct TextLooksView: View {
         Binding(
             get: { store.activeProfile.captionStyle(id: selection) },
             set: {
+                let before = snapshot
                 if let i = captionIndex { store.activeProfile.captionStyles?[i].style = $0 } else { store.activeProfile.captions = $0 }
+                noteEdit(from: before)
                 store.scheduleActiveProfileSave()
             })
     }
@@ -96,7 +115,9 @@ struct TextLooksView: View {
         Binding(
             get: { store.activeProfile.tagStyle(id: selection) },
             set: {
+                let before = snapshot
                 if let i = tagIndex { store.activeProfile.tagStyles?[i].style = $0 } else { store.activeProfile.tagStyle = $0 }
+                noteEdit(from: before)
                 store.scheduleActiveProfileSave()
             })
     }
@@ -106,9 +127,81 @@ struct TextLooksView: View {
             get: { store.activeProfile.textStyles?.first { $0.id.uuidString == id } ?? fallback },
             set: { value in
                 guard let index = store.activeProfile.textStyles?.firstIndex(where: { $0.id.uuidString == id }) else { return }
+                let before = snapshot
                 store.activeProfile.textStyles?[index] = value
+                noteEdit(from: before)
                 store.scheduleActiveProfileSave()
             })
+    }
+
+    // MARK: Undo, Redo, Discard
+
+    private var historyKey: String { "\(store.activeProfile.profileName)|\(tab.rawValue)|\(selection ?? "")" }
+
+    private var snapshot: LookSnapshot? {
+        switch tab {
+        case .captions: .caption(name.wrappedValue, caption.wrappedValue)
+        case .tags: .tag(name.wrappedValue, tag.wrappedValue)
+        case .named: named.map { .named($0.wrappedValue) }
+        case .overlays, .fonts: nil
+        }
+    }
+
+    private func noteEdit(from before: LookSnapshot?) {
+        guard let before, let after = snapshot else { return }
+        history?.record(before: before, changingTo: after)
+        expected = after
+    }
+
+    private func restartHistory() {
+        let current = snapshot
+        history = current.map { EditHistory(baseline: $0) }
+        expected = current
+    }
+
+    /// Writes a snapshot back without recording it as an edit.
+    private func restore(_ value: LookSnapshot?) {
+        guard let value else { return }
+        // A style that is selected but no longer exists (deleted elsewhere)
+        // must not land in the profile default, which is what a missing
+        // index means everywhere else in this view.
+        let isDefault = selection == "default"
+        switch value {
+        case .caption(let name, let style):
+            if let i = captionIndex {
+                store.activeProfile.captionStyles?[i].name = name
+                store.activeProfile.captionStyles?[i].style = style
+            } else if isDefault {
+                store.activeProfile.captions = style
+            } else {
+                return
+            }
+        case .tag(let name, let style):
+            if let i = tagIndex {
+                store.activeProfile.tagStyles?[i].name = name
+                store.activeProfile.tagStyles?[i].style = style
+            } else if isDefault {
+                store.activeProfile.tagStyle = style
+            } else {
+                return
+            }
+        case .named(let style):
+            guard let i = store.activeProfile.textStyles?.firstIndex(where: { $0.id == style.id }) else { return }
+            store.activeProfile.textStyles?[i] = style
+        }
+        expected = snapshot
+        store.scheduleActiveProfileSave()
+    }
+
+    @ViewBuilder private var historyBar: some View {
+        if let current = snapshot {
+            EditHistoryBar(
+                canUndo: history?.canUndo == true, canRedo: history?.canRedo == true,
+                canDiscard: history?.canDiscard(current) == true,
+                undo: { restore(history?.undo(from: current)) },
+                redo: { restore(history?.redo(from: current)) },
+                discard: { restore(history?.discard(from: current)) })
+        }
     }
 
     var body: some View {
@@ -133,7 +226,11 @@ struct TextLooksView: View {
                     )
                     .rememberedPaneWidth("pane.textLooks.list", min: 200, initial: 232, max: 300)
                     stage.id(selection).frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
-                    inspector.frame(minWidth: 280, idealWidth: 336, maxWidth: 440).frame(maxHeight: .infinity)
+                    VStack(spacing: 0) {
+                        inspector.frame(maxHeight: .infinity)
+                        historyBar
+                    }
+                    .frame(minWidth: 280, idealWidth: 336, maxWidth: 440).frame(maxHeight: .infinity)
                 }
             }
             if let countError { FormCaption(countError, tone: .warning).padding(8) }
@@ -170,6 +267,11 @@ struct TextLooksView: View {
             refreshOverlayLinks()
         }
         .onChange(of: selection) { selectedImage = nil }
+        .onChange(of: historyKey, initial: true) { restartHistory() }
+        .onChange(of: snapshot) { _, current in
+            // Not an edit or a restore made here: start over from what is there now.
+            if current != expected { restartHistory() }
+        }
         .onChange(of: selectedImage) { _, image in if image != nil { tagState = "Box" } }
         .onChange(of: initialTab) { _, value in tab = value }
         .onChange(of: store.createdTextLookSelection) { _, created in

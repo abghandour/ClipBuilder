@@ -20,6 +20,10 @@ extension AppStore {
         var result = WizardHighlightSettings(options: options, mini: mini, length: length?.rawValue,
             outputMode: mini?.outputMode.rawValue, aiRouting: HighlightAIRouting(settings.ai),
             sourceProfile: activeProfile.profileName)
+        // The history menu groups an entry under the transcript it was made on.
+        let sourceID = run?.video.id ?? (options.sourceVideoPaths.count == 1
+            ? options.sourceVideoPaths.first.flatMap { path in videos.first { $0.path == path }?.id } : nil)
+        if let key = sourceID.flatMap({ transcriptFacts[$0]?.transcriptionKey }), !key.isEmpty { result.transcriptKey = key }
         guard let run else { return result }
         let hash = run.video.hash
         switch run.footageKind {
@@ -225,8 +229,12 @@ extension AppStore {
             miniRuns[.highlights] = MiniWizardRun(projectID: projectID, video: video, footageKind: .highlights,
                 length: length, batchID: batch, candidates: [candidate], options: options,
                 selectedSelectionID: candidate.id)
-            UserDefaults.standard.set(batch, forKey: MiniWizardMemory.batchKey(profileName: activeProfile.profileName,
-                projectID: projectID, videoID: video.id, kind: .highlights, length: length))
+            // Filed under the transcript in use, whichever the entry was made
+            // on: the run and its reel item live on this page, and restoring
+            // the page or generating looks the batch up by the active set.
+            MiniWizardMemory.rememberHighlightBatch(batch, profileName: activeProfile.profileName,
+                projectID: projectID, videoID: video.id, length: length,
+                setKey: transcriptFacts[video.id]?.transcriptionKey ?? "")
             openedHighlightBatches[id] = batch
             highlightOpenWarnings[id] = nil
             appendLog(\.wizardLog, ["Express: opened \(HighlightHistoryNavigation.label(for: record))."])
