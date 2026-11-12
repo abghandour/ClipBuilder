@@ -3,8 +3,8 @@ import SwiftUI
 /// Folder tabs: a left-aligned row of text tabs where the open tab merges
 /// into the panel under it, the way Safari draws its tabs. Only the open
 /// tab's content exists, so the panel takes that content's height (`fills`
-/// false) or the whole page (`fills` true). Used for the wizard's Settings
-/// tabs, the Express / Full switch and the Reports pages.
+/// false) or the whole page (`fills` true). Used for the wizard's steps and
+/// Settings tabs, the Express / Full switch and the Reports pages.
 struct PageTabs<Tab: Hashable, Content: View>: View {
     let tabs: [Tab]
     @Binding var selection: Tab
@@ -13,10 +13,14 @@ struct PageTabs<Tab: Hashable, Content: View>: View {
     var fills = false
     var rowSpacing: CGFloat = Theme.spaceM
     var padding: CGFloat = Theme.spaceM
+    /// The tab and panel share one surface so the open tab reads as part of
+    /// it. Tabs that hold other tabs take a different one from theirs.
+    var surface = AnyShapeStyle(Color(nsColor: .controlBackgroundColor))
+    /// A tab's tooltip, e.g. what the step behind it currently holds.
+    var help: ((Tab) -> String)? = nil
     @ViewBuilder let content: (Tab) -> Content
 
-    /// The tab and panel share one surface so the open tab reads as part of it.
-    private var panel: Color { Color(nsColor: .controlBackgroundColor) }
+    private var panel: AnyShapeStyle { surface }
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
@@ -29,12 +33,13 @@ struct PageTabs<Tab: Hashable, Content: View>: View {
                             .foregroundStyle(open ? .primary : .secondary)
                             .padding(.horizontal, Theme.spaceL)
                             .padding(.vertical, Theme.spaceS - 1)
-                            .background(open ? panel : .clear,
+                            .background(open ? panel : AnyShapeStyle(.clear),
                                         in: UnevenRoundedRectangle(topLeadingRadius: Theme.cardRadius,
                                                                    topTrailingRadius: Theme.cardRadius))
                             .contentShape(Rectangle())
                     }
                     .buttonStyle(.plain)
+                    .help(help?(tab) ?? "")
                     .accessibilityAddTraits(open ? [.isSelected] : [])
                 }
                 Spacer(minLength: 0)

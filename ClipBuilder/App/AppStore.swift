@@ -495,6 +495,9 @@ final class AppStore {
     /// current after its awaits (a newer Open started) does nothing.
     @ObservationIgnored var highlightOpenToken = 0
     var miniFootageKind: MiniWizardFlow.FootageKind = .highlights
+    /// The open Express step. Kept here, not in the page, so it survives
+    /// the page being rebuilt (Express → Full → Express).
+    var miniStep: MiniWizardFlow.Card = .source
     var miniRun: MiniWizardRun? {
         get { miniRuns[miniFootageKind] }
         set { miniRuns[miniFootageKind] = newValue }

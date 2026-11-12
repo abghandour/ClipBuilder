@@ -29,6 +29,7 @@ extension AppStore {
         clearMiniReel()
         miniRuns = [:]
         miniFootageVideoID = nil
+        miniStep = .source
     }
 
     func beginMiniFootageLoad(stage: String) -> UUID {
@@ -148,6 +149,9 @@ extension AppStore {
                             setKey: readSet, current: stillActive)
                     }
                     if stillActive {
+                        // The page gives a run that only just loaded its own
+                        // step; a generation asks for Footage itself.
+                        miniStep = .footage
                         miniRuns[.highlights] = MiniWizardRun(projectID: projectID, video: video, footageKind: .highlights,
                             length: flow.length, batchID: batch, candidates: candidates, options: options,
                             selectedSelectionID: candidates.first?.id)

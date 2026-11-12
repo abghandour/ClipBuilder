@@ -62,8 +62,8 @@ nonisolated struct WizardCardFlow: Sendable {
         case .source, .plan, .settings:
             return nil
         case .footage:
-            if needsFootageProposal { return "Describe the idea and find matching footage in 1 Source first." }
-            if !sourcesReady && answers.savedSelectionCount == 0 { return "Choose usable sources in 1 Source first." }
+            if needsFootageProposal { return "Describe the idea and find matching footage in Source first." }
+            if !sourcesReady && answers.savedSelectionCount == 0 { return "Choose usable sources in Source first." }
             return nil
         }
     }

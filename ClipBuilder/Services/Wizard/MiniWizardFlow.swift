@@ -268,7 +268,7 @@ nonisolated struct MiniWizardFlow: Sendable {
         switch card {
         case .source: video?.filename ?? "Pick a source first"
         case .footage: video == nil ? "Pick a source first" : hasFootage ? "Review footage" : "Choose footage"
-        case .broll: hasKeptFootage ? "Select words and pick a scene" : "Keep footage in 2 Footage first."
+        case .broll: hasKeptFootage ? "Select words and pick a scene" : "Keep footage in Footage first."
         case .settings: canExpand(.settings) ? "Ready to generate" : "Choose footage first"
         }
     }

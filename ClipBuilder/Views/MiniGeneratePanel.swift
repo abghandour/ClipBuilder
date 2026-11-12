@@ -88,7 +88,7 @@ struct MiniStartOverButton: View {
     @Environment(AppStore.self) private var store
     /// True when the page holds anything a fresh Express start would lose.
     let hasChanges: Bool
-    /// Forget the source, footage and every setting and return to 1 Source.
+    /// Forget the source, footage and every setting and return to Source.
     let startOver: () -> Void
     @State private var confirmStartOver = false
 
@@ -99,7 +99,7 @@ struct MiniStartOverButton: View {
             Label("Start Over", systemImage: "arrow.counterclockwise").lineLimit(1).fixedSize()
         }
         .disabled(store.isWizardRunning)
-        .help("Start Over: clear the source, footage and every setting and go back to 1 Source")
+        .help("Start Over: clear the source, footage and every setting and go back to Source")
         .confirmationDialog("Start over from Source?", isPresented: $confirmStartOver, titleVisibility: .visible) {
             Button("Start Over", role: .destructive) { startOver() }
             Button("Cancel", role: .cancel) {}

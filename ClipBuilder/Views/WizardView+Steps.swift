@@ -1,6 +1,6 @@
 import SwiftUI
 
-// The four cards (Source, Plan, Footage, Settings) and their navigation.
+// The four steps (Source, Plan, Footage, Settings), shown as tabs, and their navigation.
 // WizardCardFlow owns the pure rules; the answers and actions stay on WizardView.
 extension WizardView {
     /// The videos the current source choice covers.
@@ -105,12 +105,10 @@ extension WizardView {
             GeometryReader { page in
             ScrollView {
                 VStack(alignment: .leading, spacing: Theme.spaceL) {
-                    ForEach(WizardCardFlow.Card.allCases, id: \.self) { card in
-                        wizardCard(card, flow: flow, pageHeight: page.size.height)
-                            .id(card)
-                    }
+                    stepTabs(flow: flow, pageHeight: page.size.height)
+                        .id("steps")
                     // As in Express: once takes are kept, the summary and Generate
-                    // live in their own panel that no collapse can hide.
+                    // live in their own panel under the steps.
                     if flow.settingsRenders {
                         MiniCard(number: 5, title: "Generate", summary: "", isOpen: true) {
                             generatePanel
@@ -125,11 +123,8 @@ extension WizardView {
             .onChange(of: requestedCard) { _, card in
                 collapsedCard = nil
                 if card == .source { sourceGridExpanded = true }
-                if reduceMotion {
-                    proxy.scrollTo(card, anchor: .top)
-                } else {
-                    withAnimation(.easeInOut(duration: 0.2)) { proxy.scrollTo(card, anchor: .top) }
-                }
+                // Another step starts at its top, not where the last one was scrolled.
+                proxy.scrollTo("steps", anchor: .top)
             }
         }
         .environment(\.wizardStepRows, true)
@@ -166,31 +161,36 @@ extension WizardView {
         collapsedCard = nil
     }
 
-    func wizardCard(_ card: WizardCardFlow.Card, flow: WizardCardFlow, pageHeight: CGFloat = 800) -> some View {
-        let open = flow.visibleCard == card
-        return MiniCard(number: card.rawValue, title: card == .settings ? presetTitle : card.title,
-            summary: flow.summary(for: card), isOpen: open, compactSummary: true,
-            headerTap: {
-                let click = cardFlow.headerClick(card)
-                requestedCard = click.requested
-                collapsedCard = click.collapsed
-            }, accessory: card == .settings ? AnyView(presetButtons) : nil) {
-                if open {
-                    if card == .source, store.pendingWizardPrompt != nil {
-                        generateRequestBanner
-                    }
-                    VStack(alignment: .leading, spacing: Theme.spaceM) {
-                        if let prerequisite = flow.prerequisite(for: card) {
-                            FormCaption(prerequisite)
-                            Button("Open 1 Source") { self.open(.source) }
-                                .lineLimit(1).fixedSize()
-                        } else {
-                            cardContents(card, pageHeight: pageHeight)
-                        }
-                    }
-                    .disabled(isFindingFootage)
+    /// Steps 1-4 as tabs: one step is open at a time and a tab's tooltip
+    /// says what its step holds. Settings names its preset inside the tab.
+    func stepTabs(flow: WizardCardFlow, pageHeight: CGFloat = 800) -> some View {
+        PageTabs(tabs: WizardCardFlow.Card.allCases,
+                 selection: Binding(get: { flow.openCard }, set: { open($0) }),
+                 label: \.title,
+                 surface: AnyShapeStyle(.quaternary.opacity(0.5)),
+                 help: { flow.summary(for: $0) }) { card in
+            if card == .settings {
+                HStack(spacing: Theme.spaceM) {
+                    Text(presetTitle).font(.headline)
+                        .lineLimit(1).truncationMode(.tail).help(presetTitle)
+                    Spacer(minLength: Theme.spaceS)
+                    presetButtons
                 }
             }
+            if card == .source, store.pendingWizardPrompt != nil {
+                generateRequestBanner
+            }
+            VStack(alignment: .leading, spacing: Theme.spaceM) {
+                if let prerequisite = flow.prerequisite(for: card) {
+                    FormCaption(prerequisite)
+                    Button("Open Source") { self.open(.source) }
+                        .lineLimit(1).fixedSize()
+                } else {
+                    cardContents(card, pageHeight: pageHeight)
+                }
+            }
+            .disabled(isFindingFootage)
+        }
     }
 
     @ViewBuilder func cardContents(_ card: WizardCardFlow.Card, pageHeight: CGFloat = 800) -> some View {
@@ -297,8 +297,8 @@ extension WizardView {
                 MiniModelButton(tasks: [capabilities.sources == .podcastRecording ? "highlights" : "wizard"])
             }
             if !canStart && !store.isWizardRunning {
-                FormCaption("Review 1 Source to resolve the missing footage or AI setup.", tone: .warning)
-                Button("Open 1 Source") { open(.source) }
+                FormCaption("Review Source to resolve the missing footage or AI setup.", tone: .warning)
+                Button("Open Source") { open(.source) }
                     .lineLimit(1).fixedSize()
             }
             let hidden = projectSelections.count - visibleSelections.count

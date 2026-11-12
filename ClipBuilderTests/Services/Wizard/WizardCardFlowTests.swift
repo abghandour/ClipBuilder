@@ -25,12 +25,12 @@ struct WizardCardFlowTests {
         var flow = WizardCardFlow()
         #expect(flow.prerequisite(for: .source) == nil && flow.prerequisite(for: .plan) == nil)
         #expect(flow.prerequisite(for: .settings) == nil)
-        #expect(flow.prerequisite(for: .footage) == "Choose usable sources in 1 Source first.")
+        #expect(flow.prerequisite(for: .footage) == "Choose usable sources in Source first.")
         #expect(!flow.canExpand(.footage))
         flow.sourcesReady = true
         #expect(flow.canExpand(.footage))
         flow.needsFootageProposal = true
-        #expect(flow.prerequisite(for: .footage) == "Describe the idea and find matching footage in 1 Source first.")
+        #expect(flow.prerequisite(for: .footage) == "Describe the idea and find matching footage in Source first.")
         // Saved selections stay reachable with an empty source pool.
         var saved = WizardCardFlow()
         saved.answers.savedSelectionCount = 2

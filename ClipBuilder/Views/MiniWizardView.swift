@@ -31,8 +31,18 @@ struct MiniWizardView: View {
     @State private var transcriptVideoID: Int64?
     @State private var confirmRemoveBRoll = false
     @State private var collapsedCard: MiniWizardFlow.Card?
-    /// Navigation before a run exists; a run carries its own requested card.
-    @State private var pendingCard: MiniWizardFlow.Card = .source
+    /// The open step, held by the store so it survives this view being
+    /// rebuilt. A run's `requestedCard` moves it only when the run on
+    /// screen asks (see the `RunStep` change handler).
+    private var pendingCard: MiniWizardFlow.Card {
+        get { store.miniStep }
+        nonmutating set { store.miniStep = newValue }
+    }
+
+    private struct RunStep: Equatable {
+        var batchID: String?
+        var card: MiniWizardFlow.Card?
+    }
 
     init(profileName: String) {
         self.profileName = profileName
@@ -150,7 +160,7 @@ struct MiniWizardView: View {
                        captionsEnabled: miniSettings.captions, transcriptLanguage: transcriptLanguage,
                        hasFootage: currentRun?.hasFootage == true || !store.miniReelItems.isEmpty,
                        hasKeptFootage: (currentRun?.keptCount ?? 0) > 0 || !store.miniReelItems.isEmpty,
-                       requestedCard: currentRun?.requestedCard ?? pendingCard, collapsedCard: collapsedCard,
+                       requestedCard: pendingCard, collapsedCard: collapsedCard,
                        outputMode: miniSettings.outputMode)
     }
 
@@ -248,13 +258,18 @@ struct MiniWizardView: View {
                 autoLoad(autoLoadKey)
             }
         }
-        // Navigation from a finished step (generate, keep) reopens the page.
-        .onChange(of: currentRun?.requestedCard, initial: true) { _, requested in
+        // The page owns the open step. A step the run on screen asks for
+        // (generate, keep) is followed; a run that only just loaded, because
+        // a source was picked or the footage kind changed, takes the page's
+        // step instead of moving it to Footage.
+        .onChange(of: RunStep(batchID: currentRun?.batchID, card: currentRun?.requestedCard), initial: true) { old, new in
             collapsedCard = nil
-            // Remember the card the run had open: while the run is reloaded
-            // (a transcript change evicts it) the page falls back to
-            // `pendingCard`, which must not still say Source.
-            if let requested { pendingCard = requested }
+            guard let card = new.card, let kind = currentRun?.footageKind else { return }
+            if old.batchID == new.batchID {
+                pendingCard = card
+            } else if card != pendingCard {
+                store.miniRuns[kind]?.requestedCard = pendingCard
+            }
         }
         // `initial` so a request parked while this form was being re-created
         // (profile switch, page hidden) runs as soon as it is on screen.
@@ -320,7 +335,7 @@ struct MiniWizardView: View {
     }
 
     /// Forget the source, the footage runs and every answer, and reopen
-    /// 1 Source. The AI instructions stay: they belong to the profile.
+    /// Source. The AI instructions stay: they belong to the profile.
     private func startOver() {
         instructionsFocused = false
         saveInstructions()
@@ -349,73 +364,7 @@ struct MiniWizardView: View {
     private var settingsColumn: some View {
         GeometryReader { page in
             ScrollView {
-                VStack(alignment: .leading, spacing: Theme.spaceL) {
-                    MiniCard(number: 1, title: "Source", summary: flow.summary(for: .source),
-                             isOpen: !flow.isCollapsed(.source), headerTap: headerTap(.source)) {
-                        if !flow.isCollapsed(.source) {
-                            sourceGrid.disabled(store.isWizardRunning)
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    MiniCard(number: 2, title: "Footage",
-                             summary: currentRun?.summary ?? flow.summary(for: .footage),
-                             isOpen: !flow.isCollapsed(.footage),
-                             headerTap: headerTap(.footage),
-                             accessory: selectedVideo.map { video in
-                                 AnyView(MiniTranscriptSetControl(videoID: video.id, sets: transcriptSets))
-                             }) {
-                        if !flow.isCollapsed(.footage) {
-                            if selectedVideo == nil {
-                                FormCaption("Pick a source in 1 Source first.")
-                            } else {
-                                footageControls.disabled(store.isWizardRunning)
-                                // Space, not a rule, parts the controls from the review.
-                                footageReviews(pageHeight: page.size.height)
-                                    .padding(.top, Theme.spaceS)
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                    if flow.isPodcastOrInterview {
-                        MiniCard(number: 3, title: "B-roll", summary: flow.summary(for: .broll),
-                            isOpen: flow.visibleCard == .broll, headerTap: headerTap(.broll),
-                            accessory: brollCount > 0 ? AnyView(Text(brollCount == 1 ? "1 B-roll" : "\(brollCount) B-rolls")
-                                .font(.caption.weight(.semibold)).lineLimit(1).fixedSize()
-                                .padding(.horizontal, 8).padding(.vertical, 4).background(.quaternary, in: .capsule)) : nil) {
-                            if flow.visibleCard == .broll {
-                                Button("Remove All B-Rolls", role: .destructive) { confirmRemoveBRoll = true }
-                                    .lineLimit(1).fixedSize().disabled(brollCount == 0 || store.isWizardRunning)
-                                if let run = currentRun, flow.canExpand(.broll) {
-                                    MiniBRollPanel(run: run, settings: $miniSettings)
-                                        .id(run.batchID)
-                                } else {
-                                    FormCaption("Keep footage in 2 Footage first.")
-                                }
-                            }
-                        }
-                        .frame(maxWidth: .infinity)
-                    }
-                    MiniCard(number: flow.isPodcastOrInterview ? 4 : 3,
-                        title: MiniWizardPresetStore.cardTitle(loaded: loadedPreset, current: miniSettings),
-                        summary: flow.canExpand(.settings)
-                            ? flow.settingsSummary(miniSettings.effective(for: flow,
-                                introAvailable: store.bumpers.contains { $0.placements.contains(.intro) },
-                                outroAvailable: store.bumpers.contains { $0.placements.contains(.outro) }))
-                            : flow.summary(for: .settings),
-                        isOpen: flow.visibleCard == .settings && settingsProfile == profileName,
-                        headerTap: headerTap(.settings),
-                        accessory: AnyView(presetButtons)) {
-                        if flow.visibleCard == .settings, settingsProfile == profileName {
-                            if let run = currentRun, flow.canExpand(.settings) {
-                                MiniSettingsCard(settings: $miniSettings, tab: $settingsTab, flow: flow, run: run)
-                            } else {
-                                FormCaption(selectedVideo == nil ? "Pick a source in 1 Source first."
-                                    : "Choose and keep footage in 2 Footage first.")
-                            }
-                        }
-                    }
-                    .frame(maxWidth: .infinity)
-                }
+                stepTabs(pageHeight: page.size.height)
                 .padding(Theme.spaceL)
                 // minWidth 0: a card that still outgrows the column overflows
                 // on the right instead of being centred and cut on both sides.
@@ -427,6 +376,106 @@ struct MiniWizardView: View {
         .task(id: transcriptSetsKey) {
             guard let videoID = selectedVideo?.id else { transcriptSets = []; return }
             transcriptSets = (try? await store.database?.transcriptionSets(videoID: videoID)) ?? []
+        }
+    }
+
+    /// The steps as tabs, in order; B-roll only for talk footage.
+    private var stepCards: [MiniWizardFlow.Card] {
+        [.source, .footage] + (flow.isPodcastOrInterview ? [.broll] : []) + [.settings]
+    }
+
+    private func stepLabel(_ card: MiniWizardFlow.Card) -> String {
+        switch card {
+        case .source: "Source"
+        case .footage: "Footage"
+        case .broll: "B-roll"
+        case .settings: "Settings"
+        }
+    }
+
+    /// What a collapsed card used to say under its title: the tab's tooltip.
+    private func stepSummary(_ card: MiniWizardFlow.Card) -> String {
+        switch card {
+        case .source, .broll: flow.summary(for: card)
+        case .footage: currentRun?.summary ?? flow.summary(for: .footage)
+        case .settings:
+            flow.canExpand(.settings)
+                ? flow.settingsSummary(miniSettings.effective(for: flow,
+                    introAvailable: store.bumpers.contains { $0.placements.contains(.intro) },
+                    outroAvailable: store.bumpers.contains { $0.placements.contains(.outro) }))
+                : flow.summary(for: .settings)
+        }
+    }
+
+    /// One step open at a time. A remembered B-roll step on footage that has
+    /// none opens Footage.
+    private func stepTabs(pageHeight: CGFloat) -> some View {
+        let cards = stepCards
+        let current = cards.contains(flow.openCard) ? flow.openCard : .footage
+        return PageTabs(tabs: cards,
+                        selection: Binding(get: { current }, set: { card in
+                            open(card)
+                            if card == .settings || card == .broll { keepFootage(for: card) }
+                        }),
+                        label: stepLabel,
+                        surface: AnyShapeStyle(.quaternary.opacity(0.5)),
+                        help: stepSummary) { card in
+            stepContents(card, pageHeight: pageHeight)
+        }
+    }
+
+    @ViewBuilder
+    private func stepContents(_ card: MiniWizardFlow.Card, pageHeight: CGFloat) -> some View {
+        switch card {
+        case .source:
+            sourceGrid.disabled(store.isWizardRunning)
+        case .footage:
+            if let video = selectedVideo {
+                HStack(spacing: Theme.spaceM) {
+                    Text(stepSummary(.footage)).font(.callout).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.tail)
+                    Spacer(minLength: Theme.spaceS)
+                    MiniTranscriptSetControl(videoID: video.id, sets: transcriptSets)
+                }
+                footageControls.disabled(store.isWizardRunning)
+                // Space, not a rule, parts the controls from the review.
+                footageReviews(pageHeight: pageHeight)
+                    .padding(.top, Theme.spaceS)
+            } else {
+                FormCaption("Pick a source in \(stepLabel(.source)) first.")
+            }
+        case .broll:
+            HStack(spacing: Theme.spaceM) {
+                Button("Remove All B-Rolls", role: .destructive) { confirmRemoveBRoll = true }
+                    .lineLimit(1).fixedSize().disabled(brollCount == 0 || store.isWizardRunning)
+                Spacer(minLength: Theme.spaceS)
+                if brollCount > 0 {
+                    Text(brollCount == 1 ? "1 B-roll" : "\(brollCount) B-rolls")
+                        .font(.caption.weight(.semibold)).lineLimit(1).fixedSize()
+                        .padding(.horizontal, 8).padding(.vertical, 4).background(.quaternary, in: .capsule)
+                }
+            }
+            if let run = currentRun, flow.canExpand(.broll) {
+                MiniBRollPanel(run: run, settings: $miniSettings)
+                    .id(run.batchID)
+            } else {
+                FormCaption("Keep footage in \(stepLabel(.footage)) first.")
+            }
+        case .settings:
+            if settingsProfile == profileName {
+                HStack(spacing: Theme.spaceM) {
+                    let title = MiniWizardPresetStore.cardTitle(loaded: loadedPreset, current: miniSettings)
+                    Text(title).font(.headline).lineLimit(1).truncationMode(.tail).help(title)
+                    Spacer(minLength: Theme.spaceS)
+                    presetButtons
+                }
+                if let run = currentRun, flow.canExpand(.settings) {
+                    MiniSettingsCard(settings: $miniSettings, tab: $settingsTab, flow: flow, run: run)
+                } else {
+                    FormCaption(selectedVideo == nil ? "Pick a source in \(stepLabel(.source)) first."
+                        : "Choose and keep footage in \(stepLabel(.footage)) first.")
+                }
+            }
         }
     }
 
@@ -522,19 +571,6 @@ struct MiniWizardView: View {
         collapsedCard = nil
         pendingCard = card
         store.miniRun?.requestedCard = card
-    }
-
-    /// Clicking a card's header toggles it; any card opens at any time.
-    private func headerTap(_ card: MiniWizardFlow.Card) -> (() -> Void)? {
-        {
-            guard let click = flow.headerClick(card) else { return }
-            collapsedCard = click.collapsed
-            if click.collapsed == nil {
-                pendingCard = click.requested
-                store.miniRun?.requestedCard = click.requested
-                if click.requested == .settings || click.requested == .broll { keepFootage(for: click.requested) }
-            }
-        }
     }
 
     /// Q&A and Transcript picks become kept footage when Settings opens (the
@@ -927,7 +963,7 @@ struct MiniWizardView: View {
         case "wizard.generate", WizardAssistant.generateWithFramingAction, "wizard.openInEditor", "wizard.roughCut":
             guard canGenerateKept else {
                 store.presentNotice("Ask AI", store.isWizardRunning ? "The Wizard is already working."
-                                    : "Keep footage in 2 Footage first, then Generate.")
+                                    : "Keep footage in Footage first, then Generate.")
                 return
             }
             store.generateMiniReel(settings: miniSettings, flow: flow,
