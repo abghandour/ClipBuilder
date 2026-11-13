@@ -17,15 +17,19 @@ struct ProjectCardView: View {
                 VStack(alignment: .leading, spacing: Theme.spaceM) {
                     HStack(spacing: Theme.spaceS) {
                         ForEach(0..<3, id: \.self) { index in
-                            Group {
-                                if project.thumbnailPaths.indices.contains(index) {
-                                    VideoThumbnail(url: URL(fileURLWithPath: project.thumbnailPaths[index]), time: 0.5)
-                                } else {
-                                    Rectangle().fill(.quaternary)
+                            // The cell takes its share of the row and its
+                            // height from that; the frame is drawn inside it,
+                            // so a filled picture cannot widen the card.
+                            Color.clear
+                                .aspectRatio(4 / 3, contentMode: .fit)
+                                .overlay {
+                                    if project.thumbnailPaths.indices.contains(index) {
+                                        VideoThumbnail(url: URL(fileURLWithPath: project.thumbnailPaths[index]), time: 0.5)
+                                    } else {
+                                        Rectangle().fill(.quaternary)
+                                    }
                                 }
-                            }
-                            .aspectRatio(4 / 3, contentMode: .fill)
-                            .clipShape(.rect(cornerRadius: Theme.mediaRadius))
+                                .clipShape(.rect(cornerRadius: Theme.mediaRadius))
                         }
                     }
 

@@ -210,6 +210,13 @@ extension Database {
             """, [.integer(projectID)]).map(Self.videoRecord)
     }
 
+    /// What Add from Home offers: the videos not in this project whose file
+    /// is on this Mac or on Drive. A row with neither is listed nowhere, so
+    /// adding it to a project would show nothing.
+    func fetchAddableVideos(notIn projectID: Int64) throws -> [VideoRecord] {
+        try fetchVideosNotInProject(projectID).filter(\.isReachable)
+    }
+
     func countVideosNotInProject(_ projectID: Int64) throws -> Int {
         guard try !isHomeProject(projectID) else { return 0 }
         return Int(try connection.query("""

@@ -77,7 +77,7 @@ extension AppStore {
             let snapshot = try await database.fetchLibrarySnapshot(projectID: id)
             let loadedTimelines = try await database.fetchTimelines(projectID: id)
             let loadedProjects = try await database.fetchProjects()
-            let homeAvailability = try await database.countVideosNotInProject(id)
+            let homeAvailability = try await database.fetchAddableVideos(notIn: id).count
             // A profile switch or another project load meanwhile owns the lists now.
             guard generation == profileGeneration, activeProjectID == id else { return }
             timelines = loadedTimelines
@@ -357,7 +357,7 @@ extension AppStore {
             return
         }
         let generation = profileGeneration
-        let count = try? await database.countVideosNotInProject(projectID)
+        let count = try? await database.fetchAddableVideos(notIn: projectID).count
         guard generation == profileGeneration, self.database === database, activeProjectID == projectID else { return }
         if let count { homeVideosNotInProjectCount = count }
     }
@@ -366,7 +366,7 @@ extension AppStore {
         guard let database, let projectID = activeProjectID, !isHomeProject else { return [] }
         let generation = profileGeneration
         do {
-            let videos = try await database.fetchVideosNotInProject(projectID)
+            let videos = try await database.fetchAddableVideos(notIn: projectID)
             let ids = videos.map(\.id)
             let facts = try await database.fetchVideoFacts(ids: ids)
             let names = try await database.projectNames(forVideos: ids)

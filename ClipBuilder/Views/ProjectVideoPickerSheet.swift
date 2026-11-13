@@ -50,39 +50,17 @@ struct ProjectVideoPickerSheet: View {
             } else if filtered.isEmpty {
                 ContentUnavailableView("No matching videos", systemImage: "magnifyingglass")
             } else {
-                List(filtered, selection: $selection) { candidate in
-                    let video = candidate.video
-                    HStack {
-                        VideoThumbnail(url: video.url, time: 0.5)
-                            .frame(width: 64, height: 38)
-                            .clipShape(.rect(cornerRadius: Theme.mediaRadius))
-                        VStack(alignment: .leading) {
-                            Text(video.filename)
-                                .lineLimit(1)
-                            HStack {
-                                Text(video.createdDate, format: .dateTime.year().month(.twoDigits).day(.twoDigits))
-                                    .help(video.createdDate.formatted(date: .complete, time: .standard))
-                                Text(video.duration.timecode)
-                            }
-                            .font(.caption.monospacedDigit())
-                            .foregroundStyle(.secondary)
-                            .lineLimit(1).fixedSize()
-                            HStack(spacing: Theme.spaceXS) {
-                                ForEach(Array(candidate.projectNames.prefix(3).enumerated()), id: \.offset) { _, name in
-                                    Text(name)
-                                        .lineLimit(1)
-                                        .padding(.horizontal, 6).padding(.vertical, 2)
-                                        .background(.quaternary, in: Capsule())
-                                }
-                                if candidate.projectNames.count > 3 {
-                                    Text("+\(candidate.projectNames.count - 3)").lineLimit(1).fixedSize()
-                                }
-                            }
-                            .font(.caption)
-                            .help(candidate.projectNames.joined(separator: ", "))
+                ScrollView {
+                    LazyVGrid(
+                        columns: [GridItem(.adaptive(minimum: 180, maximum: 260), spacing: Theme.spaceM, alignment: .top)],
+                        alignment: .leading,
+                        spacing: Theme.spaceM
+                    ) {
+                        ForEach(filtered) { candidate in
+                            cell(candidate)
                         }
                     }
-                    .tag(video.id)
+                    .padding(Theme.spaceM)
                 }
             }
 
@@ -105,11 +83,71 @@ struct ProjectVideoPickerSheet: View {
             }
             .padding(Theme.spaceM)
         }
-        .frame(minWidth: 640, minHeight: 480)
+        .frame(minWidth: 680, minHeight: 520)
         .modalCloseButton { dismiss() }
         .navigationTitle("Add from Home")
         .task(id: store.activeProjectID) { await loadVideos() }
         .onChange(of: store.profileGeneration) { dismiss() }
+    }
+
+    /// One video: a click adds it to, or takes it out of, the selection.
+    private func cell(_ candidate: HomeVideoCandidate) -> some View {
+        let video = candidate.video
+        let selected = selection.contains(video.id)
+        return Button {
+            if selected { selection.remove(video.id) } else { selection.insert(video.id) }
+        } label: {
+            VStack(alignment: .leading, spacing: Theme.spaceXS) {
+                // The cell sets the picture's size; the frame is drawn inside it.
+                Color.clear
+                    .aspectRatio(16 / 9, contentMode: .fit)
+                    .overlay { VideoThumbnail(url: video.url, time: 0.5) }
+                    .clipShape(.rect(cornerRadius: Theme.mediaRadius))
+                    .overlay(alignment: .topTrailing) {
+                        Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                            .font(.title3)
+                            .symbolRenderingMode(.palette)
+                            .foregroundStyle(.white, selected ? Color.accentColor : Color.black.opacity(0.35))
+                            .padding(Theme.spaceXS)
+                    }
+                    .overlay {
+                        RoundedRectangle(cornerRadius: Theme.mediaRadius)
+                            .strokeBorder(Color.accentColor, lineWidth: selected ? 3 : 0)
+                    }
+                Text(video.filename)
+                    .lineLimit(2)
+                    .multilineTextAlignment(.leading)
+                    .help(video.filename)
+                HStack {
+                    Text(video.createdDate, format: .dateTime.year().month(.twoDigits).day(.twoDigits))
+                        .help(video.createdDate.formatted(date: .complete, time: .standard))
+                    Text(video.duration.timecode)
+                }
+                .font(.caption.monospacedDigit())
+                .foregroundStyle(.secondary)
+                .lineLimit(1).fixedSize()
+                if !candidate.projectNames.isEmpty {
+                    HStack(spacing: Theme.spaceXS) {
+                        ForEach(Array(candidate.projectNames.prefix(2).enumerated()), id: \.offset) { _, name in
+                            Text(name)
+                                .lineLimit(1)
+                                .padding(.horizontal, 6).padding(.vertical, 2)
+                                .background(.quaternary, in: Capsule())
+                        }
+                        if candidate.projectNames.count > 2 {
+                            Text("+\(candidate.projectNames.count - 2)").lineLimit(1).fixedSize()
+                        }
+                    }
+                    .font(.caption)
+                    .help(candidate.projectNames.joined(separator: ", "))
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
+            .contentShape(.rect)
+        }
+        .buttonStyle(.plain)
+        .accessibilityLabel(video.filename)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     private func loadVideos() async {

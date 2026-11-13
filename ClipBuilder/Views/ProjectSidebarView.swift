@@ -2,63 +2,36 @@ import SwiftUI
 
 struct ProjectSidebarView: View {
     @Environment(AppStore.self) private var store
-    @State private var showingNewProject = false
-    @State private var newProjectName = ""
-
-    /// The project group's header: the current project's name with the
-    /// switcher behind it, so the rows below read as "inside this project".
+    /// The project group's header: the current project's name, so the rows
+    /// below read as "inside this project". One click opens All Projects,
+    /// where projects are switched and created.
     private var projectHeader: some View {
-        VStack(alignment: .leading, spacing: 0) {
-            Menu {
-                Section("Recent Projects") {
-                    ForEach(store.projects.filter { !$0.archived }.prefix(6)) { project in
-                        Button {
-                            store.selectProject(project.id)
-                        } label: {
-                            Label(
-                                project.name,
-                                systemImage: project.isHome
-                                    ? "house.fill"
-                                    : project.id == store.activeProjectID && !store.isShowingProjectsHome
-                                        ? "checkmark"
-                                        : "folder"
-                            )
-                        }
-                    }
-                }
-                Divider()
-                Button("All Projects…", systemImage: "square.grid.2x2") {
-                    store.showProjectsHome()
-                }
-                Button("New Project…", systemImage: "plus") {
-                    newProjectName = ""
-                    showingNewProject = true
-                }
-            } label: {
-                HStack(spacing: 0) {
-                    // Same Label, icon and body font as the rows below, so the
-                    // project reads as the parent of those rows, not as a
-                    // section caption.
-                    Label {
-                        Text(store.isShowingProjectsHome || store.activeProject == nil
-                             ? "Choose a project…" : store.activeProject?.name ?? "Home")
-                            .bold()
-                            .lineLimit(1)
-                    } icon: {
-                        Image(systemName: store.activeProject?.isHome == true ? "house.fill" : "folder")
-                            .foregroundStyle(Theme.projectTint)
-                    }
-                    Spacer()
-                    Image(systemName: "chevron.down")
-                        .foregroundStyle(.secondary)
-                }
-                .contentShape(.rect)
+        Button {
+            store.showProjectsHome()
+        } label: {
+            // Same Label, icon and body font as the rows below, so the
+            // project reads as the parent of those rows, not as a section
+            // caption.
+            Label {
+                Text(store.isShowingProjectsHome || store.activeProject == nil
+                     ? "Choose a project…" : store.activeProject?.name ?? "Home")
+                    .bold()
+                    .lineLimit(1)
+                    .frame(maxWidth: .infinity, alignment: .leading)
+            } icon: {
+                Image(systemName: store.activeProject?.isHome == true ? "house.fill" : "folder")
+                    .foregroundStyle(Theme.projectTint)
             }
-            .buttonStyle(.plain)
-            .foregroundStyle(.primary)
-            .textCase(nil)
-            .font(.body)
+            .contentShape(.rect)
         }
+        .buttonStyle(.plain)
+        .foregroundStyle(.primary)
+        .textCase(nil)
+        .font(.body)
+        // Room between the project's name and the selected row's highlight.
+        .padding(.bottom, Theme.spaceS)
+        .help("Show all projects")
+        .accessibilityHint("Shows all projects")
     }
 
     var body: some View {
@@ -126,16 +99,5 @@ struct ProjectSidebarView: View {
         }
         .padding(.horizontal, Theme.spaceS)
         .padding(.top, Theme.spaceS)
-        .alert("New Project", isPresented: $showingNewProject) {
-            TextField("Project name", text: $newProjectName)
-            Button("Create", action: createProject)
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Create a new job inside \(store.activeProfile.profileName).")
-        }
-    }
-
-    private func createProject() {
-        store.createProject(named: newProjectName)
     }
 }

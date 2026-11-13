@@ -321,23 +321,31 @@ struct AnalyzeView: View {
                         .help("Add source videos to this project")
                     } else {
                         Menu {
-                            Button("From Finder…") { showingImporter = true }
-                                .lineLimit(1).fixedSize()
                             Button(store.homeVideosNotInProjectCount > 0
                                    ? "From Home… (\(store.homeVideosNotInProjectCount) available)"
                                    : "From Home… (none available)") { showingProjectVideoPicker = true }
                                 .lineLimit(1).fixedSize()
                                 .disabled(store.homeVideosNotInProjectCount == 0)
+                            Button("From Finder…") { showingImporter = true }
+                                .lineLimit(1).fixedSize()
                             Button("From Google Drive…") { showingDriveBrowser = true }
                                 .lineLimit(1).fixedSize()
                         } label: {
                             ToolbarBubbleLabel(text: "Add Videos", systemImage: "plus")
                         } primaryAction: {
-                            showingImporter = true
+                            // A project draws on Home first; with nothing
+                            // left there to add, the label opens Finder.
+                            if store.homeVideosNotInProjectCount > 0 {
+                                showingProjectVideoPicker = true
+                            } else {
+                                showingImporter = true
+                            }
                         }
                         // The indicator is the only way to open the menu on a
-                        // split button; the label itself runs the Finder importer.
-                        .help("Add new videos, or open the menu to pick videos from Home")
+                        // split button; the label itself runs the default.
+                        .help(store.homeVideosNotInProjectCount > 0
+                              ? "Add videos from Home, or open the menu to add new files from Finder or Google Drive"
+                              : "Add new videos from Finder, or open the menu for Google Drive")
                     }
                     Button { showingDriveBrowser = true } label: { ToolbarBubbleLabel(text: "Add from Google Drive…", systemImage: "icloud.and.arrow.down") }
                         .help("Pick videos from Google Drive and add them to this project")
