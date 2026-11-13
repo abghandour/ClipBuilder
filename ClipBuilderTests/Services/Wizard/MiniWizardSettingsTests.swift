@@ -650,7 +650,7 @@ extension MiniWizardSettingsTests {
         #expect(included.sections.first { $0.title == "Package" }?.items == ["B-roll (1)"])
         settings.includesBRoll = false
         let excluded = flow.runSummaryCard(candidates: [candidate], exchangeCount: 0, settings: settings)
-        #expect(excluded.sections.first { $0.title == "Package" }?.items.isEmpty == true)
+        #expect(excluded.sections.first { $0.title == "Package" }?.items == ["None"])
         #expect(candidate.take.plan.clips[0].brollCuts?.count == 1)
     }
 }
