@@ -965,13 +965,16 @@ struct TranscriptSheet: View {
 
     /// One control for the whole speaker repair: the button maps who is
     /// talking again (which also splits rows where the speaker changes);
-    /// the arrow holds the single steps and their undos.
+    /// the arrow holds the single steps and their undos. A transcript
+    /// nobody has been mapped on yet has the button too: it is how its
+    /// speakers are found the first time.
     @ViewBuilder
     private func speakerActions(compact: Bool) -> some View {
-        if !turns.isEmpty {
+        if !rows.isEmpty, video.isPresent {
             let busy = hasChanges || editMode || isSaving || isMappingSpeakers
             Menu {
                 Button("Split Lines by Speaker Only") { recut() }
+                    .disabled(turns.isEmpty)
                 if store.previousSpeakerMaps[video.id] != nil || hasRecut { Divider() }
                 if store.previousSpeakerMaps[video.id] != nil {
                     Button("Put the Previous Speakers Back") { undoMap() }
@@ -990,6 +993,7 @@ struct TranscriptSheet: View {
             .disabled(busy)
             .help(hasChanges || editMode ? "Apply or discard your text changes first"
                   : isMappingSpeakers ? "Working out who is talking…"
+                  : turns.isEmpty ? "Fix Speakers: work out who is talking from the picture and the voices, name each line's speaker, and split every line where the speaker changes. Nothing changes when only one voice or no speech is found."
                   : "Fix Speakers: work out who is talking again from the picture and the voices, then split every line where the speaker changes so each line has one speaker. Lines you attributed by hand are kept and teach it their voices; lines whose text you edited are never split. The arrow has the split-only step and the ways back: the previous speakers (voices it learned stay learned) and the transcriber's own lines.")
         }
     }
@@ -1599,7 +1603,8 @@ struct TranscriptSheet: View {
         await load()
         guard mappingJob?.status == .done else { return }
         let changed = changedByMap.count
-        recutNote = changed == 0 ? "Speakers fixed — no line changed speaker."
+        recutNote = turns.isEmpty ? "No speakers were found: the lines are as they were."
+            : changed == 0 ? "Speakers fixed — no line changed speaker."
             : "Speakers fixed — \(changed) line\(changed == 1 ? "" : "s") changed speaker. Show ▸ Changed by Fix Speakers lists them."
     }
 
