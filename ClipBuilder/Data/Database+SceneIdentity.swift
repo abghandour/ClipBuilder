@@ -44,7 +44,7 @@ extension Database {
     ///
     /// Runs after the sync triggers are installed: the deletes queue
     /// tombstones so a teammate's copies retire too, and the keeper with its
-    /// tags, picks and grades are touched so they go out again under the
+    /// tags, picks and grades are queued so they go out again under the
     /// surviving identity. A Mac whose single copy carried a retired identity
     /// loses it to the tombstone and gets it back from that re-push (its
     /// cascaded grades and tags come back with it). Foreign keys are off
@@ -73,10 +73,9 @@ extension Database {
                 try db.execute("UPDATE scenes SET parent_scene_id = ? WHERE parent_scene_id = ?", [.integer(keeper), .integer(extra)])
                 try db.execute("DELETE FROM scenes WHERE id = ?", [.integer(extra)])
             }
-            try db.execute("UPDATE scenes SET id = id WHERE id = ?", [.integer(keeper)])
-            try db.execute("UPDATE scene_tags SET tag = tag WHERE scene_id = ?", [.integer(keeper)])
-            for table in ["transcript_picks", "fight_picks", "qa_picks", "grades"] {
-                try db.execute("UPDATE \(table) SET scene_id = scene_id WHERE scene_id = ?", [.integer(keeper)])
+            try queueForPush(db, table: "scenes", column: "id", keeper: keeper)
+            for table in ["scene_tags", "transcript_picks", "fight_picks", "qa_picks", "grades"] {
+                try queueForPush(db, table: table, column: "scene_id", keeper: keeper)
             }
         }
         guard !map.isEmpty else { return }
@@ -88,6 +87,23 @@ extension Database {
             }
         }
         NSLog("Scenes migration: merged %d duplicate ranges (%d copies)", groups.count, map.count)
+    }
+
+    /// Queues the keeper's rows of `table` to go out again, changed here or
+    /// not. Written to the outbox directly: the update triggers only queue
+    /// a row whose synced columns changed, so touching it does nothing.
+    /// Same conditions as those triggers (an attached profile, sync not
+    /// suspended, a row that has an identity).
+    private nonisolated static func queueForPush(_ db: SQLiteConnection, table: String, column: String, keeper: Int64) throws {
+        guard try db.columnNames(of: table).contains("sync_id") else { return }
+        let rows = """
+            SELECT sync_id FROM \(table) WHERE \(column) = ? AND sync_id IS NOT NULL
+                AND EXISTS (SELECT 1 FROM sync_binding) AND (SELECT suspended FROM sync_control WHERE id = 1) = 0
+            """
+        try db.execute("DELETE FROM sync_outbox WHERE \"table\" = ? AND op = 'upsert' AND sync_id IN (\(rows))",
+                       [.text(table), .integer(keeper)])
+        try db.execute("INSERT INTO sync_outbox(\"table\", sync_id, op) SELECT ?, sync_id, 'upsert' FROM (\(rows))",
+                       [.text(table), .integer(keeper)])
     }
 
     private nonisolated static func mergeSceneEdits(_ db: SQLiteConnection, from extra: Int64, into keeper: Int64) throws {
