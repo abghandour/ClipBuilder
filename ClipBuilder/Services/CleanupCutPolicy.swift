@@ -5,7 +5,7 @@ import Foundation
 /// filler is a judgement about speech style, so the default accepts only
 /// the former and leaves filler for the user to decide.
 nonisolated enum CleanupCutPolicy: String, Codable, Sendable, CaseIterable, Identifiable {
-    /// Every cut stays Pending until decided in Transcript Tools or the
+    /// Every cut stays Pending until decided in Cleanup Cuts or the
     /// review before rendering.
     case review
     /// Silences are accepted at once; filler runs stay Pending.
@@ -27,7 +27,7 @@ nonisolated enum CleanupCutPolicy: String, Codable, Sendable, CaseIterable, Iden
         switch self {
         case .review: "Pauses and filler runs are listed as proposed cuts and wait for your decision."
         case .acceptDeadAir: "Silences longer than the dead-air threshold are cut without asking; filler runs wait for your decision, since filler is a matter of style."
-        case .acceptAll: "Both silences and filler runs are cut without asking. You can still reject any of them in Transcript Tools."
+        case .acceptAll: "Both silences and filler runs are cut without asking. You can still keep any of them in Cleanup Cuts."
         }
     }
 

@@ -1,5 +1,6 @@
 import AVKit
 import SwiftUI
+import UniformTypeIdentifiers
 
 /// The whole transcript of one video, every segment editable in place.
 /// Save writes all changed segments at once; a segment edited before can
@@ -50,7 +51,9 @@ struct TranscriptSheet: View {
     @State private var confirmRetranscribe = false
     @State private var editMode = false
     @State private var compareMode = false
-    @State private var hoveredRowID: Int64?
+    /// The version being renamed from the version menu, and the name typed.
+    @State private var renamingSet: TranscriptionSet?
+    @State private var renameText = ""
     @State private var confirmRevertAll = false
     @State private var confirmDeleteSet = false
     @State private var confirmDeleteAllSets = false
@@ -60,6 +63,16 @@ struct TranscriptSheet: View {
     @State private var confirmUndoRecut = false
     @State private var undoRecutEditCount = 0
     @State private var showsQA = false
+    /// The topics of the active transcript, as a third view beside Lines and Q&A.
+    @State private var showsTopics = false
+    @State private var topics: [TopicRange] = []
+    /// Cleanup cuts still waiting for a decision, shown on their button.
+    @State private var pendingCuts = 0
+    /// The line a picked topic starts at; the list scrolls to it.
+    @State private var scrollTarget: Int64?
+    private var analysisJob: AppJob? { store.jobs.latest(.transcriptAnalysis, subjectID: String(video.id)) }
+    /// Lines on show: the controls that act on lines hide in the other views.
+    private var showsLines: Bool { !showsQA && !(showsTopics && !topics.isEmpty) }
     @State private var videoScenes: [SceneRecord] = []
     /// Who is talking: the podcast pass's speaker turns and this video's
     /// roster, for the speaker column and its menu.
@@ -111,7 +124,11 @@ struct TranscriptSheet: View {
     /// What the last Re-cut did, shown briefly under the header.
     @State private var recutNote: String?
     private var mappingJob: AppJob? { store.jobs.latest(.mapSpeakers, subjectID: String(video.id)) }
-    private var isMappingSpeakers: Bool { mappingJob?.status == .running }
+    /// True until the job's task has really ended: Stop marks the job
+    /// cancelled at once, while its last writes may still be landing.
+    private var isMappingSpeakers: Bool {
+        mappingJob?.status == .running || store.speakerMappingVideoIDs.contains(video.id)
+    }
     private var translationJob: AppJob? {
         store.jobs.latest(.transcriptTranslation, subjectID: "\(video.id):\(selectedTranscriptionKey)")
     }
@@ -119,7 +136,7 @@ struct TranscriptSheet: View {
     @State private var unlearnedCorrections = 0
     /// The map's latest log line while it runs.
     private var mappingStatus: String? { mappingJob?.statusLine }
-    /// Lines whose speaker the last Map Speakers Again changed, with the
+    /// Lines whose speaker the last Fix Speakers changed, with the
     /// name they had before.
     @State private var changedByMap: [Int64: String] = [:]
     /// Consecutive lines by one speaker read as one block.
@@ -148,7 +165,10 @@ struct TranscriptSheet: View {
 
     private var changeSummary: String {
         var parts: [String] = []
-        if !changedIDs.isEmpty { parts.append("\(changedIDs.count) segment\(changedIDs.count == 1 ? "" : "s") edited") }
+        let changed = rows.filter { (drafts[$0.id] ?? $0.text) != $0.text }
+        let lines = changed.count { !$0.isTranslation }, translations = changed.count - lines
+        if lines > 0 { parts.append("\(lines) line\(lines == 1 ? "" : "s") changed") }
+        if translations > 0 { parts.append("\(translations) translation\(translations == 1 ? "" : "s") changed") }
         if !changedSpeakerIDs.isEmpty { parts.append("\(changedSpeakerIDs.count) speaker change\(changedSpeakerIDs.count == 1 ? "" : "s")") }
         return parts.joined(separator: " · ")
     }
@@ -265,96 +285,180 @@ struct TranscriptSheet: View {
         return store.people.filter { !rosterKeys.contains($0.key) && !$0.hidden }
     }
 
-    /// Language shown per segment only when the transcript mixes languages
-    /// (a translation stored alongside the original).
-    private var showsLanguage: Bool { false }
-
-    /// Right of the set picker: Add Translation while a project caption
-    /// language has none, and one pill per language once there are several.
-    @ViewBuilder
-    private var translationControls: some View {
-        let missing = missingLanguages
-        let running = translationJob?.status == .running
-        if running {
-            ProgressView().controlSize(.small)
-                .help(translationJob?.statusLine ?? "Translating…")
-        } else if !missing.isEmpty, !rows.isEmpty {
-            Button("Add Translation", systemImage: "translate") {
-                store.addTranscriptTranslations(videoID: video.id, transcriptionKey: selectedTranscriptionKey, languages: missing)
-            }
-            .lineLimit(1).fixedSize()
-            .disabled(selectedTranscriptionKey.isEmpty)
-            .help("Translate this transcript into \(missing.map(DubLanguageChoices.name).joined(separator: ", ")), the project's caption languages it does not have yet. Runs in the background; edit the result with Edit.")
-        }
-        let all = languages
-        if all.count > 1 {
-            HStack(spacing: 4) {
-                ForEach(all, id: \.self) { language in
-                    let shown = !hiddenLanguages.contains(language)
-                    Button {
-                        hiddenLanguages = TranscriptTranslationRows.toggling(language, hidden: hiddenLanguages, all: all)
-                    } label: {
-                        Text(DubLanguageChoices.name(language.code))
-                            .font(.caption.weight(.medium)).lineLimit(1).fixedSize()
-                            .padding(.horizontal, 9).padding(.vertical, 3)
-                            .foregroundStyle(shown ? Color.white : Color.secondary)
-                            .background(shown ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.quaternary), in: Capsule())
-                            .contentShape(Capsule())
-                    }
-                    .buttonStyle(.plain)
-                    .help(shown ? "Hide the \(DubLanguageChoices.name(language.code)) \(language.isTranslation ? "translation" : "text")"
-                          : "Show the \(DubLanguageChoices.name(language.code)) \(language.isTranslation ? "translation" : "text")")
-                    .accessibilityAddTraits(shown ? .isSelected : [])
-                }
-            }
-            .fixedSize()
-            .accessibilityLabel("Languages shown")
+    /// One check-pill per language on show (the spoken one first); with
+    /// `allowAdd`, a dashed pill per project caption language still missing.
+    /// The pills when they fit the bar, else the same choices in a menu.
+    private func languageControls(allowAdd: Bool) -> some View {
+        ViewThatFits(in: .horizontal) {
+            languagePills(allowAdd: allowAdd)
+            languageMenu(allowAdd: allowAdd)
         }
     }
 
     @ViewBuilder
-    private var transcriptionPicker: some View {
-        if !transcriptionSets.isEmpty || missingTranscriptionPin {
-            VStack(alignment: .leading, spacing: 6) {
-                HStack {
-                    Picker("Transcription", selection: $selectedTranscriptionKey) {
-                        ForEach(transcriptionSets) { set in
-                            Text("\(set.name.map { "\($0) · " } ?? "")\(set.createdAt) · \(set.model ?? "Transcription") · \(set.language ?? "—") · \(set.segmentCount) segments\(set.editedCount > 0 ? " · \(set.editedCount) edited" : "")\(set.hasTranslations ? " · translated" : "")\(set.isActive ? " · active" : "")\(set.isPinned ? " · pinned" : "")")
-                                .tag(set.id)
-                        }
+    private func languageMenu(allowAdd: Bool) -> some View {
+        let all = languages
+        let missing = allowAdd && !rows.isEmpty && translationJob?.status != .running ? missingLanguages : []
+        if all.count > 1 || !missing.isEmpty {
+            Menu("Languages") {
+                if all.count > 1 {
+                    ForEach(all, id: \.self) { language in
+                        Toggle(DubLanguageChoices.name(language.code) + (language.isTranslation ? "" : " (spoken)"), isOn: Binding(
+                            get: { !hiddenLanguages.contains(language) },
+                            set: { _ in hiddenLanguages = TranscriptTranslationRows.toggling(language, hidden: hiddenLanguages, all: all) }))
                     }
-                    .focused($setsPickerFocused)
-                    .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-                    if let set = transcriptionSets.first(where: { $0.id == selectedTranscriptionKey })
-                        ?? transcriptionSets.first(where: \.isActive) {
-                        TranscriptSetRenameButton(videoID: video.id, set: set) {
-                            Task { transcriptionSets = (try? await store.database?.transcriptionSets(videoID: video.id)) ?? transcriptionSets }
-                        }
-                    }
-                    translationControls
-                    Button("Pin this set") { changePin(selectedTranscriptionKey) }
-                        .lineLimit(1).fixedSize()
-                        .disabled(selectedTranscriptionKey.isEmpty || pinnedTranscriptionKey == selectedTranscriptionKey)
-                    Button("Use automatic") { changePin(nil) }
-                        .lineLimit(1).fixedSize()
-                        .disabled(pinnedTranscriptionKey == nil)
-                    Menu {
-                        Button("Delete This Transcript…", role: .destructive) { confirmDeleteSet = true }
-                            .disabled(selectedTranscriptionKey.isEmpty)
-                        Button("Delete All Transcripts…", role: .destructive) { confirmDeleteAllSets = true }
-                    } label: {
-                        Label("Delete", systemImage: "trash").lineLimit(1).fixedSize()
-                    }
-                    .fixedSize()
-                    .disabled(store.transcribingVideoIDs.contains(video.id))
-                    .help("Delete the selected transcript set, or every transcript of this video")
                 }
-                .disabled(hasChanges || isSaving)
-                if missingTranscriptionPin {
-                    Text("Pinned set not on this Mac yet")
-                        .font(.caption).foregroundStyle(.secondary)
+                if !missing.isEmpty {
+                    Divider()
+                    ForEach(missing, id: \.self) { language in
+                        Button("Add \(DubLanguageChoices.name(language)) Translation") {
+                            store.addTranscriptTranslations(videoID: video.id, transcriptionKey: selectedTranscriptionKey, languages: [language])
+                        }
+                        .disabled(selectedTranscriptionKey.isEmpty)
+                    }
                 }
             }
+            .lineLimit(1).fixedSize()
+            .help("Show or hide a language of this transcript")
+        }
+    }
+
+    @ViewBuilder
+    private func languagePills(allowAdd: Bool) -> some View {
+        let all = languages
+        let missing = allowAdd && !rows.isEmpty ? missingLanguages : []
+        if all.count > 1 || !missing.isEmpty {
+            HStack(spacing: 6) {
+                Text("Languages").foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                if all.count > 1 {
+                    ForEach(all, id: \.self) { language in
+                        let shown = !hiddenLanguages.contains(language)
+                        let name = DubLanguageChoices.name(language.code)
+                        Button {
+                            hiddenLanguages = TranscriptTranslationRows.toggling(language, hidden: hiddenLanguages, all: all)
+                        } label: {
+                            HStack(spacing: 5) {
+                                Image(systemName: "checkmark").font(.caption2.weight(.bold))
+                                    .foregroundStyle(Color.accentColor).opacity(shown ? 1 : 0)
+                                    .accessibilityHidden(true)
+                                Text(name).foregroundStyle(shown ? .primary : .secondary)
+                                if !language.isTranslation { Text("spoken").foregroundStyle(.secondary) }
+                            }
+                            .font(.callout).lineLimit(1).fixedSize()
+                            .padding(.horizontal, 10).padding(.vertical, 3)
+                            .background(.quaternary.opacity(shown ? 1 : 0.4), in: Capsule())
+                            .overlay(Capsule().strokeBorder(shown ? Color.accentColor.opacity(0.8) : Color.secondary.opacity(0.35)))
+                            .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .help(shown ? "Hide the \(name) \(language.isTranslation ? "translation" : "text")"
+                              : "Show the \(name) \(language.isTranslation ? "translation" : "text")")
+                        .accessibilityAddTraits(shown ? .isSelected : [])
+                    }
+                }
+                if translationJob?.status == .running {
+                    ProgressView().controlSize(.small)
+                        .help(translationJob?.statusLine ?? "Translating…")
+                } else {
+                    ForEach(missing, id: \.self) { language in
+                        let name = DubLanguageChoices.name(language)
+                        Button {
+                            store.addTranscriptTranslations(videoID: video.id, transcriptionKey: selectedTranscriptionKey, languages: [language])
+                        } label: {
+                            Label(name, systemImage: "plus")
+                                .font(.callout).lineLimit(1).fixedSize()
+                                .foregroundStyle(.secondary)
+                                .padding(.horizontal, 10).padding(.vertical, 3)
+                                .overlay(Capsule().strokeBorder(Color.secondary.opacity(0.5), style: StrokeStyle(lineWidth: 1, dash: [3, 3])))
+                                .contentShape(Capsule())
+                        }
+                        .buttonStyle(.plain)
+                        .disabled(selectedTranscriptionKey.isEmpty)
+                        .help("Translate this transcript into \(name), a caption language of the project. Runs in the background; correct the result with Edit Text.")
+                        .accessibilityLabel("Add \(name) translation")
+                    }
+                }
+            }
+            .fixedSize()
+        }
+    }
+
+    private var selectedSet: TranscriptionSet? {
+        transcriptionSets.first { $0.id == selectedTranscriptionKey } ?? transcriptionSets.first(where: \.isActive)
+    }
+
+    private func versionTitle(_ set: TranscriptionSet) -> String {
+        set.name ?? TranscriptSetSwitch.date(set.createdAt)
+    }
+
+    private func versionState(_ set: TranscriptionSet) -> String {
+        set.isPinned ? "Pinned" : set.isActive ? "In use" : "Read only"
+    }
+
+    private func versionDetail(_ set: TranscriptionSet) -> String {
+        var parts: [String] = []
+        if set.name != nil { parts.append(TranscriptSetSwitch.date(set.createdAt)) }
+        parts.append("\(set.segmentCount) lines")
+        if let language = set.language, !language.isEmpty {
+            parts.append(DubLanguageChoices.name(language) + (set.hasTranslations ? " + translation" : ""))
+        }
+        if set.editedCount > 0 { parts.append("\(set.editedCount) edited") }
+        if let model = set.model { parts.append(model) }
+        return parts.joined(separator: " · ")
+    }
+
+    /// The transcript versions of this video and what can be done with the
+    /// one on show, beside the title.
+    @ViewBuilder
+    private var versionMenu: some View {
+        if !transcriptionSets.isEmpty || missingTranscriptionPin {
+            Menu {
+                Section("Transcript Versions") {
+                    Picker("Version", selection: $selectedTranscriptionKey) {
+                        ForEach(transcriptionSets) { set in
+                            Text("\(versionTitle(set)) — \(versionState(set)) · \(versionDetail(set))").tag(set.id)
+                        }
+                    }
+                    .pickerStyle(.inline).labelsHidden()
+                }
+                Divider()
+                Button("Always Use This Version") { changePin(selectedTranscriptionKey) }
+                    .disabled(selectedTranscriptionKey.isEmpty || pinnedTranscriptionKey == selectedTranscriptionKey)
+                Button("Choose Automatically") { changePin(nil) }
+                    .disabled(pinnedTranscriptionKey == nil)
+                Button("Rename…") {
+                    renameText = selectedSet?.name ?? ""
+                    renamingSet = selectedSet
+                }
+                .disabled(selectedSet == nil)
+                Button("Transcribe Again…") {
+                    Task {
+                        retranscribeEditCount = await store.transcriptEditCount(videoID: video.id)
+                        retranscribeOptions = store.transcriptionTimingOptions(for: [video], force: true)
+                        confirmRetranscribe = true
+                    }
+                }
+                .disabled(!video.isPresent)
+                Divider()
+                Button("Delete This Version…", role: .destructive) { confirmDeleteSet = true }
+                    .disabled(selectedTranscriptionKey.isEmpty || store.transcribingVideoIDs.contains(video.id))
+                Button("Delete All \(transcriptionSets.count) Versions…", role: .destructive) { confirmDeleteAllSets = true }
+                    .disabled(store.transcribingVideoIDs.contains(video.id))
+            } label: {
+                if let set = selectedSet {
+                    Text("Version  \(versionTitle(set))  ·  \(versionState(set))").lineLimit(1).truncationMode(.middle)
+                } else {
+                    Text("Version").lineLimit(1)
+                }
+            }
+            // A long version name is cut short rather than pushing Done out.
+            .frame(maxWidth: 340)
+            .fixedSize(horizontal: true, vertical: false)
+            .focused($setsPickerFocused)
+            .disabled(hasChanges || isSaving || editMode)
+            .help(hasChanges || editMode ? "Apply or discard your changes to switch versions"
+                  : missingTranscriptionPin ? "The pinned version is not on this Mac yet"
+                  : "Switch transcript version, choose which one the app uses, rename, transcribe again or delete")
         }
     }
 
@@ -398,7 +502,7 @@ struct TranscriptSheet: View {
                     Spacer()
                     Button("Done") { dismiss() }.lineLimit(1).fixedSize()
                 }
-                transcriptionPicker
+                versionMenu
                 Label(video.isPresent ? "Saved transcription · Read-only" : "Not on this Mac · Read-only transcript", systemImage: "text.quote")
                     .foregroundStyle(.secondary)
                 if !video.isPresent { MissingFootageDownloadButton(video: video) }
@@ -413,14 +517,64 @@ struct TranscriptSheet: View {
         }
         }
         .task(id: selectedTranscriptionKey) { await load() }
+        .speakerColors(for: Set(speakerLabels.values))
+        // The version menu's dialogs: here, because the read-only body shows the menu too.
+        .confirmationDialog("Re-transcribe this video?", isPresented: $confirmRetranscribe) {
+            // Always destructive here: confirming drops unsaved changes and closes the sheet.
+            RetranscribeButtons(options: retranscribeOptions, destructive: true) { timing in
+                store.transcribe(video: video, force: true, wordTiming: timing)
+                dismiss()
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text((retranscribeEditCount > 0
+                 ? ConfirmTranscriptLoss.message(count: retranscribeEditCount)
+                    + (hasChanges ? " Unsaved changes will be discarded." : "")
+                 : "This makes a new transcript set, discards any unsaved changes, and closes this sheet. The previous set stays in the sets list.")
+                 + (retranscribeOptions.count > 1 ? " " + TranscriptionModelChoiceDialog.message : ""))
+        }
+        .confirmationDialog("Delete this transcript?", isPresented: $confirmDeleteSet) {
+            Button("Delete Transcript", role: .destructive) { deleteSets(selectedTranscriptionKey) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Deletes the selected transcript set with its edits, translations, speaker map and topics"
+                 + (transcriptionSets.count > 1 ? "; the newest remaining set becomes active." : ". This video will have no transcript.")
+                 + " Picks and clips already made from it stay. This cannot be undone.")
+        }
+        .confirmationDialog("Delete all transcripts of this video?", isPresented: $confirmDeleteAllSets) {
+            Button("Delete All \(transcriptionSets.count) Transcripts", role: .destructive) { deleteSets(nil) }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Deletes every transcript set of this video with its edits, translations, speaker maps and topics, "
+                 + "and closes this sheet. Picks and clips already made from them stay. This cannot be undone.")
+        }
+        .alert("Rename Transcript Version", isPresented: Binding(get: { renamingSet != nil }, set: { if !$0 { renamingSet = nil } })) {
+            TextField("Name", text: $renameText)
+            Button("Rename") {
+                guard let set = renamingSet else { return }
+                let name = renameText
+                Task {
+                    await store.renameTranscriptSet(videoID: video.id, key: set.id, name: name)
+                    transcriptionSets = (try? await store.database?.transcriptionSets(videoID: video.id)) ?? transcriptionSets
+                }
+            }
+            Button("Cancel", role: .cancel) {}
+        } message: {
+            Text("Leave the name empty to show the date it was made.")
+        }
     }
 
     private var editableBody: some View {
         VStack(spacing: 0) {
-            header
-                .padding()
-            transcriptionPicker.padding(.horizontal)
-
+            titleBar
+                .padding(.horizontal).padding(.top, 14).padding(.bottom, 10)
+            Divider()
+            Group {
+                if editMode || hasChanges { editBar } else { toolbar }
+            }
+            .padding(.horizontal).padding(.vertical, 8)
+            .background(editMode || hasChanges ? Color.orange.opacity(0.12) : Color.clear)
+            notices
             Divider()
 
             if isLoading {
@@ -431,6 +585,8 @@ struct TranscriptSheet: View {
                                  preferredTranslationLanguage: store.activeProfile.captionLanguages.first) { scene, start, end in
                     store.setSceneEditRange(scene, start: start, end: end)
                 }
+            } else if showsTopics, !topics.isEmpty {
+                topicsView
             } else if rows.isEmpty {
                 ContentUnavailableView(
                     "No Transcript",
@@ -441,6 +597,7 @@ struct TranscriptSheet: View {
                     .frame(maxWidth: .infinity, maxHeight: .infinity)
             } else {
                 HStack(spacing: 0) {
+                    ScrollViewReader { proxy in
                     ScrollView {
                         LazyVStack(alignment: .leading, spacing: 0) {
                             let visible = visibleRows
@@ -486,32 +643,29 @@ struct TranscriptSheet: View {
                             }
                         }
                     }
+                    .onChange(of: scrollTarget) { _, target in
+                        guard let target else { return }
+                        proxy.scrollTo(target, anchor: .top)
+                        scrollTarget = nil
+                    }
+                    .onAppear {
+                        // A topic picked in the Topics view lands here.
+                        if let target = scrollTarget {
+                            proxy.scrollTo(target, anchor: .top)
+                            scrollTarget = nil
+                        }
+                    }
+                    }
                     Divider()
                     videoPanel
                         .frame(width: 400)
                 }
             }
 
-            if editMode || hasChanges {
-                Divider()
-                HStack {
-                    Text(hasChanges ? changeSummary : "Edit a line, then Apply to save.")
-                        .lineLimit(1).fixedSize()
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button("Discard Changes") { drafts = [:]; speakerDrafts = [:] }
-                        .controlSize(.small).lineLimit(1).fixedSize()
-                        .disabled(!hasChanges || isSaving)
-                    Button("Apply") { save(thenDismiss: false) }
-                        .controlSize(.small).lineLimit(1).fixedSize()
-                        .disabled(!hasChanges || isSaving)
-                }
-                .padding(.horizontal)
-                .padding(.vertical, 8)
-            }
         }
-        .frame(width: 1160, height: 640)
+        .frame(minWidth: 900, idealWidth: 1320, maxWidth: .infinity,
+               minHeight: 480, idealHeight: 680, maxHeight: .infinity)
+        .presentationSizing(.fitted)
         .modalCloseButton {
             if hasChanges { confirmDiscard = true } else { dismiss() }
         }
@@ -521,8 +675,10 @@ struct TranscriptSheet: View {
         .onChange(of: translationJob?.status) { _, status in
             if status == .done { Task { await load() } }
         }
-        .onChange(of: showsQA) { _, active in
-            if active { stopPlayback(releasePlayer: true) }
+        // Q&A has its own player and Topics has none: nothing keeps
+        // playing behind either.
+        .onChange(of: showsLines) { _, lines in
+            if !lines { stopPlayback(releasePlayer: true) }
         }
         .onChange(of: currentVideoScenes) { _, scenes in
             refreshSceneMapping(scenes)
@@ -532,35 +688,9 @@ struct TranscriptSheet: View {
         }
         .appJobSetupPresentation()
         .onDisappear { stopPlayback(releasePlayer: true) }
-        .sheet(isPresented: $showTools) { TranscriptToolsSheet(video: video) }
-        .confirmationDialog("Re-transcribe this video?", isPresented: $confirmRetranscribe) {
-            // Always destructive here: confirming drops unsaved changes and closes the sheet.
-            RetranscribeButtons(options: retranscribeOptions, destructive: true) { timing in
-                store.transcribe(video: video, force: true, wordTiming: timing)
-                dismiss()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text((retranscribeEditCount > 0
-                 ? ConfirmTranscriptLoss.message(count: retranscribeEditCount)
-                    + (hasChanges ? " Unsaved changes will be discarded." : "")
-                 : "This makes a new transcript set, discards any unsaved changes, and closes this sheet. The previous set stays in the sets list.")
-                 + (retranscribeOptions.count > 1 ? " " + TranscriptionModelChoiceDialog.message : ""))
-        }
-        .confirmationDialog("Delete this transcript?", isPresented: $confirmDeleteSet) {
-            Button("Delete Transcript", role: .destructive) { deleteSets(selectedTranscriptionKey) }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Deletes the selected transcript set with its edits, translations, speaker map and topics"
-                 + (transcriptionSets.count > 1 ? "; the newest remaining set becomes active." : ". This video will have no transcript.")
-                 + " Picks and clips already made from it stay. This cannot be undone.")
-        }
-        .confirmationDialog("Delete all transcripts of this video?", isPresented: $confirmDeleteAllSets) {
-            Button("Delete All \(transcriptionSets.count) Transcripts", role: .destructive) { deleteSets(nil) }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text("Deletes every transcript set of this video with its edits, translations, speaker maps and topics, "
-                 + "and closes this sheet. Picks and clips already made from them stay. This cannot be undone.")
+        .sheet(isPresented: $showTools, onDismiss: { Task { await loadAnalysis() } }) { CleanupCutsSheet(video: video) }
+        .onChange(of: analysisJob?.status) { _, status in
+            if status != .running { Task { await loadAnalysis() } }
         }
         .confirmationDialog("Undo re-cut?", isPresented: $confirmUndoRecut) {
             Button("Undo Re-cut", role: .destructive) { undoRecut() }
@@ -591,66 +721,177 @@ struct TranscriptSheet: View {
         TranscriptQASections.sections(scenes: videoScenes, rows: rows, labels: qaLabels)
     }
 
-    private var header: some View {
-        VStack(alignment: .leading, spacing: 8) {
-            HStack {
-                Text("Transcript — \(video.filename)")
-                    .font(.headline).truncationMode(.middle)
-                    .fixedSize(horizontal: false, vertical: true)
-                    .help("Transcript — \(video.filename)")
-                AIInfoButton(video: video)
-                Spacer(minLength: 8)
-                Button(hasChanges ? "Apply" : "Done") {
-                    if hasChanges { save(thenDismiss: false) } else { dismiss() }
-                }
-                .keyboardShortcut(.defaultAction)
-                .disabled(isSaving)
-                .fixedSize()
-                .help(hasChanges ? "Save every edited line and speaker change at once" : "Close")
+    /// What this is, which version, and the way out.
+    private var titleBar: some View {
+        HStack(spacing: 12) {
+            VStack(alignment: .leading, spacing: 2) {
+                SectionLabel("Transcript")
+                Text(video.filename)
+                    .font(.headline).lineLimit(1).truncationMode(.middle)
+                    .help(video.filename)
             }
-            HStack(spacing: 8) {
-                Picker("View", selection: $showsQA) {
-                    Text("Transcript").tag(false)
-                    if !qaSections.isEmpty { Text("Q&A (\(qaSections.count))").tag(true) }
+            .layoutPriority(-1)
+            AIInfoButton(video: video)
+            versionMenu
+            Text(editMode || hasChanges ? "Apply or discard your changes to switch versions."
+                 : titleSummary)
+                .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(1).truncationMode(.tail)
+                .help(editMode || hasChanges ? "" : titleSummary)
+                .layoutPriority(-2)
+            Spacer(minLength: 8)
+            if editMode || hasChanges {
+                Button("Done") { dismiss() }
+                    .lineLimit(1).fixedSize()
+                    .disabled(true)
+                    .help("Apply or discard your changes first")
+            } else {
+                Button("Done") { dismiss() }
+                    .buttonStyle(.borderedProminent)
+                    .keyboardShortcut(.defaultAction)
+                    .lineLimit(1).fixedSize()
+                    .disabled(isSaving)
+            }
+        }
+    }
+
+    private var titleSummary: String {
+        guard !rows.isEmpty else { return "" }
+        let lines = rows.count { !$0.isTranslation }
+        let shown = visibleRows.count
+        var parts = [showsQA || tagFilter.isEmpty ? "\(lines) lines" : "\(shown) of \(lines) lines"]
+        parts.append(languages.map { DubLanguageChoices.name($0.code) }.joined(separator: " + "))
+        if editedCount > 0 { parts.append("\(editedCount) edited") }
+        return parts.filter { !$0.isEmpty }.joined(separator: " · ")
+    }
+
+    /// One row: what is on show at the left, what can be done at the right.
+    /// When the sheet is too narrow for every title, the actions keep their
+    /// icons and say what they are in their tooltips.
+    private var toolbar: some View {
+        ViewThatFits(in: .horizontal) {
+            toolbar(compact: false)
+            toolbar(compact: true)
+        }
+    }
+
+    private func toolbar(compact: Bool) -> some View {
+        HStack(spacing: 10) {
+            Picker("View", selection: viewChoice) {
+                Text("Lines").tag(0)
+                if !qaSections.isEmpty { Text("Q&A \(qaSections.count)").tag(1) }
+                if !topics.isEmpty { Text("Topics \(topics.count)").tag(2) }
+            }
+            .pickerStyle(.segmented).labelsHidden().fixedSize()
+            if showsLines {
+                Divider().frame(height: 18)
+                showMenu
+                languageControls(allowAdd: true)
+                groupToggle(compact: compact)
+            }
+            Spacer(minLength: 8)
+            speakerActions(compact: compact)
+            Button {
+                showTools = true
+            } label: {
+                HStack(spacing: 5) {
+                    Label("Cleanup Cuts", systemImage: "scissors").modifier(CompactLabel(compact: compact))
+                    if pendingCuts > 0 {
+                        Text(pendingCuts.formatted()).fontWeight(.semibold).foregroundStyle(.orange).monospacedDigit()
+                    }
                 }
-                .pickerStyle(.segmented).labelsHidden().fixedSize()
-                if !rows.isEmpty {
-                    Text((showsQA || tagFilter.isEmpty ? "\(rows.count) segments"
-                         : "\(visibleRows.count) of \(rows.count) segments")
-                         + (editedCount > 0 ? " · \(editedCount) edited" : ""))
-                        .font(.caption).foregroundStyle(.secondary)
-                        .fixedSize(horizontal: false, vertical: true)
-                }
-                Spacer(minLength: 8)
-                speakerActions
-                Menu("More") {
-                    Button("Topics, Cuts & Translation…") { showTools = true }
-                        .disabled(rows.isEmpty)
-                    Button("Revert All Edits… (\(editedCount))") { confirmRevertAll = true }
-                        .disabled(editedCount == 0 || hasChanges || isSaving)
-                    Button("Re-transcribe…") {
-                        Task {
-                            retranscribeEditCount = await store.transcriptEditCount(videoID: video.id)
-                            retranscribeOptions = store.transcriptionTimingOptions(for: [video], force: true)
-                            confirmRetranscribe = true
+                .lineLimit(1)
+            }
+            .fixedSize()
+            .disabled(rows.isEmpty)
+            .accessibilityLabel("Cleanup Cuts")
+            .help(pendingCuts > 0
+                  ? "Cleanup Cuts: \(pendingCuts) pause, filler and repeat cut\(pendingCuts == 1 ? "" : "s") waiting for a decision"
+                  : "Cleanup Cuts: decide which pauses, filler words, repeats and false starts are cut from this video")
+            Menu {
+                Menu("Export Captions (SRT)") {
+                    ForEach(languages, id: \.self) { language in
+                        Button(DubLanguageChoices.name(language.code) + (language.isTranslation ? "" : " (spoken)") + "…") {
+                            exportSRT(language)
                         }
                     }
-                    .disabled(isSaving)
-                    .help("Make a new transcription; keep this set in the sets list")
                 }
-                .fixedSize()
+                .disabled(rows.isEmpty)
+                Button(analysisJob?.status == .running ? "Finding Topics & Cuts…" : "Find Topics & Cuts Again") {
+                    store.startTranscriptAnalysis(video: video)
+                }
+                .disabled(rows.isEmpty || analysisJob?.status == .running || hasChanges || isSaving)
+                Divider()
+                Button("Revert All Edits… (\(editedCount))") { confirmRevertAll = true }
+                    .disabled(editedCount == 0 || hasChanges || isSaving)
+            } label: {
+                Label("Tools", systemImage: "ellipsis.circle").modifier(CompactLabel(compact: compact, full: .titleOnly))
             }
+            .fixedSize()
+            .help("Tools: export this transcript's captions, look for topics and cleanup cuts again, or put every edited line back")
+            if showsLines {
+                Button("Edit Text", systemImage: "pencil") { editMode = true }
+                    .modifier(CompactLabel(compact: compact))
+                    .lineLimit(1).fixedSize()
+                    .disabled(isSaving || rows.isEmpty || isMappingSpeakers)
+                    .help(isMappingSpeakers ? "Wait for Fix Speakers to finish; it replaces the lines"
+                          : "Edit Text: correct lines and their translations; nothing is saved until you apply")
+            }
+        }
+        .lineLimit(1)
+    }
+
+    /// The toolbar's place while text is being edited or a change waits:
+    /// what changed, and the only way out (apply or discard).
+    private var editBar: some View {
+        HStack(spacing: 10) {
+            Image(systemName: "pencil").foregroundStyle(Color.orange).accessibilityHidden(true)
+            Text(editMode ? "Editing text" : "Changes not applied").fontWeight(.semibold).fixedSize()
+            Text(hasChanges ? changeSummary : "Type in a line or a translation.")
+                .foregroundStyle(.secondary).truncationMode(.tail)
+                .help(hasChanges ? changeSummary : "")
+                .layoutPriority(-1)
             if !showsQA {
-                HStack(spacing: 8) {
-                    transcriptFilters
-                    Spacer(minLength: 0)
-                }
+                Divider().frame(height: 18)
+                languageControls(allowAdd: false)
+                Toggle("Show what changed", isOn: $compareMode)
+                    .toggleStyle(.checkbox).fixedSize()
+                    .disabled(!canCompare)
+                    .help("Show each changed line's earlier text under it")
             }
+            Spacer(minLength: 8)
+            Button(hasChanges ? "Discard Changes" : "Stop Editing") {
+                drafts = [:]
+                speakerDrafts = [:]
+                editMode = false
+            }
+            .lineLimit(1).fixedSize()
+            .disabled(isSaving)
+            Button(applyTitle) { save(thenDismiss: false) }
+                .buttonStyle(.borderedProminent)
+                .keyboardShortcut(.defaultAction)
+                .lineLimit(1).fixedSize()
+                .disabled(!hasChanges || isSaving)
+                .help("Save every changed line, translation and speaker at once")
+        }
+        .lineLimit(1)
+    }
+
+    private var applyTitle: String {
+        let count = changedIDs.count + changedSpeakerIDs.count
+        return count == 0 ? "Apply" : "Apply \(count) Change\(count == 1 ? "" : "s")"
+    }
+
+    /// Coverage and speaker-map messages, under the toolbar only while there is one.
+    @ViewBuilder
+    private var notices: some View {
+        VStack(alignment: .leading, spacing: 6) {
             coverageControls
             statusStrip
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
+        .padding(.horizontal)
         .lineLimit(1)
-        .fixedSize(horizontal: false, vertical: true)
     }
 
     @ViewBuilder
@@ -685,12 +926,16 @@ struct TranscriptSheet: View {
         }
     }
 
-    @ViewBuilder
-    private var transcriptFilters: some View {
-        Menu(tagFilter.isEmpty ? "All tags"
-             : tagFilter == Self.changedByMapFilter ? "Changed by the map"
-             : tagFilter == Self.editedFilter ? "Edited (\(editedCount))" : tagFilter) {
-            Button("All tags") { tagFilter = "" }
+    private var showLabel: String {
+        tagFilter.isEmpty ? "All lines"
+            : tagFilter == Self.changedByMapFilter ? "Changed by Fix Speakers"
+            : tagFilter == Self.editedFilter ? "Edited (\(editedCount))"
+            : tagFilter == "reel-highlight" ? "Reel" : tagFilter
+    }
+
+    private var showMenu: some View {
+        Menu("Show  \(showLabel)") {
+            Button("All lines") { tagFilter = "" }
             Button("Edited (\(editedCount))") { tagFilter = Self.editedFilter }
                 .disabled(editedCount == 0)
             Divider()
@@ -700,80 +945,79 @@ struct TranscriptSheet: View {
             }
             if !changedByMap.isEmpty {
                 Divider()
-                Button("Changed by the map (\(changedByMap.count))") { tagFilter = Self.changedByMapFilter }
+                Button("Changed by Fix Speakers (\(changedByMap.count))") { tagFilter = Self.changedByMapFilter }
             }
         }
-        .controlSize(.small).lineLimit(1).fixedSize()
-        .help("Show edited lines, lines carrying a tag, or lines the last speaker map changed")
-        if rows.contains(where: { speakerLabels[$0.id] != nil }) {
-            Toggle("Group by Speaker", isOn: $groupBySpeaker)
-                .toggleStyle(.checkbox)
-                .fixedSize()
-                .controlSize(.small)
-                .lineLimit(1)
-                .help("Read each speaker's uninterrupted run as one block with one play button; turn it off to play, time or re-attribute single lines")
-        }
-        Toggle("Edit", systemImage: "pencil", isOn: $editMode)
-            .toggleStyle(.button).buttonStyle(.bordered)
-            .controlSize(.small).lineLimit(1).fixedSize()
-            .disabled(isSaving)
-        Toggle("Compare", systemImage: "text.redaction", isOn: $compareMode)
-            .toggleStyle(.button).buttonStyle(.bordered)
-            .controlSize(.small).lineLimit(1).fixedSize()
-            .disabled(!canCompare)
+        .lineLimit(1).fixedSize()
+        .help("Show every line, only edited lines, lines carrying a tag, or lines the last speaker map changed")
     }
 
     @ViewBuilder
-    private var speakerActions: some View {
+    private func groupToggle(compact: Bool) -> some View {
+        if rows.contains(where: { speakerLabels[$0.id] != nil }) {
+            Toggle(compact ? "Group" : "Group by speaker", isOn: $groupBySpeaker)
+                .toggleStyle(.checkbox)
+                .lineLimit(1).fixedSize()
+                .accessibilityLabel("Group by speaker")
+                .help("Group by speaker: read each speaker's uninterrupted run as one block with one play button; turn it off to play, time or re-attribute single lines")
+        }
+    }
+
+    /// One control for the whole speaker repair: the button maps who is
+    /// talking again (which also splits rows where the speaker changes);
+    /// the arrow holds the single steps and their undos.
+    @ViewBuilder
+    private func speakerActions(compact: Bool) -> some View {
         if !turns.isEmpty {
-            // Split rows where the speaker changes mid-row, using the
-            // words' timings; Undo puts the transcriber's rows back.
-            Menu("Speakers") {
-                Button("Re-cut by Speaker") { recut() }
-                    .disabled(hasChanges || isSaving)
-                if hasRecut {
-                    Button("Undo Re-cut") { requestUndoRecut() }
-                        .disabled(hasChanges || isSaving)
-                }
-                Divider()
-                Button(isMappingSpeakers ? "Mapping Speakers…" : "Map Speakers Again") { mapSpeakersAgain() }
-                    .disabled(hasChanges || isSaving || isMappingSpeakers)
+            let busy = hasChanges || editMode || isSaving || isMappingSpeakers
+            Menu {
+                Button("Split Lines by Speaker Only") { recut() }
+                if store.previousSpeakerMaps[video.id] != nil || hasRecut { Divider() }
                 if store.previousSpeakerMaps[video.id] != nil {
-                    Button("Undo Map Speakers Again") { undoMap() }
-                        .disabled(hasChanges || isSaving || isMappingSpeakers)
+                    Button("Put the Previous Speakers Back") { undoMap() }
                 }
+                if hasRecut {
+                    Button("Put the Transcriber's Lines Back") { requestUndoRecut() }
+                }
+            } label: {
+                Label(isMappingSpeakers ? "Fixing Speakers…" : "Fix Speakers", systemImage: "person.wave.2")
+                    .modifier(CompactLabel(compact: compact))
+                    .lineLimit(1)
+            } primaryAction: {
+                fixSpeakers()
             }
             .fixedSize()
-            .help(hasChanges ? "Apply or discard your pending changes first"
-                  : "Split every row where the speaker changes, at the gap between words, so each row has one speaker" + (hasRecut ? " — or put the transcriber's original rows back" : "")
-                    + ". Map Speakers Again reruns who-is-talking from the picture and the voices; the lines you attributed by hand teach it their voices")
+            .disabled(busy)
+            .help(hasChanges || editMode ? "Apply or discard your text changes first"
+                  : isMappingSpeakers ? "Working out who is talking…"
+                  : "Fix Speakers: work out who is talking again from the picture and the voices, then split every line where the speaker changes so each line has one speaker. Lines you attributed by hand are kept and teach it their voices; lines whose text you edited are never split. The arrow has the split-only step and the ways back: the previous speakers (voices it learned stay learned) and the transcriber's own lines.")
         }
     }
 
     @ViewBuilder
     private var statusStrip: some View {
         if isMappingSpeakers {
-            let message = mappingStatus ?? "Mapping speakers…"
+            let message = mappingJob?.status == .running ? (mappingStatus ?? "Fixing speakers…") : "Stopping…"
             HStack(spacing: 8) {
                 ProgressView().controlSize(.mini)
                 Text(message).foregroundStyle(.secondary)
                     .truncationMode(.tail).help(message)
                     .fixedSize(horizontal: false, vertical: true)
-                if let mappingJob {
+                if let mappingJob, mappingJob.status == .running {
                     Button("Stop") { store.jobs.cancel(mappingJob.id) }
-                        .fixedSize().help("Stop mapping speakers")
+                        .fixedSize().help("Stop fixing speakers")
                 }
             }
             .font(.caption).lineLimit(1)
         } else if unlearnedCorrections > 0, !turns.isEmpty {
             let pending = unlearnedCorrections
-            let message = "\(pending) line\(pending == 1 ? "" : "s") attributed by hand — Map Speakers Again to teach the tracker \(pending == 1 ? "that voice" : "those voices") and fix the rest of this file"
+            let message = "\(pending) line\(pending == 1 ? "" : "s") attributed by hand — Fix Speakers to teach the tracker \(pending == 1 ? "that voice" : "those voices") and fix the rest of this file"
             HStack(spacing: 8) {
                 Label(message, systemImage: "waveform.badge.exclamationmark")
                     .foregroundStyle(Color.orange).truncationMode(.tail)
                     .fixedSize(horizontal: false, vertical: true)
-                    .help(message + ". The speaker map still disagrees with these lines. Mapping again uses your attributions as ground truth, remaps every other line, and remembers the voices for other files.")
-                Button("Map Speakers Again") { mapSpeakersAgain() }
+                    .help(message + ". The speaker map still disagrees with these lines. Fix Speakers uses your attributions as ground truth, remaps every other line, splits lines where the speaker changes, and remembers the voices for other files.")
+                Button("Fix Speakers") { fixSpeakers() }
                     .disabled(hasChanges || isSaving || isMappingSpeakers)
                     .controlSize(.small).fixedSize()
                     .help("Rerun who-is-talking with your attributions as ground truth")
@@ -786,6 +1030,9 @@ struct TranscriptSheet: View {
         }
     }
 
+    /// One line: play, then who / when / tags and the line's state, then
+    /// the text column, which holds text only (the spoken line and its
+    /// translations, each behind its language code).
     private func segmentRow(_ row: TranscriptRow, showTags: Bool, current: Bool, repeatedSpeaker: Bool,
                             grouped: Bool = false, blockEnd: Double? = nil) -> some View {
         let playing = self.playing?.rowID == row.id
@@ -793,18 +1040,18 @@ struct TranscriptSheet: View {
         // and speaker controls; empty columns keep the rest aligned.
         let continuation = grouped && repeatedSpeaker
         let end = grouped ? (blockEnd ?? row.endTime) : row.endTime
-        return HStack(alignment: .top, spacing: 10) {
+        let translations = (translationsByRow[row.id] ?? []).filter(shows)
+        let changed = isChanged(row) || (translationsByRow[row.id] ?? []).contains(where: isChanged)
+        return HStack(alignment: .top, spacing: 12) {
             if continuation {
-                Spacer(minLength: 0).frame(width: 18)
-                Spacer(minLength: 0).frame(width: 84)
-                Spacer(minLength: 0).frame(width: 108)
+                Spacer(minLength: 0).frame(width: 22)
             } else {
                 Button {
                     Task { await togglePlayback(row, end: grouped ? end : nil) }
                 } label: {
                     Image(systemName: playing ? "stop.fill" : "play.fill")
                         .font(.caption)
-                        .frame(width: 18, height: 18)
+                        .frame(width: 22, height: 22)
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
@@ -817,116 +1064,138 @@ struct TranscriptSheet: View {
                 .accessibilityLabel(playing ? "Stop"
                                     : grouped ? "Play \(speakerLabel(row) ?? "speaker") from \(row.startTime.timecode) to \(end.timecode)"
                                     : "Play line at \(row.startTime.timecode)")
-                .padding(.top, 2)
+            }
 
-                VStack(alignment: .leading, spacing: 2) {
+            VStack(alignment: .leading, spacing: 5) {
+                if !continuation {
+                    speakerMenu(row, compact: repeatedSpeaker)
                     Text("\(row.startTime.timecode)–\(end.timecode)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
-                    if showsLanguage {
-                        Text(row.isTranslation ? "\(row.language) · translation" : row.language)
-                            .font(.caption2)
-                            .foregroundStyle(.tertiary)
-                    }
-                }
-                .frame(width: 84, alignment: .leading)
-                .padding(.top, 3)
-
-                speakerMenu(row)
-                    .frame(width: 108, alignment: .leading)
-                    .padding(.top, 1)
-                    .opacity(repeatedSpeaker ? 0.45 : 1)
-            }
-
-            VStack(alignment: .leading, spacing: 4) {
-                if !shows(row) {
-                    EmptyView()
-                } else if editMode && !row.isTranslation {
-                    HStack(alignment: .top, spacing: 4) {
-                        TextField("Segment text", text: Binding(
-                            get: { drafts[row.id] ?? row.text },
-                            set: { drafts[row.id] = $0 }
-                        ), axis: .vertical)
-                        .textFieldStyle(.plain)
-                        .lineLimit(1...8)
-                        .disabled(isSaving)
-                        Image(systemName: "pencil")
-                            .font(.caption).foregroundStyle(.secondary)
-                            .opacity(hoveredRowID == row.id ? 1 : 0)
-                            .accessibilityHidden(true)
-                    }
-                    .padding(6)
-                    .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
-                    .onHover { hoveredRowID = $0 ? row.id : nil }
-                } else if !compareMode || !isCompared(row) {
-                    Text(drafts[row.id] ?? row.text)
-                        .textSelection(.enabled)
-                        .frame(maxWidth: .infinity, alignment: .leading)
-                }
-                if shows(row), compareMode && isCompared(row) {
-                    if !editMode || row.isTranslation {
-                        Text(comparedText(row, original: false)).textSelection(.enabled)
-                    }
-                    Text(comparedText(row, original: true))
-                        .font(.callout).foregroundStyle(.secondary)
-                        .textSelection(.enabled)
-                        .accessibilityLabel("Transcriber's original: \(row.originalText ?? row.text)")
-                }
-                ForEach((translationsByRow[row.id] ?? []).filter(shows)) { translation in
-                    translationLine(translation)
                 }
                 if showTags, let tags = lineTags[row.id], !tags.isEmpty {
                     tagLine(row, tags: tags)
                 }
-            }
-
-            if row.originalText != nil {
-                Button("Revert") { revert(row) }
+                if changed {
+                    Text("Changed, not applied")
+                        .font(.caption).foregroundStyle(Color.orange).lineLimit(1)
+                    Button("Undo line") {
+                        drafts[row.id] = nil
+                        for translation in translationsByRow[row.id] ?? [] { drafts[translation.id] = nil }
+                    }
                     .controlSize(.mini).lineLimit(1).fixedSize()
                     .disabled(isSaving)
-                    .help("Restore the transcriber's original text for this segment")
+                    .help("Drop what you typed in this line and its translations")
+                } else if row.originalText != nil {
+                    HStack(spacing: 5) {
+                        Circle().fill(Color.orange).frame(width: 6, height: 6).accessibilityHidden(true)
+                        Text("Edited").font(.caption).foregroundStyle(.secondary)
+                    }
+                    Button("Use transcriber's text") { revert(row) }
+                        .controlSize(.mini).lineLimit(1).fixedSize()
+                        .disabled(isSaving || hasChanges)
+                        .help("Restore the transcriber's original text for this line")
+                }
+                ForEach(translations.filter { $0.originalText != nil && !isChanged($0) }) { translation in
+                    Button(translations.count > 1 ? "Use machine \(languageCode(translation))" : "Use machine text") { revert(translation) }
+                        .controlSize(.mini).lineLimit(1).fixedSize()
+                        .disabled(isSaving || hasChanges)
+                        .help("Replace your \(DubLanguageChoices.name(translation.language)) wording with the machine translation")
+                }
             }
+            .frame(width: 150, alignment: .leading)
+
+            VStack(alignment: .leading, spacing: 6) {
+                if shows(row) {
+                    textLine(code: languageCode(row)) { originalText(row) }
+                }
+                ForEach(translations) { translation in
+                    textLine(code: languageCode(translation)) { translationText(translation, of: row) }
+                }
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
         .padding(.horizontal)
         .padding(.leading, groupBySpeaker ? 18 : 0)
-        .padding(.top, continuation ? 1 : 6)
-        .padding(.bottom, grouped ? 2 : 6)
-        .background(current || (drafts[row.id] ?? row.text) != row.text
-                    ? Color.accentColor.opacity(current ? 0.16 : 0.08) : Color.clear)
+        .padding(.top, continuation ? 1 : 10)
+        .padding(.bottom, grouped ? 2 : 10)
+        .background(current ? Color.accentColor.opacity(0.16) : changed ? Color.orange.opacity(0.07) : Color.clear)
+        .overlay(alignment: .leading) {
+            if current || changed {
+                Rectangle().fill(current ? Color.accentColor : Color.orange).frame(width: 3)
+                    .accessibilityHidden(true)
+            }
+        }
     }
 
-    /// A line's translation, under the line: editable with Edit like the line itself.
-    private func translationLine(_ row: TranscriptRow) -> some View {
-        HStack(alignment: .top, spacing: 6) {
-            Text(ProjectLanguageResolver.languageCode(row.language).uppercased())
-                .font(.caption2.weight(.semibold)).lineLimit(1).fixedSize()
-                .padding(.horizontal, 6).padding(.vertical, 2)
+    private func isChanged(_ row: TranscriptRow) -> Bool { (drafts[row.id] ?? row.text) != row.text }
+
+    private func languageCode(_ row: TranscriptRow) -> String {
+        ProjectLanguageResolver.languageCode(row.language).uppercased()
+    }
+
+    /// The language code in its own narrow column, so every text starts at one edge.
+    private func textLine(code: String, @ViewBuilder text: () -> some View) -> some View {
+        HStack(alignment: .firstTextBaseline, spacing: 10) {
+            Text(code)
+                .font(.caption2.weight(.bold).monospaced())
                 .foregroundStyle(.secondary)
-                .background(.quaternary, in: Capsule())
-                .help("\(DubLanguageChoices.name(row.language)) translation\(row.originalText != nil ? ", edited by hand" : "")")
-                .padding(.top, editMode ? 6 : 1)
-            if editMode {
-                TextField("\(DubLanguageChoices.name(row.language)) translation", text: Binding(
-                    get: { drafts[row.id] ?? row.text },
-                    set: { drafts[row.id] = $0 }
-                ), axis: .vertical)
-                .textFieldStyle(.plain)
-                .lineLimit(1...8)
-                .disabled(isSaving)
-                .padding(6)
-                .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
-            } else {
-                Text(drafts[row.id] ?? row.text)
-                    .foregroundStyle(.secondary)
-                    .textSelection(.enabled)
-                    .frame(maxWidth: .infinity, alignment: .leading)
+                .frame(width: 24, alignment: .leading)
+                .accessibilityLabel(DubLanguageChoices.name(code.lowercased()))
+            VStack(alignment: .leading, spacing: 4) { text() }
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+    }
+
+    private func editField(_ row: TranscriptRow, prompt: String) -> some View {
+        TextField(prompt, text: Binding(
+            get: { drafts[row.id] ?? row.text },
+            set: { drafts[row.id] = $0 }
+        ), axis: .vertical)
+        .textFieldStyle(.plain)
+        .lineLimit(1...8)
+        .disabled(isSaving)
+        .padding(.horizontal, 8).padding(.vertical, 6)
+        .background(.quaternary, in: RoundedRectangle(cornerRadius: 5))
+    }
+
+    @ViewBuilder
+    private func originalText(_ row: TranscriptRow) -> some View {
+        if editMode {
+            editField(row, prompt: "Line text").font(.body)
+        } else if compareMode && isCompared(row) {
+            Text(comparedText(row, original: false)).textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        } else {
+            Text(drafts[row.id] ?? row.text)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
+        }
+        if compareMode && isCompared(row) {
+            Text(AttributedString("Was: ") + comparedText(row, original: true))
+                .font(.callout).foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .accessibilityLabel("Transcriber's original: \(row.originalText ?? row.text)")
+        }
+    }
+
+    /// A line's translation: editable with Edit Text like the line itself.
+    @ViewBuilder
+    private func translationText(_ row: TranscriptRow, of original: TranscriptRow) -> some View {
+        if editMode {
+            editField(row, prompt: "\(DubLanguageChoices.name(row.language)) translation")
+            if row.originalText != nil || isChanged(row) {
+                Label("Your wording. Kept when the \(DubLanguageChoices.name(original.language)) changes.", systemImage: "lock")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if isChanged(original) {
+                Text("Will be re-translated from the new text when you apply. Type in it to keep your own wording.")
+                    .font(.caption).foregroundStyle(.secondary)
             }
-            if row.originalText != nil {
-                Button("Revert") { revert(row) }
-                    .controlSize(.mini).lineLimit(1).fixedSize()
-                    .disabled(isSaving)
-                    .help("Restore the machine translation of this line")
-            }
+        } else {
+            Text(drafts[row.id] ?? row.text)
+                .foregroundStyle(.secondary)
+                .textSelection(.enabled)
+                .frame(maxWidth: .infinity, alignment: .leading)
         }
     }
 
@@ -1038,58 +1307,73 @@ struct TranscriptSheet: View {
         }
     }
 
-    /// Who the app thinks is talking on the line being played, as a checkbox
-    /// per person of this video (plus Unknown): the checked one is the
-    /// current attribution; checking another stages a change for Apply.
+    /// Who says the line being played: one choice per person of this video
+    /// plus nobody known. The marked one is the current attribution;
+    /// choosing another stages a change for Apply.
     private func whoIsTalking(_ row: TranscriptRow) -> some View {
         let guess = bestTurn(for: row)
-        let guessName = guess?.personKey.map { TranscriptSpeakers.name(forKey: $0, roster: roster, people: store.people) }
         let attribution = speakerDrafts[row.id] ?? row.speaker
         let checkedKey = attributedKey(row)
-        return VStack(alignment: .leading, spacing: 6) {
+        return VStack(alignment: .leading, spacing: 4) {
             HStack {
-                SectionLabel("Who is talking · \(row.startTime.timecode)–\(row.endTime.timecode)")
-                    .monospacedDigit()
+                SectionLabel("Who says this line")
                 Spacer()
                 if attribution != .automatic {
-                    Button("Use the app's guess") { attribute([row], .automatic) }
-                        .controlSize(.mini)
+                    Button("Use Detected") { attribute([row], .automatic) }
+                        .controlSize(.mini).lineLimit(1).fixedSize()
+                        .help("Go back to the speaker the app detected")
                 }
             }
-            Text(guessName.map { "The app thinks: \($0)" }
-                 ?? (guess != nil ? "The app hears a voice it could not match to a person" : "No speaker detected under this line"))
-                .font(.caption2)
-                .foregroundStyle(.tertiary)
+            if guess == nil {
+                Text("No speaker detected under this line.")
+                    .font(.caption).foregroundStyle(.secondary)
+            } else if guess?.personKey == nil {
+                Text("A voice was detected that matches nobody yet.")
+                    .font(.caption).foregroundStyle(.secondary)
+            }
             ForEach(roster) { entry in
-                Toggle(isOn: Binding(
-                    get: { checkedKey == entry.key },
-                    set: { on in if on { attribute([row], .person(key: entry.key)) } })
-                ) {
-                    HStack(spacing: 6) {
-                        VideoPersonAvatar(record: entry, videoURL: video.url, size: 22)
-                        Text(entry.displayName)
-                            .font(.callout)
-                            .lineLimit(1)
-                        if guess?.personKey == entry.key {
-                            Text("app's guess")
-                                .font(.caption2)
-                                .foregroundStyle(.tertiary)
-                        }
-                    }
+                speakerChoice(selected: checkedKey == entry.key,
+                              detected: guess?.personKey == entry.key,
+                              help: "This person says the line — the blue frame shows their feed") {
+                    attribute([row], .person(key: entry.key))
+                } label: {
+                    VideoPersonAvatar(record: entry, videoURL: video.url, size: 22)
+                    Text(entry.displayName).font(.callout).lineLimit(1)
                 }
-                .toggleStyle(.checkbox)
-                .help("This person says the line — the blue frame shows their feed")
             }
-            Toggle(isOn: Binding(
-                get: { attribution == .unknown },
-                set: { on in if on { attribute([row], .unknown) } })
-            ) {
-                Text(TranscriptSpeakers.unknownLabel)
-                    .font(.callout)
+            speakerChoice(selected: attribution == .unknown, detected: false,
+                          help: "Nobody the app knows says this line") {
+                attribute([row], .unknown)
+            } label: {
+                Text("Nobody known").font(.callout).lineLimit(1)
             }
-            .toggleStyle(.checkbox)
-            .help("Nobody the app knows says this line")
+            Text("Correcting a few lines teaches the speaker map. Fix Speakers applies it everywhere.")
+                .font(.caption).foregroundStyle(.secondary)
+                .lineLimit(3).fixedSize(horizontal: false, vertical: true)
+                .padding(.top, 4)
         }
+    }
+
+    private func speakerChoice(selected: Bool, detected: Bool, help: String, action: @escaping () -> Void,
+                               @ViewBuilder label: () -> some View) -> some View {
+        Button(action: action) {
+            HStack(spacing: 8) {
+                Image(systemName: selected ? "largecircle.fill.circle" : "circle")
+                    .foregroundStyle(selected ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+                    .accessibilityHidden(true)
+                label()
+                Spacer(minLength: 4)
+                if detected {
+                    Text("detected").font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                }
+            }
+            .padding(.horizontal, 8).frame(height: 30)
+            .background(selected ? AnyShapeStyle(.quaternary) : AnyShapeStyle(Color.clear), in: RoundedRectangle(cornerRadius: 6))
+            .contentShape(Rectangle())
+        }
+        .buttonStyle(.plain)
+        .help(help)
+        .accessibilityAddTraits(selected ? .isSelected : [])
     }
 
     /// The feed of whoever the line is attributed to, framed in blue over
@@ -1173,7 +1457,8 @@ struct TranscriptSheet: View {
                                    label: "Scene tagged \(tag == "reel-highlight" ? "Reel" : tag)", rowID: nil)
                     }
                 } label: {
-                    TagChip(tag: tag).lineLimit(1).fixedSize()
+                    TagChip(tag: tag).lineLimit(1).truncationMode(.tail)
+                        .frame(maxWidth: 146, alignment: .leading)
                 }
                 .buttonStyle(.plain)
                 .disabled(scene == nil)
@@ -1182,12 +1467,99 @@ struct TranscriptSheet: View {
         }
     }
 
+    // MARK: - Views, topics and caption export
+
+    /// Lines, Q&A or Topics, as one segmented choice over the two flags.
+    private var viewChoice: Binding<Int> {
+        Binding(get: { showsQA ? 1 : showsTopics && !topics.isEmpty ? 2 : 0 },
+                set: { choice in
+                    showsQA = choice == 1
+                    showsTopics = choice == 2
+                })
+    }
+
+    /// The topics the analysis found: pick one to read its lines.
+    private var topicsView: some View {
+        ScrollView {
+            LazyVStack(alignment: .leading, spacing: 0) {
+                ForEach(topics) { topic in
+                    Button {
+                        showTopic(topic)
+                    } label: {
+                        HStack(alignment: .top, spacing: 12) {
+                            VStack(alignment: .leading, spacing: 2) {
+                                Text("\(topic.startTime.timecode)–\(topic.endTime.timecode)")
+                                Text(Self.topicLength(topic.duration)).foregroundStyle(.tertiary)
+                            }
+                            .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                            .lineLimit(1)
+                            .frame(width: 96, alignment: .leading)
+                            VStack(alignment: .leading, spacing: 3) {
+                                Text(topic.title).fontWeight(.semibold).lineLimit(1)
+                                if !topic.summary.isEmpty {
+                                    Text(topic.summary).foregroundStyle(.secondary).lineLimit(2)
+                                }
+                            }
+                            Spacer(minLength: 8)
+                            Image(systemName: "chevron.right").font(.caption).foregroundStyle(.tertiary)
+                        }
+                        .padding(.horizontal).padding(.vertical, 9)
+                        .contentShape(Rectangle())
+                    }
+                    .buttonStyle(.plain)
+                    .help("Show the lines of this topic")
+                    Divider()
+                }
+            }
+        }
+        .frame(maxWidth: .infinity, maxHeight: .infinity)
+    }
+
+    private static func topicLength(_ seconds: Double) -> String {
+        seconds < 60 ? "\(Int(seconds.rounded())) s" : "\(seconds.timecode) min"
+    }
+
+    /// Back to Lines, at the first line of the topic, with every line on show.
+    private func showTopic(_ topic: TopicRange) {
+        tagFilter = ""
+        let spoken = rows.filter { !$0.isTranslation }
+        scrollTarget = (spoken.first { $0.endTime > topic.startTime } ?? spoken.last)?.id
+        showsTopics = false
+    }
+
+    /// Topics and the count of undecided cuts. Both belong to the
+    /// transcript in use, so another version on show has neither.
+    private func loadAnalysis() async {
+        guard let database = store.database else { return }
+        let inUse = selectedTranscriptionKey.isEmpty || selectedTranscriptionKey == activeTranscriptionKey
+        let loadedTopics = inUse ? ((try? await database.fetchTopicRanges(videoID: video.id)) ?? []) : []
+        let proposals = (try? await database.fetchEditProposals(videoID: video.id)) ?? []
+        guard !Task.isCancelled else { return }
+        topics = loadedTopics
+        pendingCuts = CleanupCutReview.summary(CleanupCutReview.cuts(proposals)).pending
+        if topics.isEmpty { showsTopics = false }
+    }
+
+    private func exportSRT(_ language: TranscriptTranslationRows.Language) {
+        let lines = rows.filter { $0.isTranslation == language.isTranslation && $0.language == language.code }
+        guard !lines.isEmpty else { return }
+        let panel = NSSavePanel()
+        panel.allowedContentTypes = [UTType(filenameExtension: "srt") ?? .plainText]
+        panel.nameFieldStringValue = "\(video.url.deletingPathExtension().lastPathComponent)-\(language.code).srt"
+        guard panel.runModal() == .OK, let url = panel.url else { return }
+        do {
+            try SubRipExport.document(lines).write(to: url, atomically: true, encoding: .utf8)
+        } catch {
+            store.presentError("Could not export SRT", error)
+        }
+    }
+
     // MARK: - Re-cut by speaker
 
     private func recut() {
         Task {
             guard let split = await store.recutTranscriptBySpeaker(videoID: video.id) else { return }
-            recutNote = split == 0 ? "Every row already has one speaker."
+            recutNote = split == 0 ? "No lines were split. Lines whose text you edited are left whole."
                 : "\(split) row\(split == 1 ? "" : "s") split where the speaker changed."
             await load()
         }
@@ -1218,7 +1590,8 @@ struct TranscriptSheet: View {
         }
     }
 
-    private func mapSpeakersAgain() {
+    /// Map who is talking again; the job re-cuts the rows by the new turns.
+    private func fixSpeakers() {
         store.startSpeakerMapping(video: video)
     }
 
@@ -1226,8 +1599,8 @@ struct TranscriptSheet: View {
         await load()
         guard mappingJob?.status == .done else { return }
         let changed = changedByMap.count
-        recutNote = changed == 0 ? "Speakers mapped again — no line changed speaker."
-            : "Speakers mapped again — \(changed) line\(changed == 1 ? "" : "s") changed speaker."
+        recutNote = changed == 0 ? "Speakers fixed — no line changed speaker."
+            : "Speakers fixed — \(changed) line\(changed == 1 ? "" : "s") changed speaker. Show ▸ Changed by Fix Speakers lists them."
     }
 
     /// A log line as the header shows it: the filename prefix dropped.
@@ -1241,7 +1614,7 @@ struct TranscriptSheet: View {
     private func undoMap() {
         Task {
             if await store.undoSpeakerMap(video: video) {
-                recutNote = "The previous speaker map is back."
+                recutNote = "The previous speakers are back. Voices learned since stay learned."
                 await load()
             }
         }
@@ -1272,7 +1645,7 @@ struct TranscriptSheet: View {
         // A newer request or a closed sheet wins.
         guard token == playToken, player === self.player else { return }
         // A pending preview must not start behind the Q&A player.
-        guard !showsQA else { stopPlayback(releasePlayer: true); return }
+        guard showsLines else { stopPlayback(releasePlayer: true); return }
         if let end {
             let stopAt = CMTime(seconds: max(end, start + 0.2), preferredTimescale: 600)
             boundaryObserver = player.addBoundaryTimeObserver(forTimes: [NSValue(time: stopAt)], queue: .main) {
@@ -1352,7 +1725,7 @@ struct TranscriptSheet: View {
     /// a person of this video, anyone else in the library, or Unknown; the
     /// same choices for every line that reads as this speaker; and back to
     /// automatic once overridden. Attribution saves at once, like Revert.
-    private func speakerMenu(_ row: TranscriptRow) -> some View {
+    private func speakerMenu(_ row: TranscriptRow, compact: Bool = false) -> some View {
         let label = speakerLabel(row)
         let attribution = speakerDrafts[row.id] ?? row.speaker
         let overridden = attribution != .automatic
@@ -1371,30 +1744,37 @@ struct TranscriptSheet: View {
                 }
             }
         } label: {
-            VStack(alignment: .leading, spacing: 0) {
-                HStack(spacing: 4) {
-                    Image(systemName: overridden ? "person.fill.checkmark" : "person.fill")
-                        .font(.caption2)
-                    Text(label ?? "Speaker?")
-                        .font(.caption.weight(label == nil ? .regular : .semibold))
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                }
-                if let before = changedByMap[row.id], before != label {
-                    // What the previous map said, for judging the change.
-                    Text(before)
-                        .font(.caption2)
-                        .strikethrough()
-                        .foregroundStyle(.tertiary)
-                        .lineLimit(1)
-                        .truncationMode(.tail)
-                        .help("The previous speaker map said \(before)")
+            // The name shows once per run; the lines after it keep a small
+            // handle so any single line can still be given to someone else.
+            if compact, !pending, changedByMap[row.id] == nil {
+                Image(systemName: overridden ? "person.fill.checkmark" : "person")
+                    .font(.caption2).foregroundStyle(.tertiary)
+            } else {
+                VStack(alignment: .leading, spacing: 2) {
+                    let color = pending ? Color.orange : label.map { SpeakerColors.color(for: $0) } ?? Color.gray
+                    HStack(spacing: 4) {
+                        if overridden {
+                            Image(systemName: "checkmark").font(.caption2.weight(.bold)).accessibilityHidden(true)
+                        }
+                        Text(label ?? "Speaker?")
+                            .font(.caption.weight(.semibold))
+                            .lineLimit(1).truncationMode(.tail)
+                    }
+                    .foregroundStyle(color)
+                    .padding(.horizontal, 9).padding(.vertical, 2)
+                    .background(color.opacity(0.18), in: Capsule())
+                    if let before = changedByMap[row.id], before != label {
+                        // What the previous map said, for judging the change.
+                        Text(before)
+                            .font(.caption2)
+                            .strikethrough()
+                            .foregroundStyle(.tertiary)
+                            .lineLimit(1)
+                            .truncationMode(.tail)
+                            .help("The previous speaker map said \(before)")
+                    }
                 }
             }
-            .foregroundStyle(label == nil ? AnyShapeStyle(.tertiary)
-                             : label == TranscriptSpeakers.unknownLabel ? AnyShapeStyle(.secondary)
-                             : pending ? AnyShapeStyle(Color.orange)
-                             : AnyShapeStyle(Color.accentColor))
         }
         .menuStyle(.borderlessButton)
         .menuIndicator(.hidden)
@@ -1484,6 +1864,7 @@ struct TranscriptSheet: View {
         if tagFilter == Self.changedByMapFilter, changedByMap.isEmpty { tagFilter = "" }
         if tagFilter == Self.editedFilter, editedCount == 0 { tagFilter = "" }
         hasRecut = await store.hasTranscriptRecut(videoID: video.id)
+        await loadAnalysis()
         refreshSceneMapping(currentVideoScenes)
         isLoading = false
     }
@@ -1529,6 +1910,7 @@ struct TranscriptSheet: View {
                 }
                 drafts = [:]
                 speakerDrafts = [:]
+                editMode = false
                 await load()
                 if thenDismiss { dismiss() }
             } catch {
@@ -1598,6 +1980,24 @@ private struct ExchangeBracket: View {
                 }
             }
             .stroke(Color.accentColor, style: StrokeStyle(lineWidth: 3, lineCap: .round, lineJoin: .round))
+        }
+    }
+}
+
+/// A toolbar label that drops its title when the bar is short of room.
+private struct CompactLabel: ViewModifier {
+    enum Full { case titleAndIcon, titleOnly }
+
+    let compact: Bool
+    var full = Full.titleAndIcon
+
+    func body(content: Content) -> some View {
+        if compact {
+            content.labelStyle(.iconOnly)
+        } else if full == .titleOnly {
+            content.labelStyle(.titleOnly)
+        } else {
+            content.labelStyle(.titleAndIcon)
         }
     }
 }

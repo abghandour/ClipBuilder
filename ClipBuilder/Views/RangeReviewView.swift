@@ -813,9 +813,24 @@ struct RangeReviewView<Footer: View>: View {
         return boundaries.indices.contains(dropSlot) ? boundaries[dropSlot] : nil
     }
 
-    private func reorderGesture(_ item: RangeReviewItem) -> some Gesture {
-        DragGesture(minimumDistance: 6, coordinateSpace: .named(Self.listSpace))
+    /// The item the passage `item` belongs to.
+    private func owner(of item: RangeReviewItem) -> RangeReviewItem? {
+        items.first { $0.id.ownerID == item.id.ownerID }
+    }
+
+    /// Dragging `item` to a new place. With `barMoves` (a passage row's
+    /// item), a drag that starts on the item's bar moves the item instead:
+    /// the row's gesture wins over the bar's own handle there.
+    private func reorderGesture(_ row: RangeReviewItem, barMoves: RangeReviewItem? = nil) -> some Gesture {
+        // Rows sit `spaceXS` in from the list's edge; the bar starts there.
+        func target(_ value: DragGesture.Value) -> RangeReviewItem {
+            guard let barMoves, canReorder(barMoves),
+                  value.startLocation.x < Theme.spaceXS + Self.handleWidth else { return row }
+            return barMoves
+        }
+        return DragGesture(minimumDistance: 6, coordinateSpace: .named(Self.listSpace))
             .onChanged { value in
+                let item = target(value)
                 guard isEnabled else { return }
                 draggingID = item.id
                 dragTranslation = value.translation.height
@@ -823,7 +838,8 @@ struct RangeReviewView<Footer: View>: View {
                 guard !boundaries.isEmpty else { return }
                 dropSlot = boundaries.indices.min { abs(boundaries[$0] - value.location.y) < abs(boundaries[$1] - value.location.y) }
             }
-            .onEnded { _ in
+            .onEnded { value in
+                let item = target(value)
                 defer { draggingID = nil; dragTranslation = 0; dropSlot = nil }
                 if item.id.cutIndex != nil {
                     guard isEnabled, let onMoveCut, let slot = dropSlot,
@@ -884,7 +900,7 @@ struct RangeReviewView<Footer: View>: View {
                     }
                 }
                 // A keep box is 18 wide at 8 in; the text starts 5 past it.
-                .padding(.leading, (isChild ? 42 : kept != nil ? 15 : 0) + (item.isDraft ? 0 : RangeReviewPalette.barWidth + Theme.spaceXS))
+                .padding(.leading, (isChild ? 14 : kept != nil ? 15 : 0) + (item.isDraft ? 0 : RangeReviewPalette.barWidth + Theme.spaceXS))
                 .padding(.trailing, onDelete != nil && !item.isDraft && !isChild
                          ? (onUnlink != nil && !item.children.isEmpty ? 56 : 30) : 0)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -893,18 +909,13 @@ struct RangeReviewView<Footer: View>: View {
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
-            .overlay(alignment: .leading) {
-                // The same bar the pick's first word carries in the transcript.
-                if let index = paletteIndex(item) {
-                    Rectangle().fill(RangeReviewPalette.bar(index))
-                        .frame(width: RangeReviewPalette.barWidth)
-                        .padding(.vertical, Theme.spaceXS)
-                        .allowsHitTesting(false)
-                }
-            }
+            .overlay(alignment: .leading) { bars(item) }
             .accessibilityAddTraits(item.id == selectedID ? .isSelected : [])
-            .highPriorityGesture(reorderGesture(item), including: canReorder(item) ? .all : .subviews)
-            .help(canReorder(item) ? "Drag up or down to reorder" : "")
+            // A passage moves inside its item from anywhere on its row; the
+            // item itself moves only by its bar.
+            .highPriorityGesture(reorderGesture(item, barMoves: isChild ? owner(of: item) : nil),
+                                 including: isChild && canReorder(item) ? .all : .subviews)
+            .help(isChild && canReorder(item) ? "Drag up or down to reorder inside this item" : "")
             if let onDelete, !item.isDraft, !isChild {
                 HStack(spacing: Theme.spaceXS) {
                     if let onUnlink, !item.children.isEmpty {
@@ -941,6 +952,58 @@ struct RangeReviewView<Footer: View>: View {
                     .accessibilityLabel(item.keepLabel)
             }
         }
+    }
+
+    /// The row's left edge. The bar in the pick's colour (the one its first
+    /// word carries in the transcript) is the handle that moves the pick;
+    /// under an open pick with passages it runs unbroken down every passage,
+    /// and each passage adds a thinner, lighter bar of its own (the passage
+    /// moves inside the pick from that bar or anywhere on its row).
+    @ViewBuilder
+    private func bars(_ item: RangeReviewItem) -> some View {
+        if let index = paletteIndex(item) {
+            let isChild = item.id.cutIndex != nil
+            let owner = isChild ? items.first { $0.id.ownerID == item.id.ownerID } : item
+            let opensGroup = !isChild && !item.children.isEmpty && item.id.ownerID == selectedID?.ownerID
+            let endsGroup = isChild && item.id == owner?.children.last?.id
+            ZStack(alignment: .leading) {
+                Rectangle().fill(RangeReviewPalette.bar(index))
+                    .frame(width: RangeReviewPalette.barWidth)
+                    .padding(.top, isChild ? 0 : Theme.spaceXS)
+                    .padding(.bottom, opensGroup || (isChild && !endsGroup) ? 0 : Theme.spaceXS)
+                    .allowsHitTesting(false)
+                if isChild {
+                    Rectangle().fill(RangeReviewPalette.cutBar(index))
+                        .frame(width: RangeReviewPalette.barWidth / 2)
+                        .padding(.vertical, Theme.spaceXS)
+                        .padding(.leading, RangeReviewPalette.cutBarInset)
+                        .allowsHitTesting(false)
+                }
+                if let owner, canReorder(owner) {
+                    reorderHandle(owner, width: Self.handleWidth,
+                                  help: owner.children.isEmpty ? "Drag up or down to reorder"
+                                  : "Drag up or down to move this item with its \(owner.children.count) passages")
+                }
+                if isChild, canReorder(item) {
+                    reorderHandle(item, width: Self.cutHandleWidth, help: "Drag up or down to reorder inside this item")
+                        .padding(.leading, Self.handleWidth)
+                }
+            }
+        }
+    }
+
+    /// The strip over a pick's bar that takes the drag; it ends where the keep box starts.
+    private static var handleWidth: CGFloat { 8 }
+    private static var cutHandleWidth: CGFloat { 16 }
+
+    private func reorderHandle(_ item: RangeReviewItem, width: CGFloat, help: String) -> some View {
+        Color.clear
+            .frame(width: width)
+            .contentShape(Rectangle())
+            .pointerStyle(draggingID == nil ? .grabIdle : .grabActive)
+            .gesture(reorderGesture(item), isEnabled: isEnabled)
+            .help(help)
+            .accessibilityHidden(true)
     }
 
     private func rangeCaption(_ range: ClosedRange<Double>) -> String {

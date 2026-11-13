@@ -665,7 +665,7 @@ private struct GeneralSettingsTab: View {
                     }
                 }
                 .help(store.editingDefaults.podcast.cleanupCutPolicy.help)
-                Text("Pauses and filler runs are detected after every transcription with these thresholds. The Wizard skips accepted cuts; Transcript Tools shows every cut and lets you change any decision.")
+                Text("Pauses and filler runs are detected after every transcription with these thresholds. The Wizard skips accepted cuts; Cleanup Cuts, in the transcript editor, shows every cut and lets you change any decision.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
                 Picker("Translate captions automatically", selection: store.editingBinding(\.podcast.autoTranslateLanguage)) {
@@ -673,7 +673,7 @@ private struct GeneralSettingsTab: View {
                     Text("Português (Brasil)").tag("pt-BR")
                     Text("English (United States)").tag("en-US")
                 }
-                .help("Translate each new transcript to this language on the Mac in the background, so the SRT and translated captions are ready without a visit to Transcript Tools")
+                .help("Translate each new transcript to this language on the Mac in the background, so the SRT and translated captions are ready without adding it by hand in the transcript editor")
             } header: {
                 Text("Transcription defaults")
             } footer: {

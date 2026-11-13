@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Clip inspector section: how many accepted Transcript Tools cleanup cuts
+/// Clip inspector section: how many accepted Cleanup Cuts cleanup cuts
 /// fall inside the timeline's clips, and a button that cuts them out of
 /// every clip of those videos (one undo step).
 struct CleanupCutsInspectorSection: View {
@@ -22,7 +22,7 @@ struct CleanupCutsInspectorSection: View {
                     Button("Refresh", systemImage: "arrow.clockwise") { Task { await reload(videoIDs) } }
                         .labelStyle(.iconOnly)
                         .buttonStyle(.borderless)
-                        .help("Read the cut decisions from Transcript Tools again")
+                        .help("Read the cut decisions from Cleanup Cuts again")
                 }
             }
             InspectorRow("") {
@@ -34,13 +34,13 @@ struct CleanupCutsInspectorSection: View {
                     .help("Cut every accepted filler, stutter, false start, retake and pause out of the clips that play it; later clips move up")
             }
             Text(status.isEmpty
-                 ? "Accept cuts in Transcript Tools for the source video, then apply them here."
+                 ? "Decide the cuts in Cleanup Cuts, in the source video's transcript, then apply them here."
                  : status)
                 .font(.caption)
                 .foregroundStyle(.secondary)
         }
         .task(id: videoIDs) { await reload(videoIDs) }
-        // A Refresh here (decisions changed in Transcript Tools) updates Ask
+        // A Refresh here (decisions changed in Cleanup Cuts) updates Ask
         // AI's count too; BuilderCleanupCutsPublisher keeps it current otherwise.
         .onChange(of: total) { _, total in
             store.assistant.updatePageState(BuilderAssistant().page,

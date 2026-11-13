@@ -88,7 +88,7 @@ nonisolated struct PodcastSettings: Codable, Sendable {
     /// What detected pauses and filler runs start as.
     var cleanupCutPolicy = CleanupCutPolicy.acceptDeadAir
     /// Captions are translated to this language on the Mac as soon as a
-    /// transcript lands; "" = only when asked in Transcript Tools.
+    /// transcript lands; "" = only when asked in the transcript editor.
     var autoTranslateLanguage = ""
 
     enum CodingKeys: String, CodingKey {

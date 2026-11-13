@@ -631,6 +631,17 @@ extension Database {
                                 .text(proposal.decision.rawValue), .integer(proposal.id)])
     }
 
+    /// One decision for several cuts, all or none.
+    func setEditProposalDecisions(ids: Set<Int64>, decision: EditProposal.Decision) throws {
+        guard !ids.isEmpty else { return }
+        try connection.transaction {
+            for id in ids {
+                try connection.execute("UPDATE edit_proposals SET decision = ? WHERE id = ?",
+                                       [.text(decision.rawValue), .integer(id)])
+            }
+        }
+    }
+
     func replaceTopicRanges(videoID: Int64, transcriptionKey: String?, topics: [TopicRange]) throws {
         try connection.transaction {
             try connection.execute("DELETE FROM topic_ranges WHERE video_id = ? AND transcription_key IS ?", [.integer(videoID), transcriptionKey.map(SQLValue.text) ?? .null])

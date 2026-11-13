@@ -15,6 +15,11 @@ struct WizardPreviewListConfig {
     /// The palette slot of a row's clip id: the colour its item has in its
     /// Footage section, drawn as the row's left bar. Nil: no bar.
     var barSlot: ((String) -> Int?)? = nil
+    /// What ties a clip to its neighbours as passages of one item (a
+    /// transcript pick made of several), by clip id: rows next to each
+    /// other with the same key share the item's bar. Unlisted: the clip
+    /// stands alone.
+    var groupKeys: [String: String] = [:]
     /// A third tab, Summary: what Generate will make. The column's footer is
     /// then only the action buttons, pinned without a split.
     var summary: AnyView? = nil
@@ -39,6 +44,8 @@ struct WizardPreviewList: View {
     @State private var linesVersion = 0
     @State private var expanded: Set<String> = []
     @State private var draggingID: String?
+    /// The drag started on an item's bar: all its passages move as one.
+    @State private var draggingItem = false
     @State private var dragTranslation: CGFloat = 0
     @State private var dropSlot: Int?
     @State private var rowFrames: [String: CGRect] = [:]
@@ -47,6 +54,9 @@ struct WizardPreviewList: View {
 
     private static let listSpace = "wizardPreview.list"
     private static let collapsedLines = 2
+    private static let rowSpacing: CGFloat = 2
+    /// The strip over an item's bar that drags the whole item.
+    private static let itemHandleWidth: CGFloat = 10
 
     /// Built once per change of the clips or the words: the rows are read
     /// from the header, the list and every row's closures, and building them
@@ -114,16 +124,18 @@ struct WizardPreviewList: View {
         ScrollView {
             // Plain VStack: every row needs a frame for the drop maths, and
             // the kept list is short.
-            VStack(alignment: .leading, spacing: 2) {
+            let dragged = draggedIDs
+            VStack(alignment: .leading, spacing: Self.rowSpacing) {
                 ForEach(Array(rows.enumerated()), id: \.element.id) { index, row in
+                    let isDragging = dragged.contains(row.id)
                     rowView(row, index: index)
                         .background(GeometryReader { geometry in
                             Color.clear.preference(key: PreviewRowFramePreference.self,
                                                    value: [row.id: geometry.frame(in: .named(Self.listSpace))])
                         })
-                        .offset(y: isDragging(row) ? dragTranslation : 0)
-                        .opacity(isDragging(row) ? 0.75 : 1)
-                        .zIndex(isDragging(row) ? 1 : 0)
+                        .offset(y: isDragging ? dragTranslation : 0)
+                        .opacity(isDragging ? 0.75 : 1)
+                        .zIndex(isDragging ? 1 : 0)
                         .highPriorityGesture(reorderGesture(row), including: canReorder ? .all : .subviews)
                         .help(canReorder ? "Double-click to expand or collapse; drag to reorder" : "Double-click to expand or collapse")
                         .contextMenu {
@@ -166,6 +178,13 @@ struct WizardPreviewList: View {
     private func rowView(_ row: WizardPreviewRow, index: Int) -> some View {
         let selected = index == selectedIndex
         let isExpanded = expanded.contains(row.id)
+        // A row that is one of several passages of the same item: the item's
+        // bar runs unbroken down them and each has a thinner bar of its own.
+        let key = barGroupKey(row)
+        let joinsAbove = index > 0 && barGroupKey(rows[index - 1]) == key
+        let joinsBelow = index + 1 < rows.count && barGroupKey(rows[index + 1]) == key
+        let grouped = (joinsAbove || joinsBelow) && config.barSlot?(row.id) != nil
+        let bridge = Self.rowSpacing / 2
         // No buttons on the card: a click selects, a double-click expands or
         // collapses, and the context menu carries Expand, Select and Delete.
         return VStack(alignment: .leading, spacing: 2) {
@@ -200,20 +219,45 @@ struct WizardPreviewList: View {
             .accessibilityAction(named: isExpanded ? "Collapse" : "Expand") { toggleExpanded(row) }
         }
         .padding(Theme.spaceS)
-        .padding(.leading, RangeReviewPalette.barWidth)
+        .padding(.leading, RangeReviewPalette.barWidth + (grouped ? RangeReviewPalette.cutBarInset : 0))
         .background(selected ? Color.accentColor.opacity(0.18) : Color.clear,
                     in: RoundedRectangle(cornerRadius: 6))
         .overlay(alignment: .leading) {
             // The colour this clip's item has in its Footage section.
             if let slot = config.barSlot?(row.id) {
-                RangeReviewPalette.bar(slot)
-                    .frame(width: RangeReviewPalette.barWidth)
-                    .padding(.vertical, Theme.spaceXS)
-                    .allowsHitTesting(false)
-                    .accessibilityHidden(true)
+                ZStack(alignment: .leading) {
+                    RangeReviewPalette.bar(slot)
+                        .frame(width: RangeReviewPalette.barWidth)
+                        .padding(.top, grouped && joinsAbove ? -bridge : Theme.spaceXS)
+                        .padding(.bottom, grouped && joinsBelow ? -bridge : Theme.spaceXS)
+                    if grouped {
+                        RangeReviewPalette.cutBar(slot)
+                            .frame(width: RangeReviewPalette.barWidth / 2)
+                            .padding(.vertical, Theme.spaceXS)
+                            .padding(.leading, RangeReviewPalette.cutBarInset)
+                    }
+                }
+                .allowsHitTesting(false)
+                .accessibilityHidden(true)
+                if grouped, canReorder {
+                    // The item's bar is the handle for the whole item; the
+                    // row's drag reads where it started (`reorderGesture`).
+                    Color.clear
+                        .frame(width: Self.itemHandleWidth)
+                        .contentShape(Rectangle())
+                        .pointerStyle(draggingID == nil ? .grabIdle : .grabActive)
+                        .help("Drag up or down to move this item with all its passages")
+                        .accessibilityHidden(true)
+                }
             }
         }
         .padding(.horizontal, Theme.spaceXS)
+    }
+
+    /// The item a row is a passage of: the owner's key, else the rows that
+    /// move together (one take's cuts).
+    private func barGroupKey(_ row: WizardPreviewRow) -> String {
+        config.groupKeys[row.id] ?? WizardPreviewRows.blockKey(row.id)
     }
 
     /// One block per speaker turn, a blank line apart: the speaker's name
@@ -274,7 +318,20 @@ struct WizardPreviewList: View {
     // MARK: - Reorder
 
     /// Rows sharing an owner (one take's cuts) move as one block.
-    private var blocks: [[WizardPreviewRow]] { WizardPreviewRows.blocks(rows) }
+    /// Dragged by its item's bar, a row moves with every neighbour that is
+    /// a passage of the same item.
+    private var blocks: [[WizardPreviewRow]] {
+        guard draggingItem else { return WizardPreviewRows.blocks(rows) }
+        var result: [[WizardPreviewRow]] = []
+        for row in rows {
+            if let last = result.last?.last, barGroupKey(last) == barGroupKey(row) {
+                result[result.count - 1].append(row)
+            } else {
+                result.append([row])
+            }
+        }
+        return result
+    }
 
     /// Boundaries between blocks, top of the first to bottom of the last.
     private var dropBoundaries: [CGFloat] {
@@ -284,9 +341,9 @@ struct WizardPreviewList: View {
     }
 
     /// The dragged row and the rest of its block.
-    private func isDragging(_ row: WizardPreviewRow) -> Bool {
-        guard let draggingID else { return false }
-        return row.id == draggingID || WizardPreviewRows.blockKey(row.id) == WizardPreviewRows.blockKey(draggingID)
+    private var draggedIDs: Set<String> {
+        guard let draggingID else { return [] }
+        return Set(blocks.first { $0.contains { $0.id == draggingID } }?.map(\.id) ?? [])
     }
 
     private var dropMarkerY: CGFloat? {
@@ -299,6 +356,10 @@ struct WizardPreviewList: View {
         DragGesture(minimumDistance: 6, coordinateSpace: .named(Self.listSpace))
             .onChanged { value in
                 guard canReorder else { return }
+                if draggingID == nil {
+                    // Rows sit `spaceXS` in from the list's edge; the bar starts there.
+                    draggingItem = value.startLocation.x < Theme.spaceXS + Self.itemHandleWidth
+                }
                 draggingID = row.id
                 dragTranslation = value.translation.height
                 let boundaries = dropBoundaries
@@ -306,7 +367,7 @@ struct WizardPreviewList: View {
                 dropSlot = boundaries.indices.min { abs(boundaries[$0] - value.location.y) < abs(boundaries[$1] - value.location.y) }
             }
             .onEnded { _ in
-                defer { draggingID = nil; dragTranslation = 0; dropSlot = nil }
+                defer { draggingID = nil; draggingItem = false; dragTranslation = 0; dropSlot = nil }
                 guard canReorder, let slot = dropSlot else { return }
                 let ids = rows.map(\.id)
                 let reordered = WizardPreviewRows.reorderedIDs(blocks: blocks.map { $0.map(\.id) },

@@ -3,7 +3,7 @@ import Translation
 
 /// Caption translation for one video: Apple's on-device Translation first,
 /// the configured AI provider for whatever it could not do. Shared by
-/// Transcript Tools (on demand) and the automatic translation that runs
+/// the transcript editor (on demand) and the automatic translation that runs
 /// after a transcript lands when Settings names a language.
 @MainActor
 enum TranscriptTranslator {

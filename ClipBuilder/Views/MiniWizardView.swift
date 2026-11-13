@@ -138,6 +138,7 @@ struct MiniWizardView: View {
                                                                                  cached: store.miniReelSectionOrder) else { return nil }
                                     return RangeReviewPalette.slot(index, family: .init(item.kind))
                                 },
+                                groupKeys: store.miniReelGroupKeys,
                                 summary: generateSummary)
     }
 

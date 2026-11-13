@@ -1,6 +1,6 @@
 import Foundation
 
-/// Accepted transcript cleanup cuts (Transcript Tools) applied to the
+/// Accepted transcript cleanup cuts (Cleanup Cuts) applied to the
 /// Builder timeline: the clip inspector's "Apply cleanup cuts" button.
 extension AppStore {
     /// Library video ids by source path, for Builder clips that reference a

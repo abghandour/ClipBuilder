@@ -4,7 +4,7 @@ import Foundation
 /// words, stutters (a word said twice), false starts (a short fragment the
 /// speaker abandons and restarts) and retakes (a line said again shortly
 /// after; the last take is kept). Pure and deterministic; every proposal is
-/// reviewed in Transcript Tools before it cuts anything.
+/// reviewed in Cleanup Cuts before it cuts anything.
 ///
 /// Cut boundaries: a cut may reach from the end of the kept word before it
 /// to the start of the kept word after it, never inside any word. That

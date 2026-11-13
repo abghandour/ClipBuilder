@@ -257,6 +257,19 @@ extension AppStore {
         return miniReelCachedUnits
     }
 
+    /// The reel's clips that are passages of one transcript pick, each
+    /// with a key naming the pick: what the List tab draws and drags as one
+    /// item. From the same units a drop is regrouped by.
+    var miniReelGroupKeys: [String: String] {
+        guard let key = miniReelKey, let units = miniReelTranscriptUnits(key: key) else { return [:] }
+        var result: [String: String] = [:]
+        for unit in units where unit.count > 1 {
+            guard let first = unit.first else { continue }
+            for id in unit { result[MiniReelRules.clipID(kind: .transcript, itemID: id)] = "unit-\(first)" }
+        }
+        return result
+    }
+
     /// Delete on a List row: the item leaves the reel and is unselected in
     /// its section (a fight pick, which has no Keep box, is deleted).
     func removeMiniReelItem(clipID: String) {

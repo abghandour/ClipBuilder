@@ -55,6 +55,11 @@ enum RangeReviewPalette {
 
     /// Width of the bar on the list row.
     static let barWidth: CGFloat = 4
+    /// Where a passage's own thinner bar starts inside an item that has
+    /// several: past the item's bar and a gap.
+    static let cutBarInset: CGFloat = 12
+    /// A passage's own bar: half the width and a lighter shade of its item's.
+    static func cutBar(_ slot: Int) -> Color { bar(slot).opacity(0.55) }
 
     /// Hue 25 degrees (orange) for slot 0; a family shifts by 20 degrees and
     /// each step by 60. Families also differ a little in depth so two hues
