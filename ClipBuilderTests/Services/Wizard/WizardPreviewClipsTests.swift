@@ -65,6 +65,30 @@ struct WizardPreviewClipsTests {
         #expect(WizardPreviewClips.kept(run: run, scenes: [Fixtures.scene()]).isEmpty)
     }
 
+    @Test func reelHighlightsResolveSavedFootageAfterReanalysis() {
+        let original = Fixtures.scene(id: 10, start: 0, end: 30)
+        var replacement = original
+        replacement.id = 20
+        var first = Fixtures.planClip(sceneID: 10, start: 2, end: 8)
+        first.brollCuts = [.init(start: 4, end: 6, sceneID: 30, sceneOffset: 0, reason: "Example", origin: .user)]
+        var saved = candidate(7, name: "Highlight", clips: [first, Fixtures.planClip(sceneID: 10, start: 12, end: 18)])
+        saved.take.plan.framing = .speakerFocus
+        saved.take.plan = WizardSelectionRules.snapshot(saved.take.plan, scenes: [original])
+        let run = MiniWizardRun(projectID: 1, video: Fixtures.video(), footageKind: .highlights, length: .automatic,
+            batchID: "b", candidates: [saved], options: WizardOptions())
+        let items = MiniReelRules.kept(run: run)
+        let clips = WizardPreviewClips.reel(items: items, runs: [.highlights: run], videoID: run.video.id, scenes: [replacement])
+        #expect(clips.map(\.scene.id) == [20, 20])
+        #expect(clips.map(\.range) == [2...8, 12...18])
+        #expect(clips.map(\.id) == ["take-7-0", "take-7-1"])
+        #expect(clips.map(\.title) == ["Highlight · 1", "Highlight · 2"])
+        #expect(clips.first?.brollCuts == first.brollCuts)
+        #expect(clips.allSatisfy { $0.chosenSubject == .speakerFocus })
+        replacement.endTime = 25
+        #expect(WizardPreviewClips.reel(items: items, runs: [.highlights: run], videoID: run.video.id,
+                                      scenes: [replacement]).isEmpty, "different footage must not stand in for the saved range")
+    }
+
     @Test func clockReadsLikeAPlayer() {
         #expect(WizardPreviewClips.clock(0) == "0:00")
         #expect(WizardPreviewClips.clock(88.14) == "1:28")

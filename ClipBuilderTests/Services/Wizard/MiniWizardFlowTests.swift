@@ -106,6 +106,9 @@ struct MiniWizardFlowTests {
         #expect(flow.footageKinds.last == .highlights, "Highlights sits after Q&A and Transcript")
         #expect(MiniWizardFlow(video: video, hasTranscript: false, footageKind: .transcript).effectiveFootageKind == .highlights)
         #expect(MiniWizardFlow.footageSummary(kind: .transcript, count: 3, keptCount: 2) == "3 picks · 2 kept")
+        // Picks and the passages they hold are counted apart.
+        #expect(MiniWizardFlow.footageSummary(kind: .transcript, count: 18, keptCount: 5, passages: 22) == "18 picks · 22 passages")
+        #expect(MiniWizardFlow.footageSummary(kind: .transcript, count: 1, keptCount: 1, passages: 1) == "1 pick · 1 passage")
     }
 
     @Test("Lengths are 10, 15, 30 seconds or Auto")
@@ -310,7 +313,7 @@ extension MiniWizardFlowTests {
         #expect(card.sections.map(\.title) == ["Picture", "Overlays", "Package"], "no Audio row for an untyped video")
         #expect(card.sections[0].items == ["Balanced", "9:16 · 1080p", "Auto", "Random transitions"])
         #expect(card.sections[1].items == ["Captions", "Watermark"])
-        #expect(card.sections[2].items.isEmpty)
+        #expect(card.sections[2].items == ["None"], "an empty Package says so, like Overlays")
         var fight = Fixtures.video()
         fight.videoType = VideoType.fight.rawValue
         let fightCard = MiniWizardFlow(video: fight, length: .fifteen).runSummaryCard(candidates: candidates, exchangeCount: 0, settings: settings)

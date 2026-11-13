@@ -347,7 +347,9 @@ final class AppStore {
     @ObservationIgnored var personResearchRunner: (@Sendable (PersonResearchRequest) async throws -> PersonResearchOutcome)?
     /// Scored fight-action events by video id — the pace/winning graphs
     /// under the video and scene timelines render from these.
-    var fightEvents: [Int64: [FightEventRecord]] = [:]
+    var fightEvents: [Int64: [FightEventRecord]] = [:] {
+        didSet { refreshMiniFightActions() }
+    }
     /// Videos whose fight-scoring pass is running right now.
     var fightScoringInFlight: Set<Int64> = []
     var generatedVideos: [GeneratedVideoRecord] = []
@@ -422,7 +424,9 @@ final class AppStore {
     var pendingWizardAssistantRequest: WizardAssistantRequest?
 
     // Wizard job
-    var isWizardRunning = false
+    var isWizardRunning = false {
+        didSet { if !isWizardRunning { retryMiniPicksRefresh() } }
+    }
     /// True while a Builder pre-fill plan runs — drives the Builder's
     /// progress toolbar.
     var isPlanningIntoBuilder = false
@@ -509,7 +513,9 @@ final class AppStore {
     /// only, so it lasts while the app is open (AppStore+MiniUndo).
     var miniUndoStacks: [String: MiniUndoStack] = [:]
     /// An Undo or Redo is restoring a section; its controls wait.
-    var isMiniUndoing = false
+    var isMiniUndoing = false {
+        didSet { if !isMiniUndoing { retryMiniPicksRefresh() } }
+    }
     @ObservationIgnored var isRestoringMiniUndo = false
     @ObservationIgnored var miniUndoSettleTask: Task<Void, Never>?
     /// The Undo or Redo step under way; Team Sync waits for it before pulling.
@@ -528,6 +534,18 @@ final class AppStore {
     var sceneEditSaveTask: Task<Void, Error>?
     /// Serial transcript-pick writes; Mini waits for the latest before recording takes.
     var transcriptPickSaveTask: Task<Void, Error>?
+    @ObservationIgnored var miniTranscriptClearGeneration = 0
+    @ObservationIgnored var miniTranscriptGroupingEdits: [Int64: Int] = [:]
+    @ObservationIgnored var miniFightClearGeneration = 0
+    @ObservationIgnored var miniPicksRefreshPending: Set<String> = []
+    @ObservationIgnored var miniPicksRefreshInProgress = false
+    /// Highlights removed from the reel while their batch is not on screen
+    /// leave that batch's kept list here, one after the other; quitting waits.
+    @ObservationIgnored var miniHighlightUnkeepTask: Task<Void, Never>?
+    /// The source each undo history belongs to, by batch id: a pick that
+    /// comes back under another row id is renamed in all of them, also
+    /// those of a Length that is not on screen.
+    @ObservationIgnored var miniUndoStackSources: [String: MiniReelKey] = [:]
     /// Bumped when a transcript set is renamed, so lists of sets reload.
     var transcriptSetNamesVersion = 0
     /// Bumped by every library refresh. Lists that no other version covers
@@ -1195,6 +1213,7 @@ final class AppStore {
         transcriptionChoiceRequest = nil
         // Row ids belong to the profile's database.
         miniUndoStacks = [:]
+        miniUndoStackSources = [:]
         miniPlanRevisions = [:]
         videos = []
         scenes = []

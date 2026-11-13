@@ -5,12 +5,28 @@ import AVKit
 struct RangeReviewView<Footer: View>: View {
     @Environment(AppStore.self) private var store
     @Environment(\.isEnabled) private var isEnabled
+    @FocusedValue(\.wizardPreviewFocused) private var previewFocused
     let items: [RangeReviewItem]
     let rows: [TranscriptRow]
     let labels: [Int64: String]
     /// Named speaker turns; rows crossing a speaker change split into one line per speaker.
     var speakerSpans: [TranscriptQATrim.SpeakerSpan] = []
     var kept: Binding<Set<Int64>>? = nil
+    /// The list's title in place of "N of M kept", when the adapter counts
+    /// in its own words (picks and the passages they hold).
+    var keptSummary: String? = nil
+    /// A click on a mixed keep box (`keptMixed`): keep every passage of the item.
+    var onKeepWhole: ((RangeReviewItem) -> Void)? = nil
+    /// Keep All when some item is partly kept: every passage of every item.
+    /// The `kept` binding alone leaves a partly kept item as it is.
+    var onKeepAll: (() -> Void)? = nil
+    /// Shown where Add goes while nothing is marked, so the next step is
+    /// on screen before the first drag.
+    var emptyDraftAccessory: AnyView? = nil
+    /// The adapter is storing what was marked (Add): until that lands no
+    /// passage can be marked or trimmed, so this view's own draft never
+    /// runs ahead of what the adapter accepts.
+    var editsFrozen = false
     /// The colour family of this list's bars and transcript blocks: each
     /// Express Footage section has its own, so no two share a colour.
     var palette: RangeReviewPalette.Family = .qa
@@ -82,6 +98,7 @@ struct RangeReviewView<Footer: View>: View {
     @ViewBuilder var footer: (RangeReviewItem) -> Footer
 
     @State private var selectedID: RangeReviewItem.ID?
+    @FocusState private var listFocused: Bool
     /// The selected cut's `stableID`, to find it again after its siblings moved.
     @State private var selectedStable: Int64?
     /// A span being marked is a new passage of the selected item (Shift-drag).
@@ -141,7 +158,7 @@ struct RangeReviewView<Footer: View>: View {
     private var limits: ClosedRange<Double> { selected?.limits ?? 0...0 }
     private var policy: RangeReviewItem.TrimPolicy { selected?.trimPolicy ?? .qa }
     private var canTrim: Bool {
-        guard let selected, selected.isAvailable else { return false }
+        guard !editsFrozen, let selected, selected.isAvailable else { return false }
         return policy == .wizard ? limits.upperBound > limits.lowerBound
             : limits.upperBound - limits.lowerBound >= policy.minimumSpan
     }
@@ -238,6 +255,13 @@ struct RangeReviewView<Footer: View>: View {
                 }
             }
             .coordinateSpace(name: "transcriptQA.columns")
+            // Work here takes the keyboard back from the Preview column: a
+            // word or trim drag does not move focus by itself, and the trim
+            // keys would stay with the Preview picture clicked before.
+            .simultaneousGesture(DragGesture(minimumDistance: 0).onChanged { _ in
+                guard previewFocused == true else { return }
+                Self.releasePreviewFocus()
+            })
         }
         .task(id: transcriptInput) {
             let input = transcriptInput
@@ -267,7 +291,7 @@ struct RangeReviewView<Footer: View>: View {
             selection?.wrappedValue = selectedID?.ownerID
             selectItem()
             applyPendingDraft()
-            if playingAll {
+            if playingAll, pageVisible, isEnabled {
                 if advancingPlayAll, playback.player != nil, let range, range.upperBound > range.lowerBound {
                     playback.play()
                     advancingPlayAll = false
@@ -283,7 +307,7 @@ struct RangeReviewView<Footer: View>: View {
         // Only a cut that played to its end advances: a pause from scrubbing
         // or dragging a trim handle keeps the cut and its draft.
         .onChange(of: playback.endCount) { _, _ in
-            guard playingAll, !advancingPlayAll else { return }
+            guard pageVisible, isEnabled, playingAll, !advancingPlayAll else { return }
             advancePlayAll()
         }
         .onChange(of: rowIdentities) { _, _ in reconcileSelection() }
@@ -306,10 +330,10 @@ struct RangeReviewView<Footer: View>: View {
             if ready, let range, selected?.isAvailable == true {
                 playback.setRange(playable(range))
                 playback.seek(to: range.lowerBound)
-                if playingAll, advancingPlayAll {
+                if pageVisible, isEnabled, playingAll, advancingPlayAll {
                     advancingPlayAll = false
                     playback.play()
-                } else if isEnabled, autoplay {
+                } else if pageVisible, isEnabled, autoplay {
                     playback.play()
                 }
             }
@@ -321,10 +345,11 @@ struct RangeReviewView<Footer: View>: View {
             if let range { recenter(range) }
         }
         .onChange(of: isEnabled) { _, enabled in
-            if !enabled { draft = nil; playingAll = false; playback.pause() }
+            if !enabled { draft = nil; stopPlayAll() }
         }
-        .onChange(of: pageVisible) { _, visible in if !visible { playback.pause() } }
+        .onChange(of: pageVisible) { _, visible in if !visible { stopPlayAll() } }
         .onDisappear {
+            stopPlayAll()
             playback.tearDown()
             loadedURL = nil
         }
@@ -397,14 +422,14 @@ struct RangeReviewView<Footer: View>: View {
                                   owner: adding ? selected.id.ownerID : nil, video: video)
         let anchor = inactive ? marked.map(\.range.lowerBound).min() ?? selected.range.lowerBound : selected.range.lowerBound
         let emptyRange = anchor...anchor
-        let contextCanTrim = inactive ? selected.isAvailable : canTrim
+        let contextCanTrim = inactive ? selected.isAvailable && !editsFrozen : canTrim
         func activate(at word: TranscriptQATrim.Word? = nil) {
             // The saved cut under the word wins (the cut itself, not its
             // owner: a multi-cut reel's first cut must not take a word from
             // its second); pick drafts fall back to `selected`.
             let under = word.flatMap { itemUnder($0, video: video) }
             let target = under ?? selected
-            if let word, word.end > word.start, under?.isAvailable ?? contextCanTrim {
+            if let word, word.end > word.start, !editsFrozen, under?.isAvailable ?? contextCanTrim {
                 // With nothing selected a click selects that word alone, not the
                 // saved passage under it; Reset to Original brings the passage back.
                 pendingDraft = (word.start, word.end)
@@ -501,12 +526,52 @@ struct RangeReviewView<Footer: View>: View {
     /// Add for a marked draft, Clear, and Reset, pinned under the words. The
     /// row is always there so the column does not jump as the selection changes.
     private func rangeActions(_ item: RangeReviewItem, inactive: Bool) -> some View {
-        HStack(spacing: Theme.spaceS) {
-            if !inactive { draftActions(item) }
-            clearButton(item, inactive: inactive)
-            Spacer(minLength: 0)
-            if !inactive { resetButton(item) }
+        // One row when the column holds it; in a narrow column Add and its
+        // summary take a row of their own above Clear and Reset.
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: Theme.spaceS) {
+                rangeLeadingActions(item, inactive: inactive)
+                rangeTrailingActions(item, inactive: inactive)
+            }
+            VStack(alignment: .leading, spacing: Theme.spaceXS) {
+                HStack(spacing: Theme.spaceS) {
+                    rangeLeadingActions(item, inactive: inactive)
+                    Spacer(minLength: 0)
+                }
+                HStack(spacing: Theme.spaceS) { rangeTrailingActions(item, inactive: inactive) }
+            }
+            // The narrowest column: every control on a line of its own.
+            VStack(alignment: .leading, spacing: Theme.spaceXS) {
+                rangeLeadingActions(item, inactive: inactive)
+                rangeTrailingActions(item, inactive: inactive, stacked: true)
+            }
+            .frame(maxWidth: .infinity, alignment: .leading)
         }
+    }
+
+    @ViewBuilder
+    private func rangeLeadingActions(_ item: RangeReviewItem, inactive: Bool) -> some View {
+        if !inactive { draftActions(item) }
+        // Nothing marked yet: the adapter's disabled Add holds the place.
+        if spanSelection, let emptyDraftAccessory, inactive || (item.isDraft && isEmptyRange) { emptyDraftAccessory }
+    }
+
+    @ViewBuilder
+    private func rangeTrailingActions(_ item: RangeReviewItem, inactive: Bool, stacked: Bool = false) -> some View {
+        clearButton(item, inactive: inactive)
+        if spanSelection, !inactive, !item.isDraft {
+            // A saved item's edits are stored as they are made; say which one.
+            FormCaption(editingLabel(item)).lineLimit(1).truncationMode(.tail)
+                .layoutPriority(-1).help(editingLabel(item))
+        }
+        if !stacked { Spacer(minLength: 0) }
+        if !inactive { resetButton(item) }
+    }
+
+    /// "Editing Pick 1 · Passage 2": which saved item the trim controls change.
+    private func editingLabel(_ item: RangeReviewItem) -> String {
+        guard item.id.cutIndex != nil, let owner = owner(of: item) else { return "Editing \(item.keepLabel)" }
+        return "Editing \(owner.keepLabel) · \(item.keepLabel)"
     }
 
     /// Drops any marked passage and deselects the item, like clicking the
@@ -555,10 +620,21 @@ struct RangeReviewView<Footer: View>: View {
     private var itemList: some View {
         VStack(alignment: .leading, spacing: 0) {
             if let kept {
-                // The kept count titles the list; Select All sits in the footer toolbar.
+                // The kept count titles the list; Keep All sits in the footer toolbar.
                 let ids = RangeReviewItem.keepableOwnerIDs(items)
                 let count = kept.wrappedValue.intersection(ids).count
-                SectionLabel("\(count) of \(ids.count) kept")
+                // The adapter's longer wording gives way to the short count in a narrow list.
+                Group {
+                    if let keptSummary {
+                        ViewThatFits(in: .horizontal) {
+                            SectionLabel(keptSummary)
+                            SectionLabel("\(count) of \(ids.count) kept")
+                        }
+                    } else {
+                        SectionLabel("\(count) of \(ids.count) kept")
+                    }
+                }
+                    .help(keptSummary ?? "\(count) of \(ids.count) kept")
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(Theme.spaceS)
             } else if let listTitle {
@@ -615,6 +691,8 @@ struct RangeReviewView<Footer: View>: View {
             }
             .focusable()
             .focusEffectDisabled()
+            .focused($listFocused)
+            .keyboardFocusRing(listFocused)
             .onMoveCommand { direction in
                 guard isEnabled, !visibleItems.isEmpty else { return }
                 let index = visibleItems.firstIndex { $0.id == selectedID } ?? 0
@@ -660,9 +738,13 @@ struct RangeReviewView<Footer: View>: View {
                               : "Link the \(owners.count) highlighted items into one, in list order")
                     }
                     if let kept {
-                        let allKept = RangeReviewItem.allKept(kept.wrappedValue, items: items)
-                        Button(allKept ? "Deselect All" : "Select All") {
-                            kept.wrappedValue = RangeReviewItem.togglingAll(kept.wrappedValue, items: items)
+                        // A partly kept item is not all kept: Keep All fills it first.
+                        let mixed = onKeepAll != nil && items.contains(where: \.keptMixed)
+                        let allKept = !mixed && RangeReviewItem.allKept(kept.wrappedValue, items: items)
+                        // Keeping, not selecting: a row click selects, this checks the boxes.
+                        Button(allKept ? "Keep None" : "Keep All") {
+                            if mixed, let onKeepAll { onKeepAll() }
+                            else { kept.wrappedValue = RangeReviewItem.togglingAll(kept.wrappedValue, items: items) }
                         }
                         .lineLimit(1).fixedSize()
                         .disabled(!isEnabled || items.allSatisfy(\.isDraft))
@@ -722,7 +804,7 @@ struct RangeReviewView<Footer: View>: View {
     }
 
     private func startPlayAll() {
-        guard isEnabled, let first = playableItems.first else { return }
+        guard pageVisible, isEnabled, let first = playableItems.first else { return }
         playingAll = true
         if selectedID == first.id, playback.player != nil {
             playback.setRange(first.range)
@@ -742,6 +824,7 @@ struct RangeReviewView<Footer: View>: View {
 
     /// The item that just finished moves the selection on; after the last one Play All ends.
     private func advancePlayAll() {
+        guard pageVisible, isEnabled else { stopPlayAll(); return }
         let items = playableItems
         guard let index = items.firstIndex(where: { $0.id == selectedID }), index + 1 < items.count else {
             playingAll = false
@@ -937,12 +1020,24 @@ struct RangeReviewView<Footer: View>: View {
                     .padding(.trailing, Theme.spaceXS)
             }
             if let kept, !isChild, !item.isDraft {
-                Toggle(item.keepLabel, isOn: Binding(
-                    get: { kept.wrappedValue.contains(item.id.ownerID) },
-                    set: { keep in
-                        if keep { kept.wrappedValue.insert(item.id.ownerID) }
-                        else { kept.wrappedValue.remove(item.id.ownerID) }
-                    }))
+                Group {
+                    if item.keptMixed, let onKeepWhole {
+                        // One source on and one off draws the mixed box; a
+                        // click turns every source on, which keeps the rest.
+                        Toggle(item.keepLabel,
+                               sources: [Binding.constant(true),
+                                         Binding(get: { false }, set: { keep in if keep { onKeepWhole(item) } })],
+                               isOn: \.self)
+                        .accessibilityValue("Partly kept")
+                    } else {
+                        Toggle(item.keepLabel, isOn: Binding(
+                            get: { kept.wrappedValue.contains(item.id.ownerID) },
+                            set: { keep in
+                                if keep { kept.wrappedValue.insert(item.id.ownerID) }
+                                else { kept.wrappedValue.remove(item.id.ownerID) }
+                            }))
+                    }
+                }
                     .toggleStyle(.checkbox)
                     .labelsHidden()
                     .fixedSize()
@@ -1297,7 +1392,7 @@ struct RangeReviewView<Footer: View>: View {
         } else if playback.player != nil {
             playback.setRange(playable(range))
             playback.seek(to: range.lowerBound)
-            if isEnabled, autoplay { playback.play() }
+            if pageVisible, isEnabled, autoplay { playback.play() }
         }
     }
 
@@ -1432,13 +1527,23 @@ struct RangeReviewView<Footer: View>: View {
             ?? cuts.first { $0.limits.upperBound > $0.limits.lowerBound && $0.limits.contains(word.mid) }
     }
 
+    /// Ends the Preview column's keyboard focus once this click has been
+    /// delivered. A text field the click went to keeps the keyboard.
+    private static func releasePreviewFocus() {
+        DispatchQueue.main.async {
+            guard let window = NSApp.keyWindow, !(window.firstResponder is NSText) else { return }
+            window.makeFirstResponder(nil)
+        }
+    }
+
     private func handleKey(_ event: NSEvent) -> Bool {
         // The monitor is window-wide; a mounted but hidden review stays quiet.
-        guard isEnabled, pageVisible, range != nil else { return false }
-        // The preview's List owns Delete while it has focus.
-        if let onDelete, let selected, event.keyCode == 51 || event.keyCode == 117,
-           !selected.isDraft, selected.id.cutIndex == nil, !store.miniReelListFocused {
-            onDelete(selected)
+        guard isEnabled, pageVisible, range != nil,
+              !store.miniReelListFocused, previewFocused != true else { return false }
+        // Playback resolves a parent to its first passage; Delete acts on the selected row itself.
+        if let onDelete, let parent = selectedParent, event.keyCode == 51 || event.keyCode == 117,
+           !parent.isDraft, selectedID?.cutIndex == nil {
+            onDelete(parent)
             return true
         }
         guard playback.player != nil else { return false }

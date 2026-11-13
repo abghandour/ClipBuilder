@@ -28,6 +28,35 @@ struct MiniUndoTests {
         #expect(stack.redoTarget == nil)
     }
 
+    @Test func aReelArrangedSinceIsWhatTheNextStepBackRestores() {
+        func key(_ id: Int64) -> MiniReelRules.Key { .init(kind: .transcript, itemID: id) }
+        var stack = MiniUndoStack()
+        let a = pick(1, 0, 2), b = pick(2, 5, 8)
+        stack.begin(.transcript(picks: [a], reelOrder: [key(1)]))
+        stack.commit(.transcript(picks: [a, b], reelOrder: [key(1), key(2)]))
+        // The reel was dragged to B, A; then B is deleted.
+        stack.refreshPlacement(.transcript(picks: [a, b], reelOrder: [key(2), key(1)]))
+        stack.commit(.transcript(picks: [a], reelOrder: [key(1)]))
+        #expect(stack.undoTarget?.reelOrder == [key(2), key(1)])
+        #expect(stack.canUndo)
+        // A section that is not where the history has it is left alone.
+        stack.refreshPlacement(.transcript(picks: [b], reelOrder: [key(2)]))
+        #expect(stack.current?.reelOrder == [key(1)])
+    }
+
+    @Test func aPickBroughtBackIsRenamedInAnotherSectionsReelOrder() {
+        let order: [MiniReelRules.Key] = [.init(kind: .transcript, itemID: 1), .init(kind: .qa, itemID: 1)]
+        var stack = MiniUndoStack()
+        stack.begin(.qa(.init(kept: [1], order: [1], ranges: [:]), reelOrder: order))
+        stack.remapReel(pickIDs: [1: 9])
+        #expect(stack.current?.reelOrder == [.init(kind: .transcript, itemID: 9), order[1]])
+        // A transcript history is renamed by `remap`, pick rows included, not here.
+        var picks = MiniUndoStack()
+        picks.begin(.transcript(picks: [pick(1, 0, 2)], reelOrder: order))
+        picks.remapReel(pickIDs: [1: 9])
+        #expect(picks.current?.reelOrder == order)
+    }
+
     @Test func aTargetIsOnlyLeftOnceItWasRestored() {
         var stack = MiniUndoStack()
         stack.begin(state())

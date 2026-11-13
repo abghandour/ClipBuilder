@@ -18,6 +18,8 @@ struct PageTabs<Tab: Hashable, Content: View>: View {
     var surface = AnyShapeStyle(Color(nsColor: .controlBackgroundColor))
     /// A tab's tooltip, e.g. what the step behind it currently holds.
     var help: ((Tab) -> String)? = nil
+    /// A control at the right end of the tab row, level with the tabs.
+    var accessory: AnyView? = nil
     @ViewBuilder let content: (Tab) -> Content
 
     private var panel: AnyShapeStyle { surface }
@@ -42,7 +44,10 @@ struct PageTabs<Tab: Hashable, Content: View>: View {
                     .help(help?(tab) ?? "")
                     .accessibilityAddTraits(open ? [.isSelected] : [])
                 }
-                Spacer(minLength: 0)
+                Spacer(minLength: Theme.spaceS)
+                if let accessory {
+                    accessory.padding(.bottom, Theme.spaceXS)
+                }
             }
             .padding(.horizontal, Theme.spaceS)
             Group {

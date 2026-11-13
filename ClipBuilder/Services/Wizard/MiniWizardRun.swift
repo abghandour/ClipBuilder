@@ -39,10 +39,11 @@ nonisolated struct MiniWizardRun: Sendable {
     var summary: String {
         let count = switch footageKind {
         case .qa: qa?.sections.count ?? 0
-        case .transcript: transcript?.picks.count ?? 0
+        case .transcript: TranscriptPickUnits.units(transcript?.picks ?? []).count
         case .fightMetrics: fight?.picks.count ?? 0
         case .highlights: candidates.count
         }
-        return MiniWizardFlow.footageSummary(kind: footageKind, count: count, keptCount: keptCount)
+        return MiniWizardFlow.footageSummary(kind: footageKind, count: count, keptCount: keptCount,
+                                             passages: footageKind == .transcript ? transcript?.picks.count ?? 0 : nil)
     }
 }

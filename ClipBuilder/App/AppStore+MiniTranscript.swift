@@ -181,11 +181,14 @@ extension AppStore {
     }
 
     /// One passage is a pick; several become one unit, played in this order.
-    func addMiniTranscriptPicks(ranges: [ClosedRange<Double>]) {
+    /// `completion` gets whether the pick was stored, so the caller can
+    /// hold the marked passages until it was.
+    func addMiniTranscriptPicks(ranges: [ClosedRange<Double>], completion: ((Bool) -> Void)? = nil) {
         let ranges = ranges.filter { $0.upperBound > $0.lowerBound }
-        guard let first = ranges.first else { return }
-        guard ranges.count > 1 else { addMiniTranscriptPick(range: first); return }
-        guard let run = currentTranscriptRun(), let database else { return }
+        // Every request reports once, also one that is turned away here.
+        guard let first = ranges.first else { completion?(false); return }
+        guard ranges.count > 1 else { addMiniTranscriptPick(range: first, completion: completion); return }
+        guard let run = currentTranscriptRun(), let database else { completion?(false); return }
         recordMiniUndo(.transcript)
         let videoID = run.video.id
         let projectID = run.projectID
@@ -193,6 +196,7 @@ extension AppStore {
         let shownSet = TranscriptPickSet.shown(run.transcript?.setKey)
         let previous = transcriptPickSaveTask
         let generation = profileGeneration
+        let clearGeneration = miniTranscriptClearGeneration
         transcriptPickSaveTask = Task {
             _ = try? await previous?.value
             let picks: [TranscriptPick]
@@ -201,9 +205,12 @@ extension AppStore {
                                                                   ranges: ranges, set: shownSet)
             } catch {
                 if generation == profileGeneration { presentError("Could not add the pick", error) }
+                completion?(false)
                 throw error
             }
-            guard generation == profileGeneration, miniRuns[.transcript]?.batchID == batchID else { return }
+            completion?(true)
+            guard generation == profileGeneration, clearGeneration == miniTranscriptClearGeneration,
+                  miniRuns[.transcript]?.batchID == batchID else { return }
             miniRuns[.transcript]?.transcript?.picks.append(contentsOf: picks)
         }
     }
@@ -218,6 +225,7 @@ extension AppStore {
         let updated = TranscriptPickUnits.linking(picks, ids: ids, key: key)
         guard updated != picks else { return }
         recordMiniUndo(.transcript)
+        for id in ids { miniTranscriptGroupingEdits[id, default: 0] &+= 1 }
         miniRuns[.transcript]?.transcript?.picks = updated
         let videoID = run.video.id
         let projectID = run.projectID
@@ -236,8 +244,11 @@ extension AppStore {
         let projectID = run.projectID
         let batchID = run.batchID
         let shownSet = TranscriptPickSet.shown(run.transcript?.setKey)
+        let originalUnit = (run.transcript?.picks ?? []).filter { unit.contains($0.id) }
+        let groupingEdits = miniTranscriptGroupingEdits
         let previous = transcriptPickSaveTask
         let generation = profileGeneration
+        let clearGeneration = miniTranscriptClearGeneration
         transcriptPickSaveTask = Task {
             _ = try? await previous?.value
             let added: TranscriptPick
@@ -248,14 +259,28 @@ extension AppStore {
                 if generation == profileGeneration { presentError("Could not add the passage", error) }
                 throw error
             }
-            guard generation == profileGeneration, miniRuns[.transcript]?.batchID == batchID,
+            guard generation == profileGeneration, clearGeneration == miniTranscriptClearGeneration,
+                  miniRuns[.transcript]?.batchID == batchID,
                   let picks = miniRuns[.transcript]?.transcript?.picks else { return }
-            miniRuns[.transcript]?.transcript?.picks = TranscriptPickUnits.adding(added, to: picks, unit: unit)
+            let unchanged = originalUnit.filter { groupingEdits[$0.id] == miniTranscriptGroupingEdits[$0.id] }
+            let updated = TranscriptPickUnits.completingAddition(added, to: picks, originalUnit: unchanged)
+            miniRuns[.transcript]?.transcript?.picks = updated
+            // A later Unlink owns the old members; detach the new row too
+            // when none of that unit survives, before queued edits run.
+            if updated.first(where: { $0.id == added.id })?.groupKey != added.groupKey {
+                do {
+                    try await database.setTranscriptPicksLinked(projectID: projectID, videoID: videoID, ids: [added.id], key: nil)
+                    try await database.reorderTranscriptPicks(projectID: projectID, videoID: videoID, ids: updated.map(\.id))
+                } catch {
+                    if generation == profileGeneration { presentError("Could not unlink the new passage", error) }
+                    throw error
+                }
+            }
         }
     }
 
-    func addMiniTranscriptPick(range: ClosedRange<Double>) {
-        guard let run = currentTranscriptRun() else { return }
+    func addMiniTranscriptPick(range: ClosedRange<Double>, completion: ((Bool) -> Void)? = nil) {
+        guard let run = currentTranscriptRun(), database != nil else { completion?(false); return }
         recordMiniUndo(.transcript)
         let videoID = run.video.id
         let projectID = run.projectID
@@ -263,6 +288,7 @@ extension AppStore {
         let shownSet = TranscriptPickSet.shown(run.transcript?.setKey)
         let previous = transcriptPickSaveTask
         let generation = profileGeneration
+        let clearGeneration = miniTranscriptClearGeneration
         guard let database else { return }
         transcriptPickSaveTask = Task {
             _ = try? await previous?.value
@@ -272,9 +298,12 @@ extension AppStore {
                                                             start: range.lowerBound, end: range.upperBound, set: shownSet)
             } catch {
                 if generation == profileGeneration { presentError("Could not add the pick", error) }
+                completion?(false)
                 throw error
             }
-            guard generation == profileGeneration, miniRuns[.transcript]?.batchID == batchID else { return }
+            completion?(true)
+            guard generation == profileGeneration, clearGeneration == miniTranscriptClearGeneration,
+                  miniRuns[.transcript]?.batchID == batchID else { return }
             miniRuns[.transcript]?.transcript?.picks.append(pick)
         }
     }
@@ -298,6 +327,7 @@ extension AppStore {
         let order = picks.map(\.id)
         let previous = transcriptPickSaveTask
         let generation = profileGeneration
+        let clearGeneration = miniTranscriptClearGeneration
         guard let database else { return }
         transcriptPickSaveTask = Task {
             _ = try? await previous?.value
@@ -317,7 +347,8 @@ extension AppStore {
                 }
                 throw error
             }
-            guard generation == profileGeneration, miniRuns[.transcript]?.batchID == batchID,
+            guard generation == profileGeneration, clearGeneration == miniTranscriptClearGeneration,
+                  miniRuns[.transcript]?.batchID == batchID,
                   var current = miniRuns[.transcript]?.transcript?.picks else { return }
             let at = current.firstIndex(where: { $0.id == id }).map { $0 + 1 } ?? current.count
             current.insert(added, at: at)
@@ -405,8 +436,9 @@ extension AppStore {
     }
 
     func deleteAllMiniTranscriptPicks() {
-        guard let run = currentTranscriptRun(), run.transcript?.picks.isEmpty == false else { return }
+        guard let run = currentTranscriptRun() else { return }
         recordMiniUndo(.transcript)
+        miniTranscriptClearGeneration &+= 1
         miniRuns[.transcript]?.transcript?.picks = []
         let videoID = run.video.id
         let projectID = run.projectID

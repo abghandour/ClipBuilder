@@ -48,7 +48,7 @@ struct MiniHighlightReviewView: View {
                 regenerateRow(candidate, available: item.isAvailable)
             }
         }
-        .task(id: videoIDs) { await loadTranscript() }
+        .task(id: "\(run.batchID).\(videoIDs).\(store.transcriptCountsVersion).\(store.speakerNamingVersion)") { await loadTranscript() }
         .onMiniReelReveal(.highlights, contains: { id in run.candidates.contains { $0.id == id } }) { selection.wrappedValue = $0 }
     }
 

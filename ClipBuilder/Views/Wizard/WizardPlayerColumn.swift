@@ -14,8 +14,6 @@ struct WizardPlayerColumn: View {
     let aspect: CGFloat
     /// Pinned under the player: Express puts its run summary and Generate here.
     var footer: AnyView? = nil
-    /// Top-right corner of the header: Express puts Start Over here.
-    var headerAccessory: AnyView? = nil
     var emptyMessage = "Choose a video to preview"
     /// When set, the header gets List and Video (and Summary) tabs (Express).
     var list: WizardPreviewListConfig? = nil
@@ -58,11 +56,9 @@ struct WizardPlayerColumn: View {
     private var content: some View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
             VStack(alignment: .leading, spacing: Theme.spaceS) {
-                HStack(spacing: Theme.spaceS) {
-                    Text("Preview").font(.headline).lineLimit(1).fixedSize()
-                    Spacer(minLength: 0)
-                    headerAccessory
-                }
+                // With a list this column is the reel being built; without
+                // one (the Full wizard) it only plays the chosen scenes.
+                Text(list != nil ? "Reel" : "Preview").font(.headline).lineLimit(1).fixedSize()
                 if list != nil { tabPicker }
             }
             if let list, tab == .list {
@@ -77,19 +73,24 @@ struct WizardPlayerColumn: View {
                                 noun: clips.isEmpty ? "Scene" : "Clip", emptyMessage: emptyMessage)
             }
         }
+        // Whatever still outgrows the column is cut at the right, never the left.
+        .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
         .padding(Theme.spaceM)
+        .focusedValue(\.wizardPreviewFocused, true)
     }
 
     private var tabPicker: some View {
-        Picker("Preview tab", selection: $tabRaw) {
+        Picker("Reel tab", selection: $tabRaw) {
             Text("List").tag(PreviewTab.list.rawValue)
-            Text("Video").tag(PreviewTab.video.rawValue)
+            Text("Source Video").tag(PreviewTab.video.rawValue)
             if list?.summary != nil { Text("Summary").tag(PreviewTab.summary.rawValue) }
         }
         .pickerStyle(.segmented)
         .labelsHidden()
         .controlSize(.small)
-        .fixedSize()
-        .help("List shows the kept clips in order; Video plays them as recorded, in the video's own format; Summary shows what Generate will make")
+        // Fills the column and shrinks with it; a fixed size wider than a
+        // narrow column pushed the whole column's content off its left edge.
+        .frame(maxWidth: .infinity)
+        .help("List shows the reel's clips in order; Source Video plays them as recorded, in the video's own format and without the settings; Summary shows what Generate will make")
     }
 }

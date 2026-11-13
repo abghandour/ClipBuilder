@@ -17,6 +17,24 @@ struct MiniReelRulesTests {
         return MiniWizardCandidate(selection: selection, take: take, kept: kept)
     }
 
+    @Test func undoPutsBackOnlyWhatItRestored() {
+        func keys(_ items: [MiniReelItem]) -> [MiniReelRules.Key] { items.map(\.key) }
+        let a = item(.transcript, 1), b = item(.transcript, 2), q = item(.qa, 7)
+        let saved = keys([a, q, b])
+        // A deleted pick comes back at the end; Undo returns it to the front.
+        #expect(keys(MiniReelRules.restoringPlacement([q, b, a], saved: saved, restored: [a.key])) == saved)
+        // Between its old neighbours when both are still there.
+        #expect(keys(MiniReelRules.restoringPlacement([a, b, q], saved: saved, restored: [q.key])) == saved)
+        // Nothing came back (a trim was undone): an order arranged since stays.
+        #expect(keys(MiniReelRules.restoringPlacement([a, b, q], saved: saved, restored: [])) == keys([a, b, q]))
+        // Its old neighbour is gone: after the nearest earlier item that is left.
+        #expect(keys(MiniReelRules.restoringPlacement([q, b], saved: keys([a, b, q]), restored: [q.key])) == keys([b, q]))
+        // Two came back: each in its saved place, positions renumbered.
+        let both = MiniReelRules.restoringPlacement([q, b, a], saved: saved, restored: [a.key, b.key])
+        #expect(keys(both) == saved)
+        #expect(both.map(\.position) == [0, 1, 2])
+    }
+
     @Test func picksOfOneUnitShareItsPlaceAndColour() {
         func pick(_ id: Int64, _ group: String?) -> TranscriptPick {
             TranscriptPick(id: id, videoID: 1, position: Int(id), start: 0, end: 1, originalStart: 0, originalEnd: 1,

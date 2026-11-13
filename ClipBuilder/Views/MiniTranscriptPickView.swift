@@ -11,6 +11,9 @@ struct MiniTranscriptPickView: View {
     let run: MiniWizardRun
     /// The passages marked for the next pick; empty = nothing selected yet.
     @State private var composing = TranscriptDraftSelection()
+    /// Add was pressed and the pick is being stored: the marked passages
+    /// stay on screen until it is, so a failed save loses nothing.
+    @State private var addPending = false
     /// Where the empty draft sits while the just-added pick is still being written.
     @State private var lastAddedEnd: Double?
     /// The selected pick (the reel's Select sets it).
@@ -96,6 +99,14 @@ struct MiniTranscriptPickView: View {
             item.title = "\(index + 1). " + MiniWizardTranscriptRules.title(text: texts[0], number: index + 1,
                                                                             limit: Self.labelLimit - 12) + " (\(unit.count))"
             item.captions = [.init(text: "\(unit.count) passages · \(total.formatted(.number.precision(.fractionLength(1))))s", monospaced: true)]
+            // Some passages were taken out of the reel: say how many are left in.
+            let keptCuts = unit.filter(\.kept)
+            if !keptCuts.isEmpty, keptCuts.count < unit.count {
+                let keptTotal = keptCuts.reduce(0) { $0 + $1.end - $1.start }
+                item.keptMixed = true
+                item.captions = [.init(text: "\(keptCuts.count) of \(unit.count) passages kept · \(keptTotal.formatted(.number.precision(.fractionLength(1))))s",
+                                       monospaced: true)]
+            }
             item.children = unit.enumerated().map { cut, pick in
                 RangeReviewItem(id: .init(ownerID: unit[0].id, cutIndex: cut),
                     title: "#\(cut + 1) " + MiniWizardTranscriptRules.title(text: texts[cut], number: cut + 1, limit: Self.labelLimit),
@@ -113,6 +124,14 @@ struct MiniTranscriptPickView: View {
     var body: some View {
         RangeReviewView(items: items, rows: rows, labels: transcript?.labels ?? [:],
                         speakerSpans: transcript?.speakerSpans ?? [], kept: kept,
+                        keptSummary: keptSummary,
+                        onKeepWhole: { item in
+                            let unit = units.first { $0[0].id == item.id.ownerID }?.map(\.id) ?? []
+                            store.setMiniTranscriptPicksKept(Set(picks.filter(\.kept).map(\.id)).union(unit))
+                        },
+                        onKeepAll: { store.setMiniTranscriptPicksKept(Set(picks.map(\.id))) },
+                        emptyDraftAccessory: AnyView(emptyAddButton),
+                        editsFrozen: addPending,
                         palette: .transcript,
                         preferredTranslationLanguage: store.activeProfile.captionLanguages.first,
                         selection: selection, requestedCut: $requestedCut,
@@ -127,7 +146,7 @@ struct MiniTranscriptPickView: View {
                         },
                         onAddCut: addCut, splitsCuts: true,
                         emptyTitle: "Pick a passage",
-                        emptyMessage: "Select New pick, press a word in the transcript and drag, then press Add.",
+                        emptyMessage: "Select New pick, press a word in the transcript and drag, then press Add Pick.",
                         resetTitle: "Reset to Added", autoplay: false,
                         onMove: { store.reorderMiniTranscriptPicks(TranscriptPickUnits.order(picks, unitOwners: $0)) },
                         onDelete: { item in
@@ -136,11 +155,13 @@ struct MiniTranscriptPickView: View {
                         onDeleteAll: { store.deleteAllMiniTranscriptPicks() },
                         onSplit: { item, time in store.splitMiniTranscriptPick(pickID(of: item), at: time) },
                         spanSelection: true,
+                        // While Add is storing them the marked passages do not
+                        // change: what was sent is exactly what is cleared.
                         draftSpans: RangeReviewDraftSpans(others: composing.others, currentNumber: composing.currentNumber,
-                                                          begin: { composing.begin() },
-                                                          select: { composing.select(number: $0) },
-                                                          delete: { composing.remove(number: $0) },
-                                                          clear: { composing = TranscriptDraftSelection() }),
+                                                          begin: { if !addPending { composing.begin() } },
+                                                          select: { if !addPending { composing.select(number: $0) } },
+                                                          delete: { if !addPending { composing.remove(number: $0) } },
+                                                          clear: { if !addPending { composing = TranscriptDraftSelection() } }),
                         playAll: true,
                         trimAccessory: { item in
                             // Add sits in the transcript footer once a passage is marked.
@@ -148,7 +169,7 @@ struct MiniTranscriptPickView: View {
                             return AnyView(addButton(item))
                         },
                         onSave: save) { _ in EmptyView() }
-        .onChange(of: run.batchID) { _, _ in composing = TranscriptDraftSelection(); lastAddedEnd = nil }
+        .onChange(of: run.batchID) { _, _ in composing = TranscriptDraftSelection(); lastAddedEnd = nil; addPending = false }
         // The reel names one pick; its row is the unit it belongs to.
         .onMiniReelReveal(.transcript, contains: { id in picks.contains { $0.id == id } }) { id in
             let unit = units.first { $0.contains { $0.id == id } }
@@ -196,23 +217,66 @@ struct MiniTranscriptPickView: View {
 
     private func save(_ item: RangeReviewItem, start: Double, end: Double) {
         if item.isDraft {
+            guard !addPending else { return }
             composing.set(start...max(start, end))
         } else {
             store.setMiniTranscriptPickRange(pickID(of: item), start: start, end: end)
         }
     }
 
+    /// "1 of 18 picks kept · 4 passages": picks are the rows, passages what the kept ones hold.
+    private var keptSummary: String {
+        let keptUnits = units.filter { $0.contains(where: \.kept) }.count
+        let passages = picks.filter(\.kept).count
+        return "\(keptUnits) of \(units.count) \(units.count == 1 ? "pick" : "picks") kept · \(passages) \(passages == 1 ? "passage" : "passages")"
+    }
+
+    /// Add before anything is marked: there, so the next step is on screen, and off.
+    private var emptyAddButton: some View {
+        let button = Button {} label: { Text("Add Pick").lineLimit(1).fixedSize() }
+            .buttonStyle(.borderedProminent)
+            .controlSize(.small)
+            .disabled(true)
+            .help("Mark a passage first: press a word in the transcript and drag")
+        let caption = FormCaption("Nothing marked yet").lineLimit(1).fixedSize()
+        // Side by side, or the caption under the button in a narrow column.
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: Theme.spaceS) { button; caption }
+            VStack(alignment: .leading, spacing: Theme.spaceXS) { button; caption }
+        }
+    }
+
     private func addButton(_ item: RangeReviewItem) -> some View {
+        // What Add will store: how many passages and how long together.
+        let total = composing.spans.reduce(0) { $0 + $1.upperBound - $1.lowerBound }
+        let caption = FormCaption("\(composing.spans.count == 1 ? "1 passage" : "\(composing.spans.count) passages") · \(total.formatted(.number.precision(.fractionLength(1))))s")
+            .monospacedDigit().lineLimit(1).fixedSize()
+        return ViewThatFits(in: .horizontal) {
+            HStack(spacing: Theme.spaceS) { addPickButton(item); caption }
+            VStack(alignment: .leading, spacing: Theme.spaceXS) { addPickButton(item); caption }
+        }
+    }
+
+    private func addPickButton(_ item: RangeReviewItem) -> some View {
         Button {
-            store.addMiniTranscriptPicks(ranges: composing.spans)
-            lastAddedEnd = composing.spans.map(\.upperBound).max() ?? item.range.upperBound
-            composing = TranscriptDraftSelection()
+            // The marked passages stay until the pick is stored: a failed
+            // save leaves them here to try again. They cannot change
+            // meanwhile, so a stored pick always clears them.
+            guard !addPending else { return }
+            let end = composing.spans.map(\.upperBound).max() ?? item.range.upperBound
+            addPending = true
+            store.addMiniTranscriptPicks(ranges: composing.spans) { stored in
+                addPending = false
+                guard stored else { return }
+                lastAddedEnd = end
+                composing = TranscriptDraftSelection()
+            }
         } label: {
-            Text(composing.spans.count > 1 ? "Add \(composing.spans.count) as One Pick" : "Add").lineLimit(1).fixedSize()
+            Text(composing.spans.count > 1 ? "Add \(composing.spans.count) as One Pick" : "Add Pick").lineLimit(1).fixedSize()
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.small)
-        .disabled(store.isWizardRunning || !item.isAvailable)
+        .disabled(store.isWizardRunning || !item.isAvailable || addPending)
         .help(composing.spans.count > 1 ? "Add the selections as one pick; they play in the order they were marked"
               : "Add the selected passage to the picks")
     }

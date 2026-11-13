@@ -4,7 +4,7 @@ import SwiftUI
 struct WizardPreviewListConfig {
     /// The kept clips' ids in their new order after a drop.
     var onReorder: ([String]) -> Void
-    var canReorder = true
+    var canEdit = true
     /// Delete on a row (context menu or the Delete key on the selected row):
     /// the clip id to take out of the reel.
     var onDelete: ((String) -> Void)? = nil
@@ -63,13 +63,15 @@ struct WizardPreviewList: View {
     /// filters each recording's words per clip.
     @State private var rows: [WizardPreviewRow] = []
     private var videoIDs: [Int64] { Array(Set(clips.map(\.scene.videoID))).sorted() }
-    private var canReorder: Bool { config.canReorder && isEnabled && rows.count > 1 }
-    private var canDelete: Bool { config.onDelete != nil && isEnabled }
-    private var canDeleteAll: Bool { config.onDeleteAll != nil && isEnabled && !rows.isEmpty }
+    private var canEdit: Bool { config.canEdit && isEnabled }
+    private var canReorder: Bool { canEdit && rows.count > 1 }
+    private var canDelete: Bool { config.onDelete != nil && canEdit }
+    private var canDeleteAll: Bool { config.onDeleteAll != nil && canEdit && !rows.isEmpty }
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceS) {
             header
+            if !rows.isEmpty, config.onSelect != nil || config.onDelete != nil { selectedActions }
             if rows.isEmpty {
                 Text(emptyMessage).font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -103,13 +105,18 @@ struct WizardPreviewList: View {
             }
             .disabled(expandable.isEmpty)
             .help(allExpanded ? "Show two lines of text per clip" : "Show every clip's full text")
-            if canDeleteAll {
+            if config.onDeleteAll != nil {
                 Button("Remove All", systemImage: "trash") { confirmRemoveAll = true }
                     .labelStyle(.iconOnly)
+                    .disabled(!canDeleteAll)
                     .help("Remove every clip from the reel")
                     .confirmationDialog("Remove all \(rows.count) clips from the reel?", isPresented: $confirmRemoveAll,
                                         titleVisibility: .visible) {
-                        Button("Remove All", role: .destructive) { config.onDeleteAll?() }
+                        Button("Remove All", role: .destructive) {
+                            guard canDeleteAll else { return }
+                            config.onDeleteAll?()
+                        }
+                        .disabled(!canDeleteAll)
                         Button("Cancel", role: .cancel) {}
                     } message: {
                         Text("Each clip is unselected in its Footage section; Fight-metrics stretches are deleted.")
@@ -118,6 +125,59 @@ struct WizardPreviewList: View {
         }
         .controlSize(.small)
         .lineLimit(1).fixedSize(horizontal: false, vertical: true)
+    }
+
+    /// What the selected clip can do, as buttons: where it came from, and
+    /// out of the reel. The rows themselves carry no buttons.
+    private var selectedActions: some View {
+        let row = rows.indices.contains(selectedIndex) ? rows[selectedIndex] : nil
+        return ViewThatFits(in: .horizontal) {
+            selectedActions(row, compact: false)
+            selectedActions(row, compact: true)
+        }
+        .controlSize(.small)
+    }
+
+    private func selectedActions(_ row: WizardPreviewRow?, compact: Bool) -> some View {
+        HStack(spacing: Theme.spaceS) {
+            if let onSelect = config.onSelect {
+                Button { if let row { onSelect(row.id) } } label: {
+                    actionLabel("Show in Footage", systemImage: "arrow.up.left.square", compact: compact)
+                }
+                .disabled(row == nil)
+                .help("Show in Footage: open the selected clip's Footage section with its item selected")
+                .accessibilityLabel("Show in Footage")
+            }
+            if config.onDelete != nil {
+                Button { deleteSelected() } label: {
+                    actionLabel("Remove from Reel", systemImage: "minus.circle", compact: compact)
+                }
+                .disabled(row == nil || !canDelete)
+                // A Fight-metrics stretch has no keep box: out of the reel is deleted.
+                .help(removeHelp(row))
+                .accessibilityLabel("Remove from Reel")
+            }
+            Spacer(minLength: 0)
+        }
+    }
+
+    /// What Remove from Reel does to the selected clip, which depends on
+    /// the section it came from.
+    private func removeHelp(_ row: WizardPreviewRow?) -> String {
+        switch row.flatMap({ MiniReelRules.key(of: $0.id) })?.kind {
+        case .fightMetrics: "Remove from Reel: the selected Fight-metrics stretch is deleted"
+        case .highlights: "Remove from Reel: the whole Highlight this clip belongs to, with all its cuts, is unselected in Highlights, where it can be kept again"
+        default: "Remove from Reel: the selected clip is unselected in its Footage section, where it can be kept again"
+        }
+    }
+
+    @ViewBuilder
+    private func actionLabel(_ title: String, systemImage: String, compact: Bool) -> some View {
+        if compact {
+            Label(title, systemImage: systemImage).labelStyle(.iconOnly).fixedSize()
+        } else {
+            Label(title, systemImage: systemImage).labelStyle(.titleAndIcon).lineLimit(1).fixedSize()
+        }
     }
 
     private var list: some View {
@@ -143,10 +203,14 @@ struct WizardPreviewList: View {
                                 Button(expanded.contains(row.id) ? "Collapse" : "Expand") { toggleExpanded(row) }
                             }
                             if let onSelect = config.onSelect {
-                                Button("Select") { selectedIndex = index; onSelect(row.id) }
+                                Button("Show in Footage") { selectedIndex = index; onSelect(row.id) }
                             }
-                            if canDelete {
-                                Button("Delete", role: .destructive) { config.onDelete?(row.id) }
+                            if config.onDelete != nil {
+                                Button("Remove from Reel", role: .destructive) {
+                                    guard canDelete else { return }
+                                    config.onDelete?(row.id)
+                                }
+                                .disabled(!canDelete)
                             }
                         }
                 }
@@ -162,6 +226,7 @@ struct WizardPreviewList: View {
             .onDisappear { store.miniReelListFocused = false }
             .onDeleteCommand { deleteSelected() }
             .onPreferenceChange(PreviewRowFramePreference.self) { rowFrames = $0 }
+            .keyboardFocusRing(listFocused)
             .overlay(alignment: .topLeading) {
                 if draggingID != nil, let y = dropMarkerY {
                     Capsule().fill(Color.accentColor)
@@ -215,6 +280,7 @@ struct WizardPreviewList: View {
             .buttonStyle(.plain)
             .simultaneousGesture(TapGesture(count: 2).onEnded { toggleExpanded(row) })
             .accessibilityLabel("Clip \(index + 1), \(row.title)")
+            .accessibilityValue("\(row.text). Duration \(Self.clock(row.duration))")
             .accessibilityAddTraits(selected ? .isSelected : [])
             .accessibilityAction(named: isExpanded ? "Collapse" : "Expand") { toggleExpanded(row) }
         }
@@ -312,7 +378,6 @@ struct WizardPreviewList: View {
         guard canDelete, rows.indices.contains(selectedIndex) else { return }
         let id = rows[selectedIndex].id
         config.onDelete?(id)
-        selectedIndex = max(0, min(selectedIndex, rows.count - 2))
     }
 
     // MARK: - Reorder
@@ -373,10 +438,7 @@ struct WizardPreviewList: View {
                 let reordered = WizardPreviewRows.reorderedIDs(blocks: blocks.map { $0.map(\.id) },
                                                               moving: row.id, toSlot: slot)
                 guard reordered != ids else { return }
-                // The dragged clip stays current after the drop.
-                let currentID = rows.indices.contains(selectedIndex) ? rows[selectedIndex].id : nil
                 config.onReorder(reordered)
-                if let currentID, let at = reordered.firstIndex(of: currentID) { selectedIndex = at }
             }
     }
 
@@ -384,7 +446,11 @@ struct WizardPreviewList: View {
 
     private func rebuildRows() {
         let built = WizardPreviewRows.rows(clips: clips, lines: lines)
-        if built != rows { rows = built }
+        guard built != rows else { return }
+        // The store can regroup a proposed order to keep linked passages together.
+        selectedIndex = WizardPreviewRows.reconciledIndex(selectedIndex, previousIDs: rows.map(\.id),
+                                                         ids: built.map(\.id))
+        rows = built
     }
 
     /// Each recording's rows with their speaker labels, decoded off the main actor.

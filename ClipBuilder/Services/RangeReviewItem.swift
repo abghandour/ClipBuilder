@@ -73,6 +73,9 @@ nonisolated struct RangeReviewItem: Identifiable, Sendable {
     var isDraft = false
     /// Rows show this many lines of the title; 0 wraps the whole title.
     var titleLines = 1
+    /// Kept, but not all of it: some of its passages were taken out of the
+    /// reel. Its keep box shows the mixed state.
+    var keptMixed = false
 
     var isTrimmed: Bool {
         ProposedCutTrim.differs(range, proposedStart: originalRange.lowerBound, proposedEnd: originalRange.upperBound)

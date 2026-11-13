@@ -120,6 +120,35 @@ struct TranscriptPickGroupTests {
         #expect(try SyncTable.named("transcript_picks").columns.contains("group_key"))
     }
 
+    @Test("Selections keep synced transcript groups together despite interleaved stored positions")
+    func selectionsKeepSyncedGroupsTogether() async throws {
+        let temp = try await TempDatabase()
+        let database = temp.database
+        let videoID = try await temp.seedVideo(sceneCount: 2)
+        let projectID = try await database.createProject(profileName: "Test", name: "Synced groups", videoIDs: [videoID])
+        let a = try await database.addTranscriptPickGroup(projectID: projectID, videoID: videoID, ranges: [1...2, 5...6])
+        let b = try await database.addTranscriptPickGroup(projectID: projectID, videoID: videoID, ranges: [3...4, 7...8])
+        // Two Macs can save groups at the same positions before syncing.
+        let raw = try SQLiteConnection(path: temp.path.path)
+        for (position, pick) in b.enumerated() {
+            try raw.execute("UPDATE transcript_picks SET position = ? WHERE id = ?",
+                            [.integer(Int64(position)), .integer(pick.id)])
+        }
+        let picks = try await database.fetchTranscriptPicks(projectID: projectID, videoID: videoID)
+        #expect(picks.map(\.id) == (a + b).map(\.id))
+        #expect(picks.map(\.position) == [0, 1, 0, 1])
+        #expect(picks.sorted { ($0.position, $0.id) < ($1.position, $1.id) }.map(\.id)
+                == [a[0].id, b[0].id, a[1].id, b[1].id])
+        let candidates = try await database.replaceMiniTranscriptSelections(projectID: projectID, videoID: videoID,
+            miniBatch: "synced", picks: picks, rows: [], options: WizardStep1Options())
+        #expect(candidates.flatMap { $0.take.plan.clips.compactMap(\.miniPickID) } == picks.map(\.id))
+        let video = try #require(try await database.video(id: videoID))
+        let run = MiniWizardRun(projectID: projectID, video: video, footageKind: .transcript, length: .automatic,
+            batchID: "synced", candidates: candidates, options: WizardOptions(),
+            transcript: MiniWizardTranscript(rows: [], labels: [:], picks: picks))
+        #expect(MiniBRollRules.pieces(run).map(\.range) == picks.map(\.range))
+    }
+
     @Test("A passage added to a saved pick lands after its last one; a pick alone becomes a unit")
     func passageAdded() async throws {
         let temp = try await TempDatabase()

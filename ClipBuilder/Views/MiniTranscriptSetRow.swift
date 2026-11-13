@@ -21,16 +21,25 @@ struct MiniTranscriptSetControl: View {
                 })
     }
 
+    /// Closed, the menu names the transcript in use; open, each row says
+    /// when it was made, with what, and how long it is.
     private var picker: some View {
-        Picker("Transcript", selection: selection) {
-            ForEach(sets) { set in
-                Text(TranscriptSetSwitch.label(set)).lineLimit(1).tag(set.id)
+        Menu {
+            Picker("Transcript", selection: selection) {
+                ForEach(sets) { set in
+                    Text(TranscriptSetSwitch.label(set)).tag(set.id)
+                }
             }
+            .pickerStyle(.inline).labelsHidden()
+        } label: {
+            Text(active.map(TranscriptSetSwitch.shortLabel) ?? "Transcript").lineLimit(1).truncationMode(.middle)
         }
-        .labelsHidden().lineLimit(1)
+        .lineLimit(1)
         .disabled(store.isWizardRunning || store.miniEditsBlocked)
-        .help("Use another transcript of this video. Picks and Q&A sections are kept per transcript.")
+        .help((active.map { TranscriptSetSwitch.label($0) + "\n" } ?? "")
+              + "Use another transcript of this video. Picks and Q&A sections are kept per transcript.")
         .accessibilityLabel("Transcript")
+        .accessibilityValue(active.map(TranscriptSetSwitch.label) ?? "")
     }
 
     var body: some View {
@@ -43,9 +52,9 @@ struct MiniTranscriptSetControl: View {
                     picker
                 }
             } else if let active {
-                Text(TranscriptSetSwitch.label(active)).lineLimit(1).truncationMode(.middle)
+                Text(TranscriptSetSwitch.shortLabel(active)).lineLimit(1).truncationMode(.middle)
                     .foregroundStyle(.secondary)
-                    .help("This video's transcript. Transcribe it again to have another to choose from.")
+                    .help(TranscriptSetSwitch.label(active) + "\nThis video's transcript. Transcribe it again to have another to choose from.")
             } else {
                 Text("No transcript").lineLimit(1).fixedSize().foregroundStyle(.secondary)
                     .help("This video has not been transcribed. Q&A and Transcript need a transcript; Fight metrics does not.")

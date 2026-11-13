@@ -43,11 +43,12 @@ struct WizardPresetStoreTests {
         let presets = WizardPresetStore.upsert(name: "Podcast", settings: settings, savedAt: Date(timeIntervalSince1970: 100), into: [])
         let kept = try #require(presets.first?.settings)
         #expect(kept["formatPreset"] == .string("podcast") && kept["lookPreset"] == .string("vintage"))
-        for field in ["selectedRunIDs", "sourcePeople", "projectID", "templateJSON", "aiInstructions", "musicTrack"] {
+        for field in ["selectedRunIDs", "sourcePeople", "projectID", "templateJSON", "aiInstructions"] {
             #expect(kept[field] == nil, "\(field) must not be saved")
         }
         // The default caption style is a choice: loading the preset restores it.
         #expect(kept["captionStyleID"] == .null)
+        #expect(kept["musicTrack"] == .null)
         var profile = Fixtures.brand(name: "First")
         #expect(profile.wizardPresets == nil)
         profile.wizardPresets = presets
@@ -61,6 +62,32 @@ struct WizardPresetStoreTests {
         let legacy = try JSONDecoder().decode(BrandProfile.self, from: Data(#"{"profile_name":"Old"}"#.utf8))
         #expect(legacy.wizardPresets == nil)
         #expect(WizardPresetStore.summary(presets[0]).contains("Vintage film"))
+    }
+
+    @MainActor
+    @Test func expressDefaultsClearPreviousChoicesButMissingKeysLeaveThemAlone() throws {
+        let suite = "WizardPresetStoreTests.explicitClears.\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let fields = WizardPresetBridge.wizardFields(from: MiniWizardSettings())
+        let cleared = fields.filter { $0.value == .null && AISettingsPreferences.wizardKeys[$0.key] != nil }
+        #expect(cleared["watermarkOverlayTemplate"] == .null && cleared["lookPreset"] == .null)
+        #expect(cleared["fixedOverlayTemplate"] == .null)
+        for field in cleared.keys {
+            let key = try #require(AISettingsPreferences.wizardKeys[field])
+            defaults.set("previous", forKey: key)
+        }
+        WizardMemory.apply(["formatPreset": .string("custom")], profileName: "Test", defaults: defaults)
+        for field in cleared.keys {
+            let key = try #require(AISettingsPreferences.wizardKeys[field])
+            #expect(defaults.string(forKey: key) == "previous", "absent \(field) leaves the choice alone")
+        }
+        let preset = try #require(WizardPresetStore.upsert(name: "Defaults", settings: fields, into: []).first)
+        WizardMemory.apply(preset.settings, profileName: "Test", defaults: defaults)
+        for field in cleared.keys {
+            let key = try #require(AISettingsPreferences.wizardKeys[field])
+            #expect(defaults.object(forKey: key) == nil, "explicit null clears \(field)")
+        }
     }
 
     @MainActor

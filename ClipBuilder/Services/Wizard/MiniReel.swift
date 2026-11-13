@@ -132,7 +132,23 @@ nonisolated enum MiniReelRules {
         return renumbered(named + rest)
     }
 
-    /// The reel with every transcript unit's items next to each other, in
+    /// The reel with the `restored` items back where `saved` had them:
+    /// each goes right after the nearest item that came before it in
+    /// `saved` and is still in the reel (first when there is none). Every
+    /// other item keeps the order it has now.
+    static func restoringPlacement(_ items: [MiniReelItem], saved: [Key], restored: Set<Key>) -> [MiniReelItem] {
+        var result = items
+        for (at, key) in saved.enumerated() where restored.contains(key) {
+            guard let from = result.firstIndex(where: { $0.key == key }) else { continue }
+            let item = result.remove(at: from)
+            let anchor = saved[..<at].reversed().lazy.compactMap { before in
+                result.firstIndex { $0.key == before }
+            }.first
+            result.insert(item, at: anchor.map { $0 + 1 } ?? 0)
+        }
+        return renumbered(result)
+    }
+
     /// the unit's order (`units`: each unit's pick ids). The block sits
     /// where most of its items already are (the longest run; the first on a
     /// tie), so one passage dragged away comes back to its pick and a clip

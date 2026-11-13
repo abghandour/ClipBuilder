@@ -12,10 +12,20 @@ struct MiniGeneratePanel: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: 0) {
-            HStack(spacing: Theme.spaceS) {
-                generateButton
-                roughCutButton
-                openInEditorButton
+            // One row, or Generate over the other two when the pane is narrow.
+            ViewThatFits(in: .horizontal) {
+                HStack(spacing: Theme.spaceS) {
+                    generateButton
+                    roughCutButton
+                    openInEditorButton
+                }
+                VStack(alignment: .leading, spacing: Theme.spaceS) {
+                    generateButton
+                    HStack(spacing: Theme.spaceS) {
+                        roughCutButton
+                        openInEditorButton
+                    }
+                }
             }
             .padding(Theme.spaceM)
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -50,10 +60,10 @@ struct MiniGeneratePanel: View {
         Button {
             store.generateMiniReel(settings: settings, flow: flow, mode: .roughCut)
         } label: {
-            Text("Preview").lineLimit(1).fixedSize()
+            Text("Render Preview").lineLimit(1).fixedSize()
         }
         .disabled(store.miniReelItems.isEmpty || store.isWizardBatchJobRunning(projectID: projectID))
-        .help("Preview: a quick small render of this reel to check framing and focus in motion, without \(WizardRoughCut.leftOut); nothing is saved")
+        .help("Render Preview: a quick small render of this reel to check framing and focus in motion, without \(WizardRoughCut.leftOut); nothing is saved")
     }
 
 }
@@ -82,8 +92,8 @@ struct MiniGenerateSummary: View {
     }
 }
 
-/// Start Over, in the preview column's top-right corner: back to an empty
-/// Express page. Asks first when there is anything to lose.
+/// New, at the right end of the step tabs: back to an empty Express page.
+/// Asks first when there is anything to lose.
 struct MiniStartOverButton: View {
     @Environment(AppStore.self) private var store
     /// True when the page holds anything a fresh Express start would lose.
@@ -96,12 +106,12 @@ struct MiniStartOverButton: View {
         Button {
             if hasChanges { confirmStartOver = true } else { startOver() }
         } label: {
-            Label("Start Over", systemImage: "arrow.counterclockwise").lineLimit(1).fixedSize()
+            Label("New", systemImage: "plus").lineLimit(1).fixedSize()
         }
         .disabled(store.isWizardRunning)
-        .help("Start Over: clear the source, footage and every setting and go back to Source")
-        .confirmationDialog("Start over from Source?", isPresented: $confirmStartOver, titleVisibility: .visible) {
-            Button("Start Over", role: .destructive) { startOver() }
+        .help("New: clear the source, footage and every setting and start again from Source")
+        .confirmationDialog("Start a new one from Source?", isPresented: $confirmStartOver, titleVisibility: .visible) {
+            Button("Start New", role: .destructive) { startOver() }
             Button("Cancel", role: .cancel) {}
         } message: {
             Text("The source, kept footage and every setting on this page go back to their defaults. Rendered videos and the highlight history are kept.")

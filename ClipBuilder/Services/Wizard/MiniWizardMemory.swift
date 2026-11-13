@@ -48,10 +48,14 @@ nonisolated enum MiniWizardMemory {
     /// stored next to `mini.kept.<batch>`.
     static func highlightOrderKey(_ batchID: String) -> String { "mini.order.\(batchID)" }
 
+    static func eligibleSource(_ video: VideoRecord, hasScenes: Bool = true, hasTranscript: Bool = false) -> Bool {
+        video.isLocal && ((hasScenes && video.analyzedAt != nil) || hasTranscript)
+    }
+
     /// Call only after loading the current project's eligible sources successfully.
-    /// An absent or no-longer-analyzed video clears the answer; never choose a replacement.
-    static func validatedVideoPath(_ path: String, videos: [VideoRecord]) -> String {
-        videos.contains { $0.path == path && $0.analyzedAt != nil } ? path : ""
+    /// Missing sources clear the answer; never choose a replacement.
+    static func validatedVideoPath(_ path: String, videos: [VideoRecord], transcribedIDs: Set<Int64> = []) -> String {
+        videos.contains { $0.path == path && eligibleSource($0, hasTranscript: transcribedIDs.contains($0.id)) } ? path : ""
     }
 }
 

@@ -50,6 +50,9 @@ extension AppStore {
                 var candidates = try await database.miniSavedCandidates(projectID: projectID, miniBatch: batch)
                 guard !Task.isCancelled, generation == profileGeneration, activeProjectID == projectID else { return }
                 guard !candidates.isEmpty else { forget(); return }
+                // Items removed from the reel a moment ago leave the kept list first.
+                await settleMiniHighlightUnkeeps()
+                guard !Task.isCancelled, generation == profileGeneration, activeProjectID == projectID else { return }
                 if let kept = UserDefaults.standard.stringArray(forKey: "mini.kept.\(batch)") {
                     candidates = MiniHighlightReview.settingKept(Set(kept.compactMap(Int64.init)), in: candidates)
                 }
@@ -66,7 +69,6 @@ extension AppStore {
                 // Switching source or tab must not remove the remembered batch.
             } catch {
                 guard !Task.isCancelled, miniFootageLoadID == loadID, generation == profileGeneration else { return }
-                forget()
                 presentError("Could not restore Express footage", error)
             }
         }

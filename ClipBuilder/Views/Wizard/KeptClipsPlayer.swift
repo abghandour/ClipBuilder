@@ -10,6 +10,8 @@ import SwiftUI
 /// the current clip, the clip stepper with the speed control, and Play All
 /// with the length of every clip together.
 struct KeptClipsPlayer: View {
+    @Environment(\.workspacePageVisible) private var pageVisible
+    @Environment(\.isEnabled) private var isEnabled
     let clips: [WizardPreviewClip]
     /// Width / height the frame takes until the recording's own shape has
     /// been read (the output format).
@@ -35,10 +37,16 @@ struct KeptClipsPlayer: View {
     @State private var loading = 0
     @State private var settled = 0
     @State private var timeObserver: Any?
+    // The observer outlives the view value that installed it.
+    @State private var playbackClips: [WizardPreviewClip] = []
+    @State private var playbackActive = false
+    /// A click on the picture takes the keyboard, so Space and Delete stop
+    /// acting on the Footage list beside it.
+    @FocusState private var pictureFocused: Bool
     @AppStorage(PlaybackSpeed.key) private var speed = 1.0
 
     private var current: WizardPreviewClip? {
-        clips.isEmpty ? nil : clips[min(max(0, index), clips.count - 1)]
+        playbackClips.isEmpty ? nil : playbackClips[min(max(0, index), playbackClips.count - 1)]
     }
 
     var body: some View {
@@ -76,10 +84,24 @@ struct KeptClipsPlayer: View {
         .onReceive(player.publisher(for: \.rate).receive(on: RunLoop.main)) { isPlaying = $0 != 0 }
         .onChange(of: speed) { _, speed in player.setReviewSpeed(speed) }
         .onChange(of: index) { _, _ in load(play: playsAll) }
-        .onChange(of: clips.map(\.id)) { _, ids in
-            playsAll = false
-            if index >= ids.count { index = 0 }
+        .onChange(of: clips) { old, clips in
+            // The observer always steps through the list as it is now, but
+            // playback only stops when what is playing changed: a new pacing
+            // clock or B-roll on the same footage leaves it running.
+            let before = current
+            playbackClips = clips
+            let after = clips.indices.contains(index) ? clips[index] : nil
+            let sameFootage = old.map(\.id) == clips.map(\.id)
+                && before?.start == after?.start && before?.end == after?.end
+                && before?.scene.videoURL == after?.scene.videoURL
+            guard !sameFootage else { return }
+            stop()
+            if index >= clips.count { index = max(0, clips.count - 1) }
             load(play: false)
+        }
+        .onChange(of: pageVisible && isEnabled) { _, active in
+            playbackActive = active
+            if !active { stop() }
         }
     }
 
@@ -98,7 +120,18 @@ struct KeptClipsPlayer: View {
             }
             .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
             .contentShape(Rectangle())
-            .onTapGesture { togglePlay() }
+            .focusable(current != nil, interactions: .edit)
+            .focused($pictureFocused)
+            .focusEffectDisabled()
+            .keyboardFocusRing(pictureFocused, cornerRadius: Theme.mediaRadius)
+            .onKeyPress(.space) {
+                togglePlay()
+                return .handled
+            }
+            .onTapGesture {
+                pictureFocused = true
+                togglePlay()
+            }
     }
 
     private func transport(_ clip: WizardPreviewClip) -> some View {
@@ -138,11 +171,11 @@ struct KeptClipsPlayer: View {
 
     private var playAllRow: some View {
         HStack(spacing: Theme.spaceS) {
-            Button(playsAll && isPlaying ? "Stop" : "Play All",
-                   systemImage: playsAll && isPlaying ? "stop.fill" : "play.square.stack") { togglePlayAll() }
+            Button(playsAll ? "Stop" : "Play All",
+                   systemImage: playsAll ? "stop.fill" : "play.square.stack") { togglePlayAll() }
                 .controlSize(.small)
                 .lineLimit(1).fixedSize()
-                .help(playsAll && isPlaying ? "Stop playing every \(noun.lowercased())"
+                .help(playsAll ? "Stop playing every \(noun.lowercased())"
                       : "Play every \(noun.lowercased()) in order, from the first")
             Text("\(clips.count) \(noun.lowercased())\(clips.count == 1 ? "" : "s") · \(WizardPreviewClips.clock(KeptClipsPlayback.totalDuration(clips)))")
                 .font(.caption).monospacedDigit().foregroundStyle(.secondary)
@@ -154,6 +187,10 @@ struct KeptClipsPlayer: View {
     // MARK: Playback
 
     private func attach() {
+        playbackClips = clips
+        playbackActive = pageVisible && isEnabled
+        // Clips can go while another Preview tab is showing; the index is the column's.
+        if index >= clips.count { index = max(0, clips.count - 1) }
         player.setReviewSpeed(speed)
         player.actionAtItemEnd = .pause
         let observed = player
@@ -167,17 +204,25 @@ struct KeptClipsPlayer: View {
     }
 
     private func detach() {
-        player.pause()
+        playbackActive = false
+        stop()
         if let timeObserver { player.removeTimeObserver(timeObserver) }
         timeObserver = nil
+    }
+
+    private func stop() {
+        // Invalidate any seek that still intends to start playing.
+        loading += 1
+        settled = loading
+        player.pause()
         playsAll = false
     }
 
     private func tick(_ seconds: Double, player observed: AVPlayer) {
-        guard observed === player, seconds.isFinite, scrubbing == nil, settled == loading else { return }
+        guard playbackActive, observed === player, seconds.isFinite, scrubbing == nil, settled == loading else { return }
         time = seconds
         guard isPlaying else { return }
-        switch KeptClipsPlayback.step(time: seconds, index: index, clips: clips, playsAll: playsAll) {
+        switch KeptClipsPlayback.step(time: seconds, index: index, clips: playbackClips, playsAll: playsAll) {
         case .keepPlaying: break
         case .advance(let next): index = next   // onChange(of: index) loads and plays it
         case .stop:
@@ -200,7 +245,10 @@ struct KeptClipsPlayer: View {
 
     /// Puts the current clip in the player at its start.
     private func load(play: Bool) {
+        loading += 1
+        let request = loading
         guard let clip = current else {
+            stop()
             player.replaceCurrentItem(with: nil)
             loadedURL = nil
             return
@@ -216,15 +264,13 @@ struct KeptClipsPlayer: View {
             }
         }
         time = clip.start
-        loading += 1
-        let request = loading
         player.seek(to: CMTime(seconds: clip.start, preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero) { finished in
             Task { @MainActor in
                 // A seek a newer one replaced reports unfinished; the newest settles.
                 guard request == loading else { return }
                 settled = request
-                if finished, play { player.play() }
+                if finished, play, playbackActive { player.play() }
             }
         }
         if !play { player.pause() }
@@ -238,9 +284,9 @@ struct KeptClipsPlayer: View {
     }
 
     private func togglePlay() {
-        guard let clip = current else { return }
+        guard playbackActive, let clip = current else { return }
         if isPlaying {
-            player.pause()
+            stop()
         } else if time >= clip.end - KeptClipsPlayback.endTolerance || time < clip.start {
             // At the end (or outside the clip) Play starts the clip over.
             load(play: true)
@@ -250,9 +296,9 @@ struct KeptClipsPlayer: View {
     }
 
     private func togglePlayAll() {
-        if playsAll && isPlaying {
-            player.pause()
-            playsAll = false
+        guard playbackActive else { return }
+        if playsAll {
+            stop()
             return
         }
         playsAll = true

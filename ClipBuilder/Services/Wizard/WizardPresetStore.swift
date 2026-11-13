@@ -52,10 +52,14 @@ nonisolated enum WizardPresetStore {
         return Loaded(name: name, settings: settings)
     }
 
-    /// Caption choices whose unset value is itself a choice (the profile's
-    /// default style or position): a preset keeps them as null so loading it
-    /// replaces a custom style picked since.
-    static let nullableFields: Set<String> = ["captionStyleID", "captionPosition", "speakerCaptionPositions"]
+    /// An explicit default replaces a previous choice; an absent key leaves it alone.
+    static let nullableFields: Set<String> = [
+        "captionStyleID", "captionPosition", "speakerCaptionPositions", "captionLanguage",
+        "introBumperLibraryPath", "outroBumperLibraryPath",
+        "nameTagContent", "nameTagStyle", "nameTagStyleID", "nameTagPosition", "safe_area_platforms",
+        "watermarkOverlayTemplate", "watermarkOpacity", "lookPreset", "musicTrack", "useBRoll",
+        "fixedOverlayTemplate", "fixedOverlayDuration", "fixedOverlayTextsJoined", "fixedOverlayPosition", "fixedOverlayEdits",
+    ]
 
     /// The preset shape of a settings dictionary: run and source fields and
     /// other unset values removed.

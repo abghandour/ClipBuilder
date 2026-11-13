@@ -35,6 +35,12 @@ nonisolated struct WizardPreviewRow: Identifiable, Sendable, Equatable {
 
 /// Pure rules for the List tab.
 nonisolated enum WizardPreviewRows {
+    /// Follow the clip through the accepted order; if it left, keep the nearest row selected.
+    static func reconciledIndex(_ index: Int, previousIDs: [String], ids: [String]) -> Int {
+        if previousIDs.indices.contains(index), let found = ids.firstIndex(of: previousIDs[index]) { return found }
+        return max(0, min(index, ids.count - 1))
+    }
+
     /// One transcript row's words with the speaker it was attributed to.
     struct Line: Sendable, Equatable {
         var speaker: String?

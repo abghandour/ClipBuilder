@@ -44,22 +44,6 @@ extension Database {
                 AND t.transcription_key = transcript_picks.transcription_key))
         """
 
-    /// How many of the video's picks in this project each other transcript
-    /// set holds: the ones `activeSetPickPredicate` keeps off the list. A
-    /// teammate's picks arrive stamped with the set they were made on, which
-    /// need not be the one in use on this Mac.
-    func transcriptPickCountsOnOtherSets(projectID: Int64, videoID: Int64) throws -> [String: Int] {
-        var counts: [String: Int] = [:]
-        for row in try connection.query("""
-            SELECT transcription_key AS set_key, COUNT(*) AS n FROM transcript_picks
-            WHERE video_id = ? AND (project_id = ? OR project_id IS NULL) AND NOT \(Self.activeSetPickPredicate)
-            GROUP BY transcription_key
-            """, [.integer(videoID), .integer(projectID)]) {
-            if let key = row["set_key"]?.stringValue, let n = row["n"]?.intValue { counts[key] = Int(n) }
-        }
-        return counts
-    }
-
     /// The set the caller's screen shows must still be the active one:
     /// the lists below are read through it, and a pin changed elsewhere
     /// (Team Sync, the Transcript sheet) would aim a write at picks the
@@ -356,8 +340,9 @@ extension Database {
             // Only picks this project owns (after legacy adoption); a stale
             // caller's pick from another project is skipped.
             let owned = Set(try fetchTranscriptPicks(projectID: projectID, videoID: videoID).map(\.id))
-            let ordered = picks.filter { $0.kept && $0.videoID == videoID && owned.contains($0.id) }
-                .sorted { ($0.position, $0.id) < ($1.position, $1.id) }
+            let ordered = TranscriptPickUnits.contiguous(
+                picks.filter { $0.kept && $0.videoID == videoID && owned.contains($0.id) }
+                    .sorted { ($0.position, $0.id) < ($1.position, $1.id) })
             for (index, pick) in ordered.enumerated() {
                 guard pick.start.isFinite, pick.end.isFinite, pick.end > pick.start else { continue }
                 let sceneID = try sceneID(videoID: videoID, runID: runID, start: pick.start, end: pick.end)

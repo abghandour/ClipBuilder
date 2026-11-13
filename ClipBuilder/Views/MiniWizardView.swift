@@ -44,6 +44,13 @@ struct MiniWizardView: View {
         var card: MiniWizardFlow.Card?
     }
 
+    private struct ReelRevealRequest: Equatable {
+        var item: MiniReelRules.Key?
+        var videoID: Int64?
+        var visible: Bool
+        var running: Bool
+    }
+
     init(profileName: String) {
         self.profileName = profileName
         _videoPath = AppStorage(wrappedValue: "", MiniWizardMemory.key(for: .videoPath, profileName: profileName))
@@ -73,7 +80,6 @@ struct MiniWizardView: View {
     @State private var transcriptSets: [TranscriptionSet] = []
     /// Transcript picks of this source kept off the list because they were
     /// made on another transcript, counted per transcript set.
-    @State private var otherSetPicks: [String: Int] = [:]
     private var selectedVideo: VideoRecord? { projectVideos.first { $0.path == videoPath } }
 
     private var currentRun: MiniWizardRun? {
@@ -128,7 +134,7 @@ struct MiniWizardView: View {
     /// The List tab: drops reorder the reel, Delete takes a clip out of it.
     private var previewListConfig: WizardPreviewListConfig {
         WizardPreviewListConfig(onReorder: { store.reorderMiniReel($0) },
-                                canReorder: !store.isWizardRunning && !store.isMiniUndoing,
+                                canEdit: !store.isWizardRunning && !store.isLoadingMiniFootage && !store.miniEditsBlocked,
                                 onDelete: { store.removeMiniReelItem(clipID: $0) },
                                 onDeleteAll: { store.removeAllMiniReelItems() },
                                 onSelect: { store.revealMiniReelItem(clipID: $0) },
@@ -185,12 +191,13 @@ struct MiniWizardView: View {
             if let video = selectedVideo {
                 WizardPlayerColumn(clips: reelClips(videoID: video.id), aspect: playerAspect,
                     footer: generateFooter,
-                    headerAccessory: AnyView(MiniStartOverButton(hasChanges: hasChangesToReset, startOver: startOver)),
                     emptyMessage: sceneVideoIDs.contains(video.id) ? "No kept footage yet. Keep footage in the Footage step to play it here."
                         : "No scenes to preview yet. Run Analyze on this source in Sources to see it here.",
                     list: previewListConfig)
                     .id("\(store.profileGeneration):\(store.activeProjectID ?? 0):\(video.id)")
-                    .rememberedPaneWidth("pane.express.preview", min: 240, initial: 320, max: 900)
+                    // Wide enough for the three tabs and the action rows at their
+                    // full size: narrower, the column's content was cut at the left.
+                    .rememberedPaneWidth("pane.express.preview", min: 300, initial: 340, max: 900)
             }
         }
         .screenTitle("AI Wizard", subtitle: "Express")
@@ -305,6 +312,10 @@ struct MiniWizardView: View {
             if flow.footageKinds.contains(reveal.kind) { footageKind = reveal.kind }
             open(.footage)
         }
+        .task(id: ReelRevealRequest(item: store.miniReelReveal, videoID: selectedVideo?.id,
+                                  visible: pageVisible, running: store.isWizardRunning)) {
+            await revealHighlightBatch()
+        }
         .onChange(of: autoLoadKey, initial: true) { _, key in autoLoad(key) }
         // A load skipped while another run was busy, or while sources were
         // still loading, happens once that finishes.
@@ -315,6 +326,28 @@ struct MiniWizardView: View {
         }
         .onChange(of: pageVisible) { _, visible in if !visible { saveInstructions() } }
         .onDisappear { saveInstructions() }
+    }
+
+    private func revealHighlightBatch() async {
+        guard let reveal = store.miniReelReveal, reveal.kind == .highlights, pageVisible, !store.isWizardRunning,
+              flow.footageKinds.contains(.highlights) else { return }
+        if let run = store.miniRuns[.highlights], run.candidates.contains(where: { $0.id == reveal.itemID }) {
+            length = run.length
+            return
+        }
+        guard let video = selectedVideo, let projectID = store.activeProjectID, let database = store.database else { return }
+        let generation = store.profileGeneration
+        let selections = try? await database.fetchWizardSelections(projectID: projectID)
+        guard !Task.isCancelled, generation == store.profileGeneration, projectID == store.activeProjectID,
+              selectedVideo?.id == video.id, store.miniReelReveal == reveal,
+              let batch = selections?.first(where: { $0.id == reveal.itemID })?.miniBatch else { return }
+        let setKey = store.transcriptFacts[video.id]?.transcriptionKey ?? ""
+        guard let owningLength = MiniWizardFlow.Length.allCases.first(where: {
+            MiniWizardMemory.highlightBatch(profileName: profileName, projectID: projectID,
+                videoID: video.id, length: $0, setKey: setKey) == batch
+        }) else { return }
+        // The normal Length change restores the batch; its review consumes the request when ready.
+        length = owningLength
     }
 
     /// The run summary and Generate sit under the preview, outside the
@@ -378,13 +411,11 @@ struct MiniWizardView: View {
         // Express cards part their rows with space, not rules.
         .environment(\.settingsRowDividers, false)
         .task(id: transcriptSetsKey) {
-            guard let videoID = selectedVideo?.id, let projectID = store.activeProjectID else {
+            guard let videoID = selectedVideo?.id, store.activeProjectID != nil else {
                 transcriptSets = []
-                otherSetPicks = [:]
                 return
             }
             transcriptSets = (try? await store.database?.transcriptionSets(videoID: videoID)) ?? []
-            otherSetPicks = (try? await store.database?.transcriptPickCountsOnOtherSets(projectID: projectID, videoID: videoID)) ?? [:]
         }
     }
 
@@ -428,7 +459,8 @@ struct MiniWizardView: View {
                         }),
                         label: stepLabel,
                         surface: AnyShapeStyle(.quaternary.opacity(0.5)),
-                        help: stepSummary) { card in
+                        help: stepSummary,
+                        accessory: AnyView(MiniStartOverButton(hasChanges: hasChangesToReset, startOver: startOver))) { card in
             stepContents(card, pageHeight: pageHeight)
         }
     }
@@ -447,7 +479,6 @@ struct MiniWizardView: View {
                     MiniTranscriptSetControl(videoID: video.id, sets: transcriptSets)
                 }
                 footageControls.disabled(store.isWizardRunning)
-                if flow.effectiveFootageKind == .transcript { otherSetPicksNotice(video) }
                 // Space, not a rule, parts the controls from the review.
                 footageReviews(pageHeight: pageHeight)
                     .padding(.top, Theme.spaceS)
@@ -485,28 +516,6 @@ struct MiniWizardView: View {
                     FormCaption(selectedVideo == nil ? "Pick a source in \(stepLabel(.source)) first."
                         : "Choose and keep footage in \(stepLabel(.footage)) first.")
                 }
-            }
-        }
-    }
-
-    /// Picks made on another transcript of this source (a teammate's, after
-    /// a sync, or this Mac's before a new transcription) are not listed
-    /// while this one is in use. Says so, with the way to them.
-    @ViewBuilder
-    private func otherSetPicksNotice(_ video: VideoRecord) -> some View {
-        ForEach(transcriptSets.filter { !$0.isActive && (otherSetPicks[$0.id] ?? 0) > 0 }) { set in
-            let count = otherSetPicks[set.id] ?? 0
-            HStack(spacing: Theme.spaceS) {
-                FormCaption("\(count == 1 ? "1 pick was" : "\(count) picks were") made on another transcript (\(TranscriptSetSwitch.label(set))) and \(count == 1 ? "is" : "are") not listed here.",
-                            tone: .warning)
-                Button {
-                    store.setMiniTranscriptSet(videoID: video.id, key: set.id)
-                } label: {
-                    Text("Use That Transcript").lineLimit(1).fixedSize()
-                }
-                .controlSize(.small)
-                .disabled(store.isWizardRunning || store.miniEditsBlocked)
-                .help("Switch this source to the transcript those picks were made on")
             }
         }
     }
@@ -692,7 +701,7 @@ struct MiniWizardView: View {
             let caption: String = switch kind {
                 case .qa: "Q&A lists the question-and-answer exchanges found when this video was analyzed. No AI model runs for this step."
                 case .fightMetrics: "Fight metrics lists every scored action in time order. Select actions and add them as separate picks or as one stretch. Picks are kept with this video. No AI model runs for this step."
-                default: "Transcript shows every spoken line. Mark a passage and press Add. Picks are kept with this video; only checked picks become footage. No AI model runs for this step."
+                default: "Drag across words to mark a passage, then press Add Pick. Hold Shift to add more passages to the same pick. Only checked picks become footage."
             }
             FormCaption(caption)
             if let selectedVideo, !selectedVideo.isPresent {
@@ -798,9 +807,10 @@ struct MiniWizardView: View {
             // transcribed still offers Transcript picks, so it is listed too.
             sceneVideoIDs = analyzedIDs.filter { id in fetchedVideos.contains { $0.id == id && $0.analyzedAt != nil } }
             // Footage that is not on this Mac is left to Sources (download it there).
-            videos = fetchedVideos.filter { $0.isLocal && (sceneVideoIDs.contains($0.id) || transcribedIDs.contains($0.id)) }
+            videos = fetchedVideos.filter { MiniWizardMemory.eligibleSource($0, hasScenes: sceneVideoIDs.contains($0.id),
+                                                                            hasTranscript: transcribedIDs.contains($0.id)) }
             projectHasVideos = fetchedVideos.contains(where: \.isLocal)
-            let validated = MiniWizardMemory.validatedVideoPath(videoPath, videos: videos)
+            let validated = MiniWizardMemory.validatedVideoPath(videoPath, videos: videos, transcribedIDs: transcribedIDs)
             if validated != videoPath {
                 store.resetMiniFootage()
                 videoPath = validated

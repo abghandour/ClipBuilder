@@ -16,7 +16,8 @@ extension AppStore {
         options.critiqueLoop = false
         options.workflow = .automatic
         selectMiniFootage(flow: flow)
-        guard miniRuns[.fightMetrics] == nil, !isLoadingMiniFootage else { return }
+        if miniRuns[.fightMetrics] != nil { refreshMiniFightActions(); return }
+        guard !isLoadingMiniFootage else { return }
         let loadID = beginMiniFootageLoad(stage: "Loading fight actions")
         miniFootageTask = Task {
             defer { finishMiniFootageLoad(loadID) }
@@ -39,6 +40,14 @@ extension AppStore {
                 if !Task.isCancelled, miniFootageLoadID == loadID, generation == profileGeneration { presentError("Could not load the fight actions", error) }
             }
         }
+    }
+
+    /// Scoring replaces the events, but the user's selected ranges stay.
+    func refreshMiniFightActions() {
+        guard let run = miniRuns[.fightMetrics], var fight = run.fight else { return }
+        fight.actions = MiniWizardFightRules.actions(events: fightEvents[run.video.id] ?? [], duration: run.video.duration)
+        fight.names = Dictionary(uniqueKeysWithValues: people.map { ($0.key, $0.displayName) })
+        miniRuns[.fightMetrics]?.fight = fight
     }
 
     private func currentFightRun() -> MiniWizardRun? {
@@ -72,6 +81,7 @@ extension AppStore {
         let batchID = run.batchID
         let previous = fightPickSaveTask
         let generation = profileGeneration
+        let clearGeneration = miniFightClearGeneration
         let units = units.filter { $0.range.upperBound > $0.range.lowerBound }
         fightPickSaveTask = Task {
             _ = try? await previous?.value
@@ -85,7 +95,7 @@ extension AppStore {
                 if generation == profileGeneration { presentError("Could not add the pick", error) }
                 throw error
             }
-            guard generation == profileGeneration, miniRuns[.fightMetrics]?.batchID == batchID else { return }
+            guard generation == profileGeneration, clearGeneration == miniFightClearGeneration, miniRuns[.fightMetrics]?.batchID == batchID else { return }
             miniRuns[.fightMetrics]?.fight?.picks.append(contentsOf: added)
         }
     }
@@ -130,7 +140,8 @@ extension AppStore {
     }
 
     func deleteAllMiniFightPicks() {
-        guard let run = currentFightRun(), run.fight?.picks.isEmpty == false else { return }
+        guard let run = currentFightRun() else { return }
+        miniFightClearGeneration &+= 1
         miniRuns[.fightMetrics]?.fight?.picks = []
         let videoID = run.video.id
         let projectID = run.projectID

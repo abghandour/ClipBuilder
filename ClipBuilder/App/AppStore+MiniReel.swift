@@ -186,7 +186,7 @@ extension AppStore {
 
     /// Writes after a short pause: a trim drag refreshes snapshots on every
     /// tick, and only the last state needs to reach the table.
-    private func saveMiniReel() {
+    private func saveMiniReel(debounce: Bool = true) {
         guard let database, let key = miniReelKey else { return }
         let items = miniReelItems
         let previous = miniReelSaveTask
@@ -194,7 +194,7 @@ extension AppStore {
         let generation = profileGeneration
         miniReelSaveTask = Task {
             _ = try? await previous?.value
-            try? await Task.sleep(for: .milliseconds(200))
+            if debounce { try? await Task.sleep(for: .milliseconds(200)) }
             guard !Task.isCancelled else { return }
             do {
                 try await database.replaceExpressReelItems(projectID: key.projectID, videoID: key.videoID, items: items)
@@ -203,6 +203,51 @@ extension AppStore {
                 throw error
             }
         }
+    }
+
+    /// Pick completions can reconcile the reel and enqueue another save.
+    func flushMiniReel() async {
+        await miniUndoStepTask?.value
+        var flushed = false
+        while true {
+            // A trim saves through the scene and plan queues, and its
+            // completion can change the reel: they drain before the reel does.
+            let transcript = transcriptPickSaveTask
+            let fight = fightPickSaveTask
+            let qa = qaPickSaveTask
+            let trim = sceneEditSaveTask
+            let plan = wizardSelectionSaveTask
+            let unkeep = miniHighlightUnkeepTask
+            _ = try? await transcript?.value
+            _ = try? await fight?.value
+            _ = try? await qa?.value
+            _ = try? await trim?.value
+            _ = try? await plan?.value
+            await unkeep?.value
+            if miniReelLoaded, !flushed {
+                saveMiniReel(debounce: false)
+                flushed = true
+            }
+            let reel = miniReelSaveTask
+            _ = try? await reel?.value
+            if transcript == transcriptPickSaveTask, fight == fightPickSaveTask, qa == qaPickSaveTask,
+               trim == sceneEditSaveTask, plan == wizardSelectionSaveTask, unkeep == miniHighlightUnkeepTask,
+               reel == miniReelSaveTask { return }
+        }
+    }
+
+    /// Undo or Redo brought `restored` back into the reel: they return to
+    /// where the step had them. Everything else keeps the order it has
+    /// now, and a pick's passages stay together as they are linked now.
+    func restoreMiniReelOrder(_ order: [MiniReelRules.Key], restored: Set<MiniReelRules.Key>) {
+        guard miniReelLoaded, !restored.isEmpty else { return }
+        var items = MiniReelRules.restoringPlacement(miniReelItems, saved: order, restored: restored)
+        if let key = miniReelKey, let units = miniReelTranscriptUnits(key: key) {
+            items = MiniReelRules.groupingUnits(items, units: units)
+        }
+        guard items != miniReelItems else { return }
+        miniReelItems = items
+        saveMiniReel()
     }
 
     /// A List drop: `clipIDs` is the whole list in its new order.
@@ -363,13 +408,32 @@ extension AppStore {
         let generation = profileGeneration
         let defaults = UserDefaults.standard
         let batches = rememberedHighlightBatches(key: key)
-        Task {
+        let previous = miniHighlightUnkeepTask
+        miniHighlightUnkeepTask = Task {
+            await previous?.value
             for batch in batches {
                 guard let ids = try? await database.fetchWizardSelections(projectID: key.projectID, miniBatch: batch).map(\.id),
                       ids.contains(selectionID), generation == profileGeneration else { continue }
                 let kept = Set(defaults.stringArray(forKey: "mini.kept.\(batch)")?.compactMap(Int64.init) ?? ids)
                 defaults.set(kept.subtracting([selectionID]).sorted().map(String.init), forKey: "mini.kept.\(batch)")
+                // The batch came on screen while this looked for it: the
+                // run was built from the list as it was, and would put the
+                // item back in the reel.
+                if let run = miniRuns[.highlights], run.batchID == batch,
+                   MiniHighlightReview.keptIDs(run.candidates).contains(selectionID) {
+                    miniRuns[.highlights]?.candidates = MiniHighlightReview.settingKept(
+                        MiniHighlightReview.keptIDs(run.candidates).subtracting([selectionID]), in: run.candidates)
+                }
             }
+        }
+    }
+
+    /// Every queued removal has reached its batch's kept list: a reader of
+    /// that list waits here, so it cannot bring a removed item back.
+    func settleMiniHighlightUnkeeps() async {
+        while let pending = miniHighlightUnkeepTask {
+            await pending.value
+            if pending == miniHighlightUnkeepTask { return }
         }
     }
 
@@ -429,6 +493,7 @@ extension AppStore {
         for batch in rememberedHighlightBatches(key: key).sorted() where batch != loaded {
             guard var candidates = try? await database.miniSavedCandidates(projectID: key.projectID, miniBatch: batch),
                   candidates.contains(where: { wanted.contains($0.id) }) else { continue }
+            await settleMiniHighlightUnkeeps()
             if let kept = UserDefaults.standard.stringArray(forKey: "mini.kept.\(batch)") {
                 candidates = MiniHighlightReview.settingKept(Set(kept.compactMap(Int64.init)), in: candidates)
             }

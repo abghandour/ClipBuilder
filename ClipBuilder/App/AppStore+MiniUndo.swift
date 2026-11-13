@@ -8,13 +8,15 @@ extension AppStore {
     /// The section as it stands, in the form Undo compares and restores.
     func miniUndoSnapshot(_ kind: MiniWizardFlow.FootageKind) -> MiniUndoSnapshot? {
         guard let run = miniRuns[kind] else { return nil }
+        let reelOrder = miniReelItems.map(\.key)
         switch kind {
         case .transcript:
-            return run.transcript.map { .transcript(picks: $0.picks) }
+            return run.transcript.map { .transcript(picks: $0.picks, reelOrder: reelOrder) }
         case .qa:
             guard let qa = run.qa else { return nil }
             return .qa(.init(kept: qa.kept, order: qa.keptOrder,
-                             ranges: Dictionary(qa.sections.map { ($0.id, $0.range) }, uniquingKeysWith: { first, _ in first })))
+                             ranges: Dictionary(qa.sections.map { ($0.id, $0.range) }, uniquingKeysWith: { first, _ in first })),
+                       reelOrder: reelOrder)
         case .highlights:
             var plans: [Int64: MiniUndoSnapshot.Highlights.Plan] = [:]
             for candidate in run.candidates {
@@ -23,7 +25,7 @@ extension AppStore {
                                             plan: candidate.take.plan)
             }
             return .highlights(.init(kept: MiniHighlightReview.keptIDs(run.candidates),
-                                     order: run.candidates.map(\.id), plans: plans))
+                                     order: run.candidates.map(\.id), plans: plans), reelOrder: reelOrder)
         case .fightMetrics:
             return nil
         }
@@ -44,6 +46,10 @@ extension AppStore {
         }
         pruneMiniUndoStacks(keeping: batchID)
         miniUndoStacks[batchID, default: MiniUndoStack()].begin(current)
+        if let run = miniRuns[kind] { miniUndoStackSources[batchID] = MiniReelKey(projectID: run.projectID, videoID: run.video.id) }
+        // Called before the change lands: the reel as it stands is what
+        // Undo of this change must put back.
+        miniUndoStacks[batchID]?.refreshPlacement(current)
         let previous = miniUndoSettleTask
         let generation = profileGeneration
         miniUndoSettlesPending += 1
@@ -67,6 +73,7 @@ extension AppStore {
         guard miniUndoStacks.count >= Self.miniUndoStackLimit else { return }
         let loaded = Set(miniRuns.values.map(\.batchID)).union([batchID])
         miniUndoStacks = miniUndoStacks.filter { loaded.contains($0.key) }
+        miniUndoStackSources = miniUndoStackSources.filter { loaded.contains($0.key) }
     }
 
     /// A Team Sync pull changed picks or scenes: every history ends, also
@@ -74,6 +81,7 @@ extension AppStore {
     /// undo a teammate (or delete their pick).
     func forgetAllMiniUndo() {
         miniUndoStacks = [:]
+        miniUndoStackSources = [:]
     }
 
     /// A Q&A exchange trimmed by hand in the Express Footage card.
@@ -132,18 +140,29 @@ extension AppStore {
                 return
             }
             guard let target = redo ? stack.redoTarget : stack.undoTarget else { return }
+            // The way back from this step restores the reel as it stands now.
+            miniUndoStacks[batchID]?.refreshPlacement(current)
+            let reelBefore = Set(miniReelItems.map(\.key))
             let restored: Bool
             switch (target, current) {
-            case (.transcript(let picks), .transcript(let expected)):
+            case (.transcript(let picks, _), .transcript(let expected, _)):
                 restored = await restoreMiniTranscript(picks, expected: expected, batchID: batchID)
-            case (.qa(let state), _): restored = await restoreMiniQA(state, batchID: batchID)
-            case (.highlights(let state), _): restored = await restoreMiniHighlights(state, batchID: batchID)
+            case (.qa(let state, _), _): restored = await restoreMiniQA(state, batchID: batchID)
+            case (.highlights(let state, _), _): restored = await restoreMiniHighlights(state, batchID: batchID)
             default: restored = false
             }
             await settleMiniSaves()
             // History moves only once the section did; a failed restore
             // leaves the step to try again.
             guard generation == profileGeneration, miniRuns[kind]?.batchID == batchID else { return }
+            if let target = redo ? miniUndoStacks[batchID]?.redoTarget : miniUndoStacks[batchID]?.undoTarget {
+                // Only what the step brought back takes its old place: the
+                // rest of the reel may have been arranged since. Also when
+                // the restore stopped part way: the retry finds these items
+                // already in the reel and would leave them where they landed.
+                let returned = Set(miniReelItems.map(\.key).filter { $0.kind == kind }).subtracting(reelBefore)
+                restoreMiniReelOrder(target.reelOrder, restored: returned)
+            }
             let settled = miniUndoSnapshot(kind)
             guard restored else {
                 if let settled { miniUndoStacks[batchID]?.settleCurrent(settled) }
@@ -195,13 +214,19 @@ extension AppStore {
             guard generation == profileGeneration, miniRuns[.transcript]?.batchID == batchID else { return false }
             miniRuns[.transcript]?.transcript?.picks = restored.picks
             miniUndoStacks[batchID]?.remap(pickIDs: restored.remapped)
+            // The other sections of this source name the pick in their reel
+            // orders, a Length that is not on screen included.
+            let source = MiniReelKey(projectID: projectID, videoID: videoID)
+            for (other, owner) in miniUndoStackSources where other != batchID && owner == source {
+                miniUndoStacks[other]?.remapReel(pickIDs: restored.remapped)
+            }
             return true
         } catch TranscriptPickRestoreError.changed(let stored) {
             // The list changed under the screen (a sync that stopped before
             // it could say so). Show it; the history no longer applies.
             guard generation == profileGeneration, miniRuns[.transcript]?.batchID == batchID else { return false }
             miniRuns[.transcript]?.transcript?.picks = stored
-            miniUndoStacks[batchID]?.reset(to: .transcript(picks: stored))
+            miniUndoStacks[batchID]?.reset(to: .transcript(picks: stored, reelOrder: miniReelItems.map(\.key)))
             return false
         } catch {
             if generation == profileGeneration { presentError("Could not restore the picks", error) }

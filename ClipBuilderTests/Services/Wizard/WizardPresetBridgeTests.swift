@@ -105,6 +105,25 @@ struct WizardPresetBridgeTests {
         let back = WizardPresetBridge.miniPresets(from: wizard)
         #expect(back[0].settings == express && back[0].savedAt == mini[0].savedAt)
     }
+
+    @Test func brollInclusionRoundTripsAndImportsFromFullPresets() {
+        let values: [Bool?] = [true, false, nil]
+        for included in values {
+            var settings = MiniWizardSettings()
+            settings.includeBRoll = included
+            let fields = WizardPresetBridge.wizardFields(from: settings)
+            // Unset is off in Express and must not read as the Wizard's default (on).
+            #expect(fields["useBRoll"] == .bool(included ?? false))
+            #expect(WizardPresetBridge.miniSettings(from: fields).includesBRoll == (included ?? false))
+            let preset = WizardPreset(name: "B-roll", savedAt: Date(), settings: WizardPresetStore.presetFields(fields))
+            #expect(WizardPresetBridge.miniPresets(from: [preset]).first?.settings.includesBRoll == (included ?? false))
+        }
+        let imported = WizardPresetBridge.miniSettings(from: ["useBRoll": .bool(true)])
+        #expect(imported.includesBRoll)
+        #expect(WizardPresetBridge.miniSettings(from: [:], base: imported).includesBRoll)
+        #expect(!WizardPresetBridge.miniSettings(from: ["useBRoll": .bool(false)], base: imported).includesBRoll)
+        #expect(!WizardPresetBridge.miniSettings(from: ["useBRoll": .null], base: imported).includesBRoll)
+    }
 }
 
 extension WizardPresetBridgeTests {

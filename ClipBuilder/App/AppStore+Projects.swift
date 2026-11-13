@@ -451,6 +451,7 @@ extension AppStore {
         flushPendingProfileSave()
         clearBuilderPreviewCache()
         guard let database else { return }
+        await flushMiniReel()
         builder.cancelPendingAutosave()
         if let timelineID = builder.timelineID {
             saveTimeline(id: timelineID, document: builder.document)

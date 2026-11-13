@@ -130,11 +130,15 @@ nonisolated struct MiniWizardFlow: Sendable {
         return (card, nil)
     }
 
-    static func footageSummary(kind: FootageKind, count: Int, keptCount: Int) -> String {
+    /// The Footage card's count line. A transcript pick can hold several
+    /// passages: `count` is picks and `passages` what they hold together.
+    static func footageSummary(kind: FootageKind, count: Int, keptCount: Int, passages: Int? = nil) -> String {
         switch kind {
         case .qa: "\(count) exchanges · \(keptCount) kept"
         case .highlights: "\(count) candidates · \(keptCount) kept"
-        case .transcript: (count == 1 ? "1 pick" : "\(count) picks") + " · \(keptCount) kept"
+        case .transcript:
+            (count == 1 ? "1 pick" : "\(count) picks")
+                + (passages.map { " · " + ($0 == 1 ? "1 passage" : "\($0) passages") } ?? " · \(keptCount) kept")
         case .fightMetrics: count == 1 ? "1 pick" : "\(count) picks"
         }
     }
@@ -239,7 +243,7 @@ nonisolated struct MiniWizardFlow: Sendable {
         var sections = [RunSummary.Section(title: "Picture", items: picture)]
         if !audio.isEmpty { sections.append(.init(title: "Audio", items: audio)) }
         sections.append(.init(title: "Overlays", items: overlays.isEmpty ? ["None"] : overlays))
-        sections.append(.init(title: "Package", items: package))
+        sections.append(.init(title: "Package", items: package.isEmpty ? ["None"] : package))
         return RunSummary(headline: "\(output) from \(source)",
                           length: qa ? nil : length.seconds.map { "\($0) s" } ?? "Auto length",
                           sections: sections, hasFootage: true)

@@ -26,6 +26,8 @@ extension AppStore {
 
     func resetMiniFootage() {
         cancelMiniFootageLoad()
+        miniPicksRefreshPending = []
+        miniTranscriptGroupingEdits = [:]
         clearMiniReel()
         miniRuns = [:]
         miniFootageVideoID = nil
@@ -427,40 +429,66 @@ extension AppStore {
 
     /// After a Team Sync pull that changed Express picks, reload the picks
     /// of every open Express run from the database, once that kind's pending
-    /// local writes have finished. A write queued meanwhile wins: the run is
-    /// left alone and the next pull reloads it.
+    /// local writes have finished. Busy work and newer writes defer the read.
     func refreshMiniPicksAfterSync(changedTables: Set<String>) async {
         if !changedTables.isDisjoint(with: ["transcript_picks", "qa_picks", "scenes"]) { forgetAllMiniUndo() }
-        guard let database, !isWizardRunning else { return }
+        miniPicksRefreshPending.formUnion(changedTables.intersection(["transcript_picks", "fight_picks", "qa_picks"]))
+        guard let database, !isWizardRunning, !isMiniUndoing, !miniPicksRefreshInProgress else { return }
+        miniPicksRefreshInProgress = true
+        let changedTables = miniPicksRefreshPending
+        miniPicksRefreshPending = []
+        defer {
+            miniPicksRefreshInProgress = false
+            retryMiniPicksRefresh()
+        }
         let generation = profileGeneration
         if changedTables.contains("transcript_picks"), let run = miniRuns[.transcript], run.transcript != nil {
             let pending = transcriptPickSaveTask
             _ = try? await pending?.value
             if let picks = try? await database.fetchTranscriptPicks(projectID: run.projectID, videoID: run.video.id),
-               generation == profileGeneration, transcriptPickSaveTask == pending, !isWizardRunning,
+               generation == profileGeneration, transcriptPickSaveTask == pending, !isWizardRunning, !isMiniUndoing,
                miniRuns[.transcript]?.batchID == run.batchID, miniRuns[.transcript]?.transcript != nil {
                 miniRuns[.transcript]?.transcript?.picks = picks
+            }
+            if generation == profileGeneration, miniRuns[.transcript]?.batchID == run.batchID,
+               (isWizardRunning || isMiniUndoing || transcriptPickSaveTask != pending) {
+                miniPicksRefreshPending.insert("transcript_picks")
             }
         }
         if changedTables.contains("fight_picks"), let run = miniRuns[.fightMetrics], run.fight != nil {
             let pending = fightPickSaveTask
             _ = try? await pending?.value
             if let picks = try? await database.fetchFightPicks(projectID: run.projectID, videoID: run.video.id),
-               generation == profileGeneration, fightPickSaveTask == pending, !isWizardRunning,
+               generation == profileGeneration, fightPickSaveTask == pending, !isWizardRunning, !isMiniUndoing,
                miniRuns[.fightMetrics]?.batchID == run.batchID, miniRuns[.fightMetrics]?.fight != nil {
                 miniRuns[.fightMetrics]?.fight?.picks = picks
+            }
+            if generation == profileGeneration, miniRuns[.fightMetrics]?.batchID == run.batchID,
+               (isWizardRunning || isMiniUndoing || fightPickSaveTask != pending) {
+                miniPicksRefreshPending.insert("fight_picks")
             }
         }
         if changedTables.contains("qa_picks"), let run = miniRuns[.qa], run.qa != nil {
             let pending = qaPickSaveTask
             _ = try? await pending?.value
             if let kept = try? await database.fetchQAPicks(projectID: run.projectID, videoID: run.video.id),
-               generation == profileGeneration, qaPickSaveTask == pending, !isWizardRunning,
+               generation == profileGeneration, qaPickSaveTask == pending, !isWizardRunning, !isMiniUndoing,
                miniRuns[.qa]?.batchID == run.batchID, let qa = miniRuns[.qa]?.qa {
                 miniRuns[.qa]?.qa?.kept = Set(kept).intersection(qa.sections.map(\.id))
                 miniRuns[.qa]?.qa?.keptOrder = kept.filter { id in qa.sections.contains { $0.id == id } }
             }
+            if generation == profileGeneration, miniRuns[.qa]?.batchID == run.batchID,
+               (isWizardRunning || isMiniUndoing || qaPickSaveTask != pending) {
+                miniPicksRefreshPending.insert("qa_picks")
+            }
         }
+    }
+
+    /// Called when wizard work or Undo releases the edit block.
+    func retryMiniPicksRefresh() {
+        guard !miniPicksRefreshPending.isEmpty, !isWizardRunning, !isMiniUndoing,
+              !miniPicksRefreshInProgress else { return }
+        Task { await refreshMiniPicksAfterSync(changedTables: []) }
     }
 
     /// Save the chosen ranges, preserving manual source-clock cutaways.

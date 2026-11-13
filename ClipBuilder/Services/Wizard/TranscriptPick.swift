@@ -118,6 +118,19 @@ nonisolated enum TranscriptPickUnits {
         }
     }
 
+    /// An add may finish after Unlink or Link has changed its old members.
+    static func completingAddition(_ added: TranscriptPick, to picks: [TranscriptPick],
+                                   originalUnit: [TranscriptPick]) -> [TranscriptPick] {
+        let members = picks.filter { pick in
+            guard let original = originalUnit.first(where: { $0.id == pick.id }) else { return false }
+            return pick.groupKey == original.groupKey
+                || (original.groupKey == nil && pick.groupKey == added.groupKey)
+        }
+        var added = added
+        if members.isEmpty { added.groupKey = nil }
+        return adding(added, to: picks, unit: members.map(\.id))
+    }
+
     /// The list with every unit's picks next to each other.
     static func contiguous(_ picks: [TranscriptPick]) -> [TranscriptPick] {
         units(picks).flatMap { $0 }

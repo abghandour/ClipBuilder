@@ -126,15 +126,16 @@ nonisolated enum WizardPreviewClips {
             return [.init(id: item.clipID, title: "Stretch \(pick.position + 1)", scene: scene,
                           start: pick.range.lowerBound, end: pick.range.upperBound)]
         case .highlights:
-            guard let candidate = run.candidates.first(where: { $0.id == item.itemID }), candidate.kept else { return [] }
+            guard let candidate = run.candidates.first(where: { $0.id == item.itemID }), candidate.kept,
+                  let plan = WizardSelectionRules.resolvedPlan(candidate.take.plan, scenes: scenes) else { return [] }
             var result: [WizardPreviewClip] = []
-            for (index, clip) in candidate.take.plan.clips.enumerated() where clip.end > clip.start {
+            for (index, clip) in plan.clips.enumerated() where clip.end > clip.start {
                 guard let scene = byID[clip.sceneID] else { continue }
-                let title = candidate.take.plan.clips.count > 1
+                let title = plan.clips.count > 1
                     ? "\(candidate.selection.name) · \(index + 1)" : candidate.selection.name
                 result.append(.init(id: "take-\(candidate.id)-\(index)", title: title, scene: scene,
                                     start: clip.start, end: clip.end, brollCuts: clip.brollCuts,
-                                    chosenSubject: candidate.take.plan.framing))
+                                    chosenSubject: plan.framing))
             }
             return result
         }

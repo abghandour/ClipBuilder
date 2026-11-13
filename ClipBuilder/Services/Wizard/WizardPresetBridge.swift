@@ -49,6 +49,9 @@ nonisolated enum WizardPresetBridge {
         fields["lookPreset"] = settings.lookName.map(JSONSetting.string) ?? .null
         fields["outputMode"] = .string(settings.outputMode.rawValue)
         fields["useMusic"] = .bool(settings.music)
+        // Unset means off in Express, but a missing key means on in the
+        // Wizard: the choice always travels as what Express would do.
+        fields["useBRoll"] = .bool(settings.includesBRoll)
         fields["muteSource"] = .bool(settings.muteSourceAudio)
         fields["musicTrack"] = settings.musicTrackName.map(JSONSetting.string) ?? .null
         return fields
@@ -118,6 +121,10 @@ nonisolated enum WizardPresetBridge {
         if let value = fields["lookPreset"] { settings.look = value.string ?? "" }
         if let mode = fields["outputMode"]?.string.flatMap(MiniWizardFlow.OutputMode.init(rawValue:)) { settings.outputMode = mode }
         if let music = fields["useMusic"]?.bool { settings.music = music }
+        // An untouched choice stays untouched when the dictionary agrees with it.
+        if let value = fields["useBRoll"], (value.bool ?? false) != settings.includesBRoll {
+            settings.includesBRoll = value.bool ?? false
+        }
         if let mute = fields["muteSource"]?.bool { settings.muteSourceAudio = mute }
         if let value = fields["musicTrack"] { settings.musicTrack = value.string }
         return settings

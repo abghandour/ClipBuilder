@@ -4,6 +4,23 @@ import Testing
 
 @Suite("Preview clip list rows")
 struct WizardPreviewRowsTests {
+    @Test func selectionFollowsTheAcceptedOrder() {
+        let before = ["A1", "A2", "B"]
+        #expect(WizardPreviewRows.reconciledIndex(1, previousIDs: before, ids: before) == 1,
+                "a proposed A1, B, A2 order regrouped by the store still selects A2")
+        #expect(WizardPreviewRows.reconciledIndex(1, previousIDs: before, ids: ["B", "A1", "A2"]) == 2)
+        #expect(WizardPreviewRows.reconciledIndex(2, previousIDs: before, ids: ["A2", "B"]) == 1,
+                "removing an earlier clip keeps the selected clip")
+    }
+
+    @Test func selectionClampsWhenItsClipLeaves() {
+        #expect(WizardPreviewRows.reconciledIndex(1, previousIDs: ["A", "B", "C"], ids: ["A", "C"]) == 1)
+        #expect(WizardPreviewRows.reconciledIndex(2, previousIDs: ["A", "B", "C"], ids: ["A", "B"]) == 1)
+        #expect(WizardPreviewRows.reconciledIndex(8, previousIDs: ["A"], ids: ["A", "B"]) == 1)
+        #expect(WizardPreviewRows.reconciledIndex(-1, previousIDs: [], ids: ["A"]) == 0)
+        #expect(WizardPreviewRows.reconciledIndex(1, previousIDs: ["A", "B"], ids: []) == 0)
+    }
+
     private func clip(_ id: String, scene: SceneRecord, start: Double, end: Double) -> WizardPreviewClip {
         WizardPreviewClip(id: id, title: id, scene: scene, start: start, end: end)
     }

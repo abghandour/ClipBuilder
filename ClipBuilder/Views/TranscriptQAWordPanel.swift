@@ -583,7 +583,7 @@ private struct TranscriptQALineView: View, Equatable {
                     .frame(width: columnWidth, alignment: .topLeading)
             }
         }
-        .padding(.horizontal, Theme.spaceS)
+        .padding(.horizontal, Theme.spaceXS)
         .padding(.vertical, 4)
         // The line being spoken is not tinted: a block behind the whole turn
         // read as part of the selection. The yellow spoken word and Follow
@@ -605,17 +605,23 @@ private struct TranscriptQALineView: View, Equatable {
     }
 
     private func originalLine(_ line: TranscriptQATrim.Line) -> some View {
-        HStack(alignment: .top, spacing: Theme.spaceS) {
-            Button(line.start.timecode) { onSeek(line.start) }
-                .buttonStyle(.plain)
-                .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
-                .lineLimit(1).fixedSize()
-                .help("Move the playhead to \(line.start.timecode)")
-            VStack(alignment: .leading, spacing: 2) {
+        // Laid out like a row of the reel list: who is talking at the left,
+        // the time at the far right, and the words under them from the
+        // column's own left edge.
+        VStack(alignment: .leading, spacing: 2) {
+            HStack(alignment: .firstTextBaseline, spacing: Theme.spaceS) {
                 if let speaker = line.speaker, !line.continuesSpeaker {
                     SpeakerPill(speaker: speaker, font: .caption.weight(.semibold))
                         .help(speaker)
                 }
+                Spacer(minLength: 0)
+                Button(line.start.timecode) { onSeek(line.start) }
+                    .buttonStyle(.plain)
+                    .font(.caption.monospacedDigit()).foregroundStyle(.secondary)
+                    .lineLimit(1).fixedSize()
+                    .help("Move the playhead to \(line.start.timecode)")
+            }
+            Group {
                 FlowLayout(spacing: TranscriptQAWordCursor.wordSpacing,
                            rowSpacing: TranscriptQAWordCursor.rowSpacing,
                            onPlace: FlowLayoutPlacementReporter(report: reportPlacement)) {
@@ -638,6 +644,7 @@ private struct TranscriptQALineView: View, Equatable {
             }
             .frame(maxWidth: .infinity, alignment: .leading)
         }
+        .frame(maxWidth: .infinity, alignment: .leading)
     }
 
     /// What paints a word: the selection, or the tightest saved pick holding it.

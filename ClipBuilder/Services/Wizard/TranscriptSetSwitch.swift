@@ -32,6 +32,15 @@ nonisolated enum TranscriptSetSwitch {
         return AISettingsJSON.decode(Settings.self, record.settingsJSON)?.transcriptKey
     }
 
+    /// The closed menu's label: enough to tell which transcript is in use.
+    /// The model and length stay in the menu's own rows (`label`).
+    static func shortLabel(_ set: TranscriptionSet) -> String {
+        var parts = [(set.name?.isEmpty == false ? set.name : nil) ?? date(set.createdAt)]
+        if set.editedCount > 0 { parts.append("\(set.editedCount) edited") }
+        if set.isPinned { parts.append("pinned") }
+        return parts.joined(separator: " · ")
+    }
+
     /// A short menu label: when it was made, with what, and how long it is.
     static func label(_ set: TranscriptionSet) -> String {
         // A named set reads by its name; the date tells two of one name apart.

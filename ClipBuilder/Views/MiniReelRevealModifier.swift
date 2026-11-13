@@ -14,11 +14,14 @@ private struct MiniReelRevealModifier: ViewModifier {
     private struct Trigger: Equatable {
         var reveal: MiniReelRules.Key?
         var visible: Bool
+        var available: Bool
     }
 
     func body(content: Content) -> some View {
-        content.onChange(of: Trigger(reveal: store.miniReelReveal, visible: pageVisible), initial: true) { _, trigger in
-            guard trigger.visible, let reveal = trigger.reveal, reveal.kind == kind, contains(reveal.itemID) else { return }
+        content.onChange(of: Trigger(reveal: store.miniReelReveal, visible: pageVisible,
+                                    available: store.miniReelReveal.map { $0.kind == kind && contains($0.itemID) } ?? false),
+                         initial: true) { _, trigger in
+            guard trigger.visible, trigger.available, let reveal = trigger.reveal else { return }
             select(reveal.itemID)
             store.miniReelReveal = nil
         }
