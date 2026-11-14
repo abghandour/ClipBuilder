@@ -272,6 +272,8 @@ private struct PreviewHandlesLayer: View {
     let revealMarkers: Bool
     let onMove: (PreviewElement, CustomPosition) -> Void
     var onPlaceOverlay: ((OverlayComponent, CGRect) -> Void)? = nil
+    /// The lines the element being dragged is aligned to; nil when nothing is dragged.
+    @State private var dragGuides: [PreviewSnapRules.Guide]?
 
     private var scale: CGFloat {
         guard canvas.width > 0, canvas.height > 0 else { return 1 }
@@ -287,20 +289,45 @@ private struct PreviewHandlesLayer: View {
                width: rect.width * scale, height: rect.height * scale)
     }
 
+    /// The reel's frame in the preview view's coordinates.
+    private var frame: CGRect { viewRect(CGRect(origin: .zero, size: canvas)) }
+
+    /// Every element on show, keyed so a dragged one can leave itself out.
+    private var boxes: [String: CGRect] {
+        var boxes: [String: CGRect] = [:]
+        for (index, rect) in layout.tags.enumerated() { boxes["tag-\(index)"] = viewRect(rect) }
+        for (index, caption) in layout.captions.enumerated() { boxes["caption-\(index)"] = viewRect(caption.rect) }
+        for (index, box) in layout.overlayComponents.enumerated() { boxes["overlay-\(index)"] = viewRect(box.rect) }
+        return boxes
+    }
+
+    /// What a handle uses to align its drag: the frame, the other elements,
+    /// and where to report the lines it landed on. Holding Command drags freely.
+    private func snapping(_ key: String) -> PreviewSnapping {
+        let others = boxes.filter { $0.key != key }.map(\.value)
+        return PreviewSnapping(frame: frame, others: others) { dragGuides = $0 }
+    }
+
     var body: some View {
         ZStack(alignment: .topLeading) {
+            if let dragGuides {
+                PreviewGuidesView(frame: frame, active: dragGuides)
+            }
             ForEach(Array(layout.tags.enumerated()), id: \.offset) { index, rect in
                 let person = layout.tagKeys.indices.contains(index) ? layout.tagKeys[index] : nil
-                PreviewHandle(element: .nameTag(person: person), rect: viewRect(rect), size: size, onMove: onMove)
+                PreviewHandle(element: .nameTag(person: person), rect: viewRect(rect), size: size,
+                              snapping: snapping("tag-\(index)"), onMove: onMove)
             }
-            ForEach(Array(layout.captions.enumerated()), id: \.element.personKey) { _, caption in
+            ForEach(Array(layout.captions.enumerated()), id: \.element.personKey) { index, caption in
                 let slot = caption.personKey.flatMap { ordinals[$0] }.map(CaptionSpeakerOrder.slot)
                 PreviewHandle(element: .caption(slot: slot), rect: viewRect(caption.rect), size: size,
-                              name: caption.name, isTalking: caption.isTalking, revealMarker: revealMarkers, onMove: onMove)
+                              name: caption.name, isTalking: caption.isTalking, revealMarker: revealMarkers,
+                              snapping: snapping("caption-\(index)"), onMove: onMove)
             }
             if let onPlaceOverlay {
-                ForEach(layout.overlayComponents, id: \.component) { box in
-                    PreviewComponentHandle(component: box.component, rect: viewRect(box.rect), aspect: box.aspect, size: size) { placed in
+                ForEach(Array(layout.overlayComponents.enumerated()), id: \.element.component) { index, box in
+                    PreviewComponentHandle(component: box.component, rect: viewRect(box.rect), aspect: box.aspect, size: size,
+                                           snapping: snapping("overlay-\(index)")) { placed in
                         guard scale > 0, canvas.width > 0, canvas.height > 0 else { return }
                         // Back to canvas pixels, minus the legacy whole-design drag, then to fractions.
                         let canvasRect = CGRect(x: (placed.minX - origin.x) / scale - layout.overlayShift.x,
@@ -313,6 +340,64 @@ private struct PreviewHandlesLayer: View {
             }
         }
         .frame(width: size.width, height: size.height, alignment: .topLeading)
+    }
+}
+
+/// What a dragged handle aligns to, and where it reports the lines it is on.
+private struct PreviewSnapping {
+    var frame: CGRect
+    var others: [CGRect]
+    /// The lines the drag is aligned to now; nil when the drag ends.
+    var report: ([PreviewSnapRules.Guide]?) -> Void
+
+    private var free: Bool { NSEvent.modifierFlags.contains(.command) }
+
+    func moved(_ rect: CGRect) -> CGRect {
+        guard !free else { report([]); return rect }
+        let result = PreviewSnapRules.moved(rect, frame: frame, others: others)
+        report(result.guides)
+        return result.rect
+    }
+
+    func resized(_ rect: CGRect, edges: PreviewSnapRules.Edges, minimum: CGSize) -> CGRect {
+        guard !free else { report([]); return rect }
+        let result = PreviewSnapRules.resized(rect, edges: edges, frame: frame, others: others, minimum: minimum)
+        report(result.guides)
+        return result.rect
+    }
+}
+
+/// The grid and centre lines shown while an element is dragged;
+/// the lines the element is aligned to are drawn bright.
+private struct PreviewGuidesView: View {
+    let frame: CGRect
+    let active: [PreviewSnapRules.Guide]
+
+    var body: some View {
+        Canvas { context, _ in
+            func line(_ guide: PreviewSnapRules.Guide) -> Path {
+                Path { path in
+                    if guide.vertical {
+                        path.move(to: CGPoint(x: guide.position, y: frame.minY))
+                        path.addLine(to: CGPoint(x: guide.position, y: frame.maxY))
+                    } else {
+                        path.move(to: CGPoint(x: frame.minX, y: guide.position))
+                        path.addLine(to: CGPoint(x: frame.maxX, y: guide.position))
+                    }
+                }
+            }
+            for guide in PreviewSnapRules.grid(in: frame) {
+                // Dark under light, so the grid reads on any footage.
+                context.stroke(line(guide), with: .color(.black.opacity(guide.centre ? 0.25 : 0.15)), lineWidth: 2)
+                context.stroke(line(guide), with: .color(.white.opacity(guide.centre ? 0.6 : 0.25)),
+                               style: StrokeStyle(lineWidth: 1, dash: guide.centre ? [] : [4, 4]))
+            }
+            for guide in active {
+                context.stroke(line(guide), with: .color(guide.centre ? .yellow : .accentColor), lineWidth: guide.centre ? 2 : 1.5)
+            }
+        }
+        .allowsHitTesting(false)
+        .accessibilityHidden(true)
     }
 }
 
@@ -331,6 +416,8 @@ private struct PreviewComponentHandle: View {
     var bounds: CGRect? = nil
     /// Only the focus frame responds to wheel/pinch zoom and insets canvas-edge grips.
     var allowsZoom = false
+    /// Alignment to the grid and the other elements; nil drags freely.
+    var snapping: PreviewSnapping? = nil
     /// The box the component was dropped at, in the preview view's coordinates.
     let onPlace: (CGRect) -> Void
     @State private var live: CGRect?
@@ -404,7 +491,8 @@ private struct PreviewComponentHandle: View {
         let box = movementBounds
         let x = min(max(box.minX, rect.minX + translation.width), max(box.minX, box.maxX - rect.width))
         let y = min(max(box.minY, rect.minY + translation.height), max(box.minY, box.maxY - rect.height))
-        return CGRect(x: x, y: y, width: rect.width, height: rect.height)
+        let moved = CGRect(x: x, y: y, width: rect.width, height: rect.height)
+        return snapping?.moved(moved) ?? moved
     }
 
     private func resized(_ grip: Grip, by translation: CGSize) -> CGRect {
@@ -419,7 +507,12 @@ private struct PreviewComponentHandle: View {
             result.origin.x = min(max(0, result.minX), max(0, box.width - result.width))
             result.origin.y = min(max(0, result.minY), max(0, box.height - result.height))
         }
-        return result.offsetBy(dx: box.minX, dy: box.minY)
+        let placed = result.offsetBy(dx: box.minX, dy: box.minY)
+        // A locked shape would be bent by pulling one edge: only free boxes snap while resizing.
+        guard let snapping, aspect == nil else { return placed }
+        return snapping.resized(placed, edges: .init(left: grip.movesLeft, right: grip.movesRight,
+                                                     top: grip.movesTop, bottom: grip.movesBottom),
+                                minimum: CGSize(width: Self.minimumWidth, height: Self.minimumHeight))
     }
 
     private func scale(by factor: CGFloat, debounce: Bool) {
@@ -457,6 +550,7 @@ private struct PreviewComponentHandle: View {
         zoomTask?.cancel()
         zoomTask = nil
         live = nil
+        if dragStart != nil { snapping?.report(nil) }
         dragStart = nil
     }
 
@@ -546,6 +640,7 @@ private struct PreviewHandle: View {
     var isTalking = false
     /// The owner asks every marker to show for a moment (a chip changed).
     var revealMarker = false
+    var snapping: PreviewSnapping? = nil
     let onMove: (PreviewElement, CustomPosition) -> Void
     @State private var translation = CGSize.zero
     @State private var hovering = false
@@ -578,9 +673,10 @@ private struct PreviewHandle: View {
                 if inside { NSCursor.openHand.push() } else { NSCursor.pop(); linger() }
             }
             .gesture(DragGesture(minimumDistance: 2)
-                .onChanged { translation = $0.translation }
+                .onChanged { translation = snapped($0.translation) }
                 .onEnded { value in
-                    let moved = value.translation
+                    let moved = snapped(value.translation)
+                    snapping?.report(nil)
                     translation = .zero
                     guard size.width > 0, size.height > 0 else { return }
                     onMove(element, CustomPosition(x: (rect.midX + moved.width) / size.width,
@@ -588,6 +684,16 @@ private struct PreviewHandle: View {
                 })
             .help("Drag to place the \(element.label)")
             .accessibilityLabel("\(name ?? element.label.capitalized) position")
+    }
+
+    /// The drag's offset after the outline is pulled onto the nearest lines.
+    private func snapped(_ translation: CGSize) -> CGSize {
+        guard let snapping else { return translation }
+        let outline = CGRect(x: rect.midX - max(24, rect.width) / 2 + translation.width,
+                             y: rect.midY - max(16, rect.height) / 2 + translation.height,
+                             width: max(24, rect.width), height: max(16, rect.height))
+        let placed = snapping.moved(outline)
+        return CGSize(width: placed.midX - rect.midX, height: placed.midY - rect.midY)
     }
 
     private func linger() {
