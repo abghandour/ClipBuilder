@@ -24,6 +24,18 @@ nonisolated enum AnalysisSteps {
             }
         }
 
+        /// What the step produces, for the "?" beside the Analyze button.
+        var detail: String {
+            switch self {
+            case .people: "Finds the faces in the recording so people can be named."
+            case .scenes: "Cuts the recording into scenes and describes each one."
+            case .transcript: "Turns the speech into a transcript with word times."
+            case .speakerNames: "Works out who is talking in each transcript line."
+            case .exchanges: "Groups the transcript into question-and-answer exchanges."
+            case .fightScore: "Scores the fight action in each scene."
+            }
+        }
+
         /// Steps that land in a new analyze batch; the rest update the video in place.
         var needsBatch: Bool { self == .scenes || self == .exchanges }
     }

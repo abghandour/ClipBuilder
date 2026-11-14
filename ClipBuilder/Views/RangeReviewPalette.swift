@@ -47,19 +47,17 @@ enum RangeReviewPalette {
     /// The block behind a saved pick's words: the slot's hue toned down
     /// over the window background, the same colour as its list row's bar.
     /// Opaque, so adjoining word rectangles join without seams.
-    static func block(_ slot: Int) -> Color {
+    /// `dimmed` is nearer the background and still opaque (translucent
+    /// blocks would show their overlaps as seams).
+    static func block(_ slot: Int, dimmed: Bool = false) -> Color {
         if slot == RangeReviewMarkedRange.draftSlot { return TranscriptQAWordCursor.draftColor }
         let hue = hue(slot)
-        return Color(nsColor: hue.blended(withFraction: 0.7, of: .windowBackgroundColor) ?? hue.withAlphaComponent(0.3))
+        return Color(nsColor: hue.blended(withFraction: dimmed ? 0.9 : 0.7, of: .windowBackgroundColor)
+                     ?? hue.withAlphaComponent(dimmed ? 0.12 : 0.3))
     }
 
     /// Width of the bar on the list row.
     static let barWidth: CGFloat = 4
-    /// Where a passage's own thinner bar starts inside an item that has
-    /// several: past the item's bar and a gap.
-    static let cutBarInset: CGFloat = 12
-    /// A passage's own bar: half the width and a lighter shade of its item's.
-    static func cutBar(_ slot: Int) -> Color { bar(slot).opacity(0.55) }
 
     /// Hue 25 degrees (orange) for slot 0; a family shifts by 20 degrees and
     /// each step by 60. Families also differ a little in depth so two hues
@@ -82,6 +80,8 @@ enum RangeReviewPalette {
 nonisolated struct RangeReviewMarkedRange: Hashable, Sendable {
     var range: ClosedRange<Double>
     var paletteIndex: Int
+    /// Another saved item is selected: this one steps back in the transcript.
+    var dimmed = false
 
     /// Not a saved item: another passage of the selection being composed.
     static let draftSlot = -1

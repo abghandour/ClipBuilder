@@ -57,3 +57,23 @@ extension AITaskRegistryTests {
         #expect(tags.map { $0.1 } == captions.map { $0.1 })
     }
 }
+
+extension AITaskRegistryTests {
+    @Test func proofreadingHasAnIndependentTextRoute() async {
+        #expect(AITask.proofread.rawValue == "proofread")
+        #expect(AITask.proofread.label == "Transcript proofreading")
+        #expect(AITask.configurable.contains(.proofread))
+        #expect(AICatalog.taskDefaults["proofread"] == AICatalog.taskDefaults["highlights"])
+        let proofread = AICatalog.recommendedChains["proofread"] ?? []
+        let highlights = AICatalog.recommendedChains["highlights"] ?? []
+        #expect(proofread.map { $0.0 } == highlights.map { $0.0 })
+        #expect(proofread.map { $0.1 } == highlights.map { $0.1 })
+        var config = AIConfig()
+        config.tasks["proofread"] = "codex"
+        config.taskModels["proofread"] = "proofread-model"
+        let service = AIService(config: config)
+        let route = await service.resolveProviderModel(task: AITask.proofread.rawValue)
+        #expect(route.provider == "codex" && route.model == "proofread-model")
+        #expect(await service.resolveProviderModel(task: "highlights").provider == "claude")
+    }
+}

@@ -4,6 +4,10 @@ nonisolated struct ProjectLanguages: Codable, Sendable, Hashable {
     var spoken: [String] = []
     var captions: [String] = []
     var dub: [String] = []
+    /// Proofread a video's first transcript by itself. Nil means on. It
+    /// rides in the project's languages JSON, shared with the team; the
+    /// resolver leaves it out, so it never changes a language comparison.
+    var proofreadNewTranscripts: Bool? = nil
 }
 
 nonisolated enum ProjectLanguageResolver {

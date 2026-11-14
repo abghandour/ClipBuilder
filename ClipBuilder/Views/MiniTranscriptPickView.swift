@@ -75,9 +75,9 @@ struct MiniTranscriptPickView: View {
     }
 
     private var items: [RangeReviewItem] {
-        let draftItem = RangeReviewItem(id: .init(ownerID: Self.draftOwnerID), title: "New pick",
-            titleHelp: "Press a word in the transcript and drag to select a passage, adjust it, then press Add. Hold Shift and drag to add another passage to the same pick. With a saved pick selected, Shift-drag adds a passage to it.",
-            keepLabel: "New pick",
+        let draftItem = RangeReviewItem(id: .init(ownerID: Self.draftOwnerID), title: "New selection",
+            titleHelp: "Press a word in the transcript and drag to select a passage, adjust it, then press Add. Hold Shift and drag to add another passage to the same selection. With a saved selection selected, Shift-drag adds a passage to it.",
+            keepLabel: "New selection",
             captions: draftCaptions,
             video: run.video, range: draft, originalRange: draft, limits: limits, trimPolicy: .pick,
             isAvailable: run.video.isPresent, isDraft: true)
@@ -87,7 +87,7 @@ struct MiniTranscriptPickView: View {
             var item = RangeReviewItem(id: .init(ownerID: pick.id),
                 title: "\(index + 1). " + MiniWizardTranscriptRules.title(text: texts[0], number: index + 1, limit: Self.labelLimit),
                 titleHelp: texts.joined(separator: "\n\n"),
-                keepLabel: "Pick \(index + 1)",
+                keepLabel: "Selection \(index + 1)",
                 captions: [.init(text: RangeReviewItem.rangeCaption(pick.range), monospaced: true)],
                 video: run.video, range: pick.range, originalRange: pick.originalRange, limits: limits,
                 trimPolicy: .qa, isAvailable: run.video.isPresent, titleLines: 2)
@@ -109,7 +109,8 @@ struct MiniTranscriptPickView: View {
             }
             item.children = unit.enumerated().map { cut, pick in
                 RangeReviewItem(id: .init(ownerID: unit[0].id, cutIndex: cut),
-                    title: "#\(cut + 1) " + MiniWizardTranscriptRules.title(text: texts[cut], number: cut + 1, limit: Self.labelLimit),
+                    title: MiniWizardTranscriptRules.title(text: texts[cut], number: cut + 1, limit: Self.labelLimit),
+                    badge: cut + 1,
                     titleHelp: texts[cut],
                     keepLabel: "Passage \(cut + 1)",
                     captions: [.init(text: RangeReviewItem.rangeCaption(pick.range), monospaced: true)],
@@ -145,8 +146,8 @@ struct MiniTranscriptPickView: View {
                             }, linked: true)
                         },
                         onAddCut: addCut, splitsCuts: true,
-                        emptyTitle: "Pick a passage",
-                        emptyMessage: "Select New pick, press a word in the transcript and drag, then press Add Pick.",
+                        emptyTitle: "Select a passage",
+                        emptyMessage: "Choose New selection, press a word in the transcript and drag, then press Add Selection.",
                         resetTitle: "Reset to Added", autoplay: false,
                         onMove: { store.reorderMiniTranscriptPicks(TranscriptPickUnits.order(picks, unitOwners: $0)) },
                         onDelete: { item in
@@ -228,12 +229,12 @@ struct MiniTranscriptPickView: View {
     private var keptSummary: String {
         let keptUnits = units.filter { $0.contains(where: \.kept) }.count
         let passages = picks.filter(\.kept).count
-        return "\(keptUnits) of \(units.count) \(units.count == 1 ? "pick" : "picks") kept · \(passages) \(passages == 1 ? "passage" : "passages")"
+        return "\(keptUnits) of \(units.count) \(units.count == 1 ? "selection" : "selections") kept · \(passages) \(passages == 1 ? "passage" : "passages")"
     }
 
     /// Add before anything is marked: there, so the next step is on screen, and off.
     private var emptyAddButton: some View {
-        let button = Button {} label: { Text("Add Pick").lineLimit(1).fixedSize() }
+        let button = Button {} label: { Text("Add Selection").lineLimit(1).fixedSize() }
             .buttonStyle(.borderedProminent)
             .controlSize(.small)
             .disabled(true)
@@ -272,12 +273,12 @@ struct MiniTranscriptPickView: View {
                 composing = TranscriptDraftSelection()
             }
         } label: {
-            Text(composing.spans.count > 1 ? "Add \(composing.spans.count) as One Pick" : "Add Pick").lineLimit(1).fixedSize()
+            Text(composing.spans.count > 1 ? "Add \(composing.spans.count) as One Selection" : "Add Selection").lineLimit(1).fixedSize()
         }
         .buttonStyle(.borderedProminent)
         .controlSize(.small)
         .disabled(store.isWizardRunning || !item.isAvailable || addPending)
-        .help(composing.spans.count > 1 ? "Add the selections as one pick; they play in the order they were marked"
-              : "Add the selected passage to the picks")
+        .help(composing.spans.count > 1 ? "Add the marked passages as one selection; they play in the order they were marked"
+              : "Add the marked passage to the selections")
     }
 }

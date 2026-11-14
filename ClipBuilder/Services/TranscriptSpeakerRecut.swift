@@ -60,18 +60,18 @@ nonisolated enum TranscriptSpeakerRecut {
         // Each word goes with the span holding its midpoint. Rows without
         // word timings are spread evenly over their range by token.
         let timed = row.words
-        let tokens: [(text: String, start: Double, end: Double)]
+        let tokens: [(text: String, start: Double, end: Double, source: TranscriptWord?)]
         if let timed, !timed.isEmpty {
-            tokens = timed.map { ($0.word, $0.start, $0.end) }
+            tokens = timed.map { ($0.word, $0.start, $0.end, $0) }
         } else {
             let parts = row.text.split(whereSeparator: \.isWhitespace).map(String.init)
             guard parts.count > 1 else { return passthrough }
             let step = (row.endTime - row.startTime) / Double(parts.count)
             tokens = parts.enumerated().map { index, part in
-                (part, row.startTime + Double(index) * step, row.startTime + Double(index + 1) * step)
+                (part, row.startTime + Double(index) * step, row.startTime + Double(index + 1) * step, nil)
             }
         }
-        var buckets = [[(text: String, start: Double, end: Double)]](repeating: [], count: spans.count)
+        var buckets = [[(text: String, start: Double, end: Double, source: TranscriptWord?)]](repeating: [], count: spans.count)
         for token in tokens {
             let mid = (token.start + token.end) / 2
             let index = spans.firstIndex { mid >= $0.start && mid < $0.end }
@@ -82,7 +82,7 @@ nonisolated enum TranscriptSpeakerRecut {
         for (index, bucket) in buckets.enumerated() where !bucket.isEmpty {
             let start = index == 0 ? row.startTime : (bucket.map(\.start).min() ?? spans[index].start)
             let end = index == spans.count - 1 ? row.endTime : (bucket.map(\.end).max() ?? spans[index].end)
-            let words = timed == nil ? nil : bucket.map { TranscriptWord(word: $0.text, start: $0.start, end: $0.end) }
+            let words = timed == nil ? nil : bucket.map { $0.source ?? TranscriptWord(word: $0.text, start: $0.start, end: $0.end) }
             pieces.append(Piece(start: start, end: max(end, start + 0.01), text: joined(bucket.map(\.text)),
                                 words: words, sourceRowID: row.id, speakerKey: row.speakerKey, split: true))
         }

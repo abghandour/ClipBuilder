@@ -80,6 +80,8 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
     /// Caption languages, e.g. ["en", "pt"] — one caption block per language.
     var hashtags: [String] = []
     var captionLanguages: [String]
+    /// Local per-profile spelling rules; deliberately absent from TeamProfileDocument.
+    var transcriptCorrections: [TranscriptCorrectionRules.Rule]?
     var defaultRenderSettings: RenderSettings
     var editing: ProfileEditingDefaults?
     var aiRouting: ProfileAIRouting?
@@ -157,6 +159,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         case accentColor = "accent_color"
         case tagline
         case captionLanguages = "caption_languages"
+        case transcriptCorrections = "transcript_corrections"
         case defaultRenderSettings = "default_render_settings"
         case editing
         case aiRouting = "ai_routing"
@@ -214,6 +217,7 @@ nonisolated struct BrandProfile: Codable, Sendable, Hashable, Identifiable {
         hashtags = try container.decodeIfPresent([String].self, forKey: .hashtags) ?? []
         captionLanguages = try container.decodeIfPresent([String].self, forKey: .captionLanguages)
             ?? ["en"]
+        transcriptCorrections = try container.decodeIfPresent([TranscriptCorrectionRules.Rule].self, forKey: .transcriptCorrections)
         defaultRenderSettings = try container.decodeIfPresent(RenderSettings.self, forKey: .defaultRenderSettings)
             ?? RenderSettings()
         editing = try container.decodeIfPresent(ProfileEditingDefaults.self, forKey: .editing)

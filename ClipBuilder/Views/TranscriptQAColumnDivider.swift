@@ -13,8 +13,10 @@ struct TranscriptQAColumnDivider: View {
     @State private var cursorPushed = false
 
     var body: some View {
+        // No line at rest: the columns are set apart by their spacing. It
+        // shows under the pointer and while dragging, as the resize handle.
         Rectangle()
-            .fill(Color(nsColor: .separatorColor))
+            .fill(cursorPushed || dragStartWidth != nil ? Color(nsColor: .separatorColor) : Color.clear)
             .frame(width: 1)
             .frame(width: TranscriptQAColumns.dividerWidth)
             .contentShape(Rectangle())

@@ -244,12 +244,14 @@ struct WizardPreviewList: View {
         let selected = index == selectedIndex
         let isExpanded = expanded.contains(row.id)
         // A row that is one of several passages of the same item: the item's
-        // bar runs unbroken down them and each has a thinner bar of its own.
+        // bar runs unbroken down them and they alternate on a faint grey,
+        // exactly as the Footage list draws them.
         let key = barGroupKey(row)
         let joinsAbove = index > 0 && barGroupKey(rows[index - 1]) == key
         let joinsBelow = index + 1 < rows.count && barGroupKey(rows[index + 1]) == key
         let grouped = (joinsAbove || joinsBelow) && config.barSlot?(row.id) != nil
         let bridge = Self.rowSpacing / 2
+        let placeInItem = rows[..<index].reversed().prefix { barGroupKey($0) == key }.count
         // No buttons on the card: a click selects, a double-click expands or
         // collapses, and the context menu carries Expand, Select and Delete.
         return VStack(alignment: .leading, spacing: 2) {
@@ -285,8 +287,10 @@ struct WizardPreviewList: View {
             .accessibilityAction(named: isExpanded ? "Collapse" : "Expand") { toggleExpanded(row) }
         }
         .padding(Theme.spaceS)
-        .padding(.leading, RangeReviewPalette.barWidth + (grouped ? RangeReviewPalette.cutBarInset : 0))
-        .background(selected ? Color.accentColor.opacity(0.18) : Color.clear,
+        // Air between the item's bar and the words.
+        .padding(.leading, RangeReviewPalette.barWidth + Theme.spaceXS)
+        .background(selected ? Color.accentColor.opacity(0.18)
+                    : grouped && placeInItem.isMultiple(of: 2) ? Color.primary.opacity(0.06) : Color.clear,
                     in: RoundedRectangle(cornerRadius: 6))
         .overlay(alignment: .leading) {
             // The colour this clip's item has in its Footage section.
@@ -296,12 +300,6 @@ struct WizardPreviewList: View {
                         .frame(width: RangeReviewPalette.barWidth)
                         .padding(.top, grouped && joinsAbove ? -bridge : Theme.spaceXS)
                         .padding(.bottom, grouped && joinsBelow ? -bridge : Theme.spaceXS)
-                    if grouped {
-                        RangeReviewPalette.cutBar(slot)
-                            .frame(width: RangeReviewPalette.barWidth / 2)
-                            .padding(.vertical, Theme.spaceXS)
-                            .padding(.leading, RangeReviewPalette.cutBarInset)
-                    }
                 }
                 .allowsHitTesting(false)
                 .accessibilityHidden(true)

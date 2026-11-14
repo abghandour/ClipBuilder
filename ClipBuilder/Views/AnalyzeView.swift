@@ -606,13 +606,15 @@ struct AnalyzeView: View {
             }
             Spacer(minLength: 0)
             if summary.files > 0 {
-                Button(AnalysisSteps.batchButtonTitle(files: summary.files, steps: summary.steps)) {
-                    runAllMissingSteps()
-                }
-                .buttonStyle(.borderedProminent)
-                .lineLimit(1).fixedSize()
+                AnalyzeStepsButton(
+                    title: "Analyze \(summary.files) file\(summary.files == 1 ? "" : "s")", count: summary.steps,
+                    items: AnalysisSteps.Step.allCases.compactMap { step in
+                        let files = missing.values.count { $0.contains(step) }
+                        return files > 0 ? .init(step: step, files: files) : nil
+                    },
+                    help: "Runs every missing or outdated analysis step of every file on this Mac, then syncs the results with the team",
+                    runAll: runAllMissingSteps, run: { runMissingSteps(only: $0) })
                 .disabled(busy)
-                .help("Runs every missing or outdated analysis step of every file on this Mac, then syncs the results with the team")
             }
         }
         .padding(.horizontal, Theme.spaceS)
@@ -690,15 +692,14 @@ struct AnalyzeView: View {
             }
             if single, let video = previewVideo, !steps.isEmpty {
                 let busy = stepsInFlight(video)
-                Button(AnalysisSteps.buttonTitle(count: steps.count)) {
-                    runSteps(steps, video: video)
-                }
-                .buttonStyle(.borderedProminent)
+                AnalyzeStepsButton(
+                    title: "Analyze", count: steps.count, items: steps.map { .init(step: $0, files: nil) },
+                    help: video.isPresent
+                        ? "Runs the analysis steps this \(video.type?.label.lowercased() ?? "recording") is missing: "
+                          + steps.map(\.title).joined(separator: ", ")
+                        : VideoRecord.notPresentReason,
+                    runAll: { runSteps(steps, video: video) }, run: { runSteps([$0], video: video) })
                 .disabled(busy || store.isAnalyzing || !video.isPresent)
-                .help(video.isPresent
-                      ? "Runs the analysis steps this \(video.type?.label.lowercased() ?? "recording") is missing: "
-                        + steps.map(\.title).joined(separator: ", ")
-                      : VideoRecord.notPresentReason)
                 if busy { ProgressView().controlSize(.small) }
             }
             if single {

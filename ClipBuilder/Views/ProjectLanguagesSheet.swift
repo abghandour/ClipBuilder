@@ -18,7 +18,7 @@ struct ProjectLanguagesSheet: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceM) {
-            Text("Languages — \(project.name)").font(.headline)
+            Text("Languages and Transcripts — \(project.name)").font(.headline)
             Text("Shared with the team. Empty lists inherit the profile defaults; installation is checked on each Mac.")
                 .font(.caption).foregroundStyle(.secondary)
             Form {
@@ -26,6 +26,13 @@ struct ProjectLanguagesSheet: View {
                 languageList("Caption and translation targets", values: $languages.captions,
                              choices: ["en", "pt", "es", "fr", "de", "it", "ja", "ko", "zh", "ar", "hi", "ru"])
                 languageList("Dub targets", values: $languages.dub, choices: dubChoices)
+                Section("Transcripts") {
+                    Toggle("Proofread new transcripts", isOn: Binding(
+                        get: { languages.proofreadNewTranscripts ?? true },
+                        // On is the default and is stored as nothing.
+                        set: { languages.proofreadNewTranscripts = $0 ? nil : false }))
+                        .help("Right after a video is transcribed for the first time, AI reads the transcript and underlines words it thinks were misheard. It never changes the text. Proofread in the Transcript editor's Tools menu runs it by hand.")
+                }
             }
             .formStyle(.grouped)
             if let error { Text(error).font(.caption).foregroundStyle(.red) }

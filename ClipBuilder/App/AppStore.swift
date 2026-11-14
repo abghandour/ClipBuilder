@@ -293,6 +293,9 @@ final class AppStore {
     }
     private(set) var speakerNamingVersion = 0
     var speakerMappingVideoIDs: Set<Int64> = []
+    /// Bumped per video when Proofread writes suggestions onto its words:
+    /// an open Transcript editor reloads to underline them.
+    var transcriptMarksRevision: [Int64: Int] = [:]
     /// Distinct people the people pass found per video; the Sources table
     /// shows them as soon as a detection finishes.
     var videoPeopleCounts: [Int64: Int] = [:] { didSet { videoPeopleVersion &+= 1 } }
@@ -873,7 +876,9 @@ final class AppStore {
     /// `wordTiming` is the user's choice for this run; nil uses the default from Settings.
     func transcription(wordTiming: WordTiming?) -> TranscriptionService {
         TranscriptionService(podcastSettings: podcastEditingSettings, spokenLocales: projectLanguages.spoken,
-                             wordTiming: wordTiming ?? settings.wordTimingChoice)
+                             wordTiming: wordTiming ?? settings.wordTimingChoice,
+                             corrections: activeProfile.transcriptCorrections ?? [],
+                             onFirstTranscript: firstTranscriptHandler())
     }
     let analyzer: Analyzer
     let podcastAnalysis: PodcastAnalysisService

@@ -1024,6 +1024,17 @@ nonisolated struct TranscriptWord: Codable, Sendable, Equatable {
     var word: String
     var start: Double
     var end: Double
+    /// Recognizer confidence; absent for legacy, translated and edited
+    /// tokens. Exactly 1 means the user marked the word right.
+    var confidence: Double? = nil
+    /// What Proofread thinks was said instead; cleared when the word is
+    /// fixed, marked right or edited.
+    var suggestion: TranscriptWordSuggestion? = nil
+}
+
+nonisolated struct TranscriptWordSuggestion: Codable, Sendable, Equatable {
+    var to: String
+    var reason: String
 }
 
 /// One-hop snapshot of the library tables the main window keeps in memory.

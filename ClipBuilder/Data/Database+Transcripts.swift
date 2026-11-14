@@ -374,8 +374,16 @@ extension Database {
         guard let rows = try transcriptBackup(videoID: videoID, transcriptionKey: transcriptionKey),
               let key = rows.first?.transcriptionKey else { return false }
         try connection.transaction {
+            // What was marked right or suggested on the re-cut rows stays on
+            // the same words of the rows coming back.
+            let marked = try fetchTranscripts(videoID: videoID, transcriptionKey: key)
+                .filter { !$0.isTranslation }.flatMap { $0.words ?? [] }
             try connection.execute("DELETE FROM transcripts WHERE video_id = ? AND is_translation = 0 AND transcription_key IS ?", [.integer(videoID), rows.first?.transcriptionKey.map(SQLValue.text) ?? .null])
-            for row in rows {
+            for var row in rows {
+                if !marked.isEmpty, let words = row.words {
+                    let carried = TranscriptWordRules.carryingMarks(fromRecut: marked, onto: words)
+                    if carried != words { row.wordsJSON = String(decoding: try JSONEncoder().encode(carried), as: UTF8.self) }
+                }
                 try connection.execute("""
                     INSERT INTO transcripts (video_id, language, is_translation, start_time, end_time, text, original_text,
                                              words, original_words, provider, model, technique, seconds, speaker_key, transcription_key, transcription_created_at)
@@ -484,7 +492,9 @@ extension Database {
 
     /// Edit transcript text in place, preserving the pristine original once.
     /// Typing the original back is a revert, so the line stops counting as edited.
-    func updateTranscriptText(id: Int64, text: String) throws {
+    /// `fixes` says the edit is this list of word fixes (old word position
+    /// to its new token), so the marks follow the exact words kept.
+    func updateTranscriptText(id: Int64, text: String, fixes: [Int: String]? = nil) throws {
         guard let row = try connection.query("SELECT * FROM transcripts WHERE id = ?", [.integer(id)]).first,
               row["text"]?.stringValue != text else { return }
         if row["original_text"]?.stringValue == text {
@@ -494,8 +504,27 @@ extension Database {
         let original = (row["original_words"]?.stringValue ?? row["words"]?.stringValue)
             .flatMap { $0.data(using: .utf8) }
             .flatMap { try? JSONDecoder().decode([TranscriptWord].self, from: $0) }
-        let words = TranscriptWordAlignment.realign(text: text, original: original,
-            start: row["start_time"]?.doubleValue ?? 0, end: row["end_time"]?.doubleValue ?? 0)
+        let start = row["start_time"]?.doubleValue ?? 0
+        let end = row["end_time"]?.doubleValue ?? 0
+        // The originals know nothing of what was marked right or suggested
+        // since: words this edit leaves alone keep those marks.
+        let current = row["words"]?.stringValue.flatMap { $0.data(using: .utf8) }
+            .flatMap { try? JSONDecoder().decode([TranscriptWord].self, from: $0) }
+        var keeping: [Int: Int]?
+        if let fixes, let before = row["text"]?.stringValue, let current, !current.isEmpty {
+            let old = TranscriptWordRules.tokens(before)
+            if TranscriptWordRules.tokens(TranscriptWordRules.replacing(text: before, fixes: fixes))
+                == TranscriptWordRules.tokens(text), current.count == old.count {
+                keeping = TranscriptWordRules.keptPositions(tokenCount: old.count, fixes: fixes)
+            }
+        }
+        // A list of word fixes names the exact words kept, so each keeps its
+        // own clock (a repeated word is not given its twin's); any other
+        // edit is matched by text against the transcriber's words.
+        let realigned = keeping != nil
+            ? TranscriptWordAlignment.realign(text: text, original: current, start: start, end: end, known: keeping)
+            : TranscriptWordAlignment.realign(text: text, original: original, start: start, end: end)
+        let words = TranscriptWordRules.carryingMarks(from: current, onto: realigned, keeping: keeping)
         let json = try words.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }
         try connection.execute("""
             UPDATE transcripts SET original_text = COALESCE(original_text, text),
@@ -505,10 +534,17 @@ extension Database {
 
     /// Apply several edited segment texts in one transaction (the
     /// whole-transcript editor's Save).
-    func updateTranscriptTexts(_ changes: [(id: Int64, text: String)]) throws {
+    /// `confirming` marks words right first (line id, word position, the
+    /// word expected there), so a line that is also edited keeps the mark
+    /// on the words the edit leaves alone.
+    /// `fixes` names the lines whose change is a list of word fixes.
+    func updateTranscriptTexts(_ changes: [(id: Int64, text: String)],
+                               confirming: [Int64: [Int: String]] = [:],
+                               fixes: [Int64: [Int: String]] = [:]) throws {
         try connection.transaction {
+            try confirmTranscriptWords(confirming)
             for change in changes {
-                try updateTranscriptText(id: change.id, text: change.text)
+                try updateTranscriptText(id: change.id, text: change.text, fixes: fixes[change.id])
             }
         }
     }
@@ -525,8 +561,15 @@ extension Database {
     private func revertTranscriptRow(_ row: SQLRow) throws {
         guard let id = row["id"]?.intValue, let original = row["original_text"]?.stringValue else { return }
         var words = row["original_words"]?.stringValue
-        if words == nil, let current = row["words"]?.stringValue.flatMap({ $0.data(using: .utf8) })
-            .flatMap({ try? JSONDecoder().decode([TranscriptWord].self, from: $0) }) {
+        let current = row["words"]?.stringValue.flatMap { $0.data(using: .utf8) }
+            .flatMap { try? JSONDecoder().decode([TranscriptWord].self, from: $0) }
+        if let stored = words, let current,
+           let pristine = stored.data(using: .utf8).flatMap({ try? JSONDecoder().decode([TranscriptWord].self, from: $0) }) {
+            // What was marked right or suggested since the edit stays on
+            // the words the edit never touched: same word, same time.
+            let carried = TranscriptWordRules.carryingMarks(fromRecut: current, onto: pristine)
+            if carried != pristine { words = String(decoding: try JSONEncoder().encode(carried), as: UTF8.self) }
+        } else if words == nil, let current {
             let aligned = TranscriptWordAlignment.realign(text: original, original: current,
                 start: row["start_time"]?.doubleValue ?? 0, end: row["end_time"]?.doubleValue ?? 0)
             words = try aligned.map { String(decoding: try JSONEncoder().encode($0), as: UTF8.self) }

@@ -66,6 +66,9 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     /// Scores exchanges as highlight candidates. Prompt:
     /// `PodcastHighlightFinder`; validated into `HighlightCandidate`.
     case highlights
+    /// Likely transcript mishearings only. Prompt: `TranscriptProofreading.prompt`;
+    /// JSON suggestions validated against the chunk and current rows by `TranscriptProofreading.parse`.
+    case proofread
     /// Chooses camera focus for saved podcast exchanges at render time. Prompt:
     /// `CameraFocusChooser.prompt`; JSON choices with a layout and reason per take.
     /// The same stable key also identifies older Apple Vision framing provenance.
@@ -138,7 +141,7 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     /// Tasks the user can route in Settings (provider and model pickers).
     /// Order is the Settings order.
     static let configurable: [AITask] = [
-        .analysis, .people, .exchanges, .highlights, .framing, .broll, .wizard, .critique, .research, .fightResearch, .personResearch,
+        .analysis, .people, .exchanges, .highlights, .proofread, .framing, .broll, .wizard, .critique, .research, .fightResearch, .personResearch,
         .parse, .captions, .hooks, .tagText, .storyCard, .distill, .overlay, .naming, .curate, .search, .soundbites, .cover, .dedupe, .trim,
         .gap, .report, .assist, .onboard, .route,
     ]

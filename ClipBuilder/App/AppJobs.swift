@@ -16,6 +16,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
     case openInEditor
     case roughCut
     case voiceClone
+    case proofread
     case wordTimingModel
 
     var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief || self == .generateImage }
@@ -47,6 +48,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .evaluateReelModel: "Evaluate Model"
         case .publishLessons: "Publish AI Lessons"
         case .transcriptAnalysis: "Transcript Analysis"
+        case .proofread: "Proofread Transcript"
         case .teamSync: "Team Sync"
         case .languageAssets: "Language Assets"
         case .detectLanguage: "Detect Languages"

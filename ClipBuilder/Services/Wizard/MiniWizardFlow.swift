@@ -137,7 +137,7 @@ nonisolated struct MiniWizardFlow: Sendable {
         case .qa: "\(count) exchanges · \(keptCount) kept"
         case .highlights: "\(count) candidates · \(keptCount) kept"
         case .transcript:
-            (count == 1 ? "1 pick" : "\(count) picks")
+            (count == 1 ? "1 selection" : "\(count) selections")
                 + (passages.map { " · " + ($0 == 1 ? "1 passage" : "\($0) passages") } ?? " · \(keptCount) kept")
         case .fightMetrics: count == 1 ? "1 pick" : "\(count) picks"
         }
@@ -172,7 +172,8 @@ nonisolated struct MiniWizardFlow: Sendable {
         } else if qa {
             source = "\(count) \(count == 1 ? "exchange" : "exchanges")"
         } else if picks {
-            source = "\(count) \(count == 1 ? "pick" : "picks")"
+            let noun = effectiveFootageKind == .transcript ? "selection" : "pick"
+            source = "\(count) \(noun)\(count == 1 ? "" : "s")"
         } else if let first = kept.first {
             source = "\(first.selection.name), Take \(first.take.ordinal)"
                 + (count > 1 ? " + \(count - 1) more" : "")
@@ -202,7 +203,7 @@ nonisolated struct MiniWizardFlow: Sendable {
         let output = "One reel"
         let source = reelCount != nil ? "\(count) \(count == 1 ? "clip" : "clips")"
             : qa ? "\(count) \(count == 1 ? "exchange" : "exchanges")"
-            : picks ? "\(count) \(count == 1 ? "pick" : "picks")"
+            : picks ? "\(count) \(effectiveFootageKind == .transcript ? "selection" : "pick")\(count == 1 ? "" : "s")"
             : "\(kept[0].selection.name), Take \(kept[0].take.ordinal)" + (count > 1 ? " + \(count - 1) more" : "")
         var picture = [settings.quality.label, settings.preset.label]
         picture.append(settings.framing.subject.label(type: video?.type ?? .other))

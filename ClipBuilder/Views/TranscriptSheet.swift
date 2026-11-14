@@ -1,3 +1,14 @@
+// MAP
+// State and change tracking ........ top of TranscriptSheet
+// Find, speaker filter, doubtful words (state, rules glue, Replace, Fix) .. "MARK: - Find and fix"
+// Body, sheets and dialogs ......... `body`, `editableBody`
+// Title bar, toolbar, edit bar, notices, Show menu, Fix Speakers
+// One line (`segmentRow`), its texts and compare view
+// Video panel, tags, Topics view, re-cut by speaker, playback
+// Speaker menu, load, save, revert
+// Views in their own files: TranscriptFindRow.swift (find row, replace strip),
+// TranscriptWordFixStrip.swift (fix strip, corrections sheet)
+
 import AVKit
 import SwiftUI
 import UniformTypeIdentifiers
@@ -139,6 +150,30 @@ struct TranscriptSheet: View {
     /// Lines whose speaker the last Fix Speakers changed, with the
     /// name they had before.
     @State private var changedByMap: [Int64: String] = [:]
+
+    // Find, the one-speaker filter and doubtful words (see "Find and fix").
+    @State private var searchText = ""
+    @State private var searchMatches: [TranscriptSearchRules.Match] = []
+    @State private var currentMatch: Int?
+    @FocusState private var searchFocused: Bool
+    @State private var showsReplace = false
+    @State private var replaceText = ""
+    @State private var replaceNote: String?
+    /// The only speaker whose lines show; nil shows everyone.
+    @State private var speakerFilter: String?
+    /// Every doubtful word of the loaded lines, in transcript order, and per line.
+    @State private var doubts: [TranscriptWordRules.Doubt] = []
+    @State private var doubtsByRow: [Int64: [TranscriptWordRules.Doubt]] = [:]
+    @State private var rowsByID: [Int64: TranscriptRow] = [:]
+    /// Word fixes not applied yet: line, token position in the stored
+    /// text, the new token ("" removes it). The line's draft is built
+    /// from these; typing over the draft in Edit Text retires them.
+    @State private var wordFixes: [Int64: [Int: String]] = [:]
+    /// Words marked right, not applied yet: line, position, the word.
+    @State private var confirmedWords: [Int64: [Int: String]] = [:]
+    @State private var fixingWord: TranscriptWordRules.WordID?
+    @State private var showCorrections = false
+    static let doubtfulFilter = "doubtful:words"
     /// Consecutive lines by one speaker read as one block.
     @AppStorage("transcript.groupBySpeaker") private var groupBySpeaker = false
 
@@ -161,7 +196,9 @@ struct TranscriptSheet: View {
         }
     }
 
-    private var hasChanges: Bool { !changedIDs.isEmpty || !changedSpeakerIDs.isEmpty }
+    private var markedRightCount: Int { confirmedWords.values.reduce(0) { $0 + $1.count } }
+
+    private var hasChanges: Bool { !changedIDs.isEmpty || !changedSpeakerIDs.isEmpty || markedRightCount > 0 }
 
     private var changeSummary: String {
         var parts: [String] = []
@@ -170,6 +207,7 @@ struct TranscriptSheet: View {
         if lines > 0 { parts.append("\(lines) line\(lines == 1 ? "" : "s") changed") }
         if translations > 0 { parts.append("\(translations) translation\(translations == 1 ? "" : "s") changed") }
         if !changedSpeakerIDs.isEmpty { parts.append("\(changedSpeakerIDs.count) speaker change\(changedSpeakerIDs.count == 1 ? "" : "s")") }
+        if markedRightCount > 0 { parts.append("\(markedRightCount) word\(markedRightCount == 1 ? "" : "s") marked right") }
         return parts.joined(separator: " · ")
     }
 
@@ -196,14 +234,383 @@ struct TranscriptSheet: View {
         return best?.turn
     }
 
-    /// The lines on show: all of them, or those under the tag filter.
+    private var showChoice: TranscriptLineFilter.Show {
+        tagFilter.isEmpty ? .all
+            : tagFilter == Self.editedFilter ? .edited
+            : tagFilter == Self.changedByMapFilter ? .changedByMap
+            : tagFilter == Self.doubtfulFilter ? .doubtful : .tag(tagFilter)
+    }
+
+    /// The lines on show: the Show menu's choice and the speaker filter.
     private var visibleRows: [TranscriptRow] {
-        // A translation shows under its line, never as a row of its own.
-        let rows = rows.filter { !$0.isTranslation }
-        if tagFilter.isEmpty { return rows }
-        if tagFilter == Self.editedFilter { return rows.filter { $0.originalText != nil } }
-        if tagFilter == Self.changedByMapFilter { return rows.filter { changedByMap[$0.id] != nil } }
-        return rows.filter { lineTags[$0.id]?.contains(tagFilter) == true }
+        TranscriptLineFilter.lines(rows, show: showChoice, speaker: speakerFilter, label: speakerLabel,
+                                   tags: { lineTags[$0] ?? [] }, changedByMap: Set(changedByMap.keys),
+                                   doubtful: showChoice == .doubtful ? Set(allOpenDoubts.map(\.id.rowID)) : [])
+    }
+
+    // MARK: - Find and fix
+
+    private var speakerChoices: [TranscriptLineFilter.Speaker] {
+        TranscriptLineFilter.speakers(rows, label: speakerLabel)
+    }
+
+    /// Fixing words waits while Apply writes (it clears what is pending)
+    /// and while Fix Speakers runs (it replaces the lines).
+    private var wordEditsBlocked: Bool { isSaving || isMappingSpeakers }
+
+    /// The word fixes standing for a line; nil once its draft was typed
+    /// over in Edit Text (its doubtful words then wait for Apply).
+    private func standingFixes(_ row: TranscriptRow) -> [Int: String]? {
+        guard let draft = drafts[row.id], draft != row.text else { return [:] }
+        let fixes = wordFixes[row.id] ?? [:]
+        return TranscriptWordRules.replacing(text: row.text, fixes: fixes) == draft ? fixes : nil
+    }
+
+    private func isOpen(_ doubt: TranscriptWordRules.Doubt) -> Bool {
+        guard let row = rowsByID[doubt.id.rowID], let fixes = standingFixes(row) else { return false }
+        return fixes[doubt.id.index] == nil && confirmedWords[row.id]?[doubt.id.index] == nil
+    }
+
+    /// Doubtful words nothing was decided about yet, hidden lines included.
+    private var allOpenDoubts: [TranscriptWordRules.Doubt] { doubts.filter(isOpen) }
+
+    /// The same, on the lines on show: what the stepper walks.
+    private var openDoubts: [TranscriptWordRules.Doubt] {
+        guard !doubts.isEmpty else { return [] }
+        let shown = Set(visibleRows.map(\.id))
+        return allOpenDoubts.filter { shown.contains($0.id.rowID) }
+    }
+
+    private func openDoubts(in row: TranscriptRow) -> [TranscriptWordRules.Doubt] {
+        (doubtsByRow[row.id] ?? []).filter(isOpen)
+    }
+
+    private static func wordURL(_ id: TranscriptWordRules.WordID) -> URL? {
+        URL(string: "clipbuilder-word://fix/\(id.rowID)/\(id.index)")
+    }
+
+    private static func wordID(_ url: URL) -> TranscriptWordRules.WordID? {
+        let parts = url.pathComponents.filter { $0 != "/" }
+        guard url.scheme == "clipbuilder-word", parts.count == 2,
+              let row = Int64(parts[0]), let index = Int(parts[1]) else { return nil }
+        return .init(rowID: row, index: index)
+    }
+
+    /// The spoken line as it reads now: fixes in place, doubtful words
+    /// underlined and clickable, search matches marked.
+    private func spokenText(_ row: TranscriptRow) -> AttributedString {
+        let open = openDoubts(in: row)
+        let fixes = standingFixes(row) ?? [:]
+        var result: AttributedString
+        if open.isEmpty && fixes.isEmpty {
+            result = AttributedString(drafts[row.id] ?? row.text)
+        } else {
+            let doubtAt = Dictionary(open.map { ($0.id.index, $0) }, uniquingKeysWith: { first, _ in first })
+            result = AttributedString()
+            for (index, token) in TranscriptWordRules.tokens(row.text).enumerated() {
+                let shown = fixes[index] ?? token
+                if shown.isEmpty { continue }
+                if !result.characters.isEmpty { result += AttributedString(" ") }
+                var part = AttributedString(shown)
+                if fixes[index] != nil {
+                    part.foregroundColor = .accentColor
+                } else if let doubt = doubtAt[index] {
+                    // Blue: Proofread has a suggestion. Grey: the transcriber was unsure.
+                    part.underlineStyle = Text.LineStyle(pattern: .dot, color: doubt.suggestion != nil ? .accentColor : .secondary)
+                    part.link = Self.wordURL(doubt.id)
+                    part.foregroundColor = .primary
+                    if fixingWord == doubt.id { part.backgroundColor = Color.accentColor.opacity(0.3) }
+                }
+                result += part
+            }
+        }
+        markMatches(in: &result, rowID: row.id)
+        return result
+    }
+
+    private func markMatches(in text: inout AttributedString, rowID: Int64) {
+        guard !searchMatches.isEmpty else { return }
+        let plain = String(text.characters)
+        let current = currentMatch.flatMap { searchMatches.indices.contains($0) ? searchMatches[$0] : nil }
+        for (ordinal, range) in TranscriptSearchRules.ranges(of: searchText, in: plain).enumerated() {
+            guard let found = Range(range, in: text) else { continue }
+            let isCurrent = current?.rowID == rowID && current?.ordinal == ordinal
+            text[found].backgroundColor = isCurrent ? Color.yellow : Color.yellow.opacity(0.3)
+            if isCurrent { text[found].foregroundColor = .black }
+        }
+    }
+
+    private func matchedText(_ row: TranscriptRow) -> AttributedString {
+        var text = AttributedString(drafts[row.id] ?? row.text)
+        markMatches(in: &text, rowID: row.id)
+        return text
+    }
+
+    /// What Find reads: every line on show with the texts drawn under it.
+    @State private var loadRevision = 0
+
+    private nonisolated struct SearchInput: Equatable {
+        var query: String
+        var lines: [Int64]
+        var drafts: [Int64: String]
+        var hidden: Set<TranscriptTranslationRows.Language>
+        var loaded: Int
+    }
+
+    private var searchInput: SearchInput {
+        let query = TranscriptSearchRules.query(searchText)
+        // Nothing to track while the field is empty.
+        guard !query.isEmpty else { return SearchInput(query: "", lines: [], drafts: [:], hidden: [], loaded: 0) }
+        return SearchInput(query: query, lines: visibleRows.map(\.id), drafts: drafts, hidden: hiddenLanguages, loaded: loadRevision)
+    }
+
+    private func refreshSearch(queryChanged: Bool) {
+        let previous = currentMatch.flatMap { searchMatches.indices.contains($0) ? searchMatches[$0] : nil }
+        let visible = visibleRows
+        let lines = visible.map { row in
+            TranscriptSearchRules.Line(id: row.id, texts: ([row] + (translationsByRow[row.id] ?? [])).filter(shows).map {
+                ($0.id, drafts[$0.id] ?? $0.text)
+            })
+        }
+        searchMatches = TranscriptSearchRules.matches(query: searchText, lines: lines)
+        currentMatch = TranscriptSearchRules.settle(previous: queryChanged ? nil : previous, in: searchMatches,
+                                                    lineOrder: visible.map(\.id))
+        if queryChanged, let currentMatch { scrollTarget = searchMatches[currentMatch].lineID }
+        if searchMatches.isEmpty { replaceNote = nil }
+    }
+
+    private func stepMatch(forward: Bool) {
+        if !showsLines { viewChoice.wrappedValue = 0 }
+        guard let next = TranscriptSearchRules.step(from: currentMatch, count: searchMatches.count, forward: forward) else { return }
+        currentMatch = next
+        scrollTarget = searchMatches[next].lineID
+    }
+
+    /// The correction Replace would make: nil unless the search is one whole word.
+    private var replaceRule: TranscriptCorrectionRules.Rule? {
+        TranscriptCorrectionRules.rule(from: searchText, to: replaceText.isEmpty ? "x" : replaceText)
+    }
+
+    /// The current match as a whole word of a spoken line: the line and
+    /// the token's position in the text on show.
+    private var replaceTarget: (row: TranscriptRow, index: Int)? {
+        guard let currentMatch, searchMatches.indices.contains(currentMatch) else { return nil }
+        let match = searchMatches[currentMatch]
+        guard let row = rowsByID[match.rowID], !row.isTranslation,
+              let index = TranscriptSearchRules.replaceableToken(query: searchText, text: drafts[row.id] ?? row.text,
+                                                                 ordinal: match.ordinal) else { return nil }
+        return (row, index)
+    }
+
+    private func occurrences(of word: String) -> Int {
+        let key = TranscriptCorrectionRules.key(word)
+        guard !key.isEmpty else { return 0 }
+        return rows.reduce(0) { total, row in
+            guard !row.isTranslation else { return total }
+            return total + TranscriptWordRules.tokens(drafts[row.id] ?? row.text).count { TranscriptCorrectionRules.key($0) == key }
+        }
+    }
+
+    /// Put a new token at a position of the text on show. While every
+    /// standing fix is one word for one word the positions are those of the
+    /// stored text and the line stays a list of word fixes; otherwise the
+    /// draft is rewritten as if typed.
+    private func setToken(_ token: String, at index: Int, in row: TranscriptRow) {
+        // The position on show back to the stored word it came from, so the
+        // line stays a list of word fixes after a word was removed, split
+        // or already replaced.
+        if var fixes = standingFixes(row),
+           let origin = TranscriptWordRules.origin(of: index, tokenCount: TranscriptWordRules.tokens(row.text).count, fixes: fixes) {
+            if let standing = fixes[origin.position] {
+                fixes[origin.position] = TranscriptWordRules.replacing(text: standing, fixes: [origin.offset: token])
+            } else {
+                fixes[origin.position] = token
+            }
+            setFixes(fixes, for: row)
+        } else {
+            drafts[row.id] = TranscriptWordRules.replacing(text: drafts[row.id] ?? row.text, fixes: [index: token])
+            wordFixes[row.id] = nil
+        }
+    }
+
+    private func setFixes(_ fixes: [Int: String], for row: TranscriptRow) {
+        let fixes = fixes.filter { index, token in TranscriptWordRules.tokens(row.text).indices.contains(index)
+            && TranscriptWordRules.tokens(row.text)[index] != token }
+        wordFixes[row.id] = fixes.isEmpty ? nil : fixes
+        drafts[row.id] = fixes.isEmpty ? nil : TranscriptWordRules.replacing(text: row.text, fixes: fixes)
+    }
+
+    /// Fix every whole-word occurrence in the spoken text. Returns how many changed.
+    @discardableResult
+    private func replaceAll(_ rule: TranscriptCorrectionRules.Rule) -> Int {
+        var count = 0
+        for row in rows where !row.isTranslation {
+            // Right to left, so a several-word replacement never moves a position still to visit.
+            let tokens = TranscriptWordRules.tokens(drafts[row.id] ?? row.text)
+            for (index, token) in tokens.enumerated().reversed() {
+                guard let fixed = TranscriptCorrectionRules.replacement(token, rule: rule), fixed != token else { continue }
+                setToken(fixed, at: index, in: rowsByID[row.id] ?? row)
+                count += 1
+            }
+        }
+        return count
+    }
+
+    private func replaceCurrent() {
+        guard !wordEditsBlocked, let target = replaceTarget, let rule = TranscriptCorrectionRules.rule(from: searchText, to: replaceText) else { return }
+        let tokens = TranscriptWordRules.tokens(drafts[target.row.id] ?? target.row.text)
+        guard tokens.indices.contains(target.index),
+              let fixed = TranscriptCorrectionRules.replacement(tokens[target.index], rule: rule) else { return }
+        setToken(fixed, at: target.index, in: target.row)
+        replaceNote = "Replaced 1. Apply saves it."
+    }
+
+    private func replaceEvery(always: Bool) {
+        guard !wordEditsBlocked, let rule = TranscriptCorrectionRules.rule(from: searchText, to: replaceText) else { return }
+        let count = replaceAll(rule)
+        if always { store.alwaysFixTranscriptWord(rule) }
+        replaceNote = "Replaced \(count). Apply saves \(count == 1 ? "it" : "them")."
+            + (always ? " \"\(rule.from) → \(rule.to)\" is now in this profile's corrections." : "")
+    }
+
+    private var fixingDoubt: TranscriptWordRules.Doubt? {
+        guard let fixingWord, !wordEditsBlocked else { return nil }
+        return doubtsByRow[fixingWord.rowID]?.first { $0.id == fixingWord && isOpen($0) }
+    }
+
+    /// Open the next (or previous) undecided doubtful word on show, after
+    /// `id` in transcript order; wraps round.
+    private func stepDoubt(from id: TranscriptWordRules.WordID?, forward: Bool) {
+        if !showsLines { viewChoice.wrappedValue = 0 }
+        let open = openDoubts
+        guard !open.isEmpty else { fixingWord = nil; return }
+        let openIDs = Set(open.map(\.id))
+        var next = forward ? open.first : open.last
+        if let id, let at = doubts.firstIndex(where: { $0.id == id }) {
+            let ordered = forward ? Array(doubts[(at + 1)...]) + Array(doubts[..<at])
+                : Array(doubts[..<at].reversed()) + Array(doubts[(at + 1)...].reversed())
+            next = ordered.first { openIDs.contains($0.id) }
+        }
+        fixingWord = next?.id
+        if let next { scrollTarget = next.id.rowID }
+    }
+
+    private func fix(_ doubt: TranscriptWordRules.Doubt, with text: String) {
+        guard !wordEditsBlocked, let row = rowsByID[doubt.id.rowID], var fixes = standingFixes(row) else { return }
+        fixes[doubt.id.index] = TranscriptWordRules.replacement(for: doubt.text, with: text)
+        setFixes(fixes, for: row)
+        stepDoubt(from: doubt.id, forward: true)
+    }
+
+    private func fixAll(_ doubt: TranscriptWordRules.Doubt, to text: String, always: Bool) {
+        guard !wordEditsBlocked,
+              let rule = TranscriptCorrectionRules.rule(from: TranscriptWordRules.parts(doubt.text).core, to: text) else { return }
+        replaceAll(rule)
+        if always { store.alwaysFixTranscriptWord(rule) }
+        stepDoubt(from: doubt.id, forward: true)
+    }
+
+    private func markRight(_ doubt: TranscriptWordRules.Doubt) {
+        guard !wordEditsBlocked else { return }
+        confirmedWords[doubt.id.rowID, default: [:]][doubt.id.index] = doubt.text
+        stepDoubt(from: doubt.id, forward: true)
+    }
+
+    private func hear(_ doubt: TranscriptWordRules.Doubt) {
+        let range = TranscriptWordRules.listenRange(start: doubt.start, end: doubt.end, duration: video.duration)
+        Task {
+            await play(start: range.lowerBound, end: range.upperBound,
+                       label: "\"\(TranscriptWordRules.parts(doubt.text).core)\" at \(doubt.start.timecode)", rowID: doubt.id.rowID)
+        }
+    }
+
+    private func dropPendingWordWork() {
+        wordFixes = [:]
+        confirmedWords = [:]
+        fixingWord = nil
+        replaceNote = nil
+    }
+
+    private var proofreadJob: AppJob? {
+        store.proofreadJob(videoID: video.id, setKey: selectedTranscriptionKey.isEmpty ? activeTranscriptionKey : selectedTranscriptionKey)
+    }
+
+    private func proofread() {
+        store.startProofreading(video: currentVideo,
+                                setKey: selectedTranscriptionKey.isEmpty ? activeTranscriptionKey : selectedTranscriptionKey)
+    }
+
+    /// Find's keys, the reloads and the sheet the find row needs: apart from
+    /// `editableBody`, whose modifier chain is at the type checker's limit.
+    private func findSupport(_ content: some View) -> some View {
+        content
+        // Proofread saved a part's suggestions: underline them.
+        .onChange(of: store.transcriptMarksRevision[video.id]) { _, _ in
+            Task { await load() }
+        }
+        .onChange(of: searchInput) { old, new in
+            refreshSearch(queryChanged: old.query != new.query)
+        }
+        .onChange(of: editMode) { _, editing in
+            if editing { fixingWord = nil }
+        }
+        .background {
+            // Find's keys, wherever the focus is in the sheet.
+            Group {
+                Button("Find in Transcript") {
+                    if !showsLines { viewChoice.wrappedValue = 0 }
+                    searchFocused = true
+                }
+                .keyboardShortcut("f", modifiers: .command)
+                Button("Next Match") { stepMatch(forward: true) }.keyboardShortcut("g", modifiers: .command)
+                Button("Previous Match") { stepMatch(forward: false) }.keyboardShortcut("g", modifiers: [.command, .shift])
+            }
+            .opacity(0).accessibilityHidden(true).allowsHitTesting(false)
+        }
+        .sheet(isPresented: $showCorrections) { TranscriptCorrectionsSheet() }
+    }
+
+    @ViewBuilder
+    private var findRow: some View {
+        TranscriptFindRow(searchText: $searchText, matchCount: searchMatches.count, currentMatch: currentMatch,
+                          focused: $searchFocused, showsReplace: $showsReplace, canReplace: !wordEditsBlocked && !editMode,
+                          speakers: speakerChoices, speakerFilter: $speakerFilter, doubtCount: openDoubts.count,
+                          onStep: stepMatch, onDoubtStep: { stepDoubt(from: fixingWord, forward: $0) })
+        if showsReplace, !TranscriptSearchRules.query(searchText).isEmpty, !editMode, !wordEditsBlocked {
+            TranscriptReplaceStrip(query: TranscriptSearchRules.query(searchText), replaceText: $replaceText,
+                                   canReplaceCurrent: replaceTarget != nil,
+                                   allCount: replaceRule == nil ? nil : occurrences(of: searchText), note: replaceNote,
+                                   onReplace: replaceCurrent, onReplaceAll: { replaceEvery(always: false) },
+                                   onAlways: { replaceEvery(always: true) })
+        }
+    }
+
+    /// Proofread's progress and outcome, under the toolbar.
+    @ViewBuilder
+    private var proofreadStrip: some View {
+        if let job = proofreadJob, job.status == .running {
+            HStack(spacing: 8) {
+                ProgressView().controlSize(.mini)
+                Text(job.statusLine.isEmpty ? "Proofreading this transcript…" : job.statusLine)
+                    .foregroundStyle(.secondary).truncationMode(.tail)
+                Text("Doubtful words are underlined as each part finishes.").foregroundStyle(.tertiary).layoutPriority(-1)
+                Button("Stop") { store.jobs.cancel(job.id) }
+                    .controlSize(.small).fixedSize().help("Stop proofreading. Words already underlined stay.")
+            }
+            .font(.caption).lineLimit(1)
+        } else if let job = proofreadJob, job.status == .done, showsLines {
+            let count = allOpenDoubts.count
+            HStack(spacing: 8) {
+                Label(count == 0 ? "Proofread finished: nothing to check."
+                      : "Proofread finished: \(count) word\(count == 1 ? "" : "s") to check.", systemImage: "sparkles")
+                    .foregroundStyle(.secondary).truncationMode(.tail)
+                if count > 0 {
+                    Button("Review") { stepDoubt(from: nil, forward: true) }
+                        .controlSize(.small).fixedSize().help("Open the first doubtful word")
+                }
+            }
+            .font(.caption).lineLimit(1)
+        }
     }
 
     /// Where each speaker block ends (the end time of its last visible
@@ -494,7 +901,7 @@ struct TranscriptSheet: View {
     var body: some View {
         Group {
         if video.isPresent && (selectedTranscriptionKey.isEmpty || selectedTranscriptionKey == activeTranscriptionKey) {
-            editableBody
+            findSupport(editableBody)
         } else {
             VStack(alignment: .leading, spacing: 12) {
                 HStack {
@@ -568,14 +975,18 @@ struct TranscriptSheet: View {
         VStack(spacing: 0) {
             titleBar
                 .padding(.horizontal).padding(.top, 14).padding(.bottom, 10)
-            Divider()
             Group {
                 if editMode || hasChanges { editBar } else { toolbar }
             }
             .padding(.horizontal).padding(.vertical, 8)
             .background(editMode || hasChanges ? Color.orange.opacity(0.12) : Color.clear)
+            if showsLines, !rows.isEmpty, !isLoading {
+                VStack(alignment: .leading, spacing: 6) { findRow }
+                    .padding(.horizontal).padding(.bottom, 8)
+            }
             notices
-            Divider()
+            // No rule under the controls: a little air instead.
+            Color.clear.frame(height: 6)
 
             if isLoading {
                 ProgressView()
@@ -620,11 +1031,6 @@ struct TranscriptSheet: View {
                                     segmentRow(row, showTags: index == 0 || previous != sceneIDs(row),
                                                current: current == row.id, repeatedSpeaker: sameSpeaker,
                                                grouped: grouped, blockEnd: grouped && !sameSpeaker ? blockEnds[index] : nil)
-                                    if !(grouped && index + 1 < visible.count
-                                         && speakerLabel(visible[index + 1]) == speakerLabel(row)
-                                         && visible[index + 1].isTranslation == row.isTranslation) {
-                                        Divider()
-                                    }
                                 }
                                 // Include the padding and divider so the bracket has no gaps.
                                 .overlay(alignment: .leading) {
@@ -648,6 +1054,12 @@ struct TranscriptSheet: View {
                         proxy.scrollTo(target, anchor: .top)
                         scrollTarget = nil
                     }
+                    // A click on an underlined word opens its fix strip.
+                    .environment(\.openURL, OpenURLAction { url in
+                        guard let id = Self.wordID(url) else { return .systemAction }
+                        fixingWord = fixingWord == id ? nil : id
+                        return .handled
+                    })
                     .onAppear {
                         // A topic picked in the Topics view lands here.
                         if let target = scrollTarget {
@@ -759,7 +1171,9 @@ struct TranscriptSheet: View {
         guard !rows.isEmpty else { return "" }
         let lines = rows.count { !$0.isTranslation }
         let shown = visibleRows.count
-        var parts = [showsQA || tagFilter.isEmpty ? "\(lines) lines" : "\(shown) of \(lines) lines"]
+        let filtered = showsLines && (!tagFilter.isEmpty || speakerFilter != nil)
+        var parts = [filtered ? "\(shown) of \(lines) lines" : "\(lines) lines"]
+        if showsLines, let speakerFilter { parts.append("\(speakerFilter) only") }
         parts.append(languages.map { DubLanguageChoices.name($0.code) }.joined(separator: " + "))
         if editedCount > 0 { parts.append("\(editedCount) edited") }
         return parts.filter { !$0.isEmpty }.joined(separator: " · ")
@@ -822,13 +1236,20 @@ struct TranscriptSheet: View {
                 }
                 .disabled(rows.isEmpty || analysisJob?.status == .running || hasChanges || isSaving)
                 Divider()
+                Button(proofreadJob?.status == .running ? "Proofreading…"
+                       : proofreadJob != nil || doubts.contains(where: { $0.suggestion != nil }) ? "Proofread Again" : "Proofread") {
+                    proofread()
+                }
+                .disabled(rows.isEmpty || proofreadJob?.status == .running || hasChanges || editMode || isSaving || isMappingSpeakers)
+                Button("Corrections…") { showCorrections = true }
+                Divider()
                 Button("Revert All Edits… (\(editedCount))") { confirmRevertAll = true }
                     .disabled(editedCount == 0 || hasChanges || isSaving)
             } label: {
                 Label("Tools", systemImage: "ellipsis.circle").modifier(CompactLabel(compact: compact, full: .titleOnly))
             }
             .fixedSize()
-            .help("Tools: export this transcript's captions, look for topics and cleanup cuts again, or put every edited line back")
+            .help("Tools: export this transcript's captions, look for topics and cleanup cuts again, have AI proofread it for misheard words, manage the words this profile always fixes, or put every edited line back")
             if showsLines {
                 Button("Edit Text", systemImage: "pencil") { editMode = true }
                     .modifier(CompactLabel(compact: compact))
@@ -863,6 +1284,7 @@ struct TranscriptSheet: View {
             Button(hasChanges ? "Discard Changes" : "Stop Editing") {
                 drafts = [:]
                 speakerDrafts = [:]
+                dropPendingWordWork()
                 editMode = false
             }
             .lineLimit(1).fixedSize()
@@ -878,7 +1300,7 @@ struct TranscriptSheet: View {
     }
 
     private var applyTitle: String {
-        let count = changedIDs.count + changedSpeakerIDs.count
+        let count = changedIDs.count + changedSpeakerIDs.count + markedRightCount
         return count == 0 ? "Apply" : "Apply \(count) Change\(count == 1 ? "" : "s")"
     }
 
@@ -888,6 +1310,7 @@ struct TranscriptSheet: View {
         VStack(alignment: .leading, spacing: 6) {
             coverageControls
             statusStrip
+            proofreadStrip
         }
         .frame(maxWidth: .infinity, alignment: .leading)
         .padding(.horizontal)
@@ -930,6 +1353,7 @@ struct TranscriptSheet: View {
         tagFilter.isEmpty ? "All lines"
             : tagFilter == Self.changedByMapFilter ? "Changed by Fix Speakers"
             : tagFilter == Self.editedFilter ? "Edited (\(editedCount))"
+            : tagFilter == Self.doubtfulFilter ? "Doubtful words"
             : tagFilter == "reel-highlight" ? "Reel" : tagFilter
     }
 
@@ -938,6 +1362,8 @@ struct TranscriptSheet: View {
             Button("All lines") { tagFilter = "" }
             Button("Edited (\(editedCount))") { tagFilter = Self.editedFilter }
                 .disabled(editedCount == 0)
+            Button("Doubtful words (\(allOpenDoubts.count))") { tagFilter = Self.doubtfulFilter }
+                .disabled(allOpenDoubts.isEmpty)
             Divider()
             ForEach(allLineTags, id: \.self) { tag in
                 let count = rows.count { lineTags[$0.id]?.contains(tag) == true }
@@ -949,7 +1375,7 @@ struct TranscriptSheet: View {
             }
         }
         .lineLimit(1).fixedSize()
-        .help("Show every line, only edited lines, lines carrying a tag, or lines the last speaker map changed")
+        .help("Show every line, only edited lines, lines with a doubtful word, lines carrying a tag, or lines the last speaker map changed")
     }
 
     @ViewBuilder
@@ -1056,10 +1482,13 @@ struct TranscriptSheet: View {
                     Image(systemName: playing ? "stop.fill" : "play.fill")
                         .font(.caption)
                         .frame(width: 22, height: 22)
+                        // A filled chip, so it reads as a button and keeps the 22-point column.
+                        .background(playing ? AnyShapeStyle(Color.accentColor.opacity(0.22)) : AnyShapeStyle(.quaternary),
+                                    in: RoundedRectangle(cornerRadius: 6))
                         .contentShape(Rectangle())
                 }
                 .buttonStyle(.plain)
-                .foregroundStyle(playing ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.secondary))
+                .foregroundStyle(playing ? AnyShapeStyle(Color.accentColor) : AnyShapeStyle(.primary))
                 .disabled(playbackUnavailable)
                 .help(playbackUnavailable ? "The video is not on this Mac — download it from the Drive menu to watch it"
                       : playing ? "Stop"
@@ -1072,7 +1501,7 @@ struct TranscriptSheet: View {
 
             VStack(alignment: .leading, spacing: 5) {
                 if !continuation {
-                    speakerMenu(row, compact: repeatedSpeaker)
+                    speakerMenu(row)
                     Text("\(row.startTime.timecode)–\(end.timecode)")
                         .font(.caption.monospacedDigit())
                         .foregroundStyle(.secondary)
@@ -1085,6 +1514,8 @@ struct TranscriptSheet: View {
                         .font(.caption).foregroundStyle(Color.orange).lineLimit(1)
                     Button("Undo line") {
                         drafts[row.id] = nil
+                        wordFixes[row.id] = nil
+                        confirmedWords[row.id] = nil
                         for translation in translationsByRow[row.id] ?? [] { drafts[translation.id] = nil }
                     }
                     .controlSize(.mini).lineLimit(1).fixedSize()
@@ -1100,6 +1531,24 @@ struct TranscriptSheet: View {
                         .disabled(isSaving || hasChanges)
                         .help("Restore the transcriber's original text for this line")
                 }
+                if !editMode, let first = openDoubts(in: row).first {
+                    let count = openDoubts(in: row).count
+                    Button("\(count) to check") { fixingWord = first.id }
+                        .controlSize(.mini).lineLimit(1).fixedSize()
+                        .disabled(wordEditsBlocked)
+                        .help(isMappingSpeakers ? "Wait for Fix Speakers to finish; it replaces the lines"
+                              : "\(count) doubtful word\(count == 1 ? "" : "s") in this line: underlined in the text. Click to check \(count == 1 ? "it" : "the first").")
+                }
+                if let marked = confirmedWords[row.id]?.count, marked > 0 {
+                    Text("\(marked) marked right, not applied")
+                        .font(.caption).foregroundStyle(Color.orange).lineLimit(1)
+                    if !changed {
+                        Button("Undo marks") { confirmedWords[row.id] = nil }
+                            .controlSize(.mini).lineLimit(1).fixedSize()
+                            .disabled(wordEditsBlocked)
+                            .help("Underline these words again")
+                    }
+                }
                 ForEach(translations.filter { $0.originalText != nil && !isChanged($0) }) { translation in
                     Button(translations.count > 1 ? "Use machine \(languageCode(translation))" : "Use machine text") { revert(translation) }
                         .controlSize(.mini).lineLimit(1).fixedSize()
@@ -1112,6 +1561,21 @@ struct TranscriptSheet: View {
             VStack(alignment: .leading, spacing: 6) {
                 if shows(row) {
                     textLine(code: languageCode(row)) { originalText(row) }
+                }
+                if !editMode, let doubt = fixingDoubt, doubt.id.rowID == row.id {
+                    let open = openDoubts
+                    TranscriptWordFixStrip(
+                        doubt: doubt,
+                        occurrences: occurrences(of: TranscriptWordRules.parts(doubt.text).core),
+                        position: "\((open.firstIndex { $0.id == doubt.id } ?? 0) + 1) of \(open.count)",
+                        canPlay: !playbackUnavailable,
+                        onPlay: { hear(doubt) },
+                        onFix: { fix(doubt, with: $0) },
+                        onFixAll: { fixAll(doubt, to: $0, always: $1) },
+                        onMarkRight: { markRight(doubt) },
+                        onStep: { stepDoubt(from: doubt.id, forward: $0) },
+                        onClose: { fixingWord = nil })
+                        .padding(.leading, 34)
                 }
                 ForEach(translations) { translation in
                     textLine(code: languageCode(translation)) { translationText(translation, of: row) }
@@ -1171,7 +1635,7 @@ struct TranscriptSheet: View {
             Text(comparedText(row, original: false)).textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         } else {
-            Text(drafts[row.id] ?? row.text)
+            Text(spokenText(row))
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
         }
@@ -1196,7 +1660,7 @@ struct TranscriptSheet: View {
                     .font(.caption).foregroundStyle(.secondary)
             }
         } else {
-            Text(drafts[row.id] ?? row.text)
+            Text(matchedText(row))
                 .foregroundStyle(.secondary)
                 .textSelection(.enabled)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -1287,8 +1751,7 @@ struct TranscriptSheet: View {
                         .controlSize(.small)
                 }
                 if let row = currentRow {
-                    Divider()
-                    whoIsTalking(row)
+                    whoIsTalking(row).padding(.top, 4)
                 }
             }
             Spacer(minLength: 0)
@@ -1512,7 +1975,6 @@ struct TranscriptSheet: View {
                     }
                     .buttonStyle(.plain)
                     .help("Show the lines of this topic")
-                    Divider()
                 }
             }
         }
@@ -1749,39 +2211,36 @@ struct TranscriptSheet: View {
                 }
             }
         } label: {
-            // The name shows once per run; the lines after it keep a small
-            // handle so any single line can still be given to someone else.
-            if compact, !pending, changedByMap[row.id] == nil {
-                Image(systemName: overridden ? "person.fill.checkmark" : "person")
-                    .font(.caption2).foregroundStyle(.tertiary)
-            } else {
-                VStack(alignment: .leading, spacing: 2) {
-                    let color = pending ? Color.orange : label.map { SpeakerColors.color(for: $0) } ?? Color.gray
-                    HStack(spacing: 4) {
-                        if overridden {
-                            Image(systemName: "checkmark").font(.caption2.weight(.bold)).accessibilityHidden(true)
-                        }
-                        Text(label ?? "Speaker?")
-                            .font(.caption.weight(.semibold))
-                            .lineLimit(1).truncationMode(.tail)
+            // Every line names its speaker in the speaker's colour.
+            VStack(alignment: .leading, spacing: 2) {
+                let color = pending ? Color.orange : label.map { SpeakerColors.color(for: $0) } ?? Color.gray
+                HStack(spacing: 4) {
+                    if overridden {
+                        Image(systemName: "checkmark").font(.caption2.weight(.bold)).accessibilityHidden(true)
                     }
-                    .foregroundStyle(color)
-                    .padding(.horizontal, 9).padding(.vertical, 2)
-                    .background(color.opacity(0.18), in: Capsule())
-                    if let before = changedByMap[row.id], before != label {
-                        // What the previous map said, for judging the change.
-                        Text(before)
-                            .font(.caption2)
-                            .strikethrough()
-                            .foregroundStyle(.tertiary)
-                            .lineLimit(1)
-                            .truncationMode(.tail)
-                            .help("The previous speaker map said \(before)")
-                    }
+                    Text(label ?? "Speaker?")
+                        .font(.caption.weight(.semibold))
+                        .lineLimit(1).truncationMode(.tail)
+                }
+                .foregroundStyle(color)
+                .padding(.horizontal, 9).padding(.vertical, 2)
+                .background(color.opacity(0.18), in: Capsule())
+                if let before = changedByMap[row.id], before != label {
+                    // What the previous map said, for judging the change.
+                    Text(before)
+                        .font(.caption2)
+                        .strikethrough()
+                        .foregroundStyle(.tertiary)
+                        .lineLimit(1)
+                        .truncationMode(.tail)
+                        .help("The previous speaker map said \(before)")
                 }
             }
         }
-        .menuStyle(.borderlessButton)
+        // A borderless menu flattens its label to plain text; a plain
+        // button keeps the coloured pill.
+        .menuStyle(.button)
+        .buttonStyle(.plain)
         .menuIndicator(.hidden)
         .help(pending ? "Changed here — Apply saves it"
               : overridden ? "You set who says this line — click to change it or go back to automatic"
@@ -1849,7 +2308,21 @@ struct TranscriptSheet: View {
             return
         }
         if focusSetsPicker { setsPickerFocused = true }
+        // Decoding every line's words is CPU work: off the main actor.
+        let loadedDoubts = await Task.detached { TranscriptWordRules.doubts(in: loadedRows) }.value
+        guard !Task.isCancelled, selected == selectedTranscriptionKey else { return }
         rows = loadedRows
+        // Find reads the loaded text: a Revert changes it under the same ids.
+        loadRevision &+= 1
+        rowsByID = Dictionary(loadedRows.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
+        doubts = loadedDoubts
+        doubtsByRow = Dictionary(grouping: loadedDoubts, by: \.id.rowID)
+        // Pending word work on lines that changed underneath no longer points at the same words.
+        wordFixes = wordFixes.filter { id, _ in rowsByID[id] != nil }
+        confirmedWords = confirmedWords.filter { id, _ in rowsByID[id] != nil }
+        if let fixingWord, doubtsByRow[fixingWord.rowID]?.contains(where: { $0.id == fixingWord }) != true {
+            self.fixingWord = nil
+        }
         translationsByRow = TranscriptTranslationRows.attached(loadedRows)
         // Another set may have fewer languages: one always stays on show.
         let loadedLanguages = TranscriptTranslationRows.languages(loadedRows)
@@ -1868,6 +2341,9 @@ struct TranscriptSheet: View {
                                                         after: turns, roster: roster, people: people)
         if tagFilter == Self.changedByMapFilter, changedByMap.isEmpty { tagFilter = "" }
         if tagFilter == Self.editedFilter, editedCount == 0 { tagFilter = "" }
+        if tagFilter == Self.doubtfulFilter, allOpenDoubts.isEmpty { tagFilter = "" }
+        // A speaker the reloaded lines no longer name cannot stay the filter.
+        if let speakerFilter, !speakerChoices.contains(where: { $0.name == speakerFilter }) { self.speakerFilter = nil }
         hasRecut = await store.hasTranscriptRecut(videoID: video.id)
         await loadAnalysis()
         refreshSceneMapping(currentVideoScenes)
@@ -1901,12 +2377,22 @@ struct TranscriptSheet: View {
         for row in rows {
             if let draft = speakerDrafts[row.id], draft != row.speaker { speakerChanges[draft, default: []].append(row.id) }
         }
-        guard !changes.isEmpty || !speakerChanges.isEmpty else { if thenDismiss { dismiss() }; return }
+        let confirming = confirmedWords
+        // Lines whose change is still a list of word fixes: the save can
+        // then tell a repeated word's occurrences apart.
+        var fixes: [Int64: [Int: String]] = [:]
+        for change in changes {
+            if let row = rowsByID[change.id], let standing = standingFixes(row), !standing.isEmpty { fixes[change.id] = standing }
+        }
+        guard !changes.isEmpty || !speakerChanges.isEmpty || !confirming.isEmpty else { if thenDismiss { dismiss() }; return }
         isSaving = true
         Task {
             do {
+                if !changes.isEmpty || !confirming.isEmpty {
+                    // Marked-right words are written first, in the same transaction.
+                    try await database.updateTranscriptTexts(changes, confirming: confirming, fixes: fixes)
+                }
                 if !changes.isEmpty {
-                    try await database.updateTranscriptTexts(changes)
                     await store.transcriptTextsChanged(videoID: video.id, transcriptionKey: editedSetKey,
                                                        rowIDs: changes.map(\.id))
                 }
@@ -1915,6 +2401,7 @@ struct TranscriptSheet: View {
                 }
                 drafts = [:]
                 speakerDrafts = [:]
+                dropPendingWordWork()
                 editMode = false
                 await load()
                 if thenDismiss { dismiss() }

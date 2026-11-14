@@ -30,10 +30,17 @@ actor TranscriptionService {
     private let strictEnrichment: Bool
     private let spokenLocales: [String]
     private let wordTiming: WordTiming
+    private let corrections: [TranscriptCorrectionRules.Rule]
+    /// Called once a video's very first transcript is stored (video id, set
+    /// key): the store proofreads it. Later versions never call it.
+    private let onFirstTranscript: (@Sendable (Int64, String) -> Void)?
 
     init(cacheDirectory: URL = SettingsStore.cacheDirectory.appendingPathComponent("transcripts", isDirectory: true),
          podcastSettings: PodcastSettings? = nil, strictEnrichment: Bool = false, spokenLocales: [String] = [],
-         wordTiming: WordTiming = .recognizer) {
+         wordTiming: WordTiming = .recognizer, corrections: [TranscriptCorrectionRules.Rule] = [],
+         onFirstTranscript: (@Sendable (Int64, String) -> Void)? = nil) {
+        self.corrections = corrections
+        self.onFirstTranscript = onFirstTranscript
         self.spokenLocales = spokenLocales
         self.wordTiming = wordTiming
         capturedPodcastSettings = podcastSettings
@@ -131,9 +138,11 @@ actor TranscriptionService {
             // applied to what gets stored, so the setting can change later.
             let refined = try await refineTiming(cached.segments, language: cached.detectedLanguage, video: video, log: log)
             try Task.checkCancellation()
+            let first = try await !database.videoIDsWithOriginalTranscripts().contains(video.id)
             transcriptionKey = try await Self.storeOriginal(videoID: video.id, language: cached.detectedLanguage,
-                segments: refined.segments, database: database, model: refined.model)
-            segments = refined.segments
+                segments: refined.segments, database: database, model: refined.model, corrections: corrections)
+            if first { onFirstTranscript?(video.id, transcriptionKey) }
+            segments = try await correctedSegments(videoID: video.id, key: transcriptionKey, database: database)
         } else {
             guard let key = stored.first?.transcriptionKey else { throw ScriptError.invalid("The stored transcript has no set key.") }
             transcriptionKey = key
@@ -367,8 +376,11 @@ actor TranscriptionService {
         let refined = try await refineTiming(segments, language: languageTag, video: video, log: log)
         try Task.checkCancellation()
         segments = refined.segments
+        let first = try await !database.videoIDsWithOriginalTranscripts().contains(video.id)
         let transcriptionKey = try await Self.storeOriginal(videoID: video.id, language: languageTag,
-            segments: segments, database: database, seconds: seconds, model: refined.model)
+            segments: segments, database: database, seconds: seconds, model: refined.model, corrections: corrections)
+        if first { onFirstTranscript?(video.id, transcriptionKey) }
+        segments = try await correctedSegments(videoID: video.id, key: transcriptionKey, database: database)
         do { try await enrich(segments, transcriptionKey: transcriptionKey, video: video, database: database) }
         catch {
             if strictEnrichment { throw error }
@@ -416,11 +428,19 @@ actor TranscriptionService {
     /// reuse stored rows bypass this write and retain their existing key.
     static func storeOriginal(videoID: Int64, language: String, segments: [TranscriptSegment],
                               database: Database, seconds: TimeInterval? = nil,
-                              model: String = modelName) async throws -> String {
+                              model: String = modelName, corrections: [TranscriptCorrectionRules.Rule] = []) async throws -> String {
         let key = UUID().uuidString.lowercased()
-        return try await database.replaceTranscripts(videoID: videoID, transcriptionKey: key,
-            language: language, isTranslation: false, segments: segments,
+        let stored = try await database.replaceTranscripts(videoID: videoID, transcriptionKey: key,
+            language: language, isTranslation: false,
+            segments: TranscriptCorrectionRules.applying(corrections, to: segments),
             provider: providerName, model: model, seconds: seconds)
+        return stored
+    }
+
+    private func correctedSegments(videoID: Int64, key: String, database: Database) async throws -> [TranscriptSegment] {
+        try await database.fetchTranscripts(videoID: videoID, transcriptionKey: key)
+            .filter { !$0.isTranslation }
+            .map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: $0.words) }
     }
 
     /// Precise word timing, when the user chose it and the aligner covers
@@ -535,7 +555,9 @@ actor TranscriptionService {
                     segmentStart = min(segmentStart, start)
                     segmentEnd = max(segmentEnd, end)
                     words.append(TranscriptWord(word: runText, start: start.rounded(toPlaces: 2),
-                                                end: end.rounded(toPlaces: 2)))
+                                                end: end.rounded(toPlaces: 2),
+                                                // Exactly 1 is the user's "marked right".
+                                                confidence: run.transcriptionConfidence.map { min($0, 0.99) }))
                     if let confidence = run.transcriptionConfidence {
                         confidences.append(confidence)
                     }

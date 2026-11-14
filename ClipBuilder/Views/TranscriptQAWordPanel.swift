@@ -63,6 +63,77 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     @State private var dragFrame: CGRect?
     @State private var scrollDirection = 0
     @State private var lastPreviewedWord: Int?
+    // Find and the one-speaker filter, as in the Transcript editor.
+    @State private var searchText = ""
+    @State private var speakerFilter: String?
+    @State private var searchMatches: [WordMatch] = []
+    @State private var matchedWords: Set<Int> = []
+    @State private var currentMatch: Int?
+    @FocusState private var searchFocused: Bool
+    /// Bumped to scroll to the selection. The scroll runs in the change
+    /// handler, which reads the range of that moment: a task started when
+    /// the item changed still holds the range of the item before.
+    @State private var scrollRequest = 0
+
+    /// One search match: the line it is on and the words it touches.
+    private struct WordMatch: Equatable, Sendable {
+        var lineID: Int
+        var wordIDs: [Int]
+    }
+
+    /// The lines on show: everyone's, or one speaker's.
+    private var shownLines: [TranscriptQATrim.Line] {
+        guard let speakerFilter else { return transcript.lines }
+        return transcript.lines.filter { ($0.speaker ?? TranscriptLineFilter.unknown) == speakerFilter }
+    }
+
+    /// The speakers in order of appearance with their line counts, Unknown last.
+    private var speakers: [TranscriptLineFilter.Speaker] {
+        var order: [String] = []
+        var counts: [String: Int] = [:]
+        for line in transcript.lines {
+            let name = line.speaker ?? TranscriptLineFilter.unknown
+            if counts[name] == nil { order.append(name) }
+            counts[name, default: 0] += 1
+        }
+        let named = order.filter { $0 != TranscriptLineFilter.unknown }
+        return (named + (counts[TranscriptLineFilter.unknown] == nil ? [] : [TranscriptLineFilter.unknown]))
+            .map { .init(name: $0, count: counts[$0] ?? 0) }
+    }
+
+    /// Find again: the text, the speaker on show or the transcript changed.
+    /// The matching runs off the main actor (a long podcast is many words).
+    private func refreshSearch() {
+        let query = TranscriptSearchRules.query(searchText)
+        guard !query.isEmpty else {
+            searchMatches = []; matchedWords = []; currentMatch = nil
+            return
+        }
+        let lines = shownLines.map { (id: $0.id, words: $0.words.map { (id: $0.id, text: $0.text) }) }
+        let filter = speakerFilter
+        Task {
+            let found = await Task.detached {
+                lines.flatMap { line in
+                    TranscriptSearchRules.wordMatches(query: query, words: line.words.map(\.text)).map { positions in
+                        WordMatch(lineID: line.id, wordIDs: positions.map { line.words[$0].id })
+                    }
+                }
+            }.value
+            guard query == TranscriptSearchRules.query(searchText), filter == speakerFilter else { return }
+            searchMatches = found
+            matchedWords = Set(found.flatMap(\.wordIDs))
+            currentMatch = found.isEmpty ? nil : 0
+        }
+    }
+
+    private func stepMatch(forward: Bool) {
+        currentMatch = TranscriptSearchRules.step(from: currentMatch, count: searchMatches.count, forward: forward)
+    }
+
+    private var currentMatchWords: Set<Int> {
+        currentMatch.flatMap { searchMatches.indices.contains($0) ? Set(searchMatches[$0].wordIDs) : nil } ?? []
+    }
+
     private static var scrollSpace: String { "qaWordViewport" }
 
     private var firstWord: TranscriptQATrim.Word? { transcript.words.first { TranscriptQATrim.contains($0, in: range) } }
@@ -76,6 +147,9 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     private func transcriptChanged() {
         cancelDrag()
         store.keep(wordIDs: Set(transcript.words.map(\.id)))
+        // A speaker the new transcript does not have shows everyone again.
+        if let speakerFilter, !speakers.contains(where: { $0.name == speakerFilter }) { self.speakerFilter = nil }
+        refreshSearch()
     }
 
     var body: some View {
@@ -107,6 +181,14 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
             }
             .lineLimit(1).fixedSize(horizontal: false, vertical: true)
             .padding(Theme.spaceS)
+            if !transcript.lines.isEmpty {
+                TranscriptFindRow(searchText: $searchText, matchCount: searchMatches.count, currentMatch: currentMatch,
+                                  focused: $searchFocused, showsReplace: .constant(false), canReplace: false,
+                                  allowsReplace: false, speakers: speakers, speakerFilter: $speakerFilter,
+                                  doubtCount: 0, onStep: stepMatch, onDoubtStep: { _ in }, stacksWhenNarrow: true)
+                    .controlSize(.small)
+                    .padding(.horizontal, Theme.spaceS).padding(.bottom, Theme.spaceS)
+            }
             if transcript.lines.isEmpty {
                 FormCaption("No transcript for this recording. Use the filmstrip handles to adjust the exchange.")
                     .padding(Theme.spaceM)
@@ -123,6 +205,12 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
         .onChange(of: sectionID) { _, _ in cancelDrag() }
         .onChange(of: isEnabled) { _, enabled in if !enabled { cancelDrag() } }
         .onChange(of: transcript) { _, _ in transcriptChanged() }
+        .onChange(of: searchText) { _, _ in refreshSearch() }
+        .onChange(of: speakerFilter) { _, _ in
+            // Lines leave and come back: an edge drag in flight has lost its words.
+            cancelDrag()
+            refreshSearch()
+        }
         // The lines report their frames again if translation changes the
         // layout; clearing them would lose anchors when the layout stays equal.
         .onChange(of: showsTranslation) { _, _ in cancelDrag() }
@@ -182,9 +270,12 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                 ZStack(alignment: .topLeading) {
                     ScrollView(.vertical) {
                         LazyVStack(alignment: .leading, spacing: 2) {
-                            ForEach(transcript.lines) { line in
+                            ForEach(shownLines, id: \.scrollID) { line in
                                 TranscriptQALineView(
                                     line: line,
+                                    matchedWordIDs: matchedWords.isEmpty ? [] : matchedWords.intersection(line.words.map(\.id)),
+                                    currentMatchWordIDs: currentMatchWords.isEmpty ? []
+                                        : currentMatchWords.intersection(line.words.map(\.id)),
                                     columnWidth: columnWidth,
                                     selection: TranscriptQATrim.selectionRange(range, in: line),
                                     startEdgeWordIDs: spanSelection ? [] : TranscriptQATrim.startEdgeWordIDs(in: line, range: range),
@@ -198,7 +289,6 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                                     onSelect: { actions.onSelect($0) },
                                     onSeek: { actions.onSeek($0) })
                                     .equatable()
-                                    .id(line.id)
                             }
                         }
                         .padding(Theme.spaceS)
@@ -219,7 +309,12 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                     .onChange(of: store.frames) { _, _ in previewAtPointer() }
                     anchor(.start, word: firstWord, viewportHeight: geometry.size.height)
                     anchor(.end, word: lastWord, viewportHeight: geometry.size.height)
-                    ForEach(numberedSpans, id: \.number) { spanControls($0, among: numberedSpans) }
+                    // Keyed by text, never the bare number: a line's ID is
+                    // its index, and `scrollTo(1)` would find passage #1's
+                    // badge here instead of line 1 and scroll nowhere.
+                    ForEach(numberedSpans.map { (key: "span-\($0.number)", span: $0) }, id: \.key) {
+                        spanControls($0.span, among: numberedSpans)
+                    }
                     TranscriptOverviewMarks(transcript: transcript, range: range, otherRanges: paintedRanges)
                         .frame(width: TranscriptOverviewMarks.width, height: geometry.size.height)
                         .frame(maxWidth: .infinity, alignment: .trailing)
@@ -236,10 +331,17 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                     // stack has no row yet on the first try, and the scroll
                     // stops short of it.
                     Task { @MainActor in
-                        scrollToSelection(proxy)
-                        try? await Task.sleep(for: .milliseconds(120))
-                        if dragging == nil, spanAnchor == nil { scrollToSelection(proxy) }
+                        scrollRequest += 1
+                        // A far passage takes more than one pass: each scroll
+                        // lays out more of the lazy stack and lands nearer.
+                        for delay in [60, 150, 300, 500] {
+                            try? await Task.sleep(for: .milliseconds(delay))
+                            scrollRequest += 1
+                        }
                     }
+                }
+                .onChange(of: scrollRequest) { _, _ in
+                    if dragging == nil, spanAnchor == nil { scrollToSelection(proxy) }
                 }
                 .onChange(of: range) { old, new in
                     // With nothing selected the range is an empty anchor on the
@@ -253,12 +355,20 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
                     // the top. Scroll once the lazy stack has them.
                     Task { @MainActor in scrollToSelection(proxy) }
                 }
+                .onChange(of: currentMatch) { _, index in
+                    guard let index, searchMatches.indices.contains(index) else { return }
+                    proxy.scrollTo(TranscriptLineScrollID(line: searchMatches[index].lineID), anchor: .center)
+                }
+                .onChange(of: searchMatches) { _, found in
+                    // A new search opens on its first match.
+                    if currentMatch == 0, let first = found.first { proxy.scrollTo(TranscriptLineScrollID(line: first.lineID), anchor: .center) }
+                }
                 .onChange(of: currentLine) { _, id in
                     guard followsPlayback, playback.isPlaying, dragging == nil, let id else { return }
-                    proxy.scrollTo(id, anchor: .center)
+                    proxy.scrollTo(TranscriptLineScrollID(line: id), anchor: .center)
                 }
                 .onChange(of: followsPlayback) { _, follows in
-                    if follows, dragging == nil, let currentLine { proxy.scrollTo(currentLine, anchor: .center) }
+                    if follows, dragging == nil, let currentLine { proxy.scrollTo(TranscriptLineScrollID(line: currentLine), anchor: .center) }
                 }
                 .task(id: scrollDirection) {
                     guard scrollDirection != 0 else { return }
@@ -367,7 +477,7 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
         let isCurrent = span.number == currentSpanNumber
         if let first {
             Button { onSelectSpan?(span.number) } label: {
-                Text("#\(span.number)")
+                Text("\(span.number)")
                     .font(.caption2.weight(.bold)).monospacedDigit().lineLimit(1).fixedSize()
                     .foregroundStyle(.white)
                     .padding(.horizontal, 4).padding(.vertical, 1)
@@ -467,15 +577,20 @@ struct TranscriptQAWordPanel<SelectionID: Hashable>: View {
     private func scrollOneLine(_ proxy: ScrollViewProxy, viewportHeight: CGFloat) {
         let visible = frames.filter { $0.value.maxY > 0 && $0.value.minY < viewportHeight }
         let id = scrollDirection < 0 ? visible.keys.min() : visible.keys.max()
-        guard let id, let index = transcript.lines.firstIndex(where: { $0.words.contains { $0.id == id } }) else { return }
-        let next = min(transcript.lines.count - 1, max(0, index + scrollDirection))
-        proxy.scrollTo(transcript.lines[next].id, anchor: scrollDirection < 0 ? .top : .bottom)
+        // Only the lines on show have a place to scroll to.
+        let lines = shownLines
+        guard let id, let index = lines.firstIndex(where: { $0.words.contains { $0.id == id } }) else { return }
+        let next = min(lines.count - 1, max(0, index + scrollDirection))
+        proxy.scrollTo(lines[next].scrollID, anchor: scrollDirection < 0 ? .top : .bottom)
     }
 
     private func scrollToSelection(_ proxy: ScrollViewProxy) {
         let line = transcript.lines.first { $0.words.contains { TranscriptQATrim.contains($0, in: range) } }
             ?? transcript.lines.first { $0.end > range.lowerBound }
-        if let line { proxy.scrollTo(line.id, anchor: .top) }
+        guard let line else { return }
+        // The passage is another speaker's than the one on show: show everyone.
+        if let speakerFilter, (line.speaker ?? TranscriptLineFilter.unknown) != speakerFilter { self.speakerFilter = nil }
+        proxy.scrollTo(line.scrollID, anchor: .top)
     }
 
     private func clearDrag() {
@@ -543,6 +658,9 @@ private final class TranscriptQALineActions {
 /// panel-wide frame/selection state is read while constructing its word tokens.
 private struct TranscriptQALineView: View, Equatable {
     let line: TranscriptQATrim.Line
+    /// This line's words in a search match, and those in the match being stepped to.
+    var matchedWordIDs: Set<Int> = []
+    var currentMatchWordIDs: Set<Int> = []
     let columnWidth: CGFloat
     let selection: ClosedRange<Double>?
     let startEdgeWordIDs: Set<Int>
@@ -559,6 +677,7 @@ private struct TranscriptQALineView: View, Equatable {
 
     nonisolated static func == (lhs: Self, rhs: Self) -> Bool {
         lhs.line == rhs.line && lhs.columnWidth == rhs.columnWidth
+            && lhs.matchedWordIDs == rhs.matchedWordIDs && lhs.currentMatchWordIDs == rhs.currentMatchWordIDs
             && lhs.selection == rhs.selection && lhs.startEdgeWordIDs == rhs.startEdgeWordIDs
             && lhs.otherRanges == rhs.otherRanges && lhs.spokenWordID == rhs.spokenWordID
             && lhs.showsTranslation == rhs.showsTranslation && lhs.translation == rhs.translation
@@ -650,7 +769,7 @@ private struct TranscriptQALineView: View, Equatable {
     /// What paints a word: the selection, or the tightest saved pick holding it.
     private enum Mark: Equatable {
         case selection
-        case other(Int)
+        case other(Int, dimmed: Bool)
     }
 
     private func mark(_ word: TranscriptQATrim.Word) -> Mark? {
@@ -658,7 +777,7 @@ private struct TranscriptQALineView: View, Equatable {
         // Nested picks: the tightest range owns the word.
         return otherRanges.filter { TranscriptQATrim.contains(word, in: $0.range) }
             .min { ($0.range.upperBound - $0.range.lowerBound) < ($1.range.upperBound - $1.range.lowerBound) }
-            .map { .other($0.paletteIndex) }
+            .map { .other($0.paletteIndex, dimmed: $0.dimmed) }
     }
 
     private func joins(_ marks: [Mark?], _ index: Int, _ neighbour: Int) -> Bool {
@@ -671,7 +790,8 @@ private struct TranscriptQALineView: View, Equatable {
     /// and only a little past a neighbour that is not.
     private func wordToken(_ word: TranscriptQATrim.Word, mark: Mark?, joinsPrevious: Bool, joinsNext: Bool) -> some View {
         let inside = mark == .selection
-        let other: Int? = if case .other(let index) = mark { index } else { nil }
+        let other: Int? = if case .other(let index, _) = mark { index } else { nil }
+        let dimmed = if case .other(_, true) = mark { true } else { false }
         let reach = TranscriptQAWordCursor.wordSpacing + 1
         let edge: CGFloat = 1
         // The spoken word is marked only while playing; a parked playhead would
@@ -684,7 +804,7 @@ private struct TranscriptQALineView: View, Equatable {
         // panel resolves clicks to words through their frames instead.
         return Text(word.text)
                 .font(.callout)
-                .foregroundStyle(spoken ? Color.black : inside || other != nil ? Color.primary : Color.secondary)
+                .foregroundStyle(spoken ? Color.black : inside || (other != nil && !dimmed) ? Color.primary : Color.secondary)
                 .padding(.horizontal, 2)
                 .background {
                     if spoken {
@@ -701,10 +821,20 @@ private struct TranscriptQALineView: View, Equatable {
                     } else if let other {
                         // A saved pick's words sit on a block in the colour
                         // of its list row's bar.
-                        Rectangle().fill(RangeReviewPalette.block(other))
+                        Rectangle().fill(RangeReviewPalette.block(other, dimmed: dimmed))
                             .padding(.leading, joinsPrevious ? -reach : -edge)
                             .padding(.trailing, joinsNext ? -reach : -edge)
                             .padding(.vertical, -TranscriptQAWordCursor.rowSpacing - 1)
+                    }
+                }
+                // A search match is outlined, so it shows on any block
+                // (selection, saved pick) without changing the word's width.
+                .overlay {
+                    if matchedWordIDs.contains(word.id) {
+                        let current = currentMatchWordIDs.contains(word.id)
+                        RoundedRectangle(cornerRadius: 3)
+                            .fill(Color.accentColor.opacity(current ? 0.30 : 0.12))
+                            .strokeBorder(Color.accentColor.opacity(current ? 1 : 0.6), lineWidth: current ? 2 : 1)
                     }
                 }
     }
@@ -755,4 +885,15 @@ struct TranscriptOverviewMarks: View {
             .frame(width: Self.width, height: min(size, height - top))
             .offset(y: top)
     }
+}
+
+/// A transcript line as a scroll target. Its own type, because a line's ID
+/// is a small integer and so are the IDs of the words and passage badges
+/// around it: `scrollTo(3)` could land on any of them.
+nonisolated struct TranscriptLineScrollID: Hashable, Sendable {
+    var line: Int
+}
+
+extension PodcastHighlightTrim.Line {
+    nonisolated var scrollID: TranscriptLineScrollID { .init(line: id) }
 }

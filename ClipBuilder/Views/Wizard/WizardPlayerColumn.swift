@@ -37,8 +37,7 @@ struct WizardPlayerColumn: View {
                 // The summary is a tab, so the footer is only the action row.
                 VStack(spacing: 0) {
                     content
-                    Divider()
-                    footer
+                    footer.padding(.top, Theme.spaceS)
                 }
             } else if let footer {
                 VSplitView {

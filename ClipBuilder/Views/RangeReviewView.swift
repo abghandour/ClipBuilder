@@ -194,8 +194,12 @@ struct RangeReviewView<Footer: View>: View {
     /// the kept items (none when nothing is kept), or every item in a list
     /// without keep boxes, selection or not. The selected item paints itself
     /// through `range`; its sibling cuts paint here.
+    /// `dimming`: a saved item is selected, so the others step back. The
+    /// passages of `owner` (the whole item selected, or one being added to)
+    /// stay as they are.
     private func markedRanges(excluding selectedID: RangeReviewItem.ID?, owner: Int64? = nil,
-                              video: VideoRecord) -> [RangeReviewMarkedRange] {
+                              video: VideoRecord, dimming: Bool = false) -> [RangeReviewMarkedRange] {
+        let bright = owner
         let ownerID = owner ?? selectedID?.ownerID
         let painted = RangeReviewItem.paintedOwnerIDs(items: items, selectedOwnerID: ownerID, kept: kept?.wrappedValue)
         return items.flatMap { owner in
@@ -205,7 +209,8 @@ struct RangeReviewView<Footer: View>: View {
                 let sibling = ownerID != nil && owner.id.ownerID == ownerID
                 guard painted.contains(owner.id.ownerID) || sibling, item.id != selectedID, item.video.id == video.id,
                       let index = paletteIndex(owner) else { return nil }
-                return RangeReviewMarkedRange(range: item.range, paletteIndex: index)
+                return RangeReviewMarkedRange(range: item.range, paletteIndex: index,
+                                              dimmed: dimming && owner.id.ownerID != bright)
             }
         }
     }
@@ -419,7 +424,8 @@ struct RangeReviewView<Footer: View>: View {
             && selected.id.cutIndex != nil
         let adding = !inactive && (wholeItem || addingCut)
         let marked = markedRanges(excluding: inactive || adding ? nil : selected.id,
-                                  owner: adding ? selected.id.ownerID : nil, video: video)
+                                  owner: adding ? selected.id.ownerID : nil, video: video,
+                                  dimming: !inactive && !selected.isDraft)
         let anchor = inactive ? marked.map(\.range.lowerBound).min() ?? selected.range.lowerBound : selected.range.lowerBound
         let emptyRange = anchor...anchor
         let contextCanTrim = inactive ? selected.isAvailable && !editsFrozen : canTrim
@@ -601,9 +607,8 @@ struct RangeReviewView<Footer: View>: View {
     private func columnDivider(_ column: TranscriptQAColumns.Column, width: CGFloat,
                                otherWidth: CGFloat, available: CGFloat) -> some View {
         if columnShares != nil {
-            // Fixed shares: the divider is a line, not a drag handle.
-            Rectangle().fill(Color(nsColor: .separatorColor)).frame(width: 1)
-                .frame(width: TranscriptQAColumns.dividerWidth)
+            // Fixed shares: nothing to drag, so only the gap between columns.
+            Color.clear.frame(width: TranscriptQAColumns.dividerWidth)
         } else {
         TranscriptQAColumnDivider(column: column, width: width, onResize: { proposed in
             guard let updated = TranscriptQAColumns.resizedWidth(proposed, column: column,
@@ -651,8 +656,10 @@ struct RangeReviewView<Footer: View>: View {
                     ForEach(visibleItems) { item in
                         itemRow(item)
                             .id(item.id)
+                            // An item's passages alternate on a faint grey, in place of a bar each.
                             .background(item.id == selectedID ? Color.accentColor.opacity(0.16)
-                                        : highlighted.contains(item.id.ownerID) ? Color.accentColor.opacity(0.09) : Color.clear,
+                                        : highlighted.contains(item.id.ownerID) ? Color.accentColor.opacity(0.09)
+                                        : (item.id.cutIndex ?? 1).isMultiple(of: 2) ? Color.primary.opacity(0.06) : Color.clear,
                                         in: RoundedRectangle(cornerRadius: 6))
                             .padding(.horizontal, Theme.spaceXS)
                             .background(GeometryReader { geometry in
@@ -682,6 +689,12 @@ struct RangeReviewView<Footer: View>: View {
                             .accessibilityHidden(true)
                     }
                 }
+            }
+            // A row selected from the transcript (a click on its words) comes
+            // into view; one already on screen does not move.
+            .onChange(of: selectedID) { _, id in
+                guard let id, draggingID == nil else { return }
+                withAnimation { scroller.scrollTo(id) }
             }
             // A selection made elsewhere (the reel's Select) scrolls into view.
             .onChange(of: selection?.wrappedValue) { _, ownerID in
@@ -967,12 +980,25 @@ struct RangeReviewView<Footer: View>: View {
                 }
             } label: {
                 VStack(alignment: .leading, spacing: 4) {
-                    Text(item.title)
-                        .font(.callout.weight(.medium)).italic(item.isDraft)
-                        .foregroundStyle(item.isDraft ? Color.secondary : Color.primary)
-                        .lineLimit(item.titleLines == 0 ? nil : item.titleLines).truncationMode(.tail)
-                        .fixedSize(horizontal: false, vertical: true)
-                        .help(item.titleHelp)
+                    HStack(alignment: .firstTextBaseline, spacing: 6) {
+                        if let badge = item.badge {
+                            // The passage's number, as on its words in the transcript.
+                            Text("\(badge)")
+                                .font(.caption2.weight(.bold)).monospacedDigit()
+                                .foregroundStyle(.white)
+                                .lineLimit(1).fixedSize()
+                                .frame(minWidth: 16, minHeight: 16)
+                                .padding(.horizontal, badge > 9 ? 3 : 0)
+                                .background(Color.accentColor, in: Capsule())
+                                .accessibilityLabel("Passage \(badge)")
+                        }
+                        Text(item.title)
+                            .font(.callout.weight(.medium)).italic(item.isDraft)
+                            .foregroundStyle(item.isDraft ? Color.secondary : Color.primary)
+                            .lineLimit(item.titleLines == 0 ? nil : item.titleLines).truncationMode(.tail)
+                            .fixedSize(horizontal: false, vertical: true)
+                            .help(item.titleHelp)
+                    }
                     ForEach(item.captions.indices, id: \.self) { index in
                         let caption = item.captions[index]
                         Group {
@@ -983,7 +1009,7 @@ struct RangeReviewView<Footer: View>: View {
                     }
                 }
                 // A keep box is 18 wide at 8 in; the text starts 5 past it.
-                .padding(.leading, (isChild ? 14 : kept != nil ? 15 : 0) + (item.isDraft ? 0 : RangeReviewPalette.barWidth + Theme.spaceXS))
+                .padding(.leading, (isChild ? 0 : kept != nil ? 15 : 0) + (item.isDraft ? 0 : RangeReviewPalette.barWidth + Theme.spaceXS))
                 .padding(.trailing, onDelete != nil && !item.isDraft && !isChild
                          ? (onUnlink != nil && !item.children.isEmpty ? 56 : 30) : 0)
                 .frame(maxWidth: .infinity, alignment: .leading)
@@ -994,11 +1020,11 @@ struct RangeReviewView<Footer: View>: View {
             .buttonStyle(.plain)
             .overlay(alignment: .leading) { bars(item) }
             .accessibilityAddTraits(item.id == selectedID ? .isSelected : [])
-            // A passage moves inside its item from anywhere on its row; the
-            // item itself moves only by its bar.
+            // A row moves from anywhere on its body: a passage inside its
+            // item, an item among the items (a passage row's bar moves the item).
             .highPriorityGesture(reorderGesture(item, barMoves: isChild ? owner(of: item) : nil),
-                                 including: isChild && canReorder(item) ? .all : .subviews)
-            .help(isChild && canReorder(item) ? "Drag up or down to reorder inside this item" : "")
+                                 including: canReorder(item) ? .all : .subviews)
+            .help(!canReorder(item) ? "" : isChild ? "Drag up or down to reorder inside this item" : "Drag up or down to reorder")
             if let onDelete, !item.isDraft, !isChild {
                 HStack(spacing: Theme.spaceXS) {
                     if let onUnlink, !item.children.isEmpty {
@@ -1067,13 +1093,6 @@ struct RangeReviewView<Footer: View>: View {
                     .padding(.top, isChild ? 0 : Theme.spaceXS)
                     .padding(.bottom, opensGroup || (isChild && !endsGroup) ? 0 : Theme.spaceXS)
                     .allowsHitTesting(false)
-                if isChild {
-                    Rectangle().fill(RangeReviewPalette.cutBar(index))
-                        .frame(width: RangeReviewPalette.barWidth / 2)
-                        .padding(.vertical, Theme.spaceXS)
-                        .padding(.leading, RangeReviewPalette.cutBarInset)
-                        .allowsHitTesting(false)
-                }
                 if let owner, canReorder(owner) {
                     reorderHandle(owner, width: Self.handleWidth,
                                   help: owner.children.isEmpty ? "Drag up or down to reorder"
@@ -1783,7 +1802,7 @@ struct RangeStepControls: View, Equatable {
             let time = playback.time
             Button(action: split) { Text("Split at Playhead").lineLimit(1).fixedSize() }
                 .disabled(!(time - range.lowerBound >= minimum && range.upperBound - time >= minimum))
-                .help("Split at the playhead: this pick keeps the first half, a new pick takes the rest")
+                .help("Split at the playhead: this one keeps the first half, a new one takes the rest")
         }
     }
 }

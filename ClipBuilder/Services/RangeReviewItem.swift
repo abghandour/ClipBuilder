@@ -56,6 +56,8 @@ nonisolated struct RangeReviewItem: Identifiable, Sendable {
 
     var id: ID
     var title: String
+    /// A passage's number inside its item, drawn as a circle before the title.
+    var badge: Int? = nil
     var titleHelp: String
     var keepLabel: String
     var captions: [Caption]

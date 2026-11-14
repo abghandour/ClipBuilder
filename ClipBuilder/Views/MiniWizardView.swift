@@ -185,10 +185,21 @@ struct MiniWizardView: View {
         )
     }
 
+    /// Width of the Reel column, dragged by the gap on its left.
+    @AppStorage("pane.express.preview.width") private var previewWidth = 340.0
+
     var body: some View {
-        HSplitView {
-            settingsColumn.frame(minWidth: 480, maxWidth: .infinity)
+        // Not an HSplitView: its divider line cannot be hidden. The gap
+        // between the columns is the resize handle (a line shows under the pointer).
+        GeometryReader { geometry in
+        let previewLimit = max(300, min(900, geometry.size.width - 480 - TranscriptQAColumns.dividerWidth))
+        let preview = min(previewLimit, max(300, CGFloat(previewWidth)))
+        HStack(spacing: 0) {
+            settingsColumn.frame(maxWidth: .infinity)
             if let video = selectedVideo {
+                TranscriptQAColumnDivider(column: .transcript, width: preview,
+                                          onResize: { previewWidth = Double(min(previewLimit, max(300, $0))) },
+                                          onReset: { previewWidth = 340 }, isLeading: false)
                 WizardPlayerColumn(clips: reelClips(videoID: video.id), aspect: playerAspect,
                     footer: generateFooter,
                     emptyMessage: sceneVideoIDs.contains(video.id) ? "No kept footage yet. Keep footage in the Footage step to play it here."
@@ -197,8 +208,12 @@ struct MiniWizardView: View {
                     .id("\(store.profileGeneration):\(store.activeProjectID ?? 0):\(video.id)")
                     // Wide enough for the three tabs and the action rows at their
                     // full size: narrower, the column's content was cut at the left.
-                    .rememberedPaneWidth("pane.express.preview", min: 300, initial: 340, max: 900)
+                    .frame(width: preview)
+                    // The column's own 12-point inset is for the Full wizard's
+                    // split; here the gap to the cards is 18 points in all.
+                    .padding(.leading, -(Theme.spaceM - 2))
             }
+        }
         }
         .screenTitle("AI Wizard", subtitle: "Express")
         .confirmationDialog("Remove all B-rolls from this reel?", isPresented: $confirmRemoveBRoll) {
@@ -402,7 +417,9 @@ struct MiniWizardView: View {
         GeometryReader { page in
             ScrollView {
                 stepTabs(pageHeight: page.size.height)
-                .padding(Theme.spaceL)
+                // Half the trailing space: the Reel column has its own.
+                .padding([.top, .leading, .bottom], Theme.spaceL)
+                .padding(.trailing, Theme.spaceS)
                 // minWidth 0: a card that still outgrows the column overflows
                 // on the right instead of being centred and cut on both sides.
                 .frame(minWidth: 0, maxWidth: .infinity, alignment: .leading)
@@ -701,7 +718,7 @@ struct MiniWizardView: View {
             let caption: String = switch kind {
                 case .qa: "Q&A lists the question-and-answer exchanges found when this video was analyzed. No AI model runs for this step."
                 case .fightMetrics: "Fight metrics lists every scored action in time order. Select actions and add them as separate picks or as one stretch. Picks are kept with this video. No AI model runs for this step."
-                default: "Drag across words to mark a passage, then press Add Pick. Hold Shift to add more passages to the same pick. Only checked picks become footage."
+                default: "Drag across words to mark a passage, then press Add Selection. Hold Shift to add more passages to the same selection. Only checked selections become footage."
             }
             FormCaption(caption)
             if let selectedVideo, !selectedVideo.isPresent {

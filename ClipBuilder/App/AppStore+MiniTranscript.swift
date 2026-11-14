@@ -51,7 +51,7 @@ extension AppStore {
                 miniRuns[.transcript] = MiniWizardRun(projectID: projectID, video: video, footageKind: .transcript,
                     length: .automatic, batchID: batch, candidates: saved, options: options,
                     transcript: transcript)
-                appendLog(\.wizardLog, ["Express: transcript ready, \(picks.count) saved picks."])
+                appendLog(\.wizardLog, ["Express: transcript ready, \(picks.count) saved selections."])
             } catch is CancellationError {
                 if miniFootageLoadID == loadID, generation == profileGeneration { appendLog(\.wizardLog, ["Loading transcript stopped."]) }
             } catch {
@@ -204,7 +204,7 @@ extension AppStore {
                 picks = try await database.addTranscriptPickGroup(projectID: projectID, videoID: videoID,
                                                                   ranges: ranges, set: shownSet)
             } catch {
-                if generation == profileGeneration { presentError("Could not add the pick", error) }
+                if generation == profileGeneration { presentError("Could not add the selection", error) }
                 completion?(false)
                 throw error
             }
@@ -229,7 +229,7 @@ extension AppStore {
         miniRuns[.transcript]?.transcript?.picks = updated
         let videoID = run.video.id
         let projectID = run.projectID
-        enqueueTranscriptPickWrite(linked ? "Could not link the picks" : "Could not unlink the pick", batchID: run.batchID) { database in
+        enqueueTranscriptPickWrite(linked ? "Could not link the selections" : "Could not unlink the selection", batchID: run.batchID) { database in
             try await database.setTranscriptPicksLinked(projectID: projectID, videoID: videoID, ids: ids, key: key)
         }
     }
@@ -297,7 +297,7 @@ extension AppStore {
                 pick = try await database.addTranscriptPick(projectID: projectID, videoID: videoID,
                                                             start: range.lowerBound, end: range.upperBound, set: shownSet)
             } catch {
-                if generation == profileGeneration { presentError("Could not add the pick", error) }
+                if generation == profileGeneration { presentError("Could not add the selection", error) }
                 completion?(false)
                 throw error
             }
@@ -343,7 +343,7 @@ extension AppStore {
                        let at = miniRuns[.transcript]?.transcript?.picks.firstIndex(where: { $0.id == id }) {
                         miniRuns[.transcript]?.transcript?.picks[at].end = end
                     }
-                    presentError("Could not split the pick", error)
+                    presentError("Could not split the selection", error)
                 }
                 throw error
             }
@@ -367,7 +367,7 @@ extension AppStore {
         miniRuns[.transcript]?.transcript?.picks[index].start = start
         miniRuns[.transcript]?.transcript?.picks[index].end = end
         let projectID = run.projectID
-        enqueueTranscriptPickWrite("Could not save the pick", batchID: run.batchID) { database in
+        enqueueTranscriptPickWrite("Could not save the selection", batchID: run.batchID) { database in
             try await database.setTranscriptPickRange(projectID: projectID, id: id, start: start, end: end)
         }
     }
@@ -387,7 +387,7 @@ extension AppStore {
         let videoID = run.video.id
         let projectID = run.projectID
         let order = ordered.map(\.id)
-        enqueueTranscriptPickWrite("Could not reorder the picks", batchID: run.batchID) { database in
+        enqueueTranscriptPickWrite("Could not reorder the selections", batchID: run.batchID) { database in
             try await database.reorderTranscriptPicks(projectID: projectID, videoID: videoID, ids: order)
         }
     }
@@ -405,7 +405,7 @@ extension AppStore {
         }
         let projectID = run.projectID
         let updates = changed.map { ($0.id, ids.contains($0.id)) }
-        enqueueTranscriptPickWrite("Could not save the pick", batchID: run.batchID) { database in
+        enqueueTranscriptPickWrite("Could not save the selection", batchID: run.batchID) { database in
             for (id, kept) in updates {
                 try await database.setTranscriptPickKept(projectID: projectID, id: id, kept: kept)
             }
@@ -417,7 +417,7 @@ extension AppStore {
         recordMiniUndo(.transcript)
         miniRuns[.transcript]?.transcript?.picks.removeAll { $0.id == id }
         let projectID = run.projectID
-        enqueueTranscriptPickWrite("Could not delete the pick", batchID: run.batchID) { database in
+        enqueueTranscriptPickWrite("Could not delete the selection", batchID: run.batchID) { database in
             try await database.deleteTranscriptPick(projectID: projectID, id: id)
         }
     }
@@ -430,7 +430,7 @@ extension AppStore {
         recordMiniUndo(.transcript)
         miniRuns[.transcript]?.transcript?.picks.removeAll { ids.contains($0.id) }
         let projectID = run.projectID
-        enqueueTranscriptPickWrite("Could not delete the pick", batchID: run.batchID) { database in
+        enqueueTranscriptPickWrite("Could not delete the selection", batchID: run.batchID) { database in
             for id in ids { try await database.deleteTranscriptPick(projectID: projectID, id: id) }
         }
     }
@@ -443,7 +443,7 @@ extension AppStore {
         let videoID = run.video.id
         let projectID = run.projectID
         let shownSet = TranscriptPickSet.shown(run.transcript?.setKey)
-        enqueueTranscriptPickWrite("Could not remove the picks", batchID: run.batchID) { database in
+        enqueueTranscriptPickWrite("Could not remove the selections", batchID: run.batchID) { database in
             try await database.deleteTranscriptPicks(projectID: projectID, videoID: videoID, set: shownSet)
         }
     }
@@ -453,7 +453,7 @@ extension AppStore {
         guard let run = currentTranscriptRun(), let transcript = run.transcript,
               transcript.picks.contains(where: \.kept), let database else { return }
         let generation = profileGeneration
-        beginWizardSelectionWork(projectID: run.projectID, stage: "Saving transcript picks", options: run.options)
+        beginWizardSelectionWork(projectID: run.projectID, stage: "Saving transcript selections", options: run.options)
         wizardTask = Task {
             var saved = false
             defer {
@@ -482,14 +482,14 @@ extension AppStore {
                 miniRuns[.transcript]?.selectedSelectionID = candidates.first?.id
                 miniRuns[.transcript]?.requestedCard = candidates.isEmpty ? .footage : card
                 saved = !candidates.isEmpty
-                appendLog(\.wizardLog, ["Express: saved \(candidates.count) transcript picks as selections."])
+                appendLog(\.wizardLog, ["Express: saved \(candidates.count) transcript selections."])
                 // The picks' scenes are new library rows.
                 await refreshAllNow()
                 await refreshWizardSelections()
             } catch is CancellationError {
-                if generation == profileGeneration { appendLog(\.wizardLog, ["Saving transcript picks stopped."]) }
+                if generation == profileGeneration { appendLog(\.wizardLog, ["Saving transcript selections stopped."]) }
             } catch {
-                if generation == profileGeneration { presentError("Could not save the transcript picks", error) }
+                if generation == profileGeneration { presentError("Could not save the transcript selections", error) }
             }
         }
     }

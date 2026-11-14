@@ -760,7 +760,8 @@ extension AppStore {
         let transcription = TranscriptionService(
             cacheDirectory: SettingsStore.cacheDirectory.appendingPathComponent("transcripts", isDirectory: true),
             podcastSettings: podcastEditingSettings, strictEnrichment: true, spokenLocales: projectLanguages.spoken,
-            wordTiming: settings.wordTimingChoice)
+            wordTiming: settings.wordTimingChoice, corrections: activeProfile.transcriptCorrections ?? [],
+            onFirstTranscript: firstTranscriptHandler())
         let language = transcriptionLanguage()
         let languages = projectLanguages
         let probe = languageProbe
