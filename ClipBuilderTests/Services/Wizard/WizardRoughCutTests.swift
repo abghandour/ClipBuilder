@@ -4,6 +4,33 @@ import Testing
 
 @Suite("Wizard rough cut")
 struct WizardRoughCutTests {
+    @Test func plainCutKeepsPausesWithoutMarksAndRespectsVisibleOverlayRows() {
+        var options = WizardOptions()
+        options.strikeHighlights = true
+        options.strikeImpactFreeze = 1.2
+        let plain = WizardRoughCut.options(options)
+        #expect(plain.strikeHighlights == false && plain.strikeImpactFreeze == 1.2)
+        var settings = MiniWizardSettings()
+        settings.actionOverlays = true
+        settings.pauseOnContact = true
+        settings.pauseOnContactSeconds = 1.2
+        for visible in [false, true] {
+            let rough = WizardRoughCut.options(options, extras: .init(overlays: .init(settings: settings, showsStrikeActions: visible)))
+            #expect(rough.strikeHighlights == visible)
+            #expect(rough.strikeImpactFreeze == (visible ? 1.2 : nil))
+        }
+        settings.actionOverlays = false
+        let pauseOnly = WizardRoughCut.options(options, extras: .init(overlays: .init(settings: settings, showsStrikeActions: true)))
+        #expect(pauseOnly.strikeHighlights == false && pauseOnly.strikeImpactFreeze == 1.2)
+        settings.dub = true
+        let dubbed = WizardRoughCut.options(options, extras: .init(overlays: .init(settings: settings, showsStrikeActions: true)))
+        #expect(dubbed.dubLanguage == nil && dubbed.strikeImpactFreeze == 1.2)
+        let eligibility = WizardRoughCut.pauseEligibilityOptions(options,
+            extras: .init(overlays: .init(settings: settings, showsStrikeActions: true)), oneReel: false)
+        #expect(eligibility.dubLanguage == DubLanguageChoices.defaultLanguage)
+        #expect(eligibility.strikeImpactFreeze == 1.2)
+    }
+
     @Test("every presentation layer is off and the canvas is a third of the size, aspect kept")
     func optionsKeepFramingOnly() {
         var options = WizardOptions()
@@ -223,6 +250,33 @@ struct WizardRoughCutTests {
         #expect(abs(moment.time - 12) < 0.0001)
         let end = try #require(WizardPreviewClips.moment(in: clips, at: duration + 10))
         #expect(abs(end.time - 18) < 0.0001)
+    }
+
+    @Test("saved trimmed pieces recover their take's scene by file and range, including a zero-span hold")
+    func renderedSavedPauses() throws {
+        let scene = Fixtures.scene(id: 7, start: 0, end: 10)
+        let plan = Fixtures.plan(clips: [Fixtures.planClip(sceneID: 7, start: 2, end: 8)])
+        let take = WizardSelectionTake(id: 11, selectionID: 5, ordinal: 1, note: nil, plan: plan, sceneIDs: [7],
+            proxyPath: nil, criticScore: nil, criticNotes: nil, provenance: nil, createdAt: nil)
+        var original = Fixtures.timelineClip(sceneID: 7, sourceStart: 2, duration: 6)
+        original.videoFile = scene.videoPath
+        original.sceneFullDuration = scene.duration
+        let pieces = StrikeFreezeRules.pieces(original, contacts: [4], hold: 0.05)
+        let document = Fixtures.timelineDocument(clips: pieces)
+        let saved = try JSONDecoder().decode(TimelineDocument.self, from: JSONEncoder().encode(document))
+        #expect(saved.videoTrack.count == 3 && saved.videoTrack.allSatisfy { $0.sceneID == nil })
+        let fresh = WizardPreviewClips.rendered(document, take: take, name: "Cut", scenes: [scene], xfadeDuration: 0.5)
+        let restored = WizardPreviewClips.rendered(saved, take: take, name: "Cut", scenes: [scene], xfadeDuration: 0.5)
+        #expect(restored == fresh)
+        #expect(abs(RoughCut.plannedDuration(of: restored) - 6.05) < 1e-9)
+        #expect(WizardPreviewClips.moment(in: restored, at: 2.025)?.time == 4)
+        var unrelated = scene
+        unrelated.id = 99
+        // A matching file alone is insufficient: this scene isn't in the take.
+        #expect(WizardPreviewClips.rendered(saved, take: take, name: "Cut", scenes: [unrelated], xfadeDuration: 0.5).isEmpty)
+        var wrongFile = scene
+        wrongFile.videoPath = "/tmp/other.mp4"
+        #expect(WizardPreviewClips.rendered(saved, take: take, name: "Cut", scenes: [wrongFile], xfadeDuration: 0.5).isEmpty)
     }
 
     @Test("rendered preview uses pacing trims and the incoming clip during an overlap")

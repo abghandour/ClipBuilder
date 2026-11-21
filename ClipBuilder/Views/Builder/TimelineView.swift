@@ -747,6 +747,13 @@ struct TimelineClipBlock: View {
             }
             VStack(alignment: .leading, spacing: 1) {
                 HStack(spacing: Theme.spaceXS) {
+                    if clip.hold == true {
+                        Image(systemName: "snowflake")
+                            .font(.badgeCompact)
+                            .foregroundStyle(.white)
+                            .help("Freeze frame")
+                            .accessibilityLabel("Freeze frame")
+                    }
                     if clip.bumper {
                         Label("Bumper · " + store.bumperDisplayName(for: clip), systemImage: "film.stack")
                             .font(.caption2).foregroundStyle(.white)

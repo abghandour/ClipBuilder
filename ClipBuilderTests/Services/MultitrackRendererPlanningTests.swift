@@ -160,6 +160,25 @@ struct MultitrackRendererPlanningTests {
         #expect(pieces.first { $0.track == 1 }?.duration == 2)
     }
 
+    @Test("a minimum hold survives both crop splitting and layered segmentation")
+    func minimumHoldThroughCropBlocks() throws {
+        var hold = Fixtures.timelineClip(sceneID: nil, sourceStart: 4, duration: 0.05, startTime: 4)
+        hold.videoFile = "/tmp/hold.mp4"
+        hold.sourceEnd = 4
+        hold.hold = true
+        var document = Fixtures.timelineDocument(clips: [hold])
+        document.cropBlocks = [CropBlockItem(layout: .fullScreen, startTime: 0, duration: 6.05)]
+        let resolved = MultitrackRenderer.resolveClips(document: document, scenes: [])
+        let cropped = MultitrackRenderer.applyCropBlocks(resolved, document: document)
+        let piece = try #require(cropped.first)
+        #expect(cropped.count == 1 && piece.hold)
+        let segments = MultitrackRenderer.buildLayeredSegments(cropped)
+        let segment = try #require(segments.first)
+        #expect(segments.count == 1 && abs(segment.duration - 0.05) < 1e-9)
+        let placement = try #require(MultitrackRenderer.placements(for: segment).first)
+        #expect(placement.hold && placement.muted && placement.sourceStart == 4)
+    }
+
     @Test("overlay planning preserves local clocks, gaps, transition windows and z-order")
     func overlayPlanning() {
         typealias Overlay = MultitrackRenderer.TimedOverlayPNG
@@ -377,21 +396,23 @@ struct MultitrackRendererPlanningTests {
 
     @Test("only a mixed-in cutaway changes how the segment's audio is mixed")
     func audioMixKeepsUnityGain() {
-        let single = MultitrackRenderer.audioMixFilter(labels: ["[a0]"], cutawayAudio: false)
+        let single = MultitrackRenderer.audioMixFilter(labels: ["[a0]"], cutawayAudio: false, duration: 1.2)
         #expect(single.filters.isEmpty && single.source == "[a0]")
 
         // Without B-roll audio the mix is exactly what it always was.
-        let plain = MultitrackRenderer.audioMixFilter(labels: ["[a0]", "[a1]"], cutawayAudio: false)
+        let plain = MultitrackRenderer.audioMixFilter(labels: ["[a0]", "[a1]"], cutawayAudio: false, duration: 1.2)
         #expect(plain.filters.first == "[a0][a1]amix=inputs=2:duration=longest:dropout_transition=0[amix]")
 
-        let withCutaway = MultitrackRenderer.audioMixFilter(labels: ["[a0]", "[a1]"], cutawayAudio: true)
+        let withCutaway = MultitrackRenderer.audioMixFilter(labels: ["[a0]", "[a1]"], cutawayAudio: true, duration: 1.2)
         let filter = withCutaway.filters.first ?? ""
         #expect(filter.contains("amix=inputs=2"))
         #expect(filter.contains("normalize=0"), "amix would otherwise halve both inputs")
         #expect(withCutaway.source == "[amix]")
 
-        let silence = MultitrackRenderer.audioMixFilter(labels: [], cutawayAudio: true)
+        let silence = MultitrackRenderer.audioMixFilter(labels: [], cutawayAudio: true, duration: 1.2)
         #expect(silence.source == "[asilent]" && silence.filters.count == 1)
+        // Made in the graph: the anullsrc input as the only audio stalled ffmpeg.
+        #expect(silence.filters == ["anullsrc=r=44100:cl=stereo:d=1.200,asetpts=PTS-STARTPTS[asilent]"])
     }
 
     @Test("a silent cutaway's file does not change how the segment is mixed")
@@ -681,7 +702,7 @@ extension MultitrackRendererPlanningTests {
         var changed = clip
         changed.effect = nil
         #expect(changed != clip)
-        #expect(RenderSegmentCache.rendererVersion == "multitrack-segment-v13-image-tracks")
+        #expect(RenderSegmentCache.rendererVersion == "multitrack-segment-v14-pause-clock")
     }
 }
 

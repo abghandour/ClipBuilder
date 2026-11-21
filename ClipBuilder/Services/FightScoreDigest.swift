@@ -6,6 +6,10 @@ nonisolated enum FightScoreDigest {
     struct Fighter: Equatable, Sendable, Identifiable {
         var key: String
         var strikes = 0
+        /// Strikes the scorer named as punches and as kicks. Knees, elbows
+        /// and strikes it could not name are only in `strikes`.
+        var punches = 0
+        var kicks = 0
         var takedowns = 0
         var takedownAttempts = 0
         var submissions = 0
@@ -18,7 +22,14 @@ nonisolated enum FightScoreDigest {
     static func fighters(events: [FightEventRecord]) -> [Fighter] {
         var rows: [String: Fighter] = [:]
         for strike in StrikeStatsSummary.deduplicatedStrikes(events) {
-            rows[strike.fighterKey, default: Fighter(key: strike.fighterKey)].strikes += 1
+            var row = rows[strike.fighterKey, default: Fighter(key: strike.fighterKey)]
+            row.strikes += 1
+            switch StrikeDetail(strike.detail)?.technique {
+            case .punch: row.punches += 1
+            case .kick: row.kicks += 1
+            default: break
+            }
+            rows[strike.fighterKey] = row
         }
         for pair in StrikeStatsSummary.pairs(events: events) {
             var row = rows[pair.attacker, default: Fighter(key: pair.attacker)]
@@ -41,7 +52,12 @@ nonisolated enum FightScoreDigest {
 
     /// "Felipe 15 strikes · 2/3 TD · 1 sub" style line per fighter.
     static func line(_ fighter: Fighter, name: String) -> String {
-        var parts = ["\(fighter.strikes) strike" + (fighter.strikes == 1 ? "" : "s")]
+        var strikes = "\(fighter.strikes) strike" + (fighter.strikes == 1 ? "" : "s")
+        if fighter.punches + fighter.kicks > 0 {
+            strikes += " (\(fighter.punches) punch" + (fighter.punches == 1 ? "" : "es")
+                + ", \(fighter.kicks) kick" + (fighter.kicks == 1 ? "" : "s") + ")"
+        }
+        var parts = [strikes]
         if fighter.takedownAttempts > 0 { parts.append("\(fighter.takedowns)/\(fighter.takedownAttempts) TD") }
         if fighter.submissionAttempts > 0 { parts.append("\(fighter.submissions)/\(fighter.submissionAttempts) sub") }
         return "\(name): " + parts.joined(separator: " · ")
@@ -50,11 +66,13 @@ nonisolated enum FightScoreDigest {
 
 extension FightScoreDigest {
     enum Category: String, CaseIterable, Sendable, Hashable {
-        case strikes, takedowns, submissions
+        case strikes, punches, kicks, takedowns, submissions
 
         var label: String {
             switch self {
             case .strikes: "Strikes"
+            case .punches: "Punches"
+            case .kicks: "Kicks"
             case .takedowns: "Takedowns"
             case .submissions: "Submissions"
             }
@@ -72,6 +90,7 @@ extension FightScoreDigest {
         var targetKey: String?
         var outcome: String?
         var detail: String?
+        var generation: Int64? = nil
 
         var label: String {
             if action == "takedown" { return "Takedown" }
@@ -81,7 +100,8 @@ extension FightScoreDigest {
         /// "Takedown attempt · defended", "Submission attempt · armbar · completed".
         var summary: String {
             var parts = [label]
-            if let detail, !detail.isEmpty, detail != SubmissionHold.unknown.rawValue { parts.append(detail) }
+            if let strike = StrikeDetail(detail) { parts.append(strike.label) }
+            else if let detail, !detail.isEmpty, detail != SubmissionHold.unknown.rawValue { parts.append(detail) }
             if let outcome, !outcome.isEmpty, action.hasSuffix("_attempt") { parts.append(outcome) }
             return parts.joined(separator: " · ")
         }
@@ -107,6 +127,11 @@ extension FightScoreDigest {
         switch category {
         case .strikes:
             rows = StrikeStatsSummary.deduplicatedStrikes(events).filter { $0.fighterKey == fighter }
+        case .punches, .kicks:
+            let wanted: StrikeDetail.Technique = category == .punches ? .punch : .kick
+            rows = StrikeStatsSummary.deduplicatedStrikes(events).filter {
+                $0.fighterKey == fighter && StrikeDetail($0.detail)?.technique == wanted
+            }
         case .takedowns:
             rows = StrikeStatsSummary.attemptSequences(events).filter {
                 $0.fighterKey == fighter && ($0.action == "takedown_attempt" || $0.action == "takedown")
@@ -118,13 +143,15 @@ extension FightScoreDigest {
         }
         return rows.sorted { $0.time < $1.time }.map {
             Entry(id: $0.id, time: $0.time, endTime: $0.endTime, action: $0.action,
-                  targetKey: $0.targetKey, outcome: $0.outcome, detail: $0.detail)
+                  targetKey: $0.targetKey, outcome: $0.outcome, detail: $0.detail, generation: $0.generation)
         }
     }
 
     static func count(_ fighter: Fighter, _ category: Category) -> Int {
         switch category {
         case .strikes: fighter.strikes
+        case .punches: fighter.punches
+        case .kicks: fighter.kicks
         case .takedowns: fighter.takedownAttempts
         case .submissions: fighter.submissionAttempts
         }

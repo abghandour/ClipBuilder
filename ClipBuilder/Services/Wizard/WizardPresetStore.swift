@@ -55,6 +55,7 @@ nonisolated enum WizardPresetStore {
     /// An explicit default replaces a previous choice; an absent key leaves it alone.
     static let nullableFields: Set<String> = [
         "captionStyleID", "captionPosition", "speakerCaptionPositions", "captionLanguage",
+        "strikeHighlights", "strikeImpactFreeze", "pauseOnContact", "pauseOnContactSeconds",
         "introBumperLibraryPath", "outroBumperLibraryPath",
         "nameTagContent", "nameTagStyle", "nameTagStyleID", "nameTagPosition", "safe_area_platforms",
         "watermarkOverlayTemplate", "watermarkOpacity", "lookPreset", "musicTrack", "useBRoll",

@@ -5,7 +5,8 @@ nonisolated enum AnalysisPipeline {
     static let podcastPass = 1
     /// Bump when visual analysis gains a stage.
     static let visualPass = 1
-    static let fightScorePass = 2
+    /// 2 added attempt sequences; 3 samples four stills a second instead of one.
+    static let fightScorePass = 3
     static let peoplePass = 1
     static let transcriptPass = 1
     static let exchangesPass = podcastPass

@@ -41,6 +41,8 @@ nonisolated struct MiniWizardFlow: Sendable {
     /// The video has analyzed scenes. Without them only Transcript picks are
     /// offered: Highlights, Q&A and Fight metrics all read scene rows.
     var hasScenes = true
+    /// Loaded with the page facts, never queried while drawing rows.
+    var hasScoredStrikes = false
     var footageKind: FootageKind = .highlights
     var length: Length = .automatic
     var captionsEnabled = false
@@ -85,10 +87,11 @@ nonisolated struct MiniWizardFlow: Sendable {
     var showsAudioOptions: Bool { isFightOrTraining }
 
     /// Every source can be dubbed; Music and mute retain their own footage rules.
-    var settingsTabs: [SettingsTab] { SettingsTab.available(audio: true) }
+    var settingsTabs: [SettingsTab] { SettingsTab.available(audio: true, voiceOver: true) }
     /// A remembered tab that this footage does not offer opens Picture.
     func effectiveSettingsTab(_ tab: SettingsTab) -> SettingsTab { tab.effective(in: settingsTabs) }
     var showsNameTags: Bool { isPodcastOrInterview }
+    var showsStrikeActions: Bool { video?.type == .fight && hasScoredStrikes }
 
     var showsCaptionLanguage: Bool { captionsEnabled && offersCaptionLanguage }
 
@@ -219,6 +222,8 @@ nonisolated struct MiniWizardFlow: Sendable {
         }
         if settings.dub { audio.append(DubLanguageChoices.summary(settings.dubLanguage ?? DubLanguageChoices.defaultLanguage)) }
         var overlays: [String] = []
+        if showsStrikeActions, settings.actionOverlays == true { overlays.append("Action overlays") }
+        if showsStrikeActions, settings.pauseOnContact == true { overlays.append("Pause on contact (\(settings.resolvedPauseOnContactSeconds) s)") }
         if settings.safeAreaOnly {
             let selected = settings.safeAreaPlatforms?.compactMap(SocialPlatform.init(rawValue:)) ?? []
             let platforms = selected.isEmpty ? profilePlatforms : selected
@@ -253,6 +258,8 @@ nonisolated struct MiniWizardFlow: Sendable {
     private func presentationSummary(_ settings: MiniWizardSettings) -> [String] {
         var parts = [settings.quality.label, settings.preset.label]
         if settings.captions { parts.append("captions") }
+        if showsStrikeActions, settings.actionOverlays == true { parts.append("action overlays") }
+        if showsStrikeActions, settings.pauseOnContact == true { parts.append("pause on contact (\(settings.resolvedPauseOnContactSeconds) s)") }
         if settings.dub { parts.append(DubLanguageChoices.summary(settings.dubLanguage ?? DubLanguageChoices.defaultLanguage)) }
         if let name = settings.overlayName { parts.append("overlay \(name)") }
         if settings.introVideo { parts.append("intro video") }

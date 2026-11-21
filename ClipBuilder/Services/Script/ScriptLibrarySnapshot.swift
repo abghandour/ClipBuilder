@@ -14,6 +14,8 @@ nonisolated struct ScriptLibrarySnapshot: Sendable {
     var videosWithPeople: Set<Int64> = []
     /// Podcast speaker turns per video, when the podcast pass ran.
     var speakerTurns: [Int64: [SpeakerTurn]] = [:]
+    /// Saved contact times captured before synchronous script mutations.
+    var strikeContacts: [Int64: [Double]] = [:]
     /// The People pass roster per video, with portrait boxes, for naming
     /// what sample_frames sees.
     var rosters: [Int64: [VideoPersonRecord]] = [:]
@@ -71,11 +73,17 @@ nonisolated struct ScriptLibrarySnapshot: Sendable {
         copy.transcripts = []; copy.features = []; copy.proposals = []
         copy.videoPeople = [:]; copy.videosWithPeople = []; copy.prerequisiteOutcomes = [:]; copy.speakerTurns = [:]
         copy.rosters = [:]
+        copy.strikeContacts = try await database.fetchStrikeContacts(videoIDs: copy.videos.map(\.id))
         let started = ContinuousClock.now
         for video in copy.videos {
             try Task.checkCancellation()
             guard started.duration(to: .now) < .seconds(10) else {
                 throw ScriptError.invalid("Library snapshot exceeded ten seconds.")
+            }
+            if video.duration.isFinite, video.duration >= 0 {
+                copy.strikeContacts[video.id] = (copy.strikeContacts[video.id] ?? []).filter { (0...video.duration).contains($0) }
+            } else {
+                copy.strikeContacts[video.id] = nil
             }
             copy.transcripts += try await database.fetchTranscripts(videoID: video.id)
             copy.features += try await database.fetchTranscriptFeatures(videoID: video.id)

@@ -40,6 +40,9 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var addCaptions: Bool?
     var enableTextOverlays: Bool?
     var strikeStats: Bool?
+    var strikeHighlights: Bool?
+    var strikeImpactFreeze: Double?
+    var voiceOverBedLevel: Double?
     var strikeUnits: String?
     var strikeSpeedCallouts: Bool?
     var strikeGrapplingCard: Bool?
@@ -102,6 +105,9 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         case addCaptions
         case enableTextOverlays
         case strikeStats
+        case strikeHighlights
+        case strikeImpactFreeze
+        case voiceOverBedLevel
         case strikeUnits
         case strikeSpeedCallouts
         case strikeGrapplingCard
@@ -167,6 +173,9 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         try c.encodeIfPresent(addCaptions, forKey: .addCaptions)
         try c.encodeIfPresent(enableTextOverlays, forKey: .enableTextOverlays)
         try c.encodeIfPresent(strikeStats, forKey: .strikeStats)
+        try c.encodeIfPresent(strikeHighlights, forKey: .strikeHighlights)
+        try c.encodeIfPresent(strikeImpactFreeze, forKey: .strikeImpactFreeze)
+        try c.encodeIfPresent(voiceOverBedLevel, forKey: .voiceOverBedLevel)
         try c.encodeIfPresent(strikeUnits, forKey: .strikeUnits)
         try c.encodeIfPresent(strikeSpeedCallouts, forKey: .strikeSpeedCallouts)
         try c.encodeIfPresent(strikeGrapplingCard, forKey: .strikeGrapplingCard)
@@ -259,6 +268,9 @@ nonisolated extension WizardOptions {
         result.addCaptions = addCaptions
         result.enableTextOverlays = enableTextOverlays
         result.strikeStats = strikeStats
+        result.strikeHighlights = strikeHighlights
+        result.strikeImpactFreeze = strikeImpactFreeze
+        result.voiceOverBedLevel = voiceOverBedLevel
         result.strikeUnits = strikeUnits
         result.strikeSpeedCallouts = strikeSpeedCallouts
         result.strikeGrapplingCard = strikeGrapplingCard
@@ -353,6 +365,9 @@ nonisolated extension WizardOptions {
         result.addCaptions = step2.addCaptions ?? base.addCaptions
         result.enableTextOverlays = step2.enableTextOverlays ?? base.enableTextOverlays
         result.strikeStats = step2.strikeStats
+        result.strikeHighlights = step2.strikeHighlights
+        result.strikeImpactFreeze = step2.strikeImpactFreeze
+        result.voiceOverBedLevel = step2.voiceOverBedLevel
         result.strikeUnits = step2.strikeUnits
         result.strikeSpeedCallouts = step2.strikeSpeedCallouts
         result.strikeGrapplingCard = step2.strikeGrapplingCard

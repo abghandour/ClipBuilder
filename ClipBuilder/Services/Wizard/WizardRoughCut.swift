@@ -2,8 +2,9 @@ import Foundation
 
 /// A rough cut is the kept reel rendered small and plain so framing and
 /// focus can be checked in motion before the final render: a third of the
-/// canvas, Compact quality, hard cuts, source audio, nothing laid over the
-/// picture. See docs/Rough-Cut-Plan.md.
+/// canvas, Compact quality, hard cuts and source audio. Contact pauses stay;
+/// strike marks are off unless the sheet's Overlays rows enable them.
+/// See docs/Rough-Cut-Plan.md.
 nonisolated enum WizardRoughCut {
     /// The canvas shrinks by this factor on each side.
     static let scale = 3
@@ -15,7 +16,7 @@ nonisolated enum WizardRoughCut {
     static let leftOutWithOverlays = "cards, bumpers, music, dub, speech polish, looks, B-roll and transitions"
     static func leftOut(overlays: Bool) -> String { overlays ? leftOutWithOverlays : leftOut }
 
-    /// Everything that is not framing turned off, before the document is
+    /// Everything except framing and contact pauses turned off, before the document is
     /// built, so the engine also skips the AI work those layers need. The
     /// effect and transition the user added in the review sheet (none by
     /// default) are the one exception, and with `extras.overlays` the
@@ -55,6 +56,10 @@ nonisolated enum WizardRoughCut {
         rough.pinnedOverlayTemplate = nil
         rough.pinnedOverlayText = nil
         rough.strikeStats = false
+        // Keep the pause clock without drawing marks. Contact acquisition is
+        // independent of this flag; Express's shared rows may override both.
+        rough.strikeHighlights = false
+        rough.strikeImpactFreeze = options.strikeImpactFreeze
         rough.strikeSpeedCallouts = false
         rough.strikeGrapplingCard = false
         rough.strikeRoundCard = false
@@ -70,7 +75,12 @@ nonisolated enum WizardRoughCut {
         if let overlays = extras.overlays {
             // The same round trip Express's previewOptions takes.
             var step2 = rough.step2
-            overlays.settings.applyOverlayOptions(to: &step2)
+            var settings = overlays.settings
+            if !overlays.showsStrikeActions {
+                settings.actionOverlays = false
+                settings.pauseOnContact = false
+            }
+            settings.applyOverlayOptions(to: &step2)
             rough = WizardOptions.merge(step1: rough.step1, step2: step2, base: rough)
             // A dubbed reel captions in the dub language; the rough cut has
             // no dub, so the captions follow the same target on their own.
@@ -79,6 +89,27 @@ nonisolated enum WizardRoughCut {
             }
         }
         return rough
+    }
+
+    /// Final-reel inputs for pause eligibility, separate from presentation.
+    /// Editing the shared rows changes the switch/length and dub policy too.
+    static func pauseEligibilityOptions(_ options: WizardOptions, extras: RoughCutExtras,
+                                        oneReel: Bool) -> WizardOptions {
+        var final = options
+        if let overlays = extras.overlays {
+            final.strikeImpactFreeze = overlays.showsStrikeActions && overlays.settings.resolvedPauseOnContact
+                ? overlays.settings.resolvedPauseOnContactSeconds : nil
+            final.dubLanguage = overlays.settings.dub
+                ? overlays.settings.dubLanguage ?? DubLanguageChoices.defaultLanguage : nil
+        }
+        if let transition = extras.transition {
+            final.transitionChoice = transition
+            final.allowedTransitions = transition == WizardPlanRules.randomTransitionChoice
+                ? options.allowedTransitions : [transition]
+        } else if oneReel, final.transitionChoice == nil {
+            final.allowedTransitions = ["cut"]
+        }
+        return final
     }
 
     /// The engine's generated cards, by file name (WizardEngine retains them
@@ -142,13 +173,15 @@ nonisolated struct RoughCutExtras: Equatable, Hashable, Sendable {
 }
 
 /// The Overlays tab of the rough cut sheet: the settings the rows bind to
-/// and the two page facts that decide which rows show.
+/// and the page facts that decide which rows show.
 nonisolated struct RoughCutOverlays: Equatable, Hashable, Sendable {
     var settings: MiniWizardSettings
     /// Podcast and interview footage: the Name tags rows.
     var showsNameTags = false
     /// A non-English transcript: the Native / English row once captions are on.
     var showsCaptionLanguage = false
+    /// Fight footage with at least one scored strike event.
+    var showsStrikeActions = false
 }
 
 /// One rendered rough cut, kept in the cache until the next one.

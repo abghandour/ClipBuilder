@@ -6,11 +6,17 @@ import SwiftUI
 struct MiniFightPickView: View {
     @Environment(AppStore.self) private var store
     let run: MiniWizardRun
+    var strikeStatuses: [String: StrikeClipStatus] = [:]
+    var strikeStatusFallback: String? = nil
     /// Scored event ids chosen in the grid; the draft previews them.
     @State private var chosen: Set<Int64> = []
     /// A hand trim of the draft; nil = the chosen actions' own span.
     @State private var draftRange: ClosedRange<Double>?
     @State private var selectedOwner: Int64?
+    /// Bumped by a double-click on an action: the player plays its stretch.
+    @State private var playRequest = 0
+    /// The action the last double-click asked to play, while it alone is selected.
+    @State private var playTarget: Int64?
 
     /// The draft's owner ID can never collide with a stored pick.
     private static let draftOwnerID: Int64 = -1
@@ -65,6 +71,11 @@ struct MiniFightPickView: View {
             noActions
         } else {
             RangeReviewView(items: items, rows: [], labels: [:],
+                            strikeStatuses: Dictionary(picks.compactMap { pick in
+                                let id = MiniReelRules.clipID(kind: .fightMetrics, itemID: pick.id)
+                                return strikeStatuses[id].map { (pick.id, $0) }
+                            }, uniquingKeysWith: { first, _ in first }),
+                            strikeStatusFallback: strikeStatusFallback,
                             selection: $selectedOwner,
                             emptyTitle: "Pick an action",
                             emptyMessage: "Select actions in the grid, adjust the stretch, then press Add.",
@@ -75,6 +86,8 @@ struct MiniFightPickView: View {
                             onDeleteAll: { store.deleteAllMiniFightPicks() },
                             playAll: true,
                             leadingPanel: AnyView(grid),
+                            playRequest: playRequest,
+                            playWanted: playTarget != nil,
                             emptyDraftHint: "Select one or more actions in the grid to preview them here.",
                             trimHint: "Drag the handles to adjust · I / O set the start / end at the playhead",
                             onSave: save) { item in
@@ -89,6 +102,8 @@ struct MiniFightPickView: View {
             .onChange(of: chosen) { _, _ in
                 draftRange = nil
                 if !chosen.isEmpty { selectedOwner = Self.draftOwnerID }
+                // Something else is selected now: a double-click still waiting to play was not for it.
+                if let target = playTarget, chosen != [target] { playTarget = nil }
             }
         }
     }
@@ -111,6 +126,7 @@ struct MiniFightPickView: View {
         let pickedIDs = Set(picks.flatMap(\.eventIDs))
         return VStack(alignment: .leading, spacing: 0) {
             gridRow(time: "Time", fighter: "Fighter", action: "Action", header: true)
+                .padding(.leading, 20 + Theme.spaceXS)
                 .padding(.horizontal, Theme.spaceS)
                 .padding(.vertical, Theme.spaceXS)
             ScrollViewReader { proxy in
@@ -119,24 +135,46 @@ struct MiniFightPickView: View {
                         ForEach(actions) { action in
                             let selected = chosen.contains(action.id)
                             let picked = pickedIDs.contains(action.id)
-                            HStack(spacing: Theme.spaceXS) {
-                                gridRow(time: action.time.timecode,
-                                        fighter: names[action.fighterKey] ?? (action.fighterKey.isEmpty ? "—" : action.fighterKey),
-                                        action: action.label, header: false)
-                                if picked {
-                                    Image(systemName: "checkmark.circle.fill")
-                                        .foregroundStyle(selected ? .white : .secondary)
-                                        .help("Already in a pick")
+                            // No gap and no outer padding: every point of the row
+                            // belongs to the tick or to the row's own click.
+                            HStack(spacing: 0) {
+                                // Ticking adds the row to the selection; a click on the row selects it alone.
+                                Button { toggle(action.id) } label: {
+                                    Image(systemName: selected ? "checkmark.circle.fill" : "circle")
+                                        .foregroundStyle(selected ? Color.white : Color.secondary)
+                                        .frame(width: 20, height: 20)
+                                        .padding(.leading, Theme.spaceS)
+                                        .padding(.vertical, 3)
+                                        .contentShape(Rectangle())
                                 }
+                                .buttonStyle(.plain)
+                                .help(selected ? "Take this action out of the selection" : "Add this action to the selection")
+                                .accessibilityLabel(selected ? "Deselect" : "Select")
+                                // The row's click and double-click stop short of the tick,
+                                // so two quick ticks never play the action.
+                                HStack(spacing: Theme.spaceXS) {
+                                    gridRow(time: action.time.timecode,
+                                            fighter: names[action.fighterKey] ?? (action.fighterKey.isEmpty ? "—" : action.fighterKey),
+                                            action: action.label, header: false)
+                                    if picked {
+                                        Image(systemName: "film")
+                                            .foregroundStyle(selected ? .white : .secondary)
+                                            .help("Already in a pick")
+                                            .accessibilityLabel("Already in a pick")
+                                    }
+                                }
+                                .padding(.vertical, 5)
+                                .padding(.leading, Theme.spaceXS)
+                                .padding(.trailing, Theme.spaceS)
+                                .frame(maxWidth: .infinity, alignment: .leading)
+                                .contentShape(Rectangle())
+                                .onTapGesture { click(action.id) }
+                                .simultaneousGesture(TapGesture(count: 2).onEnded { play(action.id) })
                             }
                             .foregroundStyle(selected ? Color.white : picked ? Color.secondary : Color.primary)
-                            .padding(.horizontal, Theme.spaceS)
-                            .padding(.vertical, 5)
                             .frame(maxWidth: .infinity, alignment: .leading)
                             .background(selected ? Color.accentColor : Color.clear)
-                            .contentShape(Rectangle())
                             .id(action.id)
-                            .onTapGesture { click(action.id) }
                             .accessibilityElement(children: .combine)
                             .accessibilityAddTraits(selected ? .isSelected : [])
                         }
@@ -146,11 +184,25 @@ struct MiniFightPickView: View {
                     if let target { proxy.scrollTo(target) }
                 }
             }
-            FormCaption(chosen.isEmpty
-                ? "\(actions.count) scored actions. Click to select; ⇧ and ⌘ extend the selection."
-                : "\(chosen.count) selected")
-                .lineLimit(1).truncationMode(.tail)
-                .padding(Theme.spaceS)
+            HStack(spacing: Theme.spaceS) {
+                FormCaption(chosen.isEmpty
+                    ? "\(actions.count) scored actions. Double-click plays one; tick the circles to select several."
+                    : "\(chosen.count) selected")
+                    .lineLimit(1).truncationMode(.tail)
+                Spacer(minLength: 0)
+                Button { chosen = Set(actions.map(\.id).filter { !pickedIDs.contains($0) }) } label: {
+                    Text("Select All New").lineLimit(1).fixedSize()
+                }
+                .controlSize(.small)
+                .disabled(actions.allSatisfy { pickedIDs.contains($0.id) })
+                .help("Select every action that is not in a pick yet")
+                if !chosen.isEmpty {
+                    Button { chosen = [] } label: { Text("Clear").lineLimit(1).fixedSize() }
+                        .controlSize(.small)
+                        .help("Deselect every action")
+                }
+            }
+            .padding(Theme.spaceS)
         }
     }
 
@@ -173,6 +225,24 @@ struct MiniFightPickView: View {
         let modifiers = NSEvent.modifierFlags
         let result = MiniWizardFightRules.select(id, in: actions.map(\.id), current: chosen, anchor: anchor,
                                                  command: modifiers.contains(.command), shift: modifiers.contains(.shift))
+        chosen = result.selected
+        anchor = result.anchor
+    }
+
+    /// A double-click: that action alone, played from its start. With ⇧ or ⌘
+    /// held the two clicks were selection changes and nothing plays.
+    private func play(_ id: Int64) {
+        let modifiers = NSEvent.modifierFlags
+        guard !modifiers.contains(.command), !modifiers.contains(.shift) else { return }
+        if chosen != [id] { chosen = [id]; anchor = id }
+        selectedOwner = Self.draftOwnerID
+        playTarget = id
+        playRequest += 1
+    }
+
+    private func toggle(_ id: Int64) {
+        let result = MiniWizardFightRules.select(id, in: actions.map(\.id), current: chosen, anchor: anchor,
+                                                 command: true, shift: false)
         chosen = result.selected
         anchor = result.anchor
     }

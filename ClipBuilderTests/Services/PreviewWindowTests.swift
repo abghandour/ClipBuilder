@@ -85,6 +85,30 @@ struct PreviewWindowTests {
         #expect(legacy.sourceOffset == 0)
     }
 
+    @Test("Fast Preview holds are silent, retain source time, and never merge with neighbours")
+    @MainActor func previewHoldPlan() throws {
+        let directory = try TempDirectory(prefix: "PreviewHold")
+        let file = directory.url.appendingPathComponent("source.mp4")
+        try Data("fixture".utf8).write(to: file)
+        var before = Fixtures.timelineClip(sceneID: nil, sourceStart: 2, duration: 2)
+        before.videoFile = file.path
+        var hold = Fixtures.timelineClip(sceneID: nil, sourceStart: 4, duration: 0.8, startTime: 2)
+        hold.videoFile = file.path
+        hold.hold = true
+        var after = Fixtures.timelineClip(sceneID: nil, sourceStart: 4, duration: 2, startTime: 2.8)
+        after.videoFile = file.path
+        let scope = try DataFolderOverride()
+        _ = scope
+        let model = BuilderTimelineModel()
+        model.loadDocument(Fixtures.timelineDocument(clips: [before, hold, after]))
+        let segments = model.previewPlan(musicLookup: [:]).segments
+        #expect(segments.count == 3)
+        let frozen = try #require(segments.first { $0.hold })
+        #expect(frozen.sourceStart == 4 && abs(frozen.duration - 0.8) < 1e-9)
+        #expect(frozen.volume == 0 && frozen.audio == nil && frozen.cutawayAudio == nil)
+        #expect(segments.last?.sourceStart == 4)
+    }
+
     @Test("the fast preview and the trimmed-edge path both carry the song offset")
     @MainActor func previewPlanOffset() throws {
         var doc = Fixtures.timelineDocument(clips: [Fixtures.timelineClip(sceneID: nil, duration: 10, startTime: 0)])
@@ -132,6 +156,17 @@ struct PreviewSliceTests {
         }
         let base = key(doc, 0...5)
         #expect(base != nil)
+        // Saved strike highlights come from the database: a window that
+        // draws them follows their revision, any other window ignores it.
+        var marked = doc
+        marked.videoTrack[0].strikeHighlights = true
+        func revised(_ document: TimelineDocument, _ window: ClosedRange<Double>, _ revision: Int) -> String? {
+            AppStore.builderPreviewKey(document: document, scenes: scenes, profile: profile, camera: "balanced",
+                                       window: window, strikeRevision: revision)
+        }
+        #expect(revised(marked, 0...5, 1) != revised(marked, 0...5, 2))
+        #expect(revised(marked, 5...10, 1) == revised(marked, 5...10, 2))
+        #expect(revised(doc, 0...5, 1) == base)
         #expect(key(doc, 0...5) == base)                                  // stable across calls
         var later = doc; later.videoTrack[1].sourceStart = 30
         #expect(key(later, 0...5) == base)                                 // change after the window

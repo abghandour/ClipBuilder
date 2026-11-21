@@ -66,41 +66,62 @@ struct AnalysisStepsTests {
                                       peopleCount: 1, passes: [], speakerNaming: named).isEmpty)
     }
 
-    @Test("Fight scoring is missing until a completed v2 pass exists")
+    @Test("Fight scoring is missing until a completed current-version pass exists")
     func fightScoring() {
         let fight = video(.fight, peopleDetected: true)
         let done = report(hasRun: true, state: .upToDate)
         #expect(AnalysisSteps.missing(video: fight, report: done, peopleCount: 1, passes: []) == [.fightScore])
         #expect(AnalysisSteps.missing(video: fight, report: done, peopleCount: 1, passes: [pass(version: 1)]) == [.fightScore])
-        #expect(AnalysisSteps.missing(video: fight, report: done, peopleCount: 1, passes: [pass(version: 2, status: .failed)]) == [.fightScore])
-        #expect(AnalysisSteps.missing(video: fight, report: done, peopleCount: 1, passes: [pass(version: 2)]).isEmpty)
+        #expect(AnalysisSteps.missing(video: fight, report: done, peopleCount: 1, passes: [pass(version: AnalysisSteps.currentFightScoreVersion, status: .failed)]) == [.fightScore])
+        #expect(AnalysisSteps.missing(video: fight, report: done, peopleCount: 1, passes: [pass(version: AnalysisSteps.currentFightScoreVersion)]).isEmpty)
         #expect(AnalysisSteps.missing(video: fight, report: report(hasRun: true, state: .outdated(stage: "Visual analysis")),
-                                      peopleCount: 1, passes: [pass(version: 2)]) == [.scenes])
+                                      peopleCount: 1, passes: [pass(version: AnalysisSteps.currentFightScoreVersion)]) == [.scenes])
     }
 
     @Test("A score taken before the scenes were rebuilt is outdated; recaps expect scoring too")
     func fightScoreFreshness() {
         let fight = video(.fight, peopleDetected: true)
         let done = report(hasRun: true, state: .upToDate)
-        let olderScore = [pass(version: 2, startedAt: "1793480000.0"), pass(version: 1, kind: .scenes, startedAt: "1793485000.0")]
+        let olderScore = [pass(version: AnalysisSteps.currentFightScoreVersion, startedAt: "1793480000.0"), pass(version: 1, kind: .scenes, startedAt: "1793485000.0")]
         #expect(AnalysisSteps.missing(video: fight, report: done, peopleCount: 1, passes: olderScore) == [.fightScore])
         #expect(AnalysisSteps.fightScoreOutdated(videoID: 1, passes: olderScore))
-        #expect(AnalysisCoverage.fightMessage(videoID: 1, passes: olderScore, legacyEvents: []) == "scored v2 · scenes changed since")
+        #expect(AnalysisCoverage.fightMessage(videoID: 1, passes: olderScore, legacyEvents: []) == "scored v\(AnalysisSteps.currentFightScoreVersion) · scenes changed since")
         // A re-score after the scenes, even without a run key, is current again.
-        let rescored = olderScore + [pass(version: 2, startedAt: "1793486000.0")]
+        let rescored = olderScore + [pass(version: AnalysisSteps.currentFightScoreVersion, startedAt: "1793486000.0")]
         #expect(AnalysisSteps.missing(video: fight, report: done, peopleCount: 1, passes: rescored).isEmpty)
         #expect(!AnalysisSteps.fightScoreOutdated(videoID: 1, passes: rescored))
         // The same-batch order (scenes stamped a second before the score) is current.
-        let sameBatch = [pass(version: 1, kind: .scenes, startedAt: "1793469243.8"), pass(version: 2, startedAt: "1793469244.9")]
+        let sameBatch = [pass(version: 1, kind: .scenes, startedAt: "1793469243.8"), pass(version: AnalysisSteps.currentFightScoreVersion, startedAt: "1793469244.9")]
         #expect(AnalysisSteps.missing(video: fight, report: done, peopleCount: 1, passes: sameBatch).isEmpty)
         // Scenes passes of another video do not age this score; no scenes pass at all keeps it.
         var other = pass(version: 1, kind: .scenes, startedAt: "1793490000.0")
         other.videoID = 2
-        #expect(AnalysisSteps.missing(video: fight, report: done, peopleCount: 1, passes: [pass(version: 2), other]).isEmpty)
+        #expect(AnalysisSteps.missing(video: fight, report: done, peopleCount: 1, passes: [pass(version: AnalysisSteps.currentFightScoreVersion), other]).isEmpty)
         #expect(!AnalysisSteps.fightScoreOutdated(videoID: 1, passes: []))
         let recap = video(.recap, peopleDetected: true)
         #expect(AnalysisSteps.missing(video: recap, report: report(hasRun: true, hasTranscript: true, state: .upToDate),
                                       peopleCount: 1, passes: []) == [.fightScore])
+    }
+
+    @Test("A partial pass stays missing and counts only persisted successful ranges")
+    func partialScoreIsNotCurrent() async throws {
+        var oldPartial = pass(version: 3)
+        oldPartial.note = "2 window(s), 4 event(s), 1 failed"
+        #expect(!AnalysisSteps.fightScoreCurrent(videoID: 1, passes: [oldPartial]))
+        oldPartial.note = "2 window(s), 4 event(s), 1 without frames"
+        #expect(!AnalysisSteps.fightScoreCurrent(videoID: 1, passes: [oldPartial]))
+        let temp = try await TempDatabase()
+        let videoID = try await temp.seedVideo(sceneCount: 3)
+        let complete = try await temp.database.startAnalysisPass(videoID: videoID, pass: .fightScore, version: 3)
+        try await temp.database.finishAnalysisPass(complete, status: .completed,
+            note: FightSampling.coverageNote("2 windows", ranges: [(0, 24)]))
+        let partial = try await temp.database.startAnalysisPass(videoID: videoID, pass: .fightScore, version: 3)
+        try await temp.database.finishAnalysisPass(partial, status: .failed,
+            note: FightSampling.coverageNote("2 windows, 1 failed", ranges: [(0, 12)]))
+        let passes = try await temp.database.fetchAnalysisPasses()
+        #expect(!AnalysisSteps.fightScoreCurrent(videoID: videoID, passes: passes))
+        #expect(StrikeStatsSummary.analyzedSeconds(passes: passes, videoID: videoID, start: 0, end: 24) == 12)
+        #expect(StrikeStatsSummary.analyzedSeconds(passes: passes, videoID: videoID, start: 12, end: 24) == 0)
     }
 
     @Test("Button title pluralizes")

@@ -341,6 +341,27 @@ nonisolated struct FightEventRecord: Identifiable, Sendable, Hashable {
     }
 }
 
+/// Where one scored strike's limb and impact are in the picture, saved with
+/// the video so the player and reel generation read it instead of finding
+/// it again. Matches its event by video, time and fighter. `track` is nil
+/// when the poses never showed the strike.
+nonisolated struct StrikeHighlightRecord: Sendable, Equatable {
+    var videoID: Int64
+    var time: Double
+    var fighterKey: String
+    var track: StrikeHighlightRules.Track?
+
+    func matches(time: Double, fighterKey: String) -> Bool {
+        abs(self.time - time) < 0.001 && self.fighterKey == fighterKey
+    }
+
+    /// Where Pause on contact freezes for this strike: the tracked moment
+    /// of impact, or the scorer's stamp (a still up to about a quarter of a
+    /// second from contact) when no limb could be tracked. A pause needs
+    /// only a time, so a strike the pose detector cannot read still pauses.
+    var pauseTime: Double { track?.contact ?? time }
+}
+
 /// The point system for scored fight actions — MMA-judging-flavored weights.
 /// Points are stored on each event, so re-weighting only affects new passes.
 nonisolated enum FightScoring {

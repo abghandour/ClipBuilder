@@ -52,6 +52,7 @@ struct BuilderScriptDebugView: View {
         store.logEvent("script-preview", "Running JSON script preview")
         defer { isRunning = false; store.isScriptPreviewRunning = false }
         let baseline = store.builder.document
+        let generation = store.profileGeneration
         let profile = store.activeProfile.profileName
         let project = store.activeProjectID
         let timeline = store.openTimelineID
@@ -72,6 +73,10 @@ struct BuilderScriptDebugView: View {
                 library.videos = try await database.fetchVideos(projectID: library.projectID)
                 library.scenes = try await database.fetchScenes(projectID: library.projectID, scope: .active)
                 for video in library.videos {
+                    if video.duration.isFinite, video.duration >= 0 {
+                        library.strikeContacts[video.id] = try await database.fetchStrikeHighlights(
+                            videoID: video.id, overlapping: 0...video.duration).compactMap { $0.track?.contact }
+                    }
                     library.transcripts += try await database.fetchTranscripts(videoID: video.id)
                     library.features += try await database.fetchTranscriptFeatures(videoID: video.id)
                     library.proposals += try await database.fetchEditProposals(videoID: video.id)
@@ -79,7 +84,7 @@ struct BuilderScriptDebugView: View {
                 }
             }
             try Task.checkCancellation()
-            guard profile == store.activeProfile.profileName, project == store.activeProjectID,
+            guard generation == store.profileGeneration, profile == store.activeProfile.profileName, project == store.activeProjectID,
                   timeline == store.openTimelineID,
                   TimelineDiff(before: baseline, after: store.builder.document).isEmpty else {
                 throw ScriptError.invalid("The timeline changed while collecting query data. Run again.")

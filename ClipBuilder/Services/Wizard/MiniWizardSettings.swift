@@ -38,6 +38,9 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var nameTagPosition: String?
     var safeAreaOnly = false
     var safeAreaPlatforms: [String]?
+    var actionOverlays: Bool?
+    var pauseOnContact: Bool?
+    var pauseOnContactSeconds: Double?
     var watermark = true
     /// A saved overlay used as the watermark; nil or empty = the brand logo.
     var watermarkOverlay: String?
@@ -74,6 +77,27 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
 
     mutating func didEditBRoll() { includeBRoll = true }
 
+    var resolvedActionOverlays: Bool {
+        get { actionOverlays == true }
+        set { actionOverlays = newValue }
+    }
+
+    var resolvedPauseOnContact: Bool {
+        get { pauseOnContact == true }
+        set { pauseOnContact = newValue }
+    }
+
+    var resolvedPauseOnContactSeconds: Double {
+        get {
+            let value = pauseOnContactSeconds ?? StrikeHighlightRules.impactHold
+            return value.isFinite ? min(StrikeFreezeRules.holdRange.upperBound, max(StrikeFreezeRules.holdRange.lowerBound, value))
+                : StrikeHighlightRules.impactHold
+        }
+        set { pauseOnContactSeconds = newValue.isFinite
+            ? min(StrikeFreezeRules.holdRange.upperBound, max(StrikeFreezeRules.holdRange.lowerBound, newValue))
+            : StrikeHighlightRules.impactHold }
+    }
+
     var resolvedInterviewCuts: Bool {
         get { interviewCuts ?? false }
         set { interviewCuts = newValue }
@@ -94,6 +118,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         case safeAreaOnly, safeAreaPlatforms
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case watermark, watermarkOverlay, watermarkOpacity
+        case actionOverlays, pauseOnContact, pauseOnContactSeconds
         case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, overlayPosition, overlayEdits, outputMode, transition, look
         case muteSourceAudio, music, musicTrack, dub, dubLanguage
     }
@@ -120,6 +145,9 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         try c.encodeIfPresent(nameTagStyle, forKey: .nameTagStyle)
         try c.encodeIfPresent(nameTagStyleID, forKey: .nameTagStyleID)
         try c.encodeIfPresent(nameTagPosition, forKey: .nameTagPosition)
+        try c.encodeIfPresent(actionOverlays, forKey: .actionOverlays)
+        try c.encodeIfPresent(pauseOnContact, forKey: .pauseOnContact)
+        try c.encodeIfPresent(pauseOnContactSeconds, forKey: .pauseOnContactSeconds)
         try c.encodeIfPresent(watermark, forKey: .watermark)
         try c.encodeIfPresent(watermarkOverlay, forKey: .watermarkOverlay)
         try c.encodeIfPresent(watermarkOpacity, forKey: .watermarkOpacity)
@@ -170,6 +198,9 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         safeAreaOnly = try c.decodeIfPresent(Bool.self, forKey: .safeAreaOnly) ?? false
         safeAreaPlatforms = try c.decodeIfPresent([String].self, forKey: .safeAreaPlatforms)
         nameTagPosition = try c.decodeIfPresent(String.self, forKey: .nameTagPosition)
+        actionOverlays = try c.decodeIfPresent(Bool.self, forKey: .actionOverlays)
+        pauseOnContact = try c.decodeIfPresent(Bool.self, forKey: .pauseOnContact)
+        pauseOnContactSeconds = try c.decodeIfPresent(Double.self, forKey: .pauseOnContactSeconds)
         watermark = try c.decodeIfPresent(Bool.self, forKey: .watermark) ?? base.watermark
         watermarkOverlay = try c.decodeIfPresent(String.self, forKey: .watermarkOverlay)
         watermarkOpacity = try c.decodeIfPresent(Double.self, forKey: .watermarkOpacity)
@@ -247,11 +278,21 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         return result
     }
 
+    /// The language the captions are shown in when it is not the one spoken:
+    /// the dub's, or English. Nil with captions off or in the spoken language.
+    var voiceCaptionLanguage: String? {
+        guard captions else { return nil }
+        if dub { return dubLanguage ?? DubLanguageChoices.defaultLanguage }
+        return englishCaptions ? "en" : nil
+    }
+
     /// The Overlays tab's choices as render options: captions, name tags,
-    /// safe area, watermark and the fixed overlay. Generate maps them here
+    /// safe area, watermark, fight actions and the fixed overlay. Generate maps them here
     /// and the rough cut sheet's Overlays tab puts them back on a cut that
     /// `WizardRoughCut.options` stripped, so both render the same picture.
     func applyOverlayOptions(to result: inout WizardStep2Options) {
+        result.strikeHighlights = actionOverlays == true
+        result.strikeImpactFreeze = pauseOnContact == true ? resolvedPauseOnContactSeconds : nil
         result.addCaptions = captions
         result.captionPosition = captionPosition
         result.speakerCaptionPositions = speakerCaptionPositions
@@ -281,13 +322,18 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     }
 
     /// These settings with `other`'s Overlays tab choices (captions, name
-    /// tags, safe area, watermark, overlay design and placements); every
+    /// tags, safe area, watermark, fight actions, overlay design and placements); every
     /// other choice stays. The rough cut sheet's Apply lands here.
-    /// `nameTags` and `captionLanguage` say whether the sheet showed those
+    /// `nameTags`, `captionLanguage` and `strikeActions` say whether the sheet showed those
     /// rows: a hidden row's value was forced by `effective(for:)`, not
     /// chosen, so the page keeps its own.
-    func adoptingOverlays(from other: Self, nameTags: Bool = true, captionLanguage: Bool = true) -> Self {
+    func adoptingOverlays(from other: Self, nameTags: Bool = true, captionLanguage: Bool = true, strikeActions: Bool = true) -> Self {
         var result = self
+        if strikeActions {
+            result.actionOverlays = other.actionOverlays
+            result.pauseOnContact = other.pauseOnContact
+            result.pauseOnContactSeconds = other.pauseOnContactSeconds
+        }
         result.captions = other.captions
         if captionLanguage, other.captions { result.englishCaptions = other.englishCaptions }
         result.captionPosition = other.captionPosition
@@ -345,6 +391,12 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
             result.framing = FramingMenu.default(type: flow.video?.type ?? .other)
         }
         if !flow.isPodcastOrInterview { result.includeBRoll = false }
+        if !flow.showsStrikeActions {
+            // Only a choice that is on is forced off: a never-set value stays
+            // nil, so hiding the rows leaves untouched settings equal.
+            if result.actionOverlays == true { result.actionOverlays = false }
+            if result.pauseOnContact == true { result.pauseOnContact = false }
+        }
         if !flow.showsNameTags { result.nameTags = false }
         if !flow.showsCaptionLanguage { result.englishCaptions = false }
         if !flow.showsAudioOptions {
@@ -380,6 +432,9 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         if result.quality == .custom { result.quality = .balanced }
         if result.preset == .custom { result.preset = .portrait1080 }
         if defaults.object(forKey: key(.includeBRoll)) != nil { result.includeBRoll = defaults.bool(forKey: key(.includeBRoll)) }
+        if defaults.object(forKey: key(.actionOverlays)) != nil { result.actionOverlays = defaults.bool(forKey: key(.actionOverlays)) }
+        if defaults.object(forKey: key(.pauseOnContact)) != nil { result.pauseOnContact = defaults.bool(forKey: key(.pauseOnContact)) }
+        if defaults.object(forKey: key(.pauseOnContactSeconds)) != nil { result.pauseOnContactSeconds = defaults.double(forKey: key(.pauseOnContactSeconds)) }
         result.captionPosition = defaults.string(forKey: key(.captionPosition))
         result.speakerCaptionPositions = defaults.dictionary(forKey: key(.speakerCaptionPositions)) as? [String: String]
         result.captionStyleID = defaults.string(forKey: key(.captionStyleID))
@@ -441,6 +496,9 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         func key(_ field: MiniWizardMemory.Field) -> String { MiniWizardMemory.key(for: field, profileName: profileName) }
         var changed = false
         func set(_ value: Any?, forKey key: String) { if defaults.setIfChanged(value, forKey: key) { changed = true } }
+        set(actionOverlays, forKey: key(.actionOverlays))
+        set(pauseOnContact, forKey: key(.pauseOnContact))
+        set(pauseOnContactSeconds, forKey: key(.pauseOnContactSeconds))
         set(includeBRoll, forKey: key(.includeBRoll))
         set(quality.rawValue, forKey: key(.quality))
         set(preset.rawValue, forKey: key(.preset))

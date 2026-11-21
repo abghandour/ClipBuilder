@@ -60,7 +60,7 @@ nonisolated enum TimelineSplit {
 
     static func pieces(_ clip: TimelineClip, at: Double, minimum: Double = 0.05, ceiling: Double? = nil)
         -> (head: TimelineClip, tail: TimelineClip)? {
-        guard !clip.bumper, at.isFinite, clip.startTime.isFinite, clip.duration.isFinite,
+        guard !clip.bumper, clip.hold != true, at.isFinite, clip.startTime.isFinite, clip.duration.isFinite,
               let sourceStart = clip.sourceStart, sourceStart.isFinite,
               let sourceEnd = ceiling ?? clip.sourceEnd, sourceEnd.isFinite,
               clip.effectiveSpeed.isFinite, clip.effectiveSpeed > 0 else { return nil }

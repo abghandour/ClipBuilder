@@ -40,8 +40,9 @@ nonisolated enum AnalysisSteps {
         var needsBatch: Bool { self == .scenes || self == .exchanges }
     }
 
-    /// Fight scoring below this version predates attempts and counts as missing.
-    static let currentFightScoreVersion = 2
+    /// Fight scoring below this version saw one still a second, missed most
+    /// strikes, and counts as missing.
+    static let currentFightScoreVersion = 3
 
     /// What the pipeline produces for a type. Podcast and Interview take the
     /// podcast pass (transcript first, then exchanges); Fight adds scoring;
@@ -99,10 +100,14 @@ nonisolated enum AnalysisSteps {
     }
 
     private static func latestFightScore(videoID: Int64, passes: [AnalysisPassRecord]) -> AnalysisPassRecord? {
-        passes.filter {
-            $0.videoID == videoID && $0.pass == .fightScore && $0.status == .completed
-                && $0.version >= currentFightScoreVersion
-        }.max { started($0) < started($1) }
+        guard let latest = passes.filter({ $0.videoID == videoID && $0.pass == .fightScore })
+            .max(by: { started($0) < started($1) }),
+              latest.status == .completed, latest.version >= currentFightScoreVersion else { return nil }
+        // Before coverage was persisted, partial passes were incorrectly
+        // completed but their summary still recorded the missing windows.
+        let summary = FightSampling.noteSummary(latest) ?? ""
+        guard !summary.contains(" failed"), !summary.contains(" without frames") else { return nil }
+        return latest
     }
 
     private static func fightScoreOutdated(_ score: AnalysisPassRecord, videoID: Int64, passes: [AnalysisPassRecord]) -> Bool {

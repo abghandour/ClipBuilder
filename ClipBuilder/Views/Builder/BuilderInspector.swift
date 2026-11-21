@@ -143,7 +143,7 @@ struct ClipInspector: View {
                         .foregroundStyle(.secondary)
                 }
                 VStack(alignment: .leading, spacing: Theme.spaceXS) {
-                    Text(clip.bumper ? "Bumper · " + store.bumperDisplayName(for: clip)
+                    Text(clip.hold == true ? "Freeze frame" : clip.bumper ? "Bumper · " + store.bumperDisplayName(for: clip)
                          : model.scene(for: clip)?.videoFilename ?? (clip.videoFile as NSString?)?.lastPathComponent ?? "Clip")
                         .font(.headline)
                         .lineLimit(1)
@@ -221,12 +221,25 @@ struct ClipInspector: View {
             }
 
             // Trim against the raw video, right under the clip identity.
-            InspectorSection("Trim") {
-                ClipTrimEditor(clip: clip)
+            if clip.hold == true {
+                InspectorSection("Freeze frame") {
+                    InspectorRow("Duration") {
+                        TextField("Seconds", value: Binding(
+                            get: { clip.duration },
+                            set: { model.trimClip(clip.uid, duration: $0, precision: clip.precision) }),
+                            format: .number.precision(.fractionLength(2)))
+                            .lineLimit(1).fixedSize(horizontal: false, vertical: true)
+                            .help("Screen time in seconds, up to 5 seconds")
+                    }
+                }
+            } else {
+                InspectorSection("Trim") {
+                    ClipTrimEditor(clip: clip)
+                }
             }
 
             // Accepted transcript cleanup cuts for the timeline's footage.
-            if !clip.bumper, !clip.isCutaway {
+            if clip.hold != true, !clip.bumper, !clip.isCutaway {
                 CleanupCutsInspectorSection()
             }
 
@@ -245,13 +258,17 @@ struct ClipInspector: View {
                         }
                         if clip.wide, !clip.isCutaway {
                             InspectorRow("Framing") {
-                                Picker("Framing", selection: Binding(
+                                let framing = Picker("Framing", selection: Binding(
                                     get: { clip.areaFraming },
                                     set: { model.setFraming(clip.uid, $0) })) {
                                     ForEach(TimelineClip.Framing.allCases, id: \.self) { Text($0.label).tag($0) }
                                 }
-                                .pickerStyle(.segmented)
                                 .labelsHidden()
+                                // Segments never compress: in a narrow pane the menu takes over.
+                                ViewThatFits(in: .horizontal) {
+                                    framing.pickerStyle(.segmented)
+                                    framing.pickerStyle(.menu)
+                                }
                                 .help("Static: one window you place. Tracking: the camera follows the people in this area. Custom: keyframes you, a recipe or the Wizard set, adjustable at the playhead.")
                             }
                             switch clip.areaFraming {
@@ -294,13 +311,17 @@ struct ClipInspector: View {
                         let podcast = scene?.tags.contains("podcast") == true
                             || (scene == nil && store.videos.first { $0.path == clip.videoFile }?.type?.usesPodcastPass == true)
                         InspectorRow("Framing") {
-                            Picker("Framing", selection: Binding(
+                            let framing = Picker("Framing", selection: Binding(
                                 get: { clip.framing },
                                 set: { model.setFraming(clip.uid, $0) })) {
                                 ForEach(TimelineClip.Framing.allCases, id: \.self) { Text($0.label).tag($0) }
                             }
-                            .pickerStyle(.segmented)
                             .labelsHidden()
+                            // Segments never compress: in a narrow pane the menu takes over.
+                            ViewThatFits(in: .horizontal) {
+                                framing.pickerStyle(.segmented)
+                                framing.pickerStyle(.menu)
+                            }
                             .help("Static: one crop you place. Tracking: the analysis follows the action or the speaker. Custom: keyframes you or the Wizard set, adjustable at the playhead.")
                         }
                         switch clip.framing {
@@ -394,18 +415,40 @@ struct ClipInspector: View {
                 }
             }
 
+            if !clip.bumper {
+                InspectorSection("Fight") {
+                    InspectorRow("Strikes") {
+                        let model = store.builder
+                        let uid = clip.uid
+                        Toggle("Highlight strikes", isOn: Binding(
+                            get: { model.clip(uid)?.strikeHighlights == true },
+                            set: { on in model.updateClip(uid) { $0.strikeHighlights = on ? true : nil } }))
+                            .lineLimit(1).fixedSize()
+                            .help("Draw each scored strike in the video: the attacking limb in green, where it lands in red. Uses the highlights saved when the fight was scored.")
+                    }
+                    if !clip.isCutaway, clip.hold != true {
+                        StrikeFreezeControls(clip: clip)
+                            .id(clip.uid)
+                    }
+                }
+            }
+
             InspectorSection("Sound") {
                 InspectorRow("Volume") {
-                    HStack(spacing: Theme.spaceS) {
-                        Picker("Volume", selection: binding(\.volume)) {
-                            ForEach(1...5, id: \.self) { level in
-                                Text("\(level)").tag(level)
-                            }
+                    let volume = Picker("Volume", selection: binding(\.volume)) {
+                        ForEach(1...5, id: \.self) { level in
+                            Text("\(level)").tag(level)
                         }
-                        .pickerStyle(.segmented)
-                        .labelsHidden()
-                        .disabled(clip.muted)
-                        Toggle("Muted", isOn: binding(\.muted))
+                    }
+                    .pickerStyle(.segmented)
+                    .labelsHidden()
+                    .fixedSize()
+                    .disabled(clip.muted)
+                    let muted = Toggle("Muted", isOn: binding(\.muted)).lineLimit(1).fixedSize()
+                    // Side by side where the pane allows, stacked where it does not.
+                    ViewThatFits(in: .horizontal) {
+                        HStack(spacing: Theme.spaceS) { volume; muted }
+                        VStack(alignment: .leading, spacing: Theme.spaceXS) { volume; muted }
                     }
                 }
             }
@@ -430,35 +473,37 @@ struct ClipInspector: View {
                 }
             }
 
-            InspectorSection("Playback") {
-                InspectorRow("Speed") {
-                    Picker("Speed", selection: Binding(
-                        get: { clip.speed ?? 1 },
-                        set: { value in
-                            model.updateClip(clip.uid, repack: true) { updated in
-                                let span = updated.duration * (updated.speed ?? 1)
-                                updated.speed = value == 1 ? nil : value
-                                updated.duration = ((span / value) * 10).rounded() / 10
-                            }
-                        })) {
-                        Text("0.5× slow").tag(0.5)
-                        Text("0.75×").tag(0.75)
-                        Text("1× normal").tag(1.0)
-                        Text("1.5×").tag(1.5)
-                        Text("2×").tag(2.0)
-                    }
-                    .labelsHidden()
-                    .help("Change playback speed; timeline length adjusts to preserve the source span")
-                }
-                InspectorRow("Captions") {
-                    Picker("Captions", selection: binding(\.captions)) {
-                        ForEach(TimelineClip.captionChoices, id: \.self) { choice in
-                            Text(choice.capitalized).tag(choice)
+            if clip.hold != true {
+                InspectorSection("Playback") {
+                    InspectorRow("Speed") {
+                        Picker("Speed", selection: Binding(
+                            get: { clip.speed ?? 1 },
+                            set: { value in
+                                model.updateClip(clip.uid, repack: true) { updated in
+                                    let span = updated.duration * (updated.speed ?? 1)
+                                    updated.speed = value == 1 ? nil : value
+                                    updated.duration = ((span / value) * 10).rounded() / 10
+                                }
+                            })) {
+                            Text("0.5× slow").tag(0.5)
+                            Text("0.75×").tag(0.75)
+                            Text("1× normal").tag(1.0)
+                            Text("1.5×").tag(1.5)
+                            Text("2×").tag(2.0)
                         }
+                        .labelsHidden()
+                        .help("Change playback speed; timeline length adjusts to preserve the source span")
                     }
-                    .labelsHidden()
-                    .help("Inherit uses the track's caption setting")
-                    .disabled(clip.bumper)
+                    InspectorRow("Captions") {
+                        Picker("Captions", selection: binding(\.captions)) {
+                            ForEach(TimelineClip.captionChoices, id: \.self) { choice in
+                                Text(choice.capitalized).tag(choice)
+                            }
+                        }
+                        .labelsHidden()
+                        .help("Inherit uses the track's caption setting")
+                        .disabled(clip.bumper)
+                    }
                 }
             }
 
@@ -1189,6 +1234,64 @@ private struct PinnedVerticalScroller: NSViewRepresentable {
                 return
             }
             current = candidate.superview
+        }
+    }
+}
+
+/// A full-width row avoids squeezing the action beside an inspector label.
+private struct StrikeFreezeControls: View {
+    @Environment(AppStore.self) private var store
+    let clip: TimelineClip
+    @State private var contacts: [Double]?
+    @State private var loadFailed = false
+    @State private var isFreezing = false
+
+    private var loadKey: [String] {
+        [clip.uid.uuidString, String(store.profileGeneration), String(describing: store.activeProjectID),
+         String(describing: store.openTimelineID), String(describing: ObjectIdentifier(store.builder)),
+         String(describing: clip.sceneID), clip.videoFile ?? "", String(describing: clip.sourceStart),
+         String(clip.sourceSpan), String(clip.hold == true), String(describing: clip.strikeImpactsFrozen),
+         store.builder.sourceURL(for: clip)?.path ?? "", String(describing: store.builder.scene(for: clip)?.videoID),
+         String(describing: store.builder.scene(for: clip)?.startTime),
+         String(store.strikeHighlightRevision)]
+    }
+
+    var body: some View {
+        VStack(alignment: .leading, spacing: Theme.spaceXS) {
+            Button {
+                isFreezing = true
+                Task {
+                    defer { isFreezing = false }
+                    await store.freezeOnImpacts(clip)
+                }
+            } label: {
+                Label("Freeze on impacts", systemImage: "snowflake")
+                    .lineLimit(1).fixedSize()
+            }
+            .disabled(contacts?.isEmpty != false || isFreezing)
+            .help("Split at saved impacts and insert a short, silent freeze frame. Undo restores the original clip.")
+            if contacts?.isEmpty == true {
+                Text("Mark strikes in Sources first")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).fixedSize()
+            } else if loadFailed {
+                Text("Could not read saved strikes")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).fixedSize()
+            }
+        }
+        .task(id: loadKey) {
+            let requested = loadKey
+            contacts = nil
+            loadFailed = false
+            do {
+                let loaded = try await store.savedStrikeContacts(for: clip)
+                guard !Task.isCancelled, requested == loadKey, let loaded else { return }
+                contacts = loaded
+            } catch {
+                guard !Task.isCancelled, requested == loadKey else { return }
+                loadFailed = true
+            }
         }
     }
 }

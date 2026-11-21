@@ -33,12 +33,15 @@ struct ChannelImportTests {
             source.removePersistentDomain(forName: "ChannelImportTests.source")
             target.removePersistentDomain(forName: "ChannelImportTests.target")
         }
+        // Never the stable app's own domain: setPersistentDomain replaces
+        // the named domain for real, and that one is the user's preferences.
         source.setPersistentDomain(["window.frame": "1,2,3,4", "kept": true,
-                                    "settings.selectedTab": "team"], forName: AppChannel.stableBundleID)
+                                    "settings.selectedTab": "team"], forName: "ChannelImportTests.source")
         target.set("ai", forKey: "settings.selectedTab")
 
         let report = ChannelImport.importEverything(profiles: ["Peace", "Second", "Missing"],
-                                                    defaults: target, stableDefaults: source)
+                                                    defaults: target, stableDefaults: source,
+                                                    stableDomain: "ChannelImportTests.source")
         #expect(report.settingsImported)
         #expect(report.librariesImported == ["Peace", "Second"])
         #expect(report.defaultsImported == 2)
@@ -54,7 +57,8 @@ struct ChannelImportTests {
         #expect(!FileManager.default.fileExists(atPath: SettingsStore.databaseURL(profileName: "Missing", channel: .beta).path))
 
         // A second run changes nothing: the beta owns its copies now.
-        let again = ChannelImport.importEverything(profiles: ["Peace", "Second"], defaults: target, stableDefaults: source)
+        let again = ChannelImport.importEverything(profiles: ["Peace", "Second"], defaults: target, stableDefaults: source,
+                                                   stableDomain: "ChannelImportTests.source")
         #expect(again.isEmpty)
         #expect(report.summary == "Imported settings, 2 libraries, window and screen preferences")
     }

@@ -28,6 +28,8 @@ nonisolated extension BuilderCommand {
             try number(start + duration, 0...86400)
         }
         switch self {
+        case .freezeClipOnImpacts(_, let hold):
+            if let hold { try number(hold, StrikeFreezeRules.holdRange) }
         case .splitClipEvenly(_, let parts, _):
             guard (2...12).contains(parts) else { throw BuilderCommandFailure.bounds("Parts must be between 2 and 12.") }
         case .setCropBlockDuration(_, let duration): try number(duration, 0.5...86400)

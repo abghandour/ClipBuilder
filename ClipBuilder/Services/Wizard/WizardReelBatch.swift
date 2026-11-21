@@ -22,36 +22,38 @@ nonisolated enum WizardReelBatch {
                     render: @Sendable (Int) async throws -> Finish?,
                     finishEmit: @escaping @Sendable (Int, String) -> Void,
                     waiting: @Sendable (Int) -> Void = { _ in }) async throws {
-        let running = Mutex(0)
-        try await withThrowingTaskGroup(of: Void.self) { group in
-            var renderError: Error?
-            do {
-                for index in 0..<count {
-                    try Task.checkCancellation()
-                    guard let finish = try await render(index) else { continue }
-                    running.withLock { $0 += 1 }
-                    group.addTask {
-                        defer { running.withLock { $0 -= 1 } }
-                        do {
-                            try await finish { finishEmit(index, $0) }
-                        } catch is CancellationError {
-                            throw CancellationError()
-                        } catch {
-                            finishEmit(index, "Finishing failed: \(error.userMessage)")
+        try await WizardStrikeHighlightSnapshot.$current.withValue(WizardStrikeHighlightSnapshot.current ?? WizardStrikeHighlightSnapshot()) {
+            let running = Mutex(0)
+            try await withThrowingTaskGroup(of: Void.self) { group in
+                var renderError: Error?
+                do {
+                    for index in 0..<count {
+                        try Task.checkCancellation()
+                        guard let finish = try await render(index) else { continue }
+                        running.withLock { $0 += 1 }
+                        group.addTask {
+                            defer { running.withLock { $0 -= 1 } }
+                            do {
+                                try await finish { finishEmit(index, $0) }
+                            } catch is CancellationError {
+                                throw CancellationError()
+                            } catch {
+                                finishEmit(index, "Finishing failed: \(error.userMessage)")
+                            }
                         }
                     }
+                } catch {
+                    renderError = error
                 }
-            } catch {
-                renderError = error
+                if renderError is CancellationError {
+                    group.cancelAll()
+                } else {
+                    let pending = running.withLock { $0 }
+                    if pending > 0 { waiting(pending) }
+                }
+                try await group.waitForAll()
+                if let renderError { throw renderError }
             }
-            if renderError is CancellationError {
-                group.cancelAll()
-            } else {
-                let pending = running.withLock { $0 }
-                if pending > 0 { waiting(pending) }
-            }
-            try await group.waitForAll()
-            if let renderError { throw renderError }
         }
     }
 }

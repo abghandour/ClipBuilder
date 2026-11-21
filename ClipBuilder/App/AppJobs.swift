@@ -18,6 +18,8 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
     case voiceClone
     case proofread
     case wordTimingModel
+    /// Express voice over: the preview's sound mix and caption translation.
+    case voiceOver
 
     var postsNotice: Bool { self == .overlayTemplate || self == .criticBrief || self == .generateImage }
     /// Routine cycles finish quietly; the outcome goes to the activity log only.
@@ -68,6 +70,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .roughCut: "Rough Cut"
         case .voiceClone: "Voice Clone"
         case .wordTimingModel: "Word Timing Model"
+        case .voiceOver: "Voice Over"
         }
     }
 
@@ -79,7 +82,7 @@ nonisolated enum AppJobKind: String, CaseIterable, Sendable {
         case .socialExport, .dub, .generateImage, .trackImage, .builderAssistant, .hookVariants, .fightStory: "builder"
         case .profileStarter, .overlayTemplate, .imageSearch, .resourceExport, .resourceImport,
              .evaluateReelModel, .publishLessons, .teamSync, .wordTimingModel: "app"
-        case .criticBrief, .evaluateCritic, .postText, .openInEditor, .roughCut: "wizard"
+        case .criticBrief, .evaluateCritic, .postText, .openInEditor, .roughCut, .voiceOver: "wizard"
         default: "analysis"
         }
     }
@@ -472,6 +475,9 @@ final class AppJobs {
             for previous in sameSearch where previous.id != newest { removeItem(previous.id) }
         }
         if job.status == .done && job.result == nil { removeItem(id) }
+        // Voice-over work is replaced as the user drags a slider: a stopped or
+        // failed run is not something to recover, the screen asking shows it.
+        if job.kind == .voiceOver && job.status != .running { removeItem(id) }
         let finished = items.filter { $0.status != .running }
         for job in finished.prefix(max(0, finished.count - Self.finishedLimit)) {
             if case .dub = job.result { dismiss(job.id) }

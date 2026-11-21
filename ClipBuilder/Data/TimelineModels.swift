@@ -328,7 +328,7 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         for track in 0..<Self.maxTracks {
             var trackReplacements: [UUID: [TimelineClip]] = [:]
             var trackRemoved: [Range<Double>] = []
-            for clip in videoTrack.filter({ !$0.bumper && $0.role == .main && $0.track == track }) {
+            for clip in videoTrack.filter({ !$0.bumper && $0.hold != true && $0.role == .main && $0.track == track }) {
                 let speed = clip.effectiveSpeed
                 guard let source = resolve(clip), source.videoID == videoID,
                       source.sourceStart.isFinite, speed.isFinite, speed > 0, clip.duration > 0 else { continue }
@@ -1008,6 +1008,13 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     /// Playback speed (nil = 1×). 0.5 = slow motion; `duration` is screen
     /// time, so the source span consumed is duration × speed.
     var speed: Double?
+    /// Draw the saved strike highlights (attacking limb in green, impact in
+    /// red) on this clip when it is rendered. nil = off.
+    var strikeHighlights: Bool?
+    /// This piece already belongs to a Freeze on Impacts edit, including a capped tail.
+    var strikeImpactsFrozen: Bool?
+    /// One source frame, held for `duration` seconds of screen time.
+    var hold: Bool?
 
     /// Full duration of the referenced scene — editor state used to decide
     /// whether the clip is trimmed. Never encoded; refilled on hydration.
@@ -1075,10 +1082,10 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         }
     }
 
-    var effectiveSpeed: Double { speed ?? 1 }
+    var effectiveSpeed: Double { hold == true ? 1 : speed ?? 1 }
 
     /// Source seconds this clip consumes (screen duration × speed).
-    var sourceSpan: Double { duration * effectiveSpeed }
+    var sourceSpan: Double { hold == true ? 0 : duration * effectiveSpeed }
 
     var isTrimmedScene: Bool {
         guard sceneID != nil, let full = sceneFullDuration else { return false }
@@ -1121,6 +1128,9 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case framingRequest = "framing_request"
         case framingProgramAudio = "framing_program_audio"
         case speed
+        case strikeHighlights = "strike_highlights"
+        case strikeImpactsFrozen = "strike_impacts_frozen"
+        case hold
         case provenance
         case contentWindow = "content_window"
     }
@@ -1172,6 +1182,10 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             cameraPathSource = try container.decodeIfPresent(String.self, forKey: .cameraPathSource)
         }
         speed = try container.decodeIfPresent(Double.self, forKey: .speed)
+        strikeHighlights = try container.decodeIfPresent(Bool.self, forKey: .strikeHighlights)
+        strikeImpactsFrozen = try container.decodeIfPresent(Bool.self, forKey: .strikeImpactsFrozen)
+        hold = try container.decodeIfPresent(Bool.self, forKey: .hold)
+        if hold == true { sourceEnd = sourceStart; speed = nil }
         provenance = try container.decodeIfPresent(StoryProvenance.self, forKey: .provenance)
         contentWindow = try container.decodeIfPresent(FreeCropRect.self, forKey: .contentWindow)
         captions = Self.decodeCaptions(container, key: .captions, fallback: "inherit",
@@ -1180,7 +1194,7 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         // fills it in from the scene. video_file clips carry it implicitly.
         if let explicit = try container.decodeIfPresent(Double.self, forKey: .duration) {
             duration = explicit
-        } else if let start = sourceStart, let end = sourceEnd {
+        } else if hold != true, let start = sourceStart, let end = sourceEnd {
             // source_end is in SOURCE seconds; screen time is the span
             // divided by the playback speed (a 0.5× clip shows 4 s of
             // screen for 2 s of source).
@@ -1247,7 +1261,15 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             try container.encode(cameraPath, forKey: .cameraPath)
             try container.encodeIfPresent(cameraPathSource, forKey: .cameraPathSource)
         }
-        try encodeOrNull(speed, in: &container, forKey: .speed)
+        try encodeOrNull(hold == true ? nil : speed, in: &container, forKey: .speed)
+        if strikeHighlights == true { try container.encode(true, forKey: .strikeHighlights) }
+        if strikeImpactsFrozen == true { try container.encode(true, forKey: .strikeImpactsFrozen) }
+        if hold == true {
+            try container.encode(true, forKey: .hold)
+            try container.encode(duration, forKey: .duration)
+            try container.encodeIfPresent(sourceStart, forKey: .sourceStart)
+            try container.encodeIfPresent(sourceStart, forKey: .sourceEnd)
+        }
         try container.encodeIfPresent(provenance, forKey: .provenance)
         try container.encodeIfPresent(contentWindow, forKey: .contentWindow)
         if let sceneID, !isTrimmedScene {
@@ -1277,6 +1299,8 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             && lhs.stackOrder == rhs.stackOrder && lhs.volume == rhs.volume && lhs.muted == rhs.muted
             && lhs.position == rhs.position && lhs.transIn == rhs.transIn && lhs.transOut == rhs.transOut
             && lhs.centerStage == rhs.centerStage && lhs.speed == rhs.speed
+            && lhs.strikeHighlights == rhs.strikeHighlights && lhs.hold == rhs.hold
+            && lhs.strikeImpactsFrozen == rhs.strikeImpactsFrozen
             && lhs.effect == rhs.effect && lhs.cropXFrac == rhs.cropXFrac && lhs.freeCrops == rhs.freeCrops && lhs.captions == rhs.captions
             && lhs.screenCrop == rhs.screenCrop && lhs.areaWindow == rhs.areaWindow && lhs.areaRegion == rhs.areaRegion
             && lhs.areaFocus == rhs.areaFocus && lhs.framingPlan == rhs.framingPlan

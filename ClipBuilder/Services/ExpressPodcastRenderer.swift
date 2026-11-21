@@ -10,6 +10,7 @@ nonisolated enum ExpressPodcastRenderer {
                         clipNumber: Int, duration: Double, output: URL,
                         contentSource: URL? = nil, contentBox: RenderEngine.ContentBox? = nil,
                         cache: RenderSegmentCache = .shared,
+                        strikeHighlightTracks: [String: [StrikeHighlightRules.Track]] = [:],
                         emit: @escaping @Sendable (String) -> Void) async throws {
         var extraction = MultitrackRenderer.windowed(document, from: 0, to: duration)
         for index in extraction.videoTrack.indices { extraction.videoTrack[index].captions = "none" }
@@ -27,7 +28,8 @@ nonisolated enum ExpressPodcastRenderer {
             try await RenderContext.$settings.withValue(document.renderSettings) {
                 let framed = try await MultitrackRenderer(render: render, segmentCache: cache).render(
                     document: extraction, scenes: scenes, profile: profile, database: database,
-                    centerStageCamera: camera, preview: true, contentWindows: contentWindows, burnIns: legacy ? [] : overlays,
+                    centerStageCamera: camera, preview: true, contentWindows: contentWindows,
+                    strikeHighlightTracks: strikeHighlightTracks, burnIns: legacy ? [] : overlays,
                     muteSource: !legacy && mute, compositeEffect: legacy ? nil : look, emit: emit)
                 defer { try? FileManager.default.removeItem(at: framed.url) }
                 if legacy {

@@ -43,6 +43,30 @@ actor RenderEngine {
         return xfadeDuration
     }
 
+    /// Which gaps can carry their action recipe: a clip must keep >= 0.4 s
+    /// of real content after losing its head to the previous gap's recipe
+    /// and its tail to the next gap's. The others become hard cuts. Shared
+    /// with the clock predictions made before the join is rendered.
+    nonisolated static func affordableRecipes(durations: [Double], transitions: [String?])
+        -> (recipe: [String?], headTrim: [Double], tailTrim: [Double]) {
+        let minRemainder = 0.4
+        var headTrim = [Double](repeating: 0, count: durations.count)
+        var tailTrim = [Double](repeating: 0, count: durations.count)
+        var recipe = [String?](repeating: nil, count: transitions.count)
+        for gap in transitions.indices where gap + 1 < durations.count {
+            guard let name = transitions[gap], TransitionRecipes.isRecipe(name) else { continue }
+            let (tail, head) = TransitionRecipes.pieces(for: name)
+            // The incoming clip may still lose its own tail to the NEXT gap's
+            // recipe — that gap's check sees headTrim[gap + 1] and guards it.
+            guard durations[gap] - headTrim[gap] - tail >= minRemainder,
+                  durations[gap + 1] - head >= minRemainder else { continue }
+            recipe[gap] = name
+            tailTrim[gap] = tail
+            headTrim[gap + 1] = head
+        }
+        return (recipe, headTrim, tailTrim)
+    }
+
     private let workDirectory: URL
 
     init() {
@@ -298,6 +322,7 @@ actor RenderEngine {
     /// crossfade that fell back to one. Timeline-clock work done after
     /// assembly maps through it (`RenderClock`).
     func concatenate(clips: [URL], transitions: [String?], output: URL,
+                     clipDurations: [Double]? = nil,
                      maximumOverlap: Double? = nil, transitionDuration: Double? = nil,
                      assemblyCache: AssemblyCache? = nil,
                      overlaps: JoinOverlaps? = nil, gapOffset: Int = 0,
@@ -306,6 +331,14 @@ actor RenderEngine {
         let timing = PerfSignpost.begin("Assembly", metadata: "clips=\(clips.count)")
         defer { PerfSignpost.end(timing) }
         guard !clips.isEmpty else { return }
+        if let clipDurations, clipDurations.count == clips.count,
+           !transitions.contains(where: { TransitionRecipes.isRecipe($0) }) {
+            try await concatenateTimed(clips: clips, durations: clipDurations, transitions: transitions,
+                output: output, maximumOverlap: maximumOverlap,
+                transitionDuration: transitionDuration ?? RenderContext.transitions.xfadeDuration,
+                overlaps: overlaps, gapOffset: gapOffset)
+            return
+        }
         if clips.count == 1 {
             try FileManager.default.copyItemReplacing(at: clips[0], to: output)
             return
@@ -461,23 +494,7 @@ actor RenderEngine {
         }
         let sfxEnabled = RenderContext.transitions.sfxEnabled
 
-        // A clip must keep >= 0.4s of real content after losing its head to
-        // the previous gap's recipe and its tail to the next gap's.
-        let minRemainder = 0.4
-        var headTrim = [Double](repeating: 0, count: clips.count)
-        var tailTrim = [Double](repeating: 0, count: clips.count)
-        var recipe = [String?](repeating: nil, count: transitions.count)
-        for gap in transitions.indices {
-            guard let name = transitions[gap], TransitionRecipes.isRecipe(name) else { continue }
-            let (tail, head) = TransitionRecipes.pieces(for: name)
-            // The incoming clip may still lose its own tail to the NEXT gap's
-            // recipe — that gap's check sees headTrim[gap + 1] and guards it.
-            guard durations[gap] - headTrim[gap] - tail >= minRemainder,
-                  durations[gap + 1] - head >= minRemainder else { continue }
-            recipe[gap] = name
-            tailTrim[gap] = tail
-            headTrim[gap + 1] = head
-        }
+        var (recipe, headTrim, tailTrim) = Self.affordableRecipes(durations: durations, transitions: transitions)
 
         // Render every bridge; a failed bridge reverts its gap to a hard cut.
         struct Bridge: Sendable { var gap: Int; var url: URL? }
@@ -652,6 +669,74 @@ actor RenderEngine {
                              ["-movflags", "+faststart", output.path],
                              timeout: 600, capture: .boundedStderrTail(), purpose: "concat: video stream copy, final audio encode")
         FFmpeg.renderLog?("Finishing: stream copy")
+    }
+
+    /// Pause assemblies have an editorial clock, independent of each MP4's
+    /// AAC priming/padding and encoder tail. Decode inputs separately (so their
+    /// skip-sample metadata is honoured), bound both streams, and encode once.
+    /// Plain reels retain the cheaper stream-copy assembly above.
+    private func concatenateTimed(clips: [URL], durations: [Double], transitions: [String?],
+                                  output: URL, maximumOverlap: Double?, transitionDuration: Double,
+                                  overlaps: JoinOverlaps?, gapOffset: Int) async throws {
+        guard durations.allSatisfy({ $0.isFinite && $0 > 0 }) else { throw CocoaError(.fileReadCorruptFile) }
+        var arguments = ["-y"]
+        var filters: [String] = []
+        var frames: [Int] = []
+        var cursor = 0.0
+        var previousEnd = 0
+        for (index, clip) in clips.enumerated() {
+            // Round cumulative boundaries, not each piece independently: many
+            // sub-frame holds must not accumulate a frame of error apiece.
+            cursor += durations[index]
+            let end = Int((cursor * 30).rounded())
+            let count = max(1, end - previousEnd)
+            previousEnd += count
+            frames.append(count)
+            arguments += ["-threads", "1", "-i", clip.path]
+            filters.append("[\(index):v]setpts=PTS-STARTPTS,fps=30," +
+                "tpad=stop_mode=clone:stop_duration=1,trim=end_frame=\(count)," +
+                "setpts=N/(30*TB),settb=AVTB[v\(index)]")
+            // 44,100 / 30 = 1,470 audio samples per output frame.
+            let samples = count * 1470
+            filters.append("[\(index):a]aresample=44100,asetpts=PTS-STARTPTS," +
+                "apad=whole_len=\(samples),atrim=end_sample=\(samples),asetpts=N/SR/TB[a\(index)]")
+        }
+        let names = (0..<max(0, clips.count - 1)).map { index -> String? in
+            let name = transitions[safe: index] ?? nil
+            return name == "cut" ? nil : name
+        }
+        // Use the same run-level fallback policy as ordinary assembly/preview.
+        let planned = MultitrackRenderer.crossfadeOverlaps(durations: durations, transitions: names,
+            transitionDuration: transitionDuration)
+        var video = "[v0]", audio = "[a0]"
+        var totalFrames = frames[0]
+        for index in 1..<clips.count {
+            let requested = min(planned[index - 1] ?? 0, maximumOverlap ?? .greatestFiniteMagnitude)
+            let overlapFrames = max(0, Int((requested * 30).rounded()))
+            let used = Double(overlapFrames) / 30
+            overlaps?.record(index - 1 + gapOffset, used)
+            let nextVideo = "[joinedv\(index)]", nextAudio = "[joineda\(index)]"
+            if overlapFrames > 0, let raw = names[index - 1] {
+                let name = Self.xfadeAliases[raw]?.0 ?? (Self.transitions.contains(raw) ? raw : "fade")
+                filters.append("\(video)[v\(index)]xfade=transition=\(name):" +
+                    String(format: "duration=%.6f:offset=%.6f", used, Double(totalFrames - overlapFrames) / 30) + nextVideo)
+                filters.append("\(audio)[a\(index)]acrossfade=ns=\(overlapFrames * 1470)" + nextAudio)
+            } else {
+                filters.append("\(video)\(audio)[v\(index)][a\(index)]concat=n=2:v=1:a=1" + nextVideo + nextAudio)
+            }
+            totalFrames += frames[index] - overlapFrames
+            // concat and xfade use different time bases; normalize each join
+            // before a later xfade and remove any extra terminal video frame.
+            filters.append("\(nextVideo)fps=30,trim=end_frame=\(totalFrames),setpts=N/(30*TB),settb=AVTB[clockv\(index)]")
+            video = "[clockv\(index)]"
+            audio = nextAudio
+        }
+        let graph = workDirectory.appendingPathComponent("timed-\(UUID().uuidString).filters")
+        try filters.joined(separator: ";\n").write(to: graph, atomically: true, encoding: .utf8)
+        defer { try? FileManager.default.removeItem(at: graph) }
+        try await FFmpeg.run(arguments + ["-/filter_complex", graph.path, "-map", video, "-map", audio,
+            "-t", String(format: "%.6f", Double(totalFrames) / 30)] + FFmpeg.encodeArgs + [output.path],
+            timeout: 1800, capture: .boundedStderrTail(), purpose: "pause assembly on the planned frame/sample clock")
     }
 
     // MARK: - Audio

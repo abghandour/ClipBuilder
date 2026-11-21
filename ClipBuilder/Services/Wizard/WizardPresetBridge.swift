@@ -17,6 +17,10 @@ nonisolated enum WizardPresetBridge {
         // Keep the remembered choice even when the toggle is off in an Express preset.
         fields["dub"] = .bool(settings.dub)
         fields["miniDubLanguage"] = settings.dubLanguage.map(JSONSetting.string) ?? .null
+        fields["strikeHighlights"] = settings.actionOverlays.map(JSONSetting.bool) ?? .null
+        fields["strikeImpactFreeze"] = settings.pauseOnContact == true ? .number(settings.resolvedPauseOnContactSeconds) : .null
+        fields["pauseOnContact"] = settings.pauseOnContact.map(JSONSetting.bool) ?? .null
+        fields["pauseOnContactSeconds"] = settings.pauseOnContactSeconds.map(JSONSetting.number) ?? .null
         fields["addCaptions"] = .bool(settings.captions)
         fields["captionPosition"] = settings.captionPosition.map(JSONSetting.string) ?? .null
         fields["speakerCaptionPositions"] = settings.speakerCaptionPositions.map(JSONSetting.dictionaryValue) ?? .null
@@ -89,6 +93,13 @@ nonisolated enum WizardPresetBridge {
         }
         if let value = fields["miniDubLanguage"] { settings.dubLanguage = value.string }
         if let value = fields["dub"]?.bool { settings.dub = value }
+        if let value = fields["strikeHighlights"] { settings.actionOverlays = value.bool }
+        if let value = fields["strikeImpactFreeze"] {
+            settings.pauseOnContact = (value.number ?? 0) > 0
+            settings.pauseOnContactSeconds = value.number
+        }
+        if let value = fields["pauseOnContact"] { settings.pauseOnContact = value.bool }
+        if let value = fields["pauseOnContactSeconds"] { settings.pauseOnContactSeconds = value.number }
         if let captions = fields["addCaptions"]?.bool { settings.captions = captions }
         if let value = fields["captionPosition"] { settings.captionPosition = value.string }
         if let value = fields["speakerCaptionPositions"] { settings.speakerCaptionPositions = value.decodeValue() }

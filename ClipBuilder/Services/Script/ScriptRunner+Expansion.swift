@@ -198,6 +198,7 @@ extension ScriptRunner {
             } else { throw BuilderCommandFailure.unknownID }
         case .setClipSpeed(let reference, let speed):
             let item = try clip(reference)
+            guard item.hold != true else { throw ClipEditFailure.outOfBounds }
             guard item.effectiveSpeed != speed else { return }
             let duration = ((item.sourceSpan / speed) * 10).rounded() / 10
             let ceiling = item.bumper ? item.sourceEnd : library.sourceDuration(for: item)

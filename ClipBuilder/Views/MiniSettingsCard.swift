@@ -25,8 +25,13 @@ struct MiniSettingsCard: View {
                 case .audio: audioRows
                 case .overlays:
                     MiniOverlayRows(settings: $settings, videoIDs: [run.video.id],
-                                    showsNameTags: flow.showsNameTags, showsCaptionLanguage: flow.showsCaptionLanguage)
+                                    showsNameTags: flow.showsNameTags, showsCaptionLanguage: flow.showsCaptionLanguage,
+                                    showsStrikeActions: flow.showsStrikeActions)
                 case .package: packageRows
+                case .voiceOver:
+                    VoiceOverPanel(owner: .init(projectID: run.projectID, videoIDs: [run.video.id],
+                                                library: store.database?.path.path ?? ""),
+                                   captionLanguage: settings.voiceCaptionLanguage)
                 }
             }
             .accessibilityLabel("Settings")

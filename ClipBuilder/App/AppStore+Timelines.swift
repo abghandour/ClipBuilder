@@ -765,11 +765,13 @@ extension AppStore {
     /// its clips, the brand profile (captions, fonts) and the framing camera.
     private func builderPreviewKey(for window: ClosedRange<Double>) -> String? {
         Self.builderPreviewKey(document: builder.document, scenes: builder.scenes, profile: activeProfile,
-                               camera: WizardDefaults.fallbackFramingCamera, window: window)
+                               camera: WizardDefaults.fallbackFramingCamera, window: window,
+                               strikeRevision: strikeHighlightRevision)
     }
 
     nonisolated static func builderPreviewKey(document: TimelineDocument, scenes: [SceneRecord], profile: BrandProfile,
-                                              camera: String, window: ClosedRange<Double>) -> String? {
+                                              camera: String, window: ClosedRange<Double>,
+                                              strikeRevision: Int = 0) -> String? {
         struct SceneFacts: Encodable {
             var id: Int64; var videoPath: String; var startTime: Double; var endTime: Double
             var centerStagePathJSON: String?; var cropXFrac: Double?; var freeCropsJSON: String?; var wide: Bool
@@ -784,6 +786,9 @@ extension AppStore {
             var profile: BrandProfile
             var camera: String
             var seconds: Double
+            /// Only for a window that draws strike highlights: they come
+            /// from the database, not the document.
+            var strikes: Int?
         }
         let windowed = MultitrackRenderer.windowed(document, from: window.lowerBound, to: window.upperBound)
         let used = Set(windowed.videoTrack.compactMap(\.sceneID))
@@ -794,7 +799,8 @@ extension AppStore {
         }
         let evidence = Evidence(document: windowed, clips: MultitrackRenderer.resolveClips(document: windowed, scenes: scenes),
                                 scenes: facts, profile: profile, camera: camera,
-                                seconds: window.upperBound - window.lowerBound)
+                                seconds: window.upperBound - window.lowerBound,
+                                strikes: windowed.videoTrack.contains { $0.strikeHighlights == true } ? strikeRevision : nil)
         return try? RenderSegmentCache.key(evidence, version: "builder-preview-slice-v1")
     }
 

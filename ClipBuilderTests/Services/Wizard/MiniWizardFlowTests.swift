@@ -4,6 +4,23 @@ import Testing
 
 @Suite("Mini Wizard flow")
 struct MiniWizardFlowTests {
+    @Test("Strike rows need a fight and scored strikes", arguments: VideoType.allCases)
+    func strikeRows(type: VideoType) {
+        var video = Fixtures.video()
+        video.videoType = type.rawValue
+        var settings = MiniWizardSettings()
+        settings.actionOverlays = true
+        settings.pauseOnContact = true
+        for scored in [false, true] {
+            let flow = MiniWizardFlow(video: video, hasScoredStrikes: scored)
+            let visible = type == .fight && scored
+            #expect(flow.showsStrikeActions == visible)
+            let effective = settings.effective(for: flow, introAvailable: false, outroAvailable: false)
+            #expect(effective.actionOverlays == visible && effective.pauseOnContact == visible)
+            #expect(effective.step2Options(base: .init()).strikeImpactFreeze == (visible ? StrikeHighlightRules.impactHold : nil))
+        }
+    }
+
     @Test("Podcasts offer Q&A, fights and training offer Fight metrics", arguments: VideoType.allCases)
     func footageChoices(type: VideoType) {
         var video = Fixtures.video()
@@ -48,10 +65,10 @@ struct MiniWizardFlowTests {
         var video = Fixtures.video()
         video.videoType = type.rawValue
         let flow = MiniWizardFlow(video: video)
-        #expect(flow.settingsTabs == [.picture, .audio, .overlays, .package])
+        #expect(flow.settingsTabs == [.picture, .audio, .overlays, .package, .voiceOver])
         #expect(flow.effectiveSettingsTab(.audio) == .audio)
         #expect(flow.effectiveSettingsTab(.package) == .package)
-        #expect(MiniWizardFlow().settingsTabs == [.picture, .audio, .overlays, .package])
+        #expect(MiniWizardFlow().settingsTabs == [.picture, .audio, .overlays, .package, .voiceOver])
     }
 
     @Test("Unknown types use highlights unless exchanges exist")

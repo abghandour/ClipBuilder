@@ -178,6 +178,8 @@ enum LegacyBuilderSchema {
             ("set_cutaway_audio", ["clip", "audio"], ["clip", "audio"]),
             ("set_clip_muted", ["clip", "muted"], ["clip", "muted"]),
             ("set_cutaway_cover_all", ["clip", "cover_all"], ["clip", "cover_all"]),
+            ("set_clip_strike_highlights", ["clip", "enabled"], ["clip", "enabled"]),
+            ("freeze_clip_on_impacts", ["clip", "hold"], ["clip"]),
             ("duplicate_clip", ["clip"], ["clip"]),
             ("set_track_sequential", ["track", "sequential"], ["track", "sequential"]),
             ("add_crop_block", ["layout", "at", "duration"], ["layout"]),
@@ -207,6 +209,9 @@ enum LegacyBuilderSchema {
             if ["set_crop_block_duration", "add_overlay"].contains(op) { properties["duration"] = bounded(0.5, 86400) }
             if ["split_crop_block", "add_overlay"].contains(op) { properties["at"] = bounded(0, 86400) }
             if op == "set_clip_speed" { properties["speed"] = bounded(0.5, 2) }
+            if op == "freeze_clip_on_impacts" {
+                properties["hold"] = bounded(StrikeFreezeRules.holdRange.lowerBound, StrikeFreezeRules.holdRange.upperBound)
+            }
             if op == "set_clip_captions" { properties["captions"] = choices(TimelineClip.captionChoices) }
             if op == "set_track_captions" { properties["captions"] = choices(TrackSettings.captionChoices) }
             if op == "set_text_position" || op == "set_track_position" {

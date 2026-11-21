@@ -41,6 +41,14 @@ enum WizardPodcastBRoll {
         var vipWindows: [ClosedRange<Double>]?
     }
 
+    /// Shared with pause eligibility: these are the sources the planner can use.
+    nonisolated static func eligibleSource(type: VideoType?, scene: SceneRecord,
+                                           start: Double?, end: Double?, speed: Double) -> Bool {
+        guard type == .podcast || type == .interview || scene.tags.contains("podcast"),
+              let start, let end, end > start, speed == 1 else { return false }
+        return true
+    }
+
     static func adding(to document: TimelineDocument, options: WizardOptions, database: Database,
                        ai: AIService, log: @escaping @Sendable (String) -> Void) async throws -> TimelineDocument {
         var cache = Cache()
@@ -109,9 +117,9 @@ enum WizardPodcastBRoll {
             try Task.checkCancellation()
             guard let sceneID = clip.sceneID, let scene = sceneMap[sceneID],
                   let context = contexts[scene.videoID],
-                  context.video.type == .podcast || context.video.type == .interview || scene.tags.contains("podcast"),
-                  let start = clip.sourceStart, let end = clip.sourceEnd, end > start,
-                  (clip.speed ?? 1) == 1 else { continue }
+                  eligibleSource(type: context.video.type, scene: scene, start: clip.sourceStart,
+                                 end: clip.sourceEnd, speed: clip.speed ?? 1),
+                  let start = clip.sourceStart, let end = clip.sourceEnd else { continue }
             let video = context.video
             let turns = context.turns
             let candidate = HighlightCandidate(sourceStart: start, sourceEnd: end, title: video.filename,

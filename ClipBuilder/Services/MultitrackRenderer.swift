@@ -25,6 +25,8 @@ actor MultitrackRenderer {
         /// when every clip framed as planned. Also recorded into
         /// `RenderFramingFallbackCollector.current` when one is set.
         var framingFallbacks: [RenderFramingFallback]? = nil
+        /// Timeline seconds to seconds of the assembled video (joins overlap).
+        var clock: RenderClock? = nil
         /// The Library row the render was filed as; nil for previews.
         var recordID: Int64? = nil
     }
@@ -40,6 +42,7 @@ actor MultitrackRenderer {
         var track: Int
         var wide: Bool
         var bumper: Bool = false
+        var hold: Bool = false
         var missingBumper: Bool = false
         /// Ordinary footage or a cutaway (B-roll) drawn over its track.
         var role: ClipRole = .main
@@ -100,11 +103,18 @@ actor MultitrackRenderer {
         var sourceFingerprint: String?
         var programAudioFingerprint: String?
         var cacheable = true
+        /// The clip asked for its strike highlights.
+        var strikeHighlights: Bool? = nil
+        /// The saved highlights to draw, in the ORIGINAL source's seconds.
+        /// Cleared once they are burned into a framing intermediate.
+        var strikeTracks: [StrikeHighlightRules.Track]? = nil
         /// Original-video time, independent of a framing intermediate's seek time.
         var transcriptSourceStart: Double?
 
+        var sourceSpan: Double { hold ? 0 : duration * speed }
+
         func transcriptStart(at timelineTime: Double) -> Double {
-            (transcriptSourceStart ?? sourceStart) + (timelineTime - startTime) * speed
+            (transcriptSourceStart ?? sourceStart) + (hold ? 0 : (timelineTime - startTime) * speed)
         }
 
         mutating func useFramedSource(_ url: URL, identity: String, areaPass: Bool, reusable: Bool) {
@@ -112,6 +122,8 @@ actor MultitrackRenderer {
             framingIdentity = (framingIdentity ?? "") + identity
             sourcePath = url.path
             sourceStart = 0
+            // Already drawn into the intermediate, before it was framed.
+            strikeTracks = nil
             fitArea = nil
             contentWindow = nil
             cacheable = cacheable && reusable
@@ -144,6 +156,7 @@ actor MultitrackRenderer {
         var sourceDur: Double
         var isWide: Bool
         var bumper: Bool = false
+        var hold: Bool = false
         var volume: Int = 5
         var layer: Int
         var position: String
@@ -179,6 +192,8 @@ actor MultitrackRenderer {
         var snapshotArea: ScreenCropArea?
         var fitWindow: FreeCropRect?
         var fitArea: ScreenCropArea?
+        /// Strike highlight pictures to lay on the source before any crop.
+        var strikeOverlay: [StrikeHighlightBurn.Sequence]?
     }
 
     private static var width: Int { RenderEngine.outputWidth }
@@ -225,6 +240,10 @@ actor MultitrackRenderer {
 
     // MARK: - Entry point
 
+    /// Tests intercept the final renderer call after Wizard orchestration has
+    /// supplied its document and tracks. Nil uses the real render pipeline.
+    @TaskLocal static var strikeHighlightRenderOverride: (@Sendable (TimelineDocument, [String: [StrikeHighlightRules.Track]]) async throws -> RenderResult)?
+
     /// `preview: true` runs the IDENTICAL pipeline (same framing, crops,
     /// transitions, music, overlays, encode settings — pixel-for-pixel what
     /// a real render produces) but writes to a temporary file and records
@@ -241,9 +260,13 @@ actor MultitrackRenderer {
                 preview: Bool = false,
                 prerenderedSources: Set<String> = [],
                 contentWindows: [String: FreeCropRect] = [:],
+                strikeHighlightTracks: [String: [StrikeHighlightRules.Track]] = [:],
                 burnIns: [RenderEngine.ClipOverlay] = [],
                 muteSource: Bool = false, compositeEffect: EffectSpec? = nil,
                 emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
+        if let renderOverride = Self.strikeHighlightRenderOverride {
+            return try await renderOverride(document, strikeHighlightTracks)
+        }
         try FootageAvailability.requireSources(document: document, scenes: scenes)
         let editing = profile.editing ?? ProfileEditingDefaults(seedingFrom: SettingsStore.loadSettings())
         return try await FFmpeg.$renderLog.withValue(emit) {
@@ -254,7 +277,8 @@ actor MultitrackRenderer {
                                                database: database, centerStageCamera: document.framingCamera ?? centerStageCamera,
                                                projectID: projectID, outputName: outputName, batchID: batchID, wizardOptions: wizardOptions, roles: roles,
                                                renderFingerprint: renderFingerprint, preview: preview,
-                                               contentWindows: contentWindows, prerenderedSources: prerenderedSources, burnIns: burnIns, muteSource: muteSource, compositeEffect: compositeEffect, emit: emit)
+                                               contentWindows: contentWindows, prerenderedSources: prerenderedSources,
+                                               strikeHighlightTracks: strikeHighlightTracks, burnIns: burnIns, muteSource: muteSource, compositeEffect: compositeEffect, emit: emit)
                 }
             }
         }
@@ -305,6 +329,7 @@ actor MultitrackRenderer {
                                   roles: [AIRole] = [], renderFingerprint: String? = nil, preview: Bool,
                                   contentWindows: [String: FreeCropRect] = [:],
                                   prerenderedSources: Set<String> = [],
+                                  strikeHighlightTracks: [String: [StrikeHighlightRules.Track]] = [:],
                                   burnIns: [RenderEngine.ClipOverlay] = [],
                                   muteSource: Bool = false, compositeEffect: EffectSpec? = nil,
                                   emit: @escaping @Sendable (String) -> Void) async throws -> RenderResult {
@@ -325,8 +350,54 @@ actor MultitrackRenderer {
                   !clips[index].bumper else { continue }
             Self.applyContentWindow(window, to: &clips[index])
         }
+        // Wizard extractions share their run's post-marking drawable snapshot.
+        // Missing paths still use the saved tracks, as Builder and previews do.
+        var strikeTracks = strikeHighlightTracks
+        var videosByPath: [String: Int64]?
+        for index in clips.indices where clips[index].strikeHighlights == true {
+            let clip = clips[index]
+            if strikeTracks[clip.sourcePath] == nil {
+                var videoID = clip.videoID ?? scenes.first { $0.videoPath == clip.sourcePath }?.videoID
+                if videoID == nil {
+                    if videosByPath == nil {
+                        videosByPath = Dictionary(((try? await database.fetchVideos(projectID: projectID)) ?? [])
+                            .map { ($0.url.path, $0.id) }, uniquingKeysWith: { first, _ in first })
+                    }
+                    videoID = videosByPath?[clip.sourcePath]
+                }
+                // Only what is drawn is kept: the tracks are part of the
+                // clip's cache identity.
+                var readError: String?
+                strikeTracks[clip.sourcePath] = []
+                if let videoID {
+                    do {
+                        strikeTracks[clip.sourcePath] = try await database.fetchStrikeHighlights(videoID: videoID)
+                            .compactMap(\.track).map(StrikeHighlightRules.drawable)
+                    } catch { readError = error.localizedDescription }
+                }
+                let sourceTracks = strikeTracks[clip.sourcePath] ?? []
+                let drawsInRender = clips.contains { candidate in
+                    candidate.strikeHighlights == true && candidate.sourcePath == clip.sourcePath
+                        && !StrikeHighlightBurn.tracks(sourceTracks, start: candidate.sourceStart, duration: candidate.sourceSpan).isEmpty
+                }
+                if !drawsInRender {
+                    // This branch runs once per source, including empty results.
+                    let status: WizardStrikeHighlights.SavedStatus? = if readError == nil, let videoID {
+                        try? await database.strikeHighlightStatus(videoID: videoID)
+                    } else { nil }
+                    emit(WizardStrikeHighlights.missingMarksMessage(
+                        filename: URL(fileURLWithPath: clip.sourcePath).lastPathComponent, status: status, readError: readError))
+                }
+            }
+            let showing = StrikeHighlightBurn.tracks(strikeTracks[clip.sourcePath] ?? [], start: clip.sourceStart,
+                                                     duration: clip.sourceSpan)
+            clips[index].strikeTracks = showing.isEmpty ? nil : showing
+            // A clip with nothing to draw renders, and caches, as one with the switch off.
+            if showing.isEmpty { clips[index].strikeHighlights = nil }
+        }
         var fighterRosters: [String: [VideoPersonRecord]] = [:]
-        for index in clips.indices where clips[index].framingPlan?.recipe?.fighterFocus == true {
+        for index in clips.indices where clips[index].framingPlan?.recipe?.fighterFocus == true
+            && (!clips[index].hold || clips[index].cameraPath == nil) {
             let clip = clips[index]
             if fighterRosters[clip.sourcePath] == nil {
                 var videoID = clip.videoID ?? scenes.first { $0.videoPath == clip.sourcePath }?.videoID
@@ -339,9 +410,12 @@ actor MultitrackRenderer {
             }
             let roster = fighterRosters[clip.sourcePath] ?? []
             clips[index].cameraPath = try await FighterTrackingAdapter.cameraPath(source: URL(fileURLWithPath: clip.sourcePath),
-                start: clip.sourceStart, duration: clip.duration * clip.speed, roster: roster,
+                start: clip.sourceStart, duration: clip.hold ? 1.0 / 30 : clip.sourceSpan, roster: roster,
                 region: clip.areaRegion ?? clip.framingPlan?.sourceWindow,
                 pullBack: clip.framingPlan?.recipe?.interviewZoom ?? 0, aspect: document.renderSettings.aspectRatio)
+            if clip.hold, let path = clips[index].cameraPath {
+                clips[index].cameraPath = HoldClipRules.cameraPath(path, duration: clip.duration)
+            }
             clips[index].centerStage = true
             clips[index].areaFocus = nil
         }
@@ -379,13 +453,13 @@ actor MultitrackRenderer {
                 let clip = clips[index]
                 // Full-screen paths and VIP reactions use the same in-graph
                 // framing route as a layout cell, without a redundant canvas pad.
-                let fullScreenPath = clip.framingPlan?.recipe?.fighterFocus == true || clip.cameraPath != nil
+                let fullScreenPath = (clip.hold && clip.centerStage) || clip.framingPlan?.recipe?.fighterFocus == true || clip.cameraPath != nil
                     && document.cropBlock(at: clip.startTime)?.layout.isFullScreen == true
                 let area = (clip.framingPlan?.area(forTrack: clip.track) ?? ScreenCropStore.area(reference: clip.screenCrop)) ?? (clip.areaRegion != nil || fullScreenPath
                     ? ScreenCropArea(name: CropLayoutRef.fullScreenName, points: [
                         .init(x: 0, y: 0), .init(x: 1, y: 0), .init(x: 1, y: 1), .init(x: 0, y: 1)]) : nil)
                 guard (areaPass ? (clip.freeCrops?.isEmpty != false && area != nil)
-                       : (clip.centerStage && !(area != nil && (clip.cameraPath != nil || clip.areaRegion != nil)))) else { continue }
+                       : (!clip.hold && clip.centerStage && !(area != nil && (clip.cameraPath != nil || clip.areaRegion != nil)))) else { continue }
                 if areaPass, let area, clip.cameraPath == nil,
                    clip.areaWindow != nil || clip.framingPlan?.isStatic == true {
                     if clip.framingPlan != nil, !clip.bumper {
@@ -410,6 +484,35 @@ actor MultitrackRenderer {
                 try Task.checkCancellation()
                 let clip = job.clip
                 let source = URL(fileURLWithPath: clip.sourcePath)
+                if clip.hold, let area = job.area {
+                    let dimensions = await FFmpeg.dimensions(of: source)
+                    let size = CGSize(width: dimensions.width, height: dimensions.height)
+                    let box = AreaFramer.pixelBounds(of: area)
+                    let path: FeedCameraPath
+                    if let saved = clip.cameraPath, clip.areaFocus == nil,
+                       (clip.framingPlan?.recipe?.fighterFocus == true || CenterStageService.pathMatchesCanvas(saved, sourceSize: size, canvasAspect: box.width / box.height)) {
+                        path = FeedCameraPath(keyframes: saved, samples: [], trackedShare: 1,
+                                              sourceSize: size, usedFallback: false)
+                    } else if clip.framingPlan?.recipe?.centerStageVIPs == true {
+                        let portraits = await Self.vipPortraits(sourcePath: clip.sourcePath,
+                            keys: clip.framingPlan?.recipe?.centerStageVIPKeys, database: database)
+                        let tracked = try await self.centerStageService.cameraPath(source: source,
+                            start: clip.sourceStart, duration: 1.0 / 30, focusPortraits: portraits,
+                            tuning: .named(clip.framingPlan?.camera ?? centerStageCamera), aspect: box.width / box.height)
+                        path = FeedCameraPath(keyframes: tracked.keyframes, samples: [], trackedShare: tracked.trackedShare,
+                                              sourceSize: size, usedFallback: tracked.trackedShare == 0)
+                    } else {
+                        path = try await self.centerStageService.cameraPath(source: source,
+                            start: clip.sourceStart, duration: 1.0 / 30,
+                            region: CenterStageService.validRegion(clip.areaRegion ?? Self.cellBounds(of: clip) ?? FreeCropRect()),
+                            tuning: .named(clip.framingPlan?.camera ?? centerStageCamera),
+                            aspect: box.width / box.height, fallbackCenter: clip.areaFocus, log: emit)
+                    }
+                    var frozen = path
+                    frozen.keyframes = HoldClipRules.cameraPath(path.keyframes, duration: clip.duration)
+                    if path.usedFallback { fallbackReasons.set(job.key, "tracking found too little to follow") }
+                    return PrepassArtifact(path: frozen, cacheable: path.reusable != false)
+                }
                 if let area = job.area, clip.areaRegion != nil || clip.cameraPath != nil {
                     if self.framingCacheEnabled, clip.cacheable, !ExpressRenderTesting.exportAreaPaths,
                        let cached = await self.segmentCache.readJSON(FeedCameraPath.self, key: job.key) {
@@ -441,14 +544,14 @@ actor MultitrackRenderer {
                         let camera = clip.framingPlan?.isSteady == true ? "steady"
                             : clip.framingPlan?.sourceWindow == nil ? "conversation" : clip.framingPlan?.camera ?? "conversation"
                         let identity = try FeedPathCache.identity(source: source, region: region,
-                            start: clip.sourceStart, duration: clip.duration * clip.speed, tuning: camera,
+                            start: clip.sourceStart, duration: clip.sourceSpan, tuning: camera,
                             aspect: box.width / box.height, focus: clip.areaFocus)
                         if self.framingCacheEnabled, let cached = await FeedPathCache.shared.read(identity) {
                             path = cached
                             emit("Feed path cache hit; decode=0; intermediates=0")
                         } else {
                             path = try await self.centerStageService.cameraPath(source: source,
-                                start: clip.sourceStart, duration: clip.duration * clip.speed, region: region, tuning: .named(camera),
+                                start: clip.sourceStart, duration: clip.sourceSpan, region: region, tuning: .named(camera),
                                 aspect: box.width / box.height, fallbackCenter: clip.areaFocus, log: emit)
                             try Task.checkCancellation()
                             if self.framingCacheEnabled, path.reusable != false,
@@ -459,7 +562,7 @@ actor MultitrackRenderer {
                     }
                     if ExpressRenderTesting.exportAreaPaths {
                         let url = try await AreaFramer.frame(source: source, start: clip.sourceStart,
-                            duration: clip.duration * clip.speed, area: area, path: path.keyframes,
+                            duration: clip.sourceSpan, area: area, path: path.keyframes,
                             centerStage: self.centerStageService, scratch: framingScratch, log: emit)
                         return PrepassArtifact(url: url, cacheable: false)
                     }
@@ -485,10 +588,20 @@ actor MultitrackRenderer {
                 try? FileManager.default.removeItem(at: owned)
                 let fellBack = Mutex(false)
                 do {
+                    // Highlights go on before the camera crops the picture.
+                    var clip = clip, source = source
+                    if let tracks = clip.strikeTracks,
+                       let burned = try await StrikeHighlightBurn.burn(source: source, start: clip.sourceStart,
+                           duration: clip.sourceSpan, tracks: tracks, scratch: framingScratch) {
+                        emit("Strike highlights: \(tracks.count) drawn before framing")
+                        source = burned
+                        clip.sourceStart = 0
+                    }
+                    defer { if source.path != clip.sourcePath { try? FileManager.default.removeItem(at: source.deletingLastPathComponent()) } }
                     let framed: URL
                     if let area = job.area {
                         framed = try await AreaFramer.frame(source: source, start: clip.sourceStart,
-                            duration: clip.duration * clip.speed, area: area, framingPlan: clip.framingPlan,
+                            duration: clip.sourceSpan, area: area, framingPlan: clip.framingPlan,
                             tuning: .named(clip.framingPlan?.camera ?? centerStageCamera), centerStage: self.centerStageService,
                             scratch: framingScratch, onFallback: { fellBack.withLock { $0 = true } }, log: emit)
                     } else {
@@ -500,15 +613,15 @@ actor MultitrackRenderer {
                                 keys: clip.framingPlan?.recipe?.centerStageVIPKeys, database: database)
                             emit("Center Stage: VIPs only, \(portraits.count) portrait(s)")
                             framed = try await self.centerStageService.reframeClip(source: source,
-                                start: clip.sourceStart, duration: clip.duration * clip.speed,
+                                start: clip.sourceStart, duration: clip.sourceSpan,
                                 focusPortraits: portraits,
                                 tuning: .named(clip.framingPlan?.camera ?? centerStageCamera), log: emit)
                         } else if let path = clip.cameraPath, CenterStageService.pathMatchesCanvas(path) {
                             framed = try await self.centerStageService.reframeClip(source: source,
-                                start: clip.sourceStart, duration: clip.duration * clip.speed, path: path, log: emit)
+                                start: clip.sourceStart, duration: clip.sourceSpan, path: path, log: emit)
                         } else {
                             framed = try await self.centerStageService.reframeClip(source: source,
-                                start: clip.sourceStart, duration: clip.duration * clip.speed,
+                                start: clip.sourceStart, duration: clip.sourceSpan,
                                 tuning: .named(clip.framingPlan?.camera ?? centerStageCamera), log: emit)
                         }
                     }
@@ -620,16 +733,8 @@ actor MultitrackRenderer {
         }
 
         // Slice the timeline into constant-membership segments + black gaps.
-        let segments = Self.buildLayeredSegments(clips)
-        var fullSegments: [Segment] = []
-        var cursor = 0.0
-        for segment in segments {
-            if segment.start > cursor + 0.05 {
-                fullSegments.append(Segment(start: cursor, end: segment.start, clips: []))
-            }
-            fullSegments.append(segment)
-            cursor = segment.end
-        }
+        let planned = Self.plannedSegments(clips)
+        let fullSegments = planned.segments
         emit("Timeline: \(clips.count) clip(s) → \(fullSegments.count) segment(s), \(totalDuration.timecode) total")
 
         // Assemble clip list + transition list in the same order/rules as the
@@ -743,20 +848,9 @@ actor MultitrackRenderer {
         let fusedOverlayCount = overlayPlan.bySegment.values.reduce(0) { $0 + $1.count }
         emit("Overlay plan: segment=\(fusedOverlayCount); timeline=\(overlayPlan.remaining.count)")
 
-        // Joins are decided by the clips alone, so they are known before any
-        // segment is encoded. Cutaways never take part in a join: a boundary
-        // a cutaway introduced must not replay the main clip's transition,
-        // so the incoming and outgoing clips are the lowest-layer main clips
-        // and their ORIGINAL extent decides. A join takes the incoming
-        // clip's transition in, else the outgoing clip's transition out.
-        var transitions: [String?] = []
-        for (index, segment) in fullSegments.enumerated() where index > 0 {
-            let incoming = Self.joinClip(in: segment.clips)
-            let outgoing = Self.joinClip(in: fullSegments[index - 1].clips)
-            let entry = incoming.flatMap { abs($0.originalStart - segment.start) < 0.001 ? $0.transIn : nil }
-            let exit = outgoing.flatMap { abs($0.originalEnd - segment.start) < 0.001 ? $0.transOut : nil }
-            transitions.append(entry ?? exit)
-        }
+        // Joins are decided by the clips alone (`plannedSegments`), so they
+        // are known before any segment is encoded.
+        var transitions = planned.transitions
 
         // Spanning overlays ride the segments they touch, on each segment's
         // own clock, when every join keeps pixels in place and no overlay
@@ -826,7 +920,10 @@ actor MultitrackRenderer {
         // bytes and raster pixels, not document JSON or scratch/overlay UUIDs.
         // Music, bumpers and recipe transitions retain their existing pipeline.
         let transitionDuration = RenderContext.transitions.xfadeDuration
-        let canReuseAssembly = document.soundTrack.isEmpty && bumperSpans.isEmpty
+        let timedAssembly = Self.usesTimedAssembly(document, transitions: transitions)
+        // Timed joins use the document clock, not probed MP4 lengths. The
+        // existing finishing/range caches reconstruct clocks from those probes.
+        let canReuseAssembly = !timedAssembly && document.soundTrack.isEmpty && bumperSpans.isEmpty
             && !transitions.contains(where: { TransitionRecipes.isRecipe($0) })
             && artifacts.allSatisfy(\.reusable)
         // With the overlays fused there is no final pass, but the assembled
@@ -898,6 +995,7 @@ actor MultitrackRenderer {
             } else {
                 let fellBack = Mutex(false)
                 try await render.concatenate(clips: clipPaths, transitions: transitions, output: assembled,
+                    clipDurations: timedAssembly ? fullSegments.map(\.duration) : nil,
                     transitionDuration: transitionDuration, assemblyCache: assemblyCache,
                     overlaps: joinOverlaps,
                     onFallback: { fellBack.withLock { $0 = true } }, onGroups: onGroups)
@@ -1076,7 +1174,7 @@ actor MultitrackRenderer {
             try Task.checkCancellation()
             previewSucceeded = true
             emit("Exact preview ready (\(finalDuration.timecode))")
-            return RenderResult(url: outputURL, duration: finalDuration, framingFallbacks: renderedFallbacks)
+            return RenderResult(url: outputURL, duration: finalDuration, framingFallbacks: renderedFallbacks, clock: clock)
         }
 
         // Persist the COMPLETE editable document so "Open in Builder" (in
@@ -1101,7 +1199,7 @@ actor MultitrackRenderer {
         if complete && finalDuration > 0 { await publishSegments(artifacts, clips: clips, finishing: finishingArtifacts) }
         emit("Saved \(outputURL.lastPathComponent)")
         return RenderResult(url: outputURL, duration: finalDuration, framingFallbacks: renderedFallbacks,
-                            recordID: recordID)
+                            clock: clock, recordID: recordID)
     }
 
     /// The clock plain crossfades produce, from the segment files' lengths
@@ -1258,7 +1356,7 @@ actor MultitrackRenderer {
             let stop = min(upper, item.startTime + item.duration)
             guard stop > start else { return nil }
             var clip = item
-            let skipped = (start - item.startTime) * item.effectiveSpeed
+            let skipped = item.hold == true ? 0 : (start - item.startTime) * item.effectiveSpeed
             clip.sourceStart = (item.sourceStart ?? 0) + skipped
             // The explicit camera path runs from the clip's source start:
             // move it with the window instead of replaying its opening.
@@ -1400,6 +1498,12 @@ actor MultitrackRenderer {
     /// the camera is off or nothing is known.
     nonisolated static func effectiveCameraPath(for clip: TimelineClip, scenes: [SceneRecord]) -> [CameraPathKeyframe] {
         guard clip.framingPlan?.sourceWindow == nil || FocusFrame.hasReplannedPath(clip) else { return [] }
+        if clip.hold == true {
+            var moving = clip
+            moving.hold = nil
+            moving.speed = nil
+            return HoldClipRules.cameraPath(effectiveCameraPath(for: moving, scenes: scenes), duration: clip.duration)
+        }
         let span = max(0, clip.duration * clip.effectiveSpeed)
         guard clip.wide, !clip.isCutaway, !clip.bumper, span > 0 else { return [] }
         if let explicit = clip.cameraPath { return CenterStageService.slice(explicit, from: 0, duration: span) }
@@ -1507,6 +1611,9 @@ actor MultitrackRenderer {
                 }
             }
             guard let sourcePath, duration > 0 else { continue }
+            if clip.hold == true, let path = cameraPath {
+                cameraPath = HoldClipRules.cameraPath(path, duration: duration)
+            }
 
             let track = min(max(0, clip.track), TimelineDocument.maxTracks - 1)
             let trackSettings = settings[safe: track] ?? TrackSettings()
@@ -1514,7 +1621,7 @@ actor MultitrackRenderer {
             let effectiveCrop = clip.bumper ? nil : clip.cropXFrac ?? trackSettings.defaultCropXFrac
             let effect = clip.effect ?? trackSettings.effect
             let effectiveEffect = clip.bumper || effect?.preset == "none" ? nil : effect
-            let muted = clip.muted || trackSettings.muted
+            let muted = clip.hold == true || clip.muted || trackSettings.muted
             let captionsResolved = clip.captions == "inherit" ? trackSettings.captions : clip.captions
 
             resolved.append(ResolvedClip(sourcePath: sourcePath,
@@ -1525,6 +1632,7 @@ actor MultitrackRenderer {
                                          track: track,
                                          wide: clip.wide,
                                          bumper: clip.bumper,
+                                         hold: clip.hold == true,
                                          role: clip.role,
                                          coverAllAreas: clip.isCutaway && clip.coverAllAreas,
                                          originalStart: clip.startTime,
@@ -1553,9 +1661,11 @@ actor MultitrackRenderer {
                                          },
                                          framingPlan: clip.framingPlan,
                                          fitArea: clip.framingPlan?.area(forTrack: clip.track),
-                                         captionsPosition: captionsResolved == "none" ? nil : captionsResolved,
+                                         captionsPosition: (clip.hold == true && !(clip.strikeImpactsFrozen == true && document.captionPosition != nil))
+                                            || captionsResolved == "none" ? nil : captionsResolved,
                                          speed: clip.effectiveSpeed,
                                          cameraPath: cameraPath, staticAreaFilter: reactionFilter(for: clip), effectiveEffect: effectiveEffect))
+            if clip.strikeHighlights == true, !clip.bumper { resolved[resolved.count - 1].strikeHighlights = true }
         }
         // Validate scene-derived paths after crop-block splitting: each piece
         // may target a different aspect, and a scene-wide path cannot represent
@@ -1618,7 +1728,9 @@ actor MultitrackRenderer {
                 let pieceStart = max(cursor, block.startTime)
                 let isLast = index == covering.count - 1
                 let pieceEnd = isLast ? clipEnd : min(clipEnd, block.endTime)
-                guard pieceEnd - pieceStart >= 0.05 else { continue }
+                // Match buildLayeredSegments: 4.05 - 4.0 is slightly below
+                // 0.05 in binary, even when the entire accepted hold is covered.
+                guard pieceEnd - pieceStart >= 0.05 - 1e-9 else { continue }
                 cursor = pieceEnd
                 let layout = block.layout
                 // Track without an area under this block: not rendered. A
@@ -1628,7 +1740,7 @@ actor MultitrackRenderer {
                 let offset = pieceStart - clip.startTime
                 piece.startTime = pieceStart
                 piece.duration = pieceEnd - pieceStart
-                piece.sourceStart = clip.sourceStart + offset * clip.speed
+                piece.sourceStart = clip.sourceStart + (clip.hold ? 0 : offset * clip.speed)
                 piece.transcriptSourceStart = clip.transcriptStart(at: pieceStart)
                 if clip.coverAllAreas {
                     // The whole canvas: no mask, scaled to fill.
@@ -1640,9 +1752,9 @@ actor MultitrackRenderer {
                 }
                 piece.transIn = pieceStart > clip.startTime + 0.001 ? nil : clip.transIn
                 piece.transOut = pieceEnd < clipEnd - 0.001 ? nil : clip.transOut
-                if let path = clip.cameraPath, offset > 0.001 {
+                if let path = clip.cameraPath, !clip.hold, offset > 0.001 {
                     let sliced = CenterStageService.slice(path, from: offset * clip.speed,
-                                                          duration: piece.duration * clip.speed)
+                                                          duration: piece.sourceSpan)
                     piece.cameraPath = sliced.count >= 2 ? sliced : nil
                 }
                 pieces.append(piece)
@@ -1659,18 +1771,18 @@ actor MultitrackRenderer {
         for (clipIndex, clip) in segment.clips.enumerated() {
             // Timeline offsets map into the source through the clip's speed
             // — a 0.5× clip consumes half a source second per screen second.
-            let clipOffset = (segment.start - clip.startTime) * clip.speed
+            let clipOffset = clip.hold ? 0 : (segment.start - clip.startTime) * clip.speed
             let areaFilter: String?
             if let path = clip.cameraPath, let source = clip.areaPathSource, let area = clip.areaPathArea {
                 areaFilter = AreaFramer.pathFilter(keyframes: CenterStageService.slice(path,
-                    from: clipOffset, duration: segment.duration * clip.speed), source: source,
+                    from: clipOffset, duration: clip.hold ? 0 : segment.duration * clip.speed), source: source,
                     area: area, namespace: "area\(clipIndex)", framingPlan: clip.framingPlan)
             } else { areaFilter = clip.staticAreaFilter }
             placements.append(Placement(sourcePath: clip.sourcePath,
                                         sourceStart: clip.sourceStart + clipOffset,
-                                        sourceDur: segment.duration * clip.speed,
+                                        sourceDur: clip.hold ? 0 : segment.duration * clip.speed,
                                         isWide: clip.wide,
-                                        bumper: clip.bumper, volume: clip.volume,
+                                        bumper: clip.bumper, hold: clip.hold, volume: clip.volume,
                                         layer: Self.placementLayer(for: clip),
                                         position: clip.effectivePosition,
                                         muted: clip.muted,
@@ -1783,10 +1895,15 @@ actor MultitrackRenderer {
         contributing.contains { !$0.muted && $0.role == .cutaway }
     }
 
-    nonisolated static func audioMixFilter(labels: [String],
-                                           cutawayAudio: Bool) -> (filters: [String], source: String) {
+    nonisolated static func audioMixFilter(labels: [String], cutawayAudio: Bool,
+                                           duration: Double) -> (filters: [String], source: String) {
         if labels.isEmpty {
-            return (["[1:a]asetpts=PTS-STARTPTS[asilent]"], "[asilent]")
+            // Silence is made inside the graph, not taken from the anullsrc
+            // input: with ffmpeg 8.1 a segment whose only audio was that
+            // input's decoder stalled at the end about once in 50 runs
+            // (every thread idle until the timeout). 0 of 400 this way.
+            return ([String(format: "anullsrc=r=44100:cl=stereo:d=%.3f,asetpts=PTS-STARTPTS[asilent]", duration)],
+                    "[asilent]")
         }
         if labels.count == 1 { return ([], labels[0]) }
         // Only a mixed-in cutaway needs the un-normalized mix; every other
@@ -1837,6 +1954,45 @@ actor MultitrackRenderer {
         }.map(\.element)
     }
 
+    /// The segments resolved clips are rendered as, black gaps included, and
+    /// the join before each segment but the first. The renderer assembles
+    /// exactly these, and `WizardPreviewClips.assembly` predicts the reel's
+    /// clock from them, so the two cannot disagree about slicing or joins.
+    ///
+    /// Cutaways never take part in a join: a boundary a cutaway introduced
+    /// must not replay the main clip's transition, so the incoming and
+    /// outgoing clips are the lowest-layer main clips and their ORIGINAL
+    /// extent decides. A join takes the incoming clip's transition in, else
+    /// the outgoing clip's transition out.
+    nonisolated static func plannedSegments(_ clips: [ResolvedClip]) -> (segments: [Segment], transitions: [String?]) {
+        var segments: [Segment] = []
+        var cursor = 0.0
+        for segment in buildLayeredSegments(clips) {
+            if segment.start > cursor + 0.05 {
+                segments.append(Segment(start: cursor, end: segment.start, clips: []))
+            }
+            segments.append(segment)
+            cursor = segment.end
+        }
+        var transitions: [String?] = []
+        for (index, segment) in segments.enumerated() where index > 0 {
+            let incoming = joinClip(in: segment.clips)
+            let outgoing = joinClip(in: segments[index - 1].clips)
+            let entry = incoming.flatMap { abs($0.originalStart - segment.start) < 0.001 ? $0.transIn : nil }
+            let exit = outgoing.flatMap { abs($0.originalEnd - segment.start) < 0.001 ? $0.transOut : nil }
+            transitions.append(entry ?? exit)
+        }
+        return (segments, transitions)
+    }
+
+    /// A reel with pauses, no bumper and no recipe join is assembled on the
+    /// document's clock, in whole frames (`RenderEngine.concatenateTimed`).
+    nonisolated static func usesTimedAssembly(_ document: TimelineDocument, transitions: [String?]) -> Bool {
+        document.videoTrack.contains { $0.hold == true || $0.strikeImpactsFrozen == true }
+            && !document.videoTrack.contains(where: \.bumper)
+            && !transitions.contains(where: { TransitionRecipes.isRecipe($0) })
+    }
+
     /// Port of _build_layered_segments: slice at every clip boundary so each
     /// segment has a constant active clip set (3dp boundaries, ≥0.05s
     /// intervals, 1e-3 coverage tolerance).
@@ -1852,7 +2008,9 @@ actor MultitrackRenderer {
         for index in 0..<(sorted.count - 1) {
             let start = sorted[index]
             let end = sorted[index + 1]
-            guard end - start >= 0.05 else { continue }
+            // Rounded millisecond boundaries can subtract to 0.0499999999999998.
+            // Keep the accepted 50 ms hold on both document and extraction clocks.
+            guard end - start >= 0.05 - 1e-9 else { continue }
             let active = clips.filter {
                 $0.startTime <= start + 0.001 && $0.startTime + $0.duration >= end - 0.001
             }
@@ -1901,6 +2059,7 @@ actor MultitrackRenderer {
             var fingerprint: String
             var start: Double
             var duration: Double
+            var hold: Bool
             var path: [CameraPathKeyframe]?
             var area: ScreenCropArea?
             var region: FreeCropRect?
@@ -1911,13 +2070,19 @@ actor MultitrackRenderer {
             var settings: RenderSettings
             var encoder: [String]
             var rendererVersion = RenderSegmentCache.rendererVersion
+            var strikeTracks: [StrikeHighlightRules.Track]?
+            var strikeBurn: Int?
         }
+        // A job that only tracks a camera path reads the untouched source.
+        let drawsPicture = !(area != nil && (clip.areaRegion != nil || clip.cameraPath != nil))
         return try RenderSegmentCache.key(Input(source: clip.framingIdentity ?? clip.sourcePath,
             fingerprint: clip.framingIdentity ?? SourceIdentityCache.shared.fingerprint(of: URL(fileURLWithPath: clip.sourcePath)),
-            start: clip.sourceStart, duration: clip.duration * clip.speed,
+            start: clip.sourceStart, duration: clip.sourceSpan, hold: clip.hold,
             path: clip.cameraPath, area: area, region: area == nil ? nil : clip.areaRegion ?? Self.cellBounds(of: clip),
             focus: area != nil && clip.areaRegion != nil ? clip.areaFocus : nil,
-            framingPlan: clip.framingPlan, contentWindow: clip.contentWindow, tuning: tuning, settings: settings, encoder: encoder), version: version)
+            framingPlan: clip.framingPlan, contentWindow: clip.contentWindow, tuning: tuning, settings: settings, encoder: encoder,
+            strikeTracks: drawsPicture ? clip.strikeTracks : nil,
+            strikeBurn: drawsPicture && clip.strikeTracks != nil ? StrikeHighlightBurn.version : nil), version: version)
     }
 
     /// Tests only: the music catalog by name, instead of the music library.
@@ -1989,7 +2154,11 @@ actor MultitrackRenderer {
         /// The first clip's index in `document.videoTrack` (its video file owns dub lines).
         var documentIndex: Int
 
-        var sourceEnd: Double { sourceStart + (end - start) * speed }
+        var pauses: [WizardStrikePauses.Pause] = []
+        var timing: WizardStrikePauses.Timing {
+            .init(plannedDuration: end - start - pauses.reduce(0) { $0 + $1.duration }, pauses: pauses)
+        }
+        var sourceEnd: Double { sourceStart + timing.plannedDuration * speed }
     }
 
     nonisolated static func captionCuts(_ clips: [ResolvedClip]) -> [CaptionCut] {
@@ -2000,6 +2169,25 @@ actor MultitrackRenderer {
         for clip in captioned {
             guard let position = clip.captionsPosition, let videoID = clip.videoID else { continue }
             let sourceStart = clip.transcriptStart(at: clip.startTime)
+            // A Wizard freeze retains the cut's origin. Keep caption pagination
+            // on the original source clock across every moving/held piece,
+            // then map the finished windows through the recorded holds once.
+            if clip.hold {
+                if let last = cuts.last, last.originKey == clip.originKey, last.videoID == videoID,
+                   last.track == clip.track, last.captionsPosition == position,
+                   abs(last.end - clip.startTime) < 0.01, abs(last.sourceEnd - sourceStart) < 0.05 {
+                    cuts[cuts.count - 1].pauses.append(.init(time: last.timing.plannedDuration, duration: clip.duration))
+                    cuts[cuts.count - 1].end = clip.startTime + clip.duration
+                } else {
+                    // An exact-preview window can begin inside a hold. Its
+                    // source clock is stationary even without a preceding piece.
+                    cuts.append(CaptionCut(start: clip.startTime, end: clip.startTime + clip.duration,
+                        sourceStart: sourceStart, speed: 1, videoID: videoID, track: clip.track,
+                        captionsPosition: position, originKey: clip.originKey, documentIndex: clip.documentIndex,
+                        pauses: [.init(time: 0, duration: clip.duration)]))
+                }
+                continue
+            }
             if let last = cuts.last, last.track == clip.track, last.captionsPosition == position,
                abs(last.speed - clip.speed) < 1e-6, abs(last.end - clip.startTime) < 0.01,
                abs(last.sourceEnd - sourceStart) < 0.05,
@@ -2049,19 +2237,23 @@ actor MultitrackRenderer {
         for cut in cuts {
             try Task.checkCancellation()
             let videoFile = document.videoTrack[safe: cut.documentIndex]?.videoFile
+            // A hold-only preview samples the caption at one source frame,
+            // then keeps that caption for the stationary output window.
+            let captionDuration = cut.timing.plannedDuration > 1e-9 ? cut.timing.plannedDuration : 1.0 / 30
+            let captionSourceEnd = cut.sourceStart + captionDuration * cut.speed
             let lines = dubLines.filter { line in
                 guard let owner = owners[line.clipUID] else { return false }
-                return owner.videoFile == videoFile && !owner.muted
+                return owner.hold != true && owner.videoFile == videoFile && !owner.muted
             }
             let dubbed = DubPlanning.captionSegments(lines: lines, sourceStart: cut.sourceStart,
-                                                     sourceEnd: cut.sourceEnd, speed: cut.speed)
+                                                     sourceEnd: captionSourceEnd, speed: cut.speed)
             let rows: [TranscriptSegment]
             if !dubbed.isEmpty {
                 rows = dubbed
             } else {
                 do {
                     rows = try await database.transcriptSegments(videoID: cut.videoID, start: cut.sourceStart,
-                                                                 end: cut.sourceEnd, language: captionLanguage)
+                                                                 end: captionSourceEnd, language: captionLanguage)
                 } catch {
                     try Task.checkCancellation()
                     plans.append(CutCaptionPlan(cut: cut, overlays: [], complete: false))
@@ -2079,14 +2271,14 @@ actor MultitrackRenderer {
                 : CaptionSpeakerEvidence()
             try Task.checkCancellation()
             let pages = CaptionOverlayPlan.pages(segments: rows, renderers: captionRenderers,
-                sourceStart: cut.sourceStart, speed: cut.speed, duration: cut.end - cut.start,
+                sourceStart: cut.sourceStart, speed: cut.speed, duration: captionDuration,
                 position: position, language: captionLanguage ?? "",
                 speakerTurns: evidence.turns, speakerRows: evidence.rows, streamID: cut.originKey,
                 speakerPositions: speakerPositions)
             let plan = try CaptionOverlayPlan.plan(pages: pages, style: captionStyle, styles: captionRenderers.styles)
             if plan.usedRevealFallback { emit("Captions: input limit reached; simplified word reveal or motion for this clip") }
             if plan.usedPageFallback { emit("Captions: over 400 inputs; using static page overlays for this clip") }
-            plans.append(CutCaptionPlan(cut: cut, overlays: plan.overlays.map { overlay in
+            plans.append(CutCaptionPlan(cut: cut, overlays: cut.timing.captions(plan.overlays).map { overlay in
                 var shifted = overlay
                 shifted.start += cut.start
                 shifted.end += cut.start
@@ -2162,7 +2354,7 @@ actor MultitrackRenderer {
         }
 
         emit("Segment \(index + 1)/\(total): compositing \(segment.clips.count) clip(s)…")
-        let placements = Self.placements(for: segment).filter { !segment.clips[$0.clipIndex].missingBumper }
+        var placements = Self.placements(for: segment).filter { !segment.clips[$0.clipIndex].missingBumper }
 
         // Captions ride the composite's filter graph — no second encode pass.
         var captions: [CaptionOverlay] = []
@@ -2347,6 +2539,26 @@ actor MultitrackRenderer {
             }
         }
         do {
+            // Strike highlights are laid on each placement's source inside
+            // the encode graph, before any crop, so every crop carries them.
+            // Their pictures are drawn here, after the cache had its chance
+            // and inside the block that always releases the segment key.
+            for position in placements.indices {
+                let placement = placements[position]
+                guard let tracks = segment.clips[placement.clipIndex].strikeTracks else { continue }
+                do {
+                    guard let marks = try await StrikeHighlightBurn.prepare(source: URL(fileURLWithPath: placement.sourcePath),
+                        start: placement.sourceStart, duration: placement.sourceDur, tracks: tracks, scratch: scratch)
+                    else { continue }
+                    placements[position].strikeOverlay = marks.sequences
+                    emit("Segment \(index + 1): strike highlights; intermediates=0")
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    key = nil // A segment missing its highlights must never satisfy the full key.
+                    emit("Segment \(index + 1): strike highlights failed (\(error)); rendering without them")
+                }
+            }
             do {
                 emit("Segment \(index + 1): encode pass")
                 try await compositeLayeredSegment(placements: placements, duration: segment.duration,
@@ -2507,7 +2719,9 @@ actor MultitrackRenderer {
             arguments += await FFmpeg.intermediateDecodeArguments(
                 for: URL(fileURLWithPath: placement.sourcePath), eligible: intermediateSources.contains(placement.sourcePath))
             arguments += ["-ss", String(format: "%.3f", max(0, placement.sourceStart)),
-                          "-t", String(format: "%.3f", placement.sourceDur),
+                          // A Double on both sides: a bare `1` here is passed to the
+                          // format as an Int and prints as 0.000.
+                          "-t", String(format: "%.3f", placement.hold ? 1.0 : placement.sourceDur),
                           "-i", placement.sourcePath]
         }
         // A still PNG needs one decoder thread; ffmpeg otherwise spawns a
@@ -2536,9 +2750,22 @@ actor MultitrackRenderer {
             // segment; the audio atempo below matches.
             let pts = placement.speed == 1 ? "setpts=PTS-STARTPTS"
                 : String(format: "setpts=(PTS-STARTPTS)/%.4f", placement.speed)
+            var input = "[\(sourceIndex):v]"
+            if let marks = placement.strikeOverlay, !marks.isEmpty {
+                let size = await FFmpeg.dimensions(of: URL(fileURLWithPath: placement.sourcePath))
+                filters += try StrikeHighlightBurn.inGraph(marks, size: CGSize(width: size.width, height: size.height),
+                                                           input: input, tag: "strike\(index)")
+                input = "[strike\(index)]"
+            }
+            if placement.hold {
+                filters.append("\(input)trim=end_frame=1," +
+                    String(format: "tpad=stop_mode=clone:stop_duration=%.6f", duration) +
+                    ",setpts=PTS-STARTPTS[hold\(index)]")
+                input = "[hold\(index)]"
+            }
             if let crops = Self.normalizedFreeCrops(placement.freeCrops), !crops.isEmpty {
                 let splitOuts = (0..<crops.count).map { "[s\(index)_\($0)]" }.joined()
-                filters.append("[\(sourceIndex):v]\(pts),setsar=1,fps=30," +
+                filters.append("\(input)\(pts),setsar=1,fps=30," +
                                "split=\(crops.count)\(splitOuts)")
                 var outs: [(label: String, x: Int, y: Int, z: Int)] = []
                 for (cropIndex, crop) in crops.enumerated() {
@@ -2568,7 +2795,7 @@ actor MultitrackRenderer {
             }
 
             if let areaFilter = placement.staticAreaFilter {
-                filters.append("[\(sourceIndex):v]setpts=PTS-STARTPTS,\(areaFilter),\(pts)," +
+                filters.append("\(input)setpts=PTS-STARTPTS,\(areaFilter),\(pts)," +
                                "setsar=1,fps=30[v\(index)]")
                 continue
             }
@@ -2580,7 +2807,7 @@ actor MultitrackRenderer {
                 let spec = FitSpec(sourceWindow: placement.fitWindow ?? plan.sourceWindow ?? FreeCropRect(),
                     sourceSize: CGSize(width: size.width, height: size.height), destination: destination,
                     canvasSize: canvas, fit: plan.fit, feather: plan.feather, blur: plan.blur)
-                filters.append("[\(sourceIndex):v]\(pts),setsar=1,fps=30[fit_source\(index)]")
+                filters.append("\(input)\(pts),setsar=1,fps=30[fit_source\(index)]")
                 filters.append(try FitComposer.graph(spec, inputLabel: "fit_source\(index)", outputLabel: "v\(index)",
                     extraInputs: &fitInputs, inputOffset: fitInputOffset))
                 continue
@@ -2589,15 +2816,15 @@ actor MultitrackRenderer {
             if placement.fillCanvas {
                 // Cover-all cutaway: crop to fill the whole canvas, centred
                 // (scale up to cover, then take the middle of the frame).
-                filters.append(String(format: "[%d:v]%@," +
+                filters.append(String(format: "%@%@," +
                                       "scale=%d:%d:force_original_aspect_ratio=increase," +
                                       "crop=%d:%d,setsar=1,fps=30[v%d]",
-                                      sourceIndex, pts, Self.width, Self.height,
+                                      input, pts, Self.width, Self.height,
                                       Self.width, Self.height, index))
                 continue
             }
 
-            var sourceStream = "[\(sourceIndex):v]"
+            var sourceStream = input
             if !placement.bumper, let window = placement.fitWindow, !Self.isFullFrame(window) {
                 filters.append(String(format: "%@crop=iw*%.5f:ih*%.5f:iw*%.5f:ih*%.5f[content%d]",
                     sourceStream, window.wFrac, window.hFrac, window.xFrac, window.yFrac, index))
@@ -2770,7 +2997,8 @@ actor MultitrackRenderer {
             filters.append("[\(audioInput):a]\(tempo)\(gain)asetpts=PTS-STARTPTS[a\(index)]")
             audioLabels.append("[a\(index)]")
         }
-        let mix = Self.audioMixFilter(labels: audioLabels, cutawayAudio: Self.mixNeedsUnityGain(contributing))
+        let mix = Self.audioMixFilter(labels: audioLabels, cutawayAudio: Self.mixNeedsUnityGain(contributing),
+                                      duration: duration)
         filters.append(contentsOf: mix.filters)
 
         let graph = output.deletingPathExtension().appendingPathExtension("filters")

@@ -1,7 +1,7 @@
 import SwiftUI
 
 /// The Overlays tab of Express's Settings card: overlay design, captions,
-/// name tags, safe area and watermark, bound to a `MiniWizardSettings`.
+/// name tags, safe area, watermark and fight actions, bound to a `MiniWizardSettings`.
 /// The rough cut sheet shows the same rows bound to its own copy, so a cut
 /// can be checked with them before they reach the page.
 struct MiniOverlayRows: View {
@@ -13,6 +13,7 @@ struct MiniOverlayRows: View {
     var showsNameTags: Bool
     /// A non-English transcript with captions on shows Native / English.
     var showsCaptionLanguage: Bool
+    var showsStrikeActions: Bool = false
 
     private var safeAreaPlatforms: Binding<[SocialPlatform]> {
         Binding(get: {
@@ -114,6 +115,16 @@ struct MiniOverlayRows: View {
                     ? "The overlay renders faded to this strength with no boxes or effects, for the whole video."
                     : "The brand logo sits top-left at this strength.")
                     .lineLimit(nil)
+            }
+        }
+        if showsStrikeActions {
+            MiniRow("Action overlays") {
+                Toggle("Action overlays", isOn: $settings.resolvedActionOverlays)
+                    .lineLimit(1).fixedSize()
+            }
+            MiniRow("Pause on contact") {
+                StrikePauseControls(enabled: $settings.resolvedPauseOnContact,
+                                    seconds: $settings.resolvedPauseOnContactSeconds)
             }
         }
     }
@@ -276,5 +287,28 @@ struct MiniOverlayRows: View {
         settings.overlayTemplate = name
         settings.overlayTexts = dynamicTexts(of: name, in: templates)
         settings.overlayEdits = OverlayEdits()
+    }
+}
+
+/// Shared by Express, its rough cut sheet, and the full Wizard.
+struct StrikePauseControls: View {
+    @Binding var enabled: Bool
+    @Binding var seconds: Double
+
+    var body: some View {
+        HStack(spacing: Theme.spaceS) {
+            Toggle("Pause on contact", isOn: $enabled)
+                .lineLimit(1).fixedSize()
+            if enabled {
+                TextField("Seconds", value: $seconds,
+                          format: .number.precision(.fractionLength(1...2)))
+                    .textFieldStyle(.roundedBorder).multilineTextAlignment(.trailing)
+                    .frame(width: 56).accessibilityLabel("Pause on contact seconds")
+                Text("s").lineLimit(1).fixedSize().foregroundStyle(.secondary)
+                Stepper("Pause seconds", value: $seconds,
+                        in: StrikeFreezeRules.holdRange, step: 0.1)
+                    .labelsHidden().fixedSize().accessibilityLabel("Pause on contact seconds")
+            }
+        }
     }
 }

@@ -4,6 +4,8 @@ import Foundation
 /// picture, its sound, what is drawn over it, and the wrapper around it.
 nonisolated enum WizardSettingsTab: String, CaseIterable, Sendable {
     case picture, audio, overlays, package
+    /// Express only: the reel's voice-over recordings.
+    case voiceOver
 
     var label: String {
         switch self {
@@ -11,12 +13,14 @@ nonisolated enum WizardSettingsTab: String, CaseIterable, Sendable {
         case .audio: "Audio"
         case .overlays: "Overlays"
         case .package: "Package"
+        case .voiceOver: "Voice Over"
         }
     }
 
     /// Audio only exists where the recipe or footage offers sound choices.
-    static func available(audio: Bool) -> [WizardSettingsTab] {
-        allCases.filter { $0 != .audio || audio }
+    /// Voice Over is Express's alone.
+    static func available(audio: Bool, voiceOver: Bool = false) -> [WizardSettingsTab] {
+        allCases.filter { ($0 != .audio || audio) && ($0 != .voiceOver || voiceOver) }
     }
 
     /// A remembered tab the page does not offer opens Picture.

@@ -32,6 +32,8 @@ struct RoughCutReviewSheet: View {
     @State private var loadingTask: Task<Void, Never>?
     @State private var posterTasks: [Task<Void, Never>] = []
     @State private var isVisible = false
+    /// The preview file with the voice over mixed in, and what it was mixed from.
+    @State private var voiceBake: (signature: String, url: URL)?
     /// The render job this sheet is waiting for, started by Play on a stale cut.
     @State private var pendingJobID: UUID?
     /// Which take Play asked for; a failed take must not play its neighbour.
@@ -50,7 +52,7 @@ struct RoughCutReviewSheet: View {
     private static let controlsWidthWithOverlays: CGFloat = 720
     private var controlsWidth: CGFloat { hasOverlays ? Self.controlsWidthWithOverlays : Self.controlsWidth }
     /// Under each player: its transport and speed rows, its caption and the grid's spacing.
-    private static let playerChromeHeight: CGFloat = 100
+    private static let playerChromeHeight: CGFloat = 116
 
     init(jobID: UUID, review: RoughCutReview) {
         _jobID = State(initialValue: jobID)
@@ -78,7 +80,24 @@ struct RoughCutReviewSheet: View {
     private var stale: Bool { framingChanged || !review.isRendered }
     /// Express's cut carries its Overlays tab; the full wizard's stays plain.
     private var hasOverlays: Bool { review.namespace == WizardAssistant.expressNamespace && extras.overlays != nil }
-    private var tabs: [WizardSettingsTab] { hasOverlays ? [.picture, .overlays] : [.picture] }
+    /// Voice over is recorded over the one finished reel.
+    private var hasVoiceOver: Bool { hasOverlays && review.cuts.count == 1 }
+    private var tabs: [WizardSettingsTab] {
+        hasOverlays ? (hasVoiceOver ? [.picture, .overlays, .voiceOver] : [.picture, .overlays]) : [.picture]
+    }
+    private var voiceOwner: VoiceOverLibrary.Owner { 
+        .init(projectID: review.projectID, videoIDs: review.videoIDs, library: store.database?.path.path ?? "")
+    }
+    /// Everything the preview's voice-over mix depends on: the cut and its
+    /// player, the recordings, the level, and whether one is being recorded.
+    private var voiceMixKey: String {
+        guard hasVoiceOver, let cut = review.cuts.first, let url = cut.url, let player = players[cut.id] else { return "" }
+        let library = store.voiceOver
+        let takes = library.owner == voiceOwner
+            ? library.takes.map { "\($0.id):\($0.sourceTime):\($0.duration)" }.joined(separator: ",") : "unloaded"
+        return [url.path, "\(ObjectIdentifier(player).hashValue)", takes, "\(library.mixRevision)",
+                library.recorder.isRecording ? "recording" : ""].joined(separator: "|")
+    }
     private var tab: WizardSettingsTab { (WizardSettingsTab(rawValue: tabRaw) ?? .picture).effective(in: tabs) }
     /// The Overlays tab edits in the picture: the still covers the cut and its handles are live.
     private var editsOverlays: Bool { hasOverlays && tab == .overlays && !busy && pendingJob == nil }
@@ -129,7 +148,10 @@ struct RoughCutReviewSheet: View {
                                                         stale: stale, onPlayStale: { render(thenPlay: cut.takeID) },
                                                         hidesOverlayWhilePlaying: true,
                                                         pictureOverlay: { time in still(for: cut, at: time) },
-                                                        pictureChrome: safeAreaShading(in: size))
+                                                        pictureChrome: safeAreaShading(in: size),
+                                                        scrubLane: hasVoiceOver && tab == .voiceOver
+                                                            ? AnyView(VoiceOverLane(clips: review.previewClips, duration: cut.duration))
+                                                            : nil)
                                         .frame(width: size.width)
                                     HStack(spacing: 6) {
                                         Text(cut.name).lineLimit(1).truncationMode(.middle)
@@ -160,6 +182,10 @@ struct RoughCutReviewSheet: View {
                     Text("Settings changed. Press play to render a cut with them; Apply keeps \(kept).")
                         .font(.caption).foregroundStyle(.secondary)
                         .lineLimit(1).truncationMode(.tail)
+                } else if tab == .voiceOver {
+                    Text("Recordings are saved as you make them. Discard does not remove them.")
+                        .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).truncationMode(.tail)
                 } else if editsOverlays {
                     Text("Drag a caption, name tag or overlay item on the picture to place it.")
                         .font(.caption).foregroundStyle(.secondary)
@@ -184,8 +210,10 @@ struct RoughCutReviewSheet: View {
         .frame(minWidth: 420 + controlsWidth, idealWidth: idealSize.width, maxWidth: .infinity,
                minHeight: 480, idealHeight: idealSize.height, maxHeight: .infinity)
         .presentationSizing(.fitted)
+        .task(id: voiceMixKey) { await bakeVoiceOver() }
         .modalCloseButton { discard() }
         .onAppear {
+            if !isVisible { store.voiceOver.reviewSheets += 1 }
             isVisible = true
             loadingTask = Task { await loadPlayers() }
         }
@@ -201,6 +229,8 @@ struct RoughCutReviewSheet: View {
             adopt(next, from: job.id)
         }
         .onDisappear {
+            // Counted out only if this sheet was counted in.
+            if isVisible { store.voiceOver.reviewSheets = max(0, store.voiceOver.reviewSheets - 1) }
             isVisible = false
             stopPlayers()
         }
@@ -346,6 +376,81 @@ struct RoughCutReviewSheet: View {
         loadingTask = Task { await loadPlayers(playTakeID: playTakeID) }
     }
 
+    /// Mixes the recordings into the preview's sound, exactly as Generate
+    /// will, and puts that file in the player. The picture is copied, so it
+    /// takes a moment; the playhead and play state carry over.
+    private func bakeVoiceOver() async {
+        guard hasVoiceOver, let cut = review.cuts.first, let source = cut.url, let database = store.database,
+              let current = players[cut.id] else { return }
+        let library = store.voiceOver
+        if library.owner != voiceOwner {
+            let language = ProjectLanguageResolver.resolve(project: nil, profile: store.activeProfile).spoken.first ?? ""
+            await library.load(voiceOwner, database: database, language: language, ai: store.ai)
+            return // The loaded recordings change the key and run this again.
+        }
+        // Never swap the player under a recording; let a dragged slider settle.
+        guard !library.recorder.isRecording else { return }
+        // The newest mix owns the "updating" line; a cancelled one must not leave it on.
+        let mixToken = library.beginMix()
+        defer { library.endMix(mixToken) }
+        try? await Task.sleep(for: .milliseconds(250))
+        guard !Task.isCancelled else { return }
+        let level = VoiceOverPreferences.bedLevel(profile: store.activeProfile.profileName)
+        let lines = level == nil ? [] : VoiceOverPlacement.place(library.takes, in: VoiceOverPlacement.cuts(from: review.previewClips))
+            .map { VoiceOverMixer.Line(url: database.voiceTakeURL($0.take), start: $0.start, duration: $0.take.duration) }
+        let signature = source.path + "|" + lines.map { "\($0.url.lastPathComponent)@\($0.start)+\($0.duration)" }.joined(separator: ",")
+            + "|\(level ?? -1)"
+        let playing = (current.currentItem?.asset as? AVURLAsset)?.url
+        var target = source
+        if !lines.isEmpty, let level {
+            if let baked = voiceBake, baked.signature == signature, FileManager.default.fileExists(atPath: baked.url.path) {
+                target = baked.url
+            } else {
+                let mixed = source.deletingLastPathComponent().appendingPathComponent("voiced-\(UUID().uuidString).mp4")
+                do {
+                    // A job, so the mix has a status-bar row with Stop and outlives nothing it should not.
+                    try await store.runVoiceOverJob(title: "Voice over — preview sound", group: "voice-mix-\(source.path)") {
+                        try await VoiceOverMixer.mix(video: source, lines: lines, level: level, output: mixed)
+                    }
+                } catch {
+                    try? FileManager.default.removeItem(at: mixed)
+                    if !(error is CancellationError) { library.message = "The preview could not play the recordings (\(error.localizedDescription))." }
+                    return
+                }
+                guard !Task.isCancelled else { try? FileManager.default.removeItem(at: mixed); return }
+                if let old = voiceBake?.url { try? FileManager.default.removeItem(at: old) }
+                voiceBake = (signature, mixed)
+                target = mixed
+            }
+        }
+        guard playing != target, players[cut.id] === current, isVisible else { return }
+        // The swap is allowed only while this sheet still shows this player,
+        // nothing newer has replaced this run, and no recording has started.
+        func currentStillShown() -> Bool {
+            players[cut.id] === current && isVisible && !Task.isCancelled && !library.recorder.isRecording
+        }
+        let item = AVPlayerItem(asset: AVURLAsset(url: target))
+        let player = AVPlayer(playerItem: item)
+        player.setReviewSpeed(PlaybackSpeed.stored())
+        await showPoster(of: player, item: item, cuts: review.cuts)
+        guard currentStillShown() else { return }
+        // Brought near first, so the hand-over below has little left to do.
+        // The old player is left alone meanwhile: Play, Pause and scrubbing stay the user's.
+        let near = current.currentTime()
+        await player.seek(to: near.isValid ? near : .zero, toleranceBefore: .zero, toleranceAfter: .zero)
+        guard currentStillShown() else { return }
+        // No await from here on: the place and the play state are read and
+        // handed over in one step, so nothing the user does can fall between.
+        let time = current.currentTime()
+        let rate = current.rate
+        if time.isValid, !near.isValid || time != near {
+            player.seek(to: time, toleranceBefore: .zero, toleranceAfter: .zero) { _ in }
+        }
+        players[cut.id] = player
+        current.pause()
+        if rate != 0 { player.rate = rate }
+    }
+
     private func stopPlayers() {
         loadingTask?.cancel()
         loadingTask = nil
@@ -395,7 +500,15 @@ struct RoughCutReviewSheet: View {
                             if let overlays = extras.overlays {
                                 MiniOverlayRows(settings: overlaySettings, videoIDs: review.videoIDs,
                                                 showsNameTags: overlays.showsNameTags,
-                                                showsCaptionLanguage: overlays.showsCaptionLanguage)
+                                                showsCaptionLanguage: overlays.showsCaptionLanguage,
+                                                showsStrikeActions: overlays.showsStrikeActions)
+                            }
+                        case .voiceOver:
+                            if let cut = review.cuts.first {
+                                VoiceOverTab(player: players[cut.id], clips: review.previewClips, owner: voiceOwner,
+                                             canRecord: !stale && cut.isRendered && pendingJob == nil,
+                                             captionLanguage: extras.overlays?.settings.voiceCaptionLanguage,
+                                             profile: store.activeProfile.profileName)
                             }
                         default: pictureRows
                         }

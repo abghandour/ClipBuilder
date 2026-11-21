@@ -25,6 +25,8 @@ nonisolated enum FightAttemptParser {
             if action == "submission_attempt" {
                 row.detail = (SubmissionHold(rawValue: entry["detail"] as? String ?? "") ?? .unknown).rawValue
             }
+        } else if StrikeStatsSummary.strikeFamily.contains(action) {
+            row.detail = StrikeDetail(response: entry)?.encoded
         } else if action == "takedown" {
             // An old-style response has no attempt denominator, even during a v2 request.
             row.scoringVersion = 1

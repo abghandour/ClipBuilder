@@ -4,6 +4,35 @@ import Testing
 
 @Suite("Mini Wizard settings")
 struct MiniWizardSettingsTests {
+    @Test func strikeChoicesRoundTripRememberAndAdoptIndependently() throws {
+        let old = try JSONDecoder().decode(MiniWizardSettings.self, from: Data("{}".utf8))
+        #expect(old.actionOverlays == nil && old.pauseOnContact == nil && old.pauseOnContactSeconds == nil)
+        var settings = old
+        settings.actionOverlays = false
+        settings.pauseOnContact = true
+        settings.pauseOnContactSeconds = 1.2
+        let decoded = try JSONDecoder().decode(MiniWizardSettings.self, from: JSONEncoder().encode(settings))
+        #expect(decoded == settings)
+        #expect(decoded.step2Options(base: .init()).strikeHighlights == false)
+        #expect(decoded.step2Options(base: .init()).strikeImpactFreeze == 1.2)
+        #expect(old.adoptingOverlays(from: settings).pauseOnContactSeconds == 1.2)
+        #expect(old.adoptingOverlays(from: settings, strikeActions: false).pauseOnContact == nil)
+        let bridged = WizardPresetBridge.miniSettings(from: WizardPresetBridge.wizardFields(from: settings))
+        #expect(bridged.actionOverlays == false && bridged.pauseOnContact == true && bridged.pauseOnContactSeconds == 1.2)
+        settings.pauseOnContact = false
+        #expect(WizardPresetBridge.miniSettings(from: WizardPresetBridge.wizardFields(from: settings)).pauseOnContactSeconds == 1.2)
+        let suite = "mini-strikes-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        settings.remember(profileName: Fixtures.brand().profileName, defaults: defaults)
+        let remembered = MiniWizardSettings.remembered(profile: Fixtures.brand(), defaults: defaults)
+        #expect(remembered.actionOverlays == false && remembered.pauseOnContact == false && remembered.pauseOnContactSeconds == 1.2)
+        settings.resolvedPauseOnContactSeconds = 20
+        #expect(settings.resolvedPauseOnContactSeconds == StrikeFreezeRules.holdRange.upperBound)
+        settings.resolvedPauseOnContactSeconds = .nan
+        #expect(settings.resolvedPauseOnContactSeconds == StrikeHighlightRules.impactHold)
+    }
+
     @Test func controlsMapToPresentationOptionsAndPreserveOtherDefaults() {
         var base = WizardOptions().step2
         var render = RenderSettings()

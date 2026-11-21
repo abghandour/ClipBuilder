@@ -9,6 +9,9 @@ struct RangeReviewView<Footer: View>: View {
     let items: [RangeReviewItem]
     let rows: [TranscriptRow]
     let labels: [Int64: String]
+    /// Only adapters with a direct Reel-clip mapping supply strike status.
+    var strikeStatuses: [Int64: StrikeClipStatus] = [:]
+    var strikeStatusFallback: String? = nil
     /// Named speaker turns; rows crossing a speaker change split into one line per speaker.
     var speakerSpans: [TranscriptQATrim.SpeakerSpan] = []
     var kept: Binding<Set<Int64>>? = nil
@@ -74,6 +77,26 @@ struct RangeReviewView<Footer: View>: View {
     /// Split the selected saved item in two at a source time (the playhead).
     var onSplit: ((RangeReviewItem, Double) -> Void)? = nil
     @State private var confirmingDeleteAll = false
+    /// The item and range a play request was for, when it arrived before its
+    /// source had loaded. A draft keeps one id while its range moves from one
+    /// thing to another, so the range is part of what was asked for.
+    @State private var playWhenReady: PendingPlay?
+    /// The owner asked to play in the same breath as it changed the selection:
+    /// the item to play once that selection has been taken.
+    @State private var playAfterSelecting: Int64?
+    /// The item `selectItem` last put in place. While it differs from
+    /// `selectedID` a change of item is on its way and will pause the player.
+    @State private var settledID: RangeReviewItem.ID?
+
+    private struct PendingPlay: Equatable {
+        var id: RangeReviewItem.ID?
+        var range: ClosedRange<Double>
+
+        func matches(id: RangeReviewItem.ID?, range: ClosedRange<Double>?) -> Bool {
+            guard let range, id == self.id else { return false }
+            return abs(range.lowerBound - self.range.lowerBound) < 0.05 && abs(range.upperBound - self.range.upperBound) < 0.05
+        }
+    }
     /// Draft items select by pressing a word and dragging; an empty range means nothing selected.
     var spanSelection = false
     /// The draft item is made of several passages (Shift-drag adds one):
@@ -83,6 +106,11 @@ struct RangeReviewView<Footer: View>: View {
     var playAll = false
     /// Replaces the transcript words column (Fight metrics shows its action grid there).
     var leadingPanel: AnyView? = nil
+    /// Bumped by the owner to play the selected item from its start (a double-click in its own panel).
+    var playRequest = 0
+    /// False once the caller's selection is no longer what `playRequest` asked
+    /// to play: a request kept while the source loads is then dropped.
+    var playWanted = true
     /// A control for the transcript column's header, per selected item.
     var transcriptAccessory: ((RangeReviewItem) -> AnyView?)? = nil
     /// A control in the transcript column's footer while a span is marked
@@ -288,13 +316,19 @@ struct RangeReviewView<Footer: View>: View {
             translationLanguages = result.1
             translationsByLanguage = result.2
         }
-        .onAppear { reconcileSelection(); selectItem() }
+        .onAppear { reconcileSelection(); selectItem(); settledID = selectedID }
         .onChange(of: selectedID) { _, _ in
             // The user went elsewhere: a passage still being added no longer takes the selection.
             pendingCut = nil
+            if playWhenReady?.id != selectedID { playWhenReady = nil }
             selectedStable = stableID(of: selectedID)
             selection?.wrappedValue = selectedID?.ownerID
             selectItem()
+            settledID = selectedID
+            if let wanted = playAfterSelecting {
+                playAfterSelecting = nil
+                if selectedID?.ownerID == wanted { playRequested() }
+            }
             applyPendingDraft()
             if playingAll, pageVisible, isEnabled {
                 if advancingPlayAll, playback.player != nil, let range, range.upperBound > range.lowerBound {
@@ -318,10 +352,35 @@ struct RangeReviewView<Footer: View>: View {
         .onChange(of: rowIdentities) { _, _ in reconcileSelection() }
         .speakerColors(for: Set(labels.values).union(speakerSpans.map(\.label)))
         .onChange(of: selection?.wrappedValue) { _, ownerID in
-            if ownerID != selectedID?.ownerID { reconcileSelection() } else { applyRequestedCut() }
+            if ownerID != selectedID?.ownerID {
+                // A change of item follows, and plays there once the item is in place.
+                reconcileSelection()
+            } else {
+                applyRequestedCut()
+                // Nothing left to wait for: the selection asked for is the one shown.
+                if let wanted = playAfterSelecting, wanted == ownerID, selectedID == settledID {
+                    playAfterSelecting = nil
+                    playRequested()
+                }
+            }
         }
         .onChange(of: requestedCut?.wrappedValue, initial: true) { _, _ in applyRequestedCut() }
+        .onChange(of: playRequest) { _, _ in
+            // The selection it came with has not been taken yet: played now it
+            // would be the old item, and stopped at once by the change.
+            // The same when the selection was taken but its item is not in place yet.
+            if let wanted = selection?.wrappedValue, wanted != selectedID?.ownerID {
+                playAfterSelecting = wanted
+            } else if selectedID != settledID, let wanted = selectedID?.ownerID {
+                playAfterSelecting = wanted
+            } else {
+                playAfterSelecting = nil
+                playRequested()
+            }
+        }
         .onChange(of: range) { _, range in
+            // The selection now shows something else: the kept request was not for it.
+            if let pending = playWhenReady, !pending.matches(id: selectedID, range: range) { playWhenReady = nil }
             guard let range else { return }
             if let draft, abs(draft.start - range.lowerBound) < 0.05, abs(draft.end - range.upperBound) < 0.05 {
                 self.draft = nil
@@ -338,9 +397,10 @@ struct RangeReviewView<Footer: View>: View {
                 if pageVisible, isEnabled, playingAll, advancingPlayAll {
                     advancingPlayAll = false
                     playback.play()
-                } else if pageVisible, isEnabled, autoplay {
+                } else if pageVisible, isEnabled, autoplay || (playWanted && playWhenReady?.matches(id: selectedID, range: range) == true) {
                     playback.play()
                 }
+                playWhenReady = nil
             }
         }
         .onChange(of: video?.url) { _, _ in selectItem() }
@@ -1007,6 +1067,9 @@ struct RangeReviewView<Footer: View>: View {
                         }
                         .lineLimit(caption.lineLimit).help(caption.text)
                     }
+                    if !item.isDraft {
+                        StrikeClipStatusLine(status: strikeStatuses[item.id.ownerID], fallback: strikeStatusFallback)
+                    }
                 }
                 // A keep box is 18 wide at 8 in; the text starts 5 past it.
                 .padding(.leading, (isChild ? 0 : kept != nil ? 15 : 0) + (item.isDraft ? 0 : RangeReviewPalette.barWidth + Theme.spaceXS))
@@ -1020,6 +1083,7 @@ struct RangeReviewView<Footer: View>: View {
             .buttonStyle(.plain)
             .overlay(alignment: .leading) { bars(item) }
             .accessibilityAddTraits(item.id == selectedID ? .isSelected : [])
+            .accessibilityValue(item.isDraft ? "" : strikeStatuses[item.id.ownerID]?.line ?? strikeStatusFallback ?? "")
             // A row moves from anywhere on its body: a passage inside its
             // item, an item among the items (a passage row's bar moves the item).
             .highPriorityGesture(reorderGesture(item, barMoves: isChild ? owner(of: item) : nil),
@@ -1394,6 +1458,20 @@ struct RangeReviewView<Footer: View>: View {
         guard let child = parent.children.first(where: { $0.id.cutIndex == cut }) else { return }
         userCleared = false
         selectedID = child.id
+    }
+
+    /// Plays the selected item from its start, now or as soon as its source is ready.
+    private func playRequested() {
+        guard pageVisible, isEnabled, let range, range.upperBound > range.lowerBound,
+              selected?.isAvailable == true else { return }
+        playingAll = false
+        advancingPlayAll = false
+        // Still loading: play as soon as the player is ready.
+        guard playback.player != nil else { playWhenReady = PendingPlay(id: selectedID, range: range); return }
+        playWhenReady = nil
+        playback.setRange(playable(range))
+        playback.seek(to: range.lowerBound)
+        playback.play()
     }
 
     private func selectItem() {

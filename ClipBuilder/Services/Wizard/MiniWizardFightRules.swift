@@ -23,7 +23,14 @@ nonisolated enum MiniWizardFightRules {
         var label: String {
             var parts = [FightScoring.actionPoints.first { $0.action == action }?.label
                          ?? action.replacingOccurrences(of: "_", with: " ").capitalized]
-            if let detail, !detail.isEmpty, detail != SubmissionHold.unknown.rawValue { parts.append(detail) }
+            if let strike = StrikeDetail(detail) {
+                // "punch right, head right": the blow and its limb, then the target and the attacker's side of the frame.
+                let blow = [strike.technique.rawValue, strike.limb?.rawValue].compactMap { $0 }.joined(separator: " ")
+                let place = [strike.target?.rawValue, strike.frameSide?.rawValue].compactMap { $0 }.joined(separator: " ")
+                parts.append([blow, place].filter { !$0.isEmpty }.joined(separator: ", "))
+            } else if let detail, !detail.isEmpty, detail != SubmissionHold.unknown.rawValue {
+                parts.append(detail.replacingOccurrences(of: "|", with: " "))
+            }
             if let outcome, !outcome.isEmpty, action.hasSuffix("_attempt") { parts.append(outcome) }
             return parts.joined(separator: " · ")
         }

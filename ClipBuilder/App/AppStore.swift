@@ -108,6 +108,7 @@ final class AppStore {
     var teamSyncCoordinator: TeamSyncCoordinator { teamSync.coordinator }
     let jobs = AppJobs()
     let dubReviews = DubReviewCoordinator()
+    let wizardStrikeHighlightOwner = WizardStrikeHighlightOwner()
     /// Ask AI on every page: page state, suggestions, ⌘⇧A (AppStore+Assistant.swift).
     let assistant = AssistantModel()
     let googleDrive = GoogleDriveTransfers.shared
@@ -351,10 +352,18 @@ final class AppStore {
     /// Scored fight-action events by video id — the pace/winning graphs
     /// under the video and scene timelines render from these.
     var fightEvents: [Int64: [FightEventRecord]] = [:] {
-        didSet { refreshMiniFightActions() }
+        didSet {
+            refreshMiniFightActions()
+            strikeHighlightRevision += 1
+        }
     }
+    /// Goes up whenever fight events or saved strike highlights change, so a
+    /// cached Builder preview of a clip that draws them is not replayed stale.
+    var strikeHighlightRevision = 0
     /// Videos whose fight-scoring pass is running right now.
-    var fightScoringInFlight: Set<Int64> = []
+    var fightScoringJobsInFlight: Set<Int64> = []
+    var wizardStrikeMarkingInFlight: Set<Int64> = []
+    var fightScoringInFlight: Set<Int64> { fightScoringJobsInFlight.union(wizardStrikeMarkingInFlight) }
     var generatedVideos: [GeneratedVideoRecord] = []
     var feedback: [FeedbackRecord] = []
     var lessons: [WizardLesson] = []
@@ -855,6 +864,8 @@ final class AppStore {
     // MARK: - Services
 
     let ai: AIService
+    /// The Express reel's voice-over recordings (docs/Express-Voice-Over-Plan.md).
+    let voiceOver = VoiceOverLibrary()
     let thumbnails = ThumbnailService()
     let renderEngine = RenderEngine()
     var builderLibraryHydration: BuilderLibraryHydration { builder.scriptLibraryHydration }
@@ -973,6 +984,8 @@ final class AppStore {
         podcastAnalysis = PodcastAnalysisService(ai: ai)
         wizard = WizardEngine(ai: ai, render: renderEngine, reviewDub: { [dubReviews] prepared, projectID, profileName in
             try await dubReviews.review(prepared, projectID: projectID, profileName: profileName)
+        }, strikeHighlightContext: { [wizardStrikeHighlightOwner] database in
+            await wizardStrikeHighlightOwner.context(database: database)
         })
         multitrackRenderer = MultitrackRenderer(render: renderEngine)
         let instagramPersistence = InstagramTokenPersistence()
@@ -982,7 +995,9 @@ final class AppStore {
         fightResearchService = FightResearchService(ai: ai)
         opensProfiles = openProfile
         jobs.store = self
+        voiceOver.store = self
         dubReviews.store = self
+        wizardStrikeHighlightOwner.store = self
         instagramPersistence.store = self
 
         builder.onTimelineAutosave = { [weak self] id, document in
@@ -1210,6 +1225,7 @@ final class AppStore {
         SettingsStore.saveActiveProfileName(name)
         scriptPrerequisites?.cancelAll()
         profileGeneration &+= 1
+        wizardStrikeMarkingInFlight = []
         // The word timing model belongs to the Mac, not the profile, but its
         // download is a job and every job stops here: start it again.
         let restartWordTimingInstall = jobs.hasLiveTask(kind: .wordTimingModel) && !WordAlignerModel.isInstalled

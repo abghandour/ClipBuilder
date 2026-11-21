@@ -26,6 +26,13 @@ struct MiniWizardView: View {
     @State private var settingsProfile: String?
     @State private var transcriptLanguage: String?
     @State private var hasTranscript = false
+    @State private var hasScoredStrikes = false
+    @State private var strikeFactsKey: String?
+    @State private var strikeSnapshot: StrikeClipStatusRules.Saved?
+    @State private var strikeSnapshotKey: String?
+    @State private var completedStrikeRequest: MiniStrikeStatusRequest?
+    @State private var strikeResult: MiniStrikeStatusRequest.Result?
+    @State private var strikeStatusError: String?
     /// Videos with active scenes; the others in `videos` are transcript-only.
     @State private var sceneVideoIDs: Set<Int64> = []
     @State private var transcriptVideoID: Int64?
@@ -115,7 +122,8 @@ struct MiniWizardView: View {
             ForEach(mountedRuns, id: \.footageKind) { run in
                 let visible = run.footageKind == openKind
                 VStack(alignment: .leading, spacing: Theme.spaceS) {
-                    MiniFootageCard(run: run, pageHeight: pageHeight)
+                    MiniFootageCard(run: run, pageHeight: pageHeight,
+                                    strikeStatuses: visibleStrikeStatuses, strikeStatusFallback: strikeStatusFallback)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .frame(height: visible ? nil : 0, alignment: .top)
@@ -145,7 +153,77 @@ struct MiniWizardView: View {
                                     return RangeReviewPalette.slot(index, family: .init(item.kind))
                                 },
                                 groupKeys: store.miniReelGroupKeys,
-                                summary: generateSummary)
+                                summary: generateSummary,
+                                strikeStatuses: visibleStrikeStatuses,
+                                strikeStatusFallback: strikeStatusFallback,
+                                strikeSummary: strikeSummary)
+    }
+
+    private var strikeStatusRequest: MiniStrikeStatusRequest {
+        let chosen = miniSettings.effective(for: flow,
+            introAvailable: store.bumpers.contains { $0.placements.contains(.intro) },
+            outroAvailable: store.bumpers.contains { $0.placements.contains(.outro) })
+        let runs = store.miniRuns.values.filter {
+            $0.video.id == selectedVideo?.id && $0.projectID == store.activeProjectID
+        }
+        let run = runs.first { $0.footageKind == flow.effectiveFootageKind }
+            ?? MiniReelRules.kinds(store.miniReelItems).compactMap { kind in runs.first { $0.footageKind == kind } }.first
+        var base = run?.options ?? WizardOptions()
+        base.manualBRoll = true
+        base.pacing = store.activeProfile.defaultPacing
+        var options = chosen.previewOptions(profile: store.activeProfile, base: base)
+        if options.formatPreset == ReelRecipe.podcastHighlights.id { options.formatPreset = "podcast" }
+        options = options.neutralized(for: ReelRecipe.recipe(id: options.formatPreset) ?? .custom)
+        return MiniStrikeStatusRequest(dataKey: transcriptKey, videoID: selectedVideo?.id,
+            isFight: selectedVideo?.type == .fight,
+            clips: MiniStrikeStatusRequest.clips(selectedVideo.map { reelClips(videoID: $0.id) } ?? [], runs: runs),
+            options: options, xfadeDuration: store.settings.transitions.xfadeDuration)
+    }
+
+    private var visibleStrikeStatuses: [String: StrikeClipStatus] {
+        let request = strikeStatusRequest
+        guard request.visible, completedStrikeRequest == request else { return [:] }
+        return strikeResult?.statuses ?? [:]
+    }
+
+    private var strikeStatusFallback: String? {
+        let request = strikeStatusRequest
+        guard request.visible else { return nil }
+        guard completedStrikeRequest == request else { return "Checking strike status…" }
+        return strikeStatusError
+    }
+
+    private var strikeSummary: String? {
+        let request = strikeStatusRequest
+        guard request.visible else { return nil }
+        guard completedStrikeRequest == request else { return "Checking strike status…" }
+        return strikeStatusError ?? strikeResult?.summary
+    }
+
+    private func refreshStrikeStatuses() async {
+        let request = strikeStatusRequest
+        guard request.visible, let videoID = request.videoID, let database = store.database else { return }
+        do {
+            let saved: StrikeClipStatusRules.Saved
+            if strikeSnapshotKey == request.dataKey, let strikeSnapshot {
+                saved = strikeSnapshot
+            } else {
+                saved = try await database.strikeClipStatusSnapshot(videoID: videoID)
+            }
+            guard !Task.isCancelled, request == strikeStatusRequest else { return }
+            strikeSnapshot = saved
+            strikeSnapshotKey = request.dataKey
+            let result = await Task.detached(priority: .userInitiated) { request.evaluate(saved: saved) }.value
+            guard !Task.isCancelled, request == strikeStatusRequest else { return }
+            strikeResult = result
+            strikeStatusError = nil
+            completedStrikeRequest = request
+        } catch {
+            guard !Task.isCancelled, request == strikeStatusRequest else { return }
+            strikeResult = nil
+            strikeStatusError = "Strike status unavailable — could not read saved marks"
+            completedStrikeRequest = request
+        }
     }
 
     /// The output format's width / height, for the plain player column.
@@ -166,6 +244,7 @@ struct MiniWizardView: View {
                        hasPodcastExchangeScenes: selectedVideo.map { podcastVideoIDs.contains($0.id) } ?? false,
                        hasTranscript: hasTranscript,
                        hasScenes: selectedVideo.map { sceneVideoIDs.contains($0.id) } ?? true,
+                       hasScoredStrikes: strikeFactsKey == transcriptKey && hasScoredStrikes,
                        footageKind: footageKind, length: length,
                        captionsEnabled: miniSettings.captions, transcriptLanguage: transcriptLanguage,
                        hasFootage: currentRun?.hasFootage == true || !store.miniReelItems.isEmpty,
@@ -277,6 +356,7 @@ struct MiniWizardView: View {
             value.remember(profileName: profileName)
         }
         .task(id: transcriptKey) { await loadTranscriptLanguage() }
+        .task(id: strikeStatusRequest) { await refreshStrikeStatuses() }
         .onChange(of: store.scenesVersion) { _, _ in store.refreshMiniQASections() }
         .onChange(of: store.transcriptCountsVersion) { _, _ in
             if store.isLoadingMiniFootage, [.qa, .transcript].contains(store.miniFootageKind) {
@@ -847,7 +927,7 @@ struct MiniWizardView: View {
     }
 
     private var transcriptKey: String {
-        "\(store.profileGeneration):\(selectedVideo?.id ?? -1):\(store.videosVersion):\(store.scenesVersion):\(store.transcriptCountsVersion)"
+        "\(store.profileGeneration):\(selectedVideo?.id ?? -1):\(store.videosVersion):\(store.scenesVersion):\(store.transcriptCountsVersion):\(store.strikeHighlightRevision)"
     }
 
     private func loadTranscriptLanguage() async {
@@ -860,7 +940,11 @@ struct MiniWizardView: View {
         guard let video = selectedVideo, let database = store.database else { return }
         // Original segments carry the language; translated English rows must not hide this choice.
         let language = try? await database.originalTranscriptLanguage(videoID: video.id)
+        let strikes = video.type == .fight
+            ? (try? await database.strikeHighlightStatus(videoID: video.id).hasStrikes) ?? false : false
         guard !Task.isCancelled, key == transcriptKey else { return }
+        hasScoredStrikes = strikes
+        strikeFactsKey = key
         transcriptLanguage = language
         hasTranscript = language != nil
     }
@@ -981,7 +1065,8 @@ struct MiniWizardView: View {
             // rest of the settings stay.
             if let overlays = command.expressOverlays {
                 miniSettings = miniSettings.adoptingOverlays(from: overlays.settings, nameTags: overlays.showsNameTags,
-                                                             captionLanguage: overlays.showsCaptionLanguage)
+                                                             captionLanguage: overlays.showsCaptionLanguage,
+                                                             strikeActions: overlays.showsStrikeActions)
             }
         }
         if id == WizardAssistant.findHighlightsAction {

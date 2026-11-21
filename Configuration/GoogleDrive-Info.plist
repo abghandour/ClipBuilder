@@ -13,6 +13,8 @@
     <!-- stable or beta, from the build configuration's CLIPBUILDER_CHANNEL
          (Configuration/Beta.xcconfig). Empty or missing: AppChannel uses the
          bundle id. -->
+    <key>NSMicrophoneUsageDescription</key>
+    <string>Clip Builder records your voice when you hold Record in Voice Over.</string>
     <key>ClipBuilderChannel</key>
     <string>$(CLIPBUILDER_CHANNEL)</string>
 </dict>

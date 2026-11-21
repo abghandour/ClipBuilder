@@ -1398,10 +1398,77 @@ private struct VideoPreviewPane: View {
     @State private var fightLoopEntryID: Int64?
     @State private var fightLoopObserver: Any?
 
+    /// The green limb and impact highlight of the strike on repeat.
+    @State private var strikeHighlight: StrikeHighlightRules.Track?
+    @State private var strikeHighlightTask: Task<Void, Never>?
+    @AppStorage("analyze.fight.strikeHighlight") private var showStrikeHighlight = true
+    @AppStorage("analyze.fight.pauseOnImpact") private var pauseOnImpact = false
+    /// Fires at the moment of impact of the strike on repeat.
+    @State private var impactObserver: Any?
+    @State private var impactHoldTask: Task<Void, Never>?
+
     private func stopFightLoop() {
         if let fightLoopObserver { player?.removeTimeObserver(fightLoopObserver) }
         fightLoopObserver = nil
         fightLoopEntryID = nil
+        strikeHighlightTask?.cancel()
+        strikeHighlightTask = nil
+        strikeHighlight = nil
+        if let impactObserver { player?.removeTimeObserver(impactObserver) }
+        impactObserver = nil
+        impactHoldTask?.cancel()
+        impactHoldTask = nil
+    }
+
+    /// Hold the picture at the moment of impact on every pass of the loop.
+    /// The observer is there for every found strike and asks the switch
+    /// each time it fires, so the switch works on a loop already running.
+    private func holdOnImpact(at contact: Double, entryID: Int64) {
+        guard let player else { return }
+        if let impactObserver { player.removeTimeObserver(impactObserver) }
+        impactObserver = player.addBoundaryTimeObserver(
+            forTimes: [NSValue(time: CMTime(seconds: contact, preferredTimescale: 600))], queue: .main
+        ) {
+            MainActor.assumeIsolated {
+                guard pauseOnImpact, fightLoopEntryID == entryID, let player = self.player else { return }
+                player.pause()
+                impactHoldTask?.cancel()
+                impactHoldTask = Task {
+                    try? await Task.sleep(for: .seconds(StrikeHighlightRules.impactHold))
+                    guard !Task.isCancelled, fightLoopEntryID == entryID else { return }
+                    player.play()
+                }
+            }
+        }
+    }
+
+    /// Switching the hold off while the picture is held lets it run again.
+    private func pauseOnImpactChanged() {
+        guard !pauseOnImpact, impactHoldTask != nil else { return }
+        impactHoldTask?.cancel()
+        impactHoldTask = nil
+        if fightLoopEntryID != nil { player?.play() }
+    }
+
+    /// Reads the strike's saved highlight (finding it off the main thread
+    /// the first time) and keeps it for the loop. Whether it is drawn and
+    /// whether the picture holds on impact are decided by the two switches
+    /// as they stand at that moment.
+    private func findStrikeHighlight(_ entry: FightScoreDigest.Entry, fighterKey: String) {
+        strikeHighlightTask?.cancel()
+        strikeHighlight = nil
+        guard StrikeStatsSummary.strikeFamily.contains(entry.action) else { return }
+        let video = video, id = entry.id, fighter = fighterKey
+        let detail = StrikeDetail(entry.detail)
+        let profile = store.profileGeneration
+        strikeHighlightTask = Task {
+            guard !Task.isCancelled, profile == store.profileGeneration else { return }
+            let track = await store.strikeHighlight(video: video, time: entry.time, fighterKey: fighter,
+                                                    detail: detail, eventGeneration: entry.generation)
+            guard !Task.isCancelled, profile == store.profileGeneration, fightLoopEntryID == id, let track else { return }
+            strikeHighlight = track
+            holdOnImpact(at: track.contact, entryID: id)
+        }
     }
 
     /// Seek to the action's window and keep rewinding to its start.
@@ -1415,6 +1482,7 @@ private struct VideoPreviewPane: View {
         player.seek(to: start, toleranceBefore: .zero, toleranceAfter: .zero)
         player.play()
         fightLoopEntryID = entry.id
+        findStrikeHighlight(entry, fighterKey: fightListPick?.fighterKey ?? "")
         fightLoopObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main
         ) { [weak player] time in
@@ -1516,6 +1584,8 @@ private struct VideoPreviewPane: View {
     private func countLabel(_ fighter: FightScoreDigest.Fighter, _ category: FightScoreDigest.Category) -> String {
         switch category {
         case .strikes: "\(fighter.strikes) strike" + (fighter.strikes == 1 ? "" : "s")
+        case .punches: "\(fighter.punches) punch" + (fighter.punches == 1 ? "" : "es")
+        case .kicks: "\(fighter.kicks) kick" + (fighter.kicks == 1 ? "" : "s")
         case .takedowns: "\(fighter.takedowns)/\(fighter.takedownAttempts) TD"
         case .submissions: "\(fighter.submissions)/\(fighter.submissionAttempts) sub"
         }
@@ -1545,6 +1615,9 @@ private struct VideoPreviewPane: View {
                 // area and pushes the sections under the fold.
                 .frame(maxWidth: .infinity, minHeight: 140, idealHeight: 230, maxHeight: 260)
                 .background(.black, in: RoundedRectangle(cornerRadius: Theme.mediaRadius))
+                .overlay {
+                    if showStrikeHighlight, let strikeHighlight { StrikeHighlightOverlay(player: player, track: strikeHighlight) }
+                }
                 .overlay {
                     switch availability {
                     case .loading:
@@ -1732,7 +1805,28 @@ private struct VideoPreviewPane: View {
                                     ProgressView()
                                         .controlSize(.small)
                                 }
-                                Button(store.fightEvents[video.id]?.isEmpty == false ? "Re-score v2" : "Score v2") {
+                                Toggle("Highlight", isOn: $showStrikeHighlight)
+                                    .toggleStyle(.button)
+                                    .controlSize(.small)
+                                    .lineLimit(1)
+                                    .fixedSize()
+                                    .help("While a strike plays on repeat, mark the attacking limb in green and where it lands in red")
+                                Toggle("Pause on impact", isOn: $pauseOnImpact)
+                                    .toggleStyle(.button)
+                                    .controlSize(.small)
+                                    .lineLimit(1)
+                                    .fixedSize()
+                                    .help("While a strike plays on repeat, hold the picture for a moment when it lands")
+                                    .onChange(of: pauseOnImpact) { pauseOnImpactChanged() }
+                                if store.fightEvents[video.id]?.isEmpty == false {
+                                    Button("Mark strikes") { store.markStrikes(video: video) }
+                                        .controlSize(.small)
+                                        .lineLimit(1)
+                                        .fixedSize()
+                                        .disabled(store.fightScoringInFlight.contains(video.id))
+                                        .help("Find the limb and impact of the scored strikes that have none saved yet, without scoring the fight again. Clips with Highlight strikes on draw these in the final video.")
+                                }
+                                Button(store.fightEvents[video.id]?.isEmpty == false ? "Re-score" : "Score") {
                                     store.scoreFightAction(video: video)
                                 }
                                 .controlSize(.small)
@@ -1753,8 +1847,8 @@ private struct VideoPreviewPane: View {
                                                markerTime: fightListPick?.videoID == video.id ? fightMarkerTime : nil)
                             } else if let pass = store.analysisPasses.last(where: { $0.videoID == video.id && $0.pass == .fightScore && $0.status != .running }) {
                                 Text(pass.status == .completed
-                                     ? "Scored v\(pass.version): no scoring actions found (\(pass.note ?? "no detail")). Check the Fight Scoring job log in the status bar."
-                                     : "Scoring \(pass.status.rawValue): \(pass.note ?? "no detail"). Check the Fight Scoring job log in the status bar.")
+                                     ? "Scored v\(pass.version): no scoring actions found (\(FightSampling.noteSummary(pass) ?? "no detail")). Check the Fight Scoring job log in the status bar."
+                                     : "Scoring \(pass.status.rawValue): \(FightSampling.noteSummary(pass) ?? "no detail"). Check the Fight Scoring job log in the status bar.")
                                     .font(.caption2)
                                     .foregroundStyle(.tertiary)
                             } else {

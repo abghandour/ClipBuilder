@@ -638,7 +638,7 @@ final class BuilderTimelineModel {
     /// The path a clip renders with, on its own clock (seconds from its
     /// source start); memoized per clip until its framing or the scenes change.
     func effectiveCameraPath(for clip: TimelineClip) -> [CameraPathKeyframe] {
-        let key = "\(clip.sourceStart ?? -1)|\(clip.duration)|\(clip.effectiveSpeed)|\(clip.centerStage)|\(clip.cameraPath?.hashValue ?? 0)|\(clip.sceneID ?? -1)|\(clip.videoFile ?? "")|\(clip.wide)|\(clip.role)"
+        let key = "\(clip.hold == true)|\(clip.sourceStart ?? -1)|\(clip.duration)|\(clip.effectiveSpeed)|\(clip.centerStage)|\(clip.cameraPath?.hashValue ?? 0)|\(clip.sceneID ?? -1)|\(clip.videoFile ?? "")|\(clip.wide)|\(clip.role)"
         if let memo = cameraPathMemo[clip.uid], memo.key == key { return memo.path }
         let path = MultitrackRenderer.effectiveCameraPath(for: clip, scenes: scenes)
         cameraPathMemo[clip.uid] = (key, path)
@@ -1244,7 +1244,7 @@ final class BuilderTimelineModel {
 
     /// Source-file time to preview for a clip at a given timeline time.
     func sourceTime(for clip: TimelineClip, atTimeline time: Double) -> Double {
-        (clip.sourceStart ?? 0) + max(0, min(clip.duration, time - clip.startTime)) * clip.effectiveSpeed
+        (clip.sourceStart ?? 0) + (clip.hold == true ? 0 : max(0, min(clip.duration, time - clip.startTime)) * clip.effectiveSpeed)
     }
 
     // MARK: - Clip mutations
@@ -1664,6 +1664,15 @@ final class BuilderTimelineModel {
     @discardableResult
     func trimClip(_ uid: UUID, duration: Double, precision: TimelinePrecision = .ordinary,
                   sourceDuration: Double? = nil) -> Result<Void, ClipEditFailure> {
+        if let index = clipIndex(uid), document.videoTrack[index].hold == true {
+            let clip = document.videoTrack[index]
+            guard duration.isFinite else { return .failure(.outOfBounds) }
+            registerUndo("Trim Freeze Frame")
+            document.videoTrack[index].duration = HoldClipRules.duration(duration, precision: precision)
+            resolveLayout(track: clip.track)
+            documentDidChange()
+            return .success(())
+        }
         if precision == .speech {
             guard let clip = clip(uid) else { return .failure(.notFound) }
             guard !clip.bumper else { return .failure(.bumper) }
@@ -1707,6 +1716,10 @@ final class BuilderTimelineModel {
     func setClipSourceRange(_ uid: UUID, start: Double, end: Double,
                             precision: TimelinePrecision = .ordinary,
                             sourceDuration: Double? = nil) -> Result<Void, ClipEditFailure> {
+        if let clip = clip(uid), clip.hold == true {
+            guard start.isFinite, end.isFinite, end >= start else { return .failure(.outOfBounds) }
+            return trimClip(uid, duration: end - start, precision: precision)
+        }
         if precision == .speech {
             guard let index = clipIndex(uid) else { return .failure(.notFound) }
             var clip = document.videoTrack[index]
@@ -1761,6 +1774,35 @@ final class BuilderTimelineModel {
         return .success(())
     }
 
+    /// Insert held impact frames as one edit, using the speed edit's track packing.
+    @discardableResult
+    func freezeOnImpacts(_ uid: UUID, contacts: [Double],
+                         hold: Double = StrikeHighlightRules.impactHold) -> Result<Int, ClipEditFailure> {
+        guard let index = clipIndex(uid) else { return .failure(.notFound) }
+        let original = document.videoTrack[index]
+        guard !original.bumper else { return .failure(.bumper) }
+        guard !original.isCutaway, original.hold != true,
+              hold.isFinite, StrikeFreezeRules.holdRange.contains(hold) else { return .failure(.outOfBounds) }
+        var source = original
+        source.sourceStart = source.sourceStart ?? scene(for: source)?.startTime
+        source.sourceEnd = source.sourceEnd ?? scene(for: source)?.endTime
+        let selected = StrikeFreezeRules.contacts(source, contacts: contacts)
+        guard !selected.isEmpty else { return .success(0) }
+        let pieces = StrikeFreezeRules.pieces(source, contacts: selected, hold: hold)
+        guard !pieces.isEmpty else { return .failure(.outOfBounds) }
+        // Expanded pieces may start past the next clip's OLD position. Preserve
+        // the pre-edit order when handing them to the existing packing routine.
+        let order = clips(inTrack: original.track).filter { !$0.bumper && !$0.isCutaway }
+            .sorted { $0.startTime < $1.startTime }
+            .flatMap { $0.uid == uid ? pieces.map(\.uid) : [$0.uid] }
+        registerUndo("Freeze on Impacts")
+        document.videoTrack.replaceSubrange(index...index, with: pieces)
+        resolveLayout(track: original.track, order: order)
+        if selection == .clip(uid) { selection = .clip(pieces[0].uid) }
+        documentDidChange()
+        return .success(selected.count)
+    }
+
     /// A cut preserves source continuity and identity without opening a gap.
     @discardableResult
     func splitClip(_ uid: UUID, at time: Double,
@@ -1769,6 +1811,7 @@ final class BuilderTimelineModel {
         guard let index = clipIndex(uid) else { return .failure(.notFound) }
         let original = document.videoTrack[index]
         guard !original.bumper else { return .failure(.bumper) }
+        guard original.hold != true else { return .failure(.outOfBounds) }
         let at = precision.rounded(time)
         let sourceStart = original.sourceStart ?? scene(for: original)?.startTime
         let ceiling = sourceDuration ?? scene(for: original)?.videoDuration ?? original.sourceEnd
@@ -1807,7 +1850,7 @@ final class BuilderTimelineModel {
     /// clip through its scene (an untrimmed one starts where the scene
     /// does), a file clip through `videoIDsByPath` (Library paths).
     func cutSource(for clip: TimelineClip, videoIDsByPath: [String: Int64]) -> TimelineDocument.CutSource? {
-        guard !clip.bumper else { return nil }
+        guard !clip.bumper, clip.hold != true else { return nil }
         if let scene = scene(for: clip) {
             return .init(videoID: scene.videoID, sourceStart: clip.sourceStart ?? scene.startTime)
         }
@@ -1972,7 +2015,7 @@ final class BuilderTimelineModel {
     /// Bumpers are not part of any track. An overlapping bumper is ignored
     /// and covers whatever the packing puts under it; a pausing bumper is
     /// an obstacle the packing steps over, which keeps its gap open.
-    func resolveLayout(track: Int) {
+    func resolveLayout(track: Int, order: [UUID]? = nil) {
         guard track >= 0, track < TimelineDocument.maxTracks, document.trackSequential[track] else { return }
         let sorted = clips(inTrack: track).sorted { $0.startTime < $1.startTime }
         let pauses = document.videoTrack
@@ -1980,7 +2023,7 @@ final class BuilderTimelineModel {
             .sorted { $0.startTime < $1.startTime }
         var cursor = 0.0
         // B-roll is bound to time: packing neither moves it nor steps over it.
-        var pending = sorted.filter { !$0.bumper && !$0.isCutaway }.map(\.uid)
+        var pending = order ?? sorted.filter { !$0.bumper && !$0.isCutaway }.map(\.uid)
         var position = 0
         while position < pending.count {
             guard let index = clipIndex(pending[position]) else { position += 1; continue }

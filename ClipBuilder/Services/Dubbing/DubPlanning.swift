@@ -8,7 +8,7 @@ nonisolated enum DubPlanning {
                       turns: [UUID: [SpeakerTurn]], settings: DubSettings) -> [DubLine] {
         var result: [DubLine] = []
         for clip in document.videoTrack {
-            guard !clip.muted, !clip.bumper, !clip.isCutaway, clip.duration > 0,
+            guard clip.hold != true, !clip.muted, !clip.bumper, !clip.isCutaway, clip.duration > 0,
                   !(document.trackSettings.indices.contains(clip.track) && document.trackSettings[clip.track].muted)
             else { continue }
             let speed = clip.speed ?? 1

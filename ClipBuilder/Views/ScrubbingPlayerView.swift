@@ -23,6 +23,13 @@ struct ScrubbingPlayerView<Overlay: View>: View {
     /// Drawn over the picture whatever the transport does (safe-area
     /// shading); above the picture overlay, never over the controls.
     var pictureChrome: AnyView? = nil
+    /// A lane drawn under the scrubber on the same scale: its left edge is
+    /// the playhead at zero, its right edge the playhead at the end.
+    var scrubLane: AnyView? = nil
+    /// Half the scrubber's thumb: the playhead's centre stops this far
+    /// short of either end of the slider.
+    private static var thumbInset: CGFloat { 9 }
+    private static var laneHeight: CGFloat { 10 }
 
     @State private var transport = PlayerTransport()
     @State private var scrubbing: Double?
@@ -65,11 +72,19 @@ struct ScrubbingPlayerView<Overlay: View>: View {
                 .controlSize(.small)
                 .disabled(player == nil || transport.duration <= 0)
                 .accessibilityLabel("Playhead")
+                .overlay(alignment: .bottom) {
+                    if let scrubLane {
+                        scrubLane.frame(height: Self.laneHeight)
+                            .padding(.horizontal, Self.thumbInset)
+                            .offset(y: Self.laneHeight + 4)
+                    }
+                }
                 Text("\((scrubbing ?? transport.time).timecode) / \(transport.duration.timecode)")
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.secondary)
                     .lineLimit(1).fixedSize()
             }
+            .padding(.bottom, scrubLane == nil ? 0 : Self.laneHeight + 4)
             // Its own row: a reel card is too narrow for the scrubber and
             // the speed control side by side.
             PlaybackSpeedControl(rate: $speed)
@@ -121,10 +136,20 @@ final class PlayerTransport {
 
     func attach(_ player: AVPlayer?) {
         guard player !== self.player else { return }
+        // Replaced in the middle of a drag (the rough cut swaps in a remixed
+        // preview): the drag goes on with the new player, and letting go
+        // still resumes playback.
+        let replacing = self.player != nil && player != nil
+        let resume = resumeAfterScrub
+        let target = pendingSeek ?? (seekInFlight ? time : nil)
         detach()
         self.player = player
         guard let player else { return }
         time = player.currentTime().seconds.isFinite ? player.currentTime().seconds : 0
+        if replacing {
+            resumeAfterScrub = resume
+            if let target { time = target; issueSeek(target) }
+        }
         timeObserver = player.addPeriodicTimeObserver(
             forInterval: CMTime(seconds: 0.1, preferredTimescale: 600), queue: .main
         ) { [weak self] current in

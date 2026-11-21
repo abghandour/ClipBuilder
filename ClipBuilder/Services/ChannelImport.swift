@@ -41,7 +41,8 @@ nonisolated enum ChannelImport {
     /// Never throws: each part that fails is named in the report and the
     /// app starts with what it got.
     static func importEverything(profiles: [String], defaults: UserDefaults = .standard,
-                                 stableDefaults: UserDefaults? = UserDefaults(suiteName: AppChannel.stableBundleID))
+                                 stableDefaults: UserDefaults? = UserDefaults(suiteName: AppChannel.stableBundleID),
+                                 stableDomain: String = AppChannel.stableBundleID)
         -> Report {
         var report = Report()
         let stableSettings = SettingsStore.settingsURL(channel: .stable)
@@ -65,7 +66,7 @@ nonisolated enum ChannelImport {
             }
         }
         if let stableDefaults {
-            report.defaultsImported = importDefaults(from: stableDefaults, into: defaults)
+            report.defaultsImported = importDefaults(from: stableDefaults, into: defaults, domain: stableDomain)
         }
         return report
     }
@@ -123,8 +124,12 @@ nonisolated enum ChannelImport {
     /// Keys the stable app has set that this app has not: window frames,
     /// screen choices, dismissed banners. The data folder key is skipped
     /// when it names a folder that no longer passes validation.
-    static func importDefaults(from source: UserDefaults, into target: UserDefaults) -> Int {
-        guard let domain = source.persistentDomain(forName: AppChannel.stableBundleID) else { return 0 }
+    /// `domain` is the stable app's own; tests name another, because
+    /// writing a persistent domain by name replaces the real app's
+    /// preferences whichever `UserDefaults` instance the call goes through.
+    static func importDefaults(from source: UserDefaults, into target: UserDefaults,
+                               domain name: String = AppChannel.stableBundleID) -> Int {
+        guard let domain = source.persistentDomain(forName: name) else { return 0 }
         var copied = 0
         for (key, value) in domain where target.object(forKey: key) == nil {
             if key == SettingsStore.dataFolderDefaultsKey, let path = value as? String,

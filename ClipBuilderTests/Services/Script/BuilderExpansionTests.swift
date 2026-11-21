@@ -42,6 +42,39 @@ struct BuilderExpansionTests {
         ]
     }
 
+    @Test("freeze command uses saved contacts, supports a custom hold and stays atomic")
+    func freezeOnImpacts() throws {
+        var source = Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 4)
+        source.strikeHighlights = true
+        let model = ScriptFixtures.model(clips: [source])
+        var library = ScriptFixtures.library()
+        library.strikeContacts[library.videos[0].id] = [1, 3]
+        let command = BuilderCommand.freezeClipOnImpacts(clip: source.uid.uuidString, hold: 1.2)
+        #expect(try JSONDecoder().decode(BuilderCommand.self, from: JSONEncoder().encode(command)) == command)
+        let defaultHold = BuilderCommand.freezeClipOnImpacts(clip: source.uid.uuidString)
+        #expect(try JSONDecoder().decode(BuilderCommand.self, from: JSONEncoder().encode(defaultHold)) == defaultHold)
+        let outcomes = ScriptRunner().run([.init(command)], model: model, library: library)
+        #expect(!outcomes.contains { $0.isRefused })
+        #expect(model.document.videoTrack.count == 5)
+        #expect(model.document.videoTrack.filter { $0.hold == true }.allSatisfy {
+            $0.duration == 1.2 && $0.strikeHighlights == true
+        })
+        let untouched = ScriptFixtures.model(clips: [source])
+        let baseline = untouched.document
+        let failed = ScriptRunner().run([.init(defaultHold), .init(.freezeClipOnImpacts(clip: UUID().uuidString))],
+                                        model: untouched, library: library)
+        #expect(failed.last?.isRefused == true)
+        #expect(untouched.document == baseline)
+        let noContacts = ScriptRunner().run([.init(defaultHold)], model: untouched, library: ScriptFixtures.library())
+        #expect(noContacts == [.unchanged(reason: "No impact far enough from the clip's edges")])
+        #expect(untouched.document == baseline)
+        for hold in [0.0, -1, 5.1, .infinity, .nan] {
+            #expect(throws: (any Error).self) {
+                try BuilderCommand.freezeClipOnImpacts(clip: source.uid.uuidString, hold: hold).validateExpansion()
+            }
+        }
+    }
+
     @Test func everyOperationRoundTripsAndRejectsUnknownOrMissingFields() throws {
         for command in commands(model()) {
             let data = try JSONEncoder().encode(command)

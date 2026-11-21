@@ -8,6 +8,8 @@ nonisolated struct WizardPreviewRow: Identifiable, Sendable, Equatable {
         case transcript
         /// The analyzer's beat-by-beat narrative for the scene.
         case description
+        /// What the fight scorer logged inside the clip ("A: right punch to the head").
+        case action
         case none
     }
 
@@ -28,6 +30,7 @@ nonisolated struct WizardPreviewRow: Identifiable, Sendable, Equatable {
     var textKind: TextKind
     /// The transcript split by speaker, in order; empty for a description.
     var segments: [Segment] = []
+    var videoID: Int64 = 0
 
     var range: ClosedRange<Double> { start...max(start, end) }
     var duration: Double { max(0, end - start) }
@@ -78,19 +81,77 @@ nonisolated enum WizardPreviewRows {
         segments.map { ($0.speaker.map { "\($0): " } ?? "") + $0.text }.joined(separator: " ")
     }
 
+    /// What the fight scorer logged inside a clip, in words, in time order:
+    /// "Jan: right punch to the head; Carlos: takedown attempt, defended".
+    /// A pause on contact is one held frame, so it takes the blow nearest it.
+    static func action(for range: ClosedRange<Double>, events: [FightEventRecord],
+                       names: [String: String]) -> String {
+        let held = range.upperBound - range.lowerBound < 0.05
+        let scored = StrikeStatsSummary.deduplicatedStrikes(events)
+            + events.filter { !StrikeStatsSummary.strikeFamily.contains($0.action) }
+        var inside = scored.filter { event in
+            // An action with a length (a submission attempt) counts while it is going on.
+            let end = max(event.time, event.endTime ?? event.time)
+            return held ? abs(event.time - range.lowerBound) <= 0.3
+                 : end > event.time ? event.time < range.upperBound && end > range.lowerBound
+                 : event.time >= range.lowerBound && event.time < range.upperBound
+        }.sorted { $0.time < $1.time }
+        if held, let nearest = inside.min(by: { abs($0.time - range.lowerBound) < abs($1.time - range.lowerBound) }) {
+            inside = [nearest]
+        } else if held {
+            // No blow at the held frame: an action going on through it (a submission attempt).
+            inside = scored.filter { event in
+                guard let end = event.endTime, end > event.time else { return false }
+                return event.time <= range.lowerBound && range.lowerBound < end
+            }.max { $0.time < $1.time }.map { [$0] } ?? []
+        }
+        let phrases = inside.map { event -> String in
+            let name = names[event.fighterKey].flatMap { $0.isEmpty ? nil : $0 }
+            return [name, phrase(event)].compactMap { $0 }.joined(separator: ": ")
+        }
+        let shown = phrases.prefix(4).joined(separator: "; ")
+        return phrases.count > 4 ? "\(shown); +\(phrases.count - 4) more" : shown
+    }
+
+    /// One scored event in plain words.
+    static func phrase(_ event: FightEventRecord) -> String {
+        let label = (FightScoring.actionPoints.first { $0.action == event.action }?.label
+            ?? event.action.replacingOccurrences(of: "_", with: " ")).lowercased()
+        if StrikeStatsSummary.strikeFamily.contains(event.action) {
+            guard let detail = StrikeDetail(event.detail) else { return label }
+            var words = [detail.limb?.rawValue, detail.technique.rawValue].compactMap { $0 }.joined(separator: " ")
+            if let target = detail.target { words += target == .legs ? " to the legs" : " to the \(target.rawValue)" }
+            if event.action == "ground_strike" { words += " on the ground" }
+            return event.action == "significant_strike" ? "big \(words)" : words
+        }
+        let extra = [event.outcome, event.detail].compactMap { $0?.trimmingCharacters(in: .whitespaces) }
+            .filter { !$0.isEmpty && !$0.contains("|") }
+        return ([label] + extra).joined(separator: ", ")
+    }
+
     /// Rows in clip order. Text is chosen by content: transcript words when
-    /// the clip's range has any, else the scene narrative, else nothing.
-    static func rows(clips: [WizardPreviewClip], lines: [Int64: [Line]]) -> [WizardPreviewRow] {
+    /// the clip's range has any, else what the fight scorer logged there,
+    /// else the scene narrative, else nothing. A Fight metrics pick was
+    /// chosen for its action, so it says the action first and falls back
+    /// to words (usually commentary) only when nothing else describes it.
+    static func rows(clips: [WizardPreviewClip], lines: [Int64: [Line]],
+                     events: [Int64: [FightEventRecord]] = [:], names: [String: String] = [:]) -> [WizardPreviewRow] {
         clips.map { clip in
+            var fightPick = false
+            if case .fightPick = owner(of: clip.id) { fightPick = true }
             let segments = segments(for: clip.range, lines: lines[clip.scene.videoID] ?? [])
             let narrative = (clip.scene.narrative ?? "").trimmingCharacters(in: .whitespacesAndNewlines)
+            let action = segments.isEmpty || fightPick
+                ? action(for: clip.range, events: events[clip.scene.videoID] ?? [], names: names) : ""
             let (text, kind): (String, WizardPreviewRow.TextKind) =
-                !segments.isEmpty ? (text(segments), .transcript)
+                !segments.isEmpty && !fightPick ? (text(segments), .transcript)
+                : !action.isEmpty ? (action, .action)
                 : !narrative.isEmpty ? (narrative, .description)
+                : !segments.isEmpty ? (text(segments), .transcript)
                 : ("", .none)
             return WizardPreviewRow(id: clip.id, title: clip.title, videoURL: clip.scene.videoURL,
                                     start: clip.start, end: clip.end, text: text, textKind: kind,
-                                    segments: kind == .transcript ? segments : [])
+                                    segments: kind == .transcript ? segments : [], videoID: clip.scene.videoID)
         }
     }
 

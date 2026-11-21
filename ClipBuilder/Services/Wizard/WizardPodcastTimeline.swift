@@ -64,6 +64,9 @@ nonisolated enum WizardPodcastTimeline {
         guard options.requestedFraming.subject != .original,
               recipe.capabilities.podcastFraming || options.requestedFraming.subject == .layout else { return [:] }
         let subject = options.requestedFraming.subject == .auto ? plan.framing ?? .speakerFocus : options.requestedFraming.subject
+        let highlightSourceTypes = Dictionary(videos.compactMap { video in
+            video.type.map { (video.url.path, $0) }
+        }, uniquingKeysWith: { first, _ in first })
         var result: [Int: TimelineDocument] = [:]
         for (index, clip) in plan.clips.enumerated() {
             guard let scene = sceneMap[clip.sceneID], clip.end > clip.start else { continue }
@@ -110,6 +113,7 @@ nonisolated enum WizardPodcastTimeline {
                 document.videoTrack[track].captions = options.addCaptions && document.videoTrack[track].track == 0
                     ? (options.captionPositionOverride ?? captionStyle.position) : "none"
             }
+            WizardStrikeHighlights.apply(to: &document, enabled: options.strikeHighlights, sourceTypes: highlightSourceTypes)
             result[index] = document
         }
         return result
@@ -121,18 +125,50 @@ extension WizardEngine {
     nonisolated static func timelineDocument(from plan: WizardPlan, sceneMap: [Int64: SceneRecord],
                                              options: WizardOptions, database: Database,
                                              profile: BrandProfile = BrandProfile(name: "Default"),
+                                             strikeHighlightTracks: [String: [StrikeHighlightRules.Track]] = [:],
+                                             strikeContacts: [String: [Double]] = [:],
+                                             pauseEligibilityPlan: WizardPlan? = nil,
                                              log: @escaping @Sendable (String) -> Void) async throws -> TimelineDocument {
         let sourceCuts = try await WizardPodcastTimeline.cutDocuments(plan: plan, sceneMap: sceneMap,
             options: options, database: database, profile: profile,
             captionStyle: profile.renderCaptionStyle(id: options.captionStyleID), log: log)
-        let cuts = sourceCuts.reduce(into: [Int: TimelineDocument]()) { result, entry in
+        var cuts = sourceCuts.reduce(into: [Int: TimelineDocument]()) { result, entry in
             result[entry.key] = WizardOrdinaryTimeline.retimed(entry.value, speed: plan.clips[entry.key].speed)
         }
         let videos = try await database.fetchVideos(projectID: options.projectID)
         let videoTypes = Dictionary(uniqueKeysWithValues: videos.compactMap { video in video.type.map { (video.id, $0) } })
-        var document = timelineDocument(from: WizardNameTags.renderPlan(plan, options: options),
+        if WizardStrikePauses.requested(options) {
+            for (index, clip) in plan.clips.enumerated() where cuts[index] == nil {
+                var single = plan
+                single.clips = [clip]
+                single.clips[0].textOverlay = nil
+                single.clips[0].speakerIntroductions = []
+                single.transitions = []
+                cuts[index] = timelineDocument(from: single, sceneMap: sceneMap, renderSettings: options.renderSettings,
+                    pacing: options.pacing, framing: options.requestedFraming, videoTypes: videoTypes)
+            }
+        }
+        // This content document has no generated cards. Preserve original
+        // eligibility, but resolve only joins that it actually presents.
+        var presentationPlan = plan
+        presentationPlan.introTitle = nil
+        var presentationOptions = options
+        presentationOptions.includeOutro = false
+        let paused = WizardStrikePauses.prepare(plan: pauseEligibilityPlan ?? plan, cuts: cuts, sceneMap: sceneMap,
+            sourceTypes: videoTypes, contacts: strikeContacts, options: options,
+            xfadeDuration: RenderContext.transitions.xfadeDuration,
+            presentation: .init(plan: presentationPlan, options: presentationOptions))
+        for message in paused.messages {
+            if let snapshot = WizardStrikeHighlightSnapshot.current {
+                if await snapshot.shouldLogPauseSkip(message) { log(message) }
+            } else { log(message) }
+        }
+        var resolvedPlan = plan
+        resolvedPlan.transitions = paused.joins.transitions
+        var document = timelineDocument(from: WizardNameTags.renderPlan(resolvedPlan, options: options),
             sceneMap: sceneMap, renderSettings: options.renderSettings,
-            pacing: options.pacing, framing: options.requestedFraming, podcastCuts: cuts, videoTypes: videoTypes)
+            pacing: options.pacing, framing: options.requestedFraming, podcastCuts: paused.cuts, videoTypes: videoTypes,
+            pauseTimings: paused.timings)
         let people = options.usesNameTags ? try await database.fetchPeople() : []
         let tagText = options.usesNameTags
             ? try await database.tagText(field: profile.tagStyle(id: options.nameTagStyleID).description.field) : [:]
@@ -140,13 +176,14 @@ extension WizardEngine {
         var cursor = 0.0
         for (index, clip) in plan.clips.enumerated() {
             guard let scene = sceneMap[clip.sceneID] else { continue }
-            let duration = (clip.end - clip.start) / clip.speed
-            if cuts[index] == nil {
-                for var item in WizardNameTags.ordinary(scene: scene, duration: duration, people: people, tagText: tagText,
+            let timing = paused.timings[index] ?? WizardStrikePauses.timing(for: clip, contacts: [], seconds: nil)
+            let duration = timing.outputDuration
+            if sourceCuts[index] == nil {
+                for var item in WizardNameTags.ordinary(scene: scene, duration: timing.plannedDuration, people: people, tagText: tagText,
                                                        options: options, captionStyle: profile.renderCaptionStyle(id: options.captionStyleID),
                                                        profile: profile, imageAspects: imageAspects) {
-                    item.startTime += cursor
-                    item.endTime += cursor
+                    item.startTime = cursor + timing.outputTime(item.startTime)
+                    item.endTime = cursor + timing.outputTime(item.endTime)
                     document.textOverlays.append(item)
                 }
             }
@@ -156,6 +193,10 @@ extension WizardEngine {
             document.videoTrack[index].captions = options.addCaptions && document.videoTrack[index].track == 0
                 ? (options.captionPositionOverride ?? profile.renderCaptionStyle(id: options.captionStyleID).position) : "none"
         }
+        let highlightSourceTypes = Dictionary(videos.compactMap { video in
+            video.type.map { (video.url.path, $0) }
+        }, uniquingKeysWith: { first, _ in first })
+        WizardStrikeHighlights.apply(to: &document, enabled: options.strikeHighlights, sourceTypes: highlightSourceTypes)
         return document
     }
 }

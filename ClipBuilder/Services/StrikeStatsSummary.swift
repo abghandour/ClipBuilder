@@ -39,8 +39,9 @@ nonisolated enum StrikeStatsSummary {
 
     static let strikeFamily: Set<String> = ["strike", "significant_strike", "hurt", "knockdown", "ground_strike"]
 
-    /// Anchor each cluster to its first timestamp; a chain of nearby blows must not
-    /// swallow a later blow more than 0.4 s from that anchor.
+    /// Legacy clusters span at most 0.4 s from their first timestamp. Dense
+    /// scoring (v3 onward) keeps distinct contacts, merging only repeats or
+    /// severity upgrades of the same named blow under 0.2 s from that anchor.
     static func deduplicatedStrikes(_ events: [FightEventRecord]) -> [FightEventRecord] {
         let groups = Dictionary(grouping: events.filter { strikeFamily.contains($0.action) }) {
             "\($0.videoID)|\($0.fighterKey)"
@@ -49,7 +50,7 @@ nonisolated enum StrikeStatsSummary {
             var result: [FightEventRecord] = []
             var anchor = -Double.infinity
             for row in rows.sorted(by: { $0.time < $1.time }) {
-                if row.time - anchor <= 0.4, let last = result.last {
+                if row.time - anchor <= 0.4, let last = result.last, sameBlow(row, last, anchor: anchor) {
                     if row.points > last.points { result[result.count - 1] = row }
                 } else {
                     anchor = row.time
@@ -58,6 +59,26 @@ nonisolated enum StrikeStatsSummary {
             }
             return result
         }.sorted { $0.time < $1.time }
+    }
+
+    private static func sameBlow(_ first: FightEventRecord, _ second: FightEventRecord, anchor: Double) -> Bool {
+        if (first.scoringVersion ?? 1) >= 3 || (second.scoringVersion ?? 1) >= 3 {
+            guard first.time < anchor + 0.2,
+                  let a = StrikeDetail(first.detail), let b = StrikeDetail(second.detail),
+                  a.technique == b.technique, let limb = a.limb, limb == b.limb else { return false }
+            let repeated = first.action == second.action && first.points == second.points
+                && first.detail == second.detail && first.targetKey == second.targetKey
+            let upgraded = second.action == "strike" && first.action == "significant_strike"
+            // Equal stamps have no chronological order; keep the upgrade
+            // even when it appeared first in the input.
+            let sameStamp = first.time == second.time
+                && second.action == "significant_strike" && first.action == "strike"
+            return repeated || upgraded || sameStamp
+        }
+        guard let a = StrikeDetail(first.detail), let b = StrikeDetail(second.detail) else { return true }
+        if a.technique != b.technique { return false }
+        if let left = a.limb, let right = b.limb, left != right { return false }
+        return true
     }
 
     /// Overlapping holds and a continuing chain through a short transition are
@@ -130,17 +151,52 @@ nonisolated enum StrikeStatsSummary {
         return pairs
     }
 
-    static func analyzedSeconds(scenes: [SceneRecord], start: Double, end: Double) -> Double {
-        let ranges = scenes.filter { $0.tags.contains(where: SmartSampling.actionTags.contains) }
-            .map { ($0.startTime, $0.endTime) }.sorted { $0.0 < $1.0 }
-        // The scorer samples the short gaps too when merging adjacent scenes.
-        var merged: [(Double, Double)] = []
-        for range in ranges {
-            if let last = merged.last, range.0 - last.1 <= 2 {
-                merged[merged.count - 1].1 = max(last.1, range.1)
-            } else { merged.append(range) }
+    /// Only reconcile a shot still unresolved at the end of the immediately
+    /// preceding scoring window. Attempts within a window remain independent.
+    static func takedownContinuations(_ windows: [(range: FightSampling.Range, events: [FightEventRecord])]) -> [FightEventRecord] {
+        var result: [FightEventRecord] = []
+        var previous: FightSampling.Range?
+        var previousIndices: [Int] = []
+        for window in windows.sorted(by: { $0.range.start < $1.range.start }) {
+            var indices: [Int] = []
+            var used: Set<Int> = []
+            for row in window.events.sorted(by: { $0.time < $1.time }) {
+                if let previous, abs(previous.end - window.range.start) < 0.001,
+                   row.action == "takedown_attempt", !row.fighterKey.isEmpty, row.targetKey != nil,
+                   // Sheet stamps are rounded to hundredths of a second.
+                   abs(row.time - window.range.start) <= 0.01,
+                   let index = previousIndices.last(where: {
+                       let prior = result[$0]
+                       return !used.contains($0) && prior.action == row.action && prior.videoID == row.videoID
+                           && prior.fighterKey == row.fighterKey && prior.targetKey == row.targetKey
+                           && prior.outcome == "unresolved"
+                           && prior.endTime.map { abs($0 - previous.end) <= FightSampling.denseInterval + 0.001 } == true
+                   }) {
+                    result[index].endTime = row.endTime
+                    result[index].outcome = row.outcome
+                    result[index].detail = row.detail
+                    used.insert(index)
+                    result[index].points = row.points
+                    indices.append(index)
+                } else {
+                    indices.append(result.count)
+                    result.append(row)
+                }
+            }
+            previous = window.range
+            previousIndices = indices
         }
-        return merged.reduce(0) { $0 + max(0, min(end, $1.1) - max(start, $1.0)) }
+        return result
+    }
+
+    /// Unknown legacy coverage is zero; current sampling policy is not evidence
+    /// that any of those seconds were actually scored.
+    static func analyzedSeconds(passes: [AnalysisPassRecord], videoID: Int64, start: Double, end: Double) -> Double {
+        guard let pass = passes.filter({ $0.videoID == videoID && $0.pass == .fightScore })
+            .max(by: { (Double($0.startedAt) ?? 0) < (Double($1.startedAt) ?? 0) }),
+              let ranges = FightSampling.successfulRanges(pass) else { return 0 }
+        return ranges
+            .reduce(0) { $0 + max(0, min(end, $1.end) - max(start, $1.start)) }
     }
 
     static func snapshot(_ original: StrikeStatPayload, video: VideoRecord, events: [FightEventRecord],
@@ -172,7 +228,7 @@ nonisolated enum StrikeStatsSummary {
         payload.states = events.isEmpty && completed == nil ? [.unavailable] : [legacy ? .legacy : .scored]
         if pairs.contains(where: { $0.outcomeCheck }) { payload.states?.append(.outcomeCheck) }
         payload.scope = .init(start: start, end: end,
-                              analyzedSeconds: analyzedSeconds(scenes: scenes, start: start, end: end),
+                              analyzedSeconds: analyzedSeconds(passes: passes, videoID: video.id, start: start, end: end),
                               round: StrikeStatsScope.round(type: video.type, start: start, end: end,
                                                             scenes: scenes, researchJSON: researchJSON),
                               isRecap: video.type == .recap)

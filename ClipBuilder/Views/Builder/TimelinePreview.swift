@@ -16,6 +16,7 @@ nonisolated struct PreviewSegment: Sendable {
     var volume: Double          // 0-1 gain for the clip's own audio
     var bumper: Bool = false
     var speed: Double = 1
+    var hold: Bool = false
     /// Dialogue that is not the picture's own: the main clip playing under
     /// a cutaway. Entirely independent of the picture — its own file,
     /// offset, speed and gain, clamped to its own length. When set it takes
@@ -148,13 +149,19 @@ nonisolated enum TimelinePreviewComposer {
             }
             let source = try await asset(for: segment.url)
             let sourceDuration = (try? await source.load(.duration).seconds) ?? segment.duration
-            let clamped = min(segment.duration * segment.speed, max(0, sourceDuration - segment.sourceStart))
+            // A sub-frame slice contains only the frame at sourceStart. The
+            // existing composition scaling stretches it for the entire hold.
+            let sourceSpan = segment.hold ? 1.0 / 60_000 : segment.duration * segment.speed
+            let clamped = min(sourceSpan, max(0, sourceDuration - segment.sourceStart))
             // A picture that has run out of source still holds its place:
             // the dialogue underneath a cutaway must keep playing.
-            let hasPicture = clamped > 0.01
+            let hasPicture = segment.hold ? clamped > 0 : clamped > 0.01
             let start = time(segment.timelineStart)
-            let range = CMTimeRange(start: time(segment.sourceStart), duration: time(max(0.001, clamped)))
-            let screenDuration = hasPicture ? time(clamped / segment.speed) : time(segment.duration)
+            let range = CMTimeRange(start: time(segment.sourceStart),
+                                    duration: segment.hold
+                                        ? CMTime(seconds: max(1.0 / 60_000, clamped), preferredTimescale: 60_000)
+                                        : time(max(0.001, clamped)))
+            let screenDuration = hasPicture && !segment.hold ? time(clamped / segment.speed) : time(segment.duration)
 
             // Composition tracks must stay contiguous — fill timeline gaps.
             if start > videoCursor {
@@ -190,7 +197,7 @@ nonisolated enum TimelinePreviewComposer {
             if start > audioCursor {
                 clipAudioTrack.insertEmptyTimeRange(CMTimeRange(start: audioCursor, end: start))
             }
-            if let dialogue = segment.audio {
+            if !segment.hold, let dialogue = segment.audio {
                 // The clip under a cutaway keeps talking: its own file, its
                 // own offset and speed, clamped against its own length.
                 let voiceAsset = try await asset(for: dialogue.url)
@@ -211,7 +218,7 @@ nonisolated enum TimelinePreviewComposer {
                     clipAudioParams.setVolume(0, at: start)
                     audioCursor = start + screenDuration
                 }
-            } else if hasPicture, segment.volume > 0,
+            } else if !segment.hold, hasPicture, segment.volume > 0,
                       let sourceAudio = try? await source.loadTracks(withMediaType: .audio).first {
                 try clipAudioTrack.insertTimeRange(range, of: sourceAudio, at: start)
                 clipAudioParams.setVolume(Float(segment.volume), at: start)
@@ -220,11 +227,11 @@ nonisolated enum TimelinePreviewComposer {
                 audioCursor = start + screenDuration
             } else {
                 clipAudioTrack.insertEmptyTimeRange(CMTimeRange(start: start, duration: screenDuration))
-                clipAudioParams.setVolume(Float(hasPicture ? segment.volume : 0), at: start)
+                clipAudioParams.setVolume(Float(hasPicture && !segment.hold ? segment.volume : 0), at: start)
                 audioCursor = start + screenDuration
             }
 
-            if let extraAudioTrack, let extraAudioParams, let extra = segment.cutawayAudio {
+            if !segment.hold, let extraAudioTrack, let extraAudioParams, let extra = segment.cutawayAudio {
                 if start > extraCursor {
                     extraAudioTrack.insertEmptyTimeRange(CMTimeRange(start: extraCursor, end: start))
                 }
@@ -423,8 +430,8 @@ extension BuilderTimelineModel {
             }
             guard let url else { continue }
             let trackMuted = document.trackSettings[safe: top.track]?.muted ?? false
-            let ownGain = (top.muted || trackMuted) ? 0.0 : Double(top.volume) / 5.0
-            let sourceStart = (top.sourceStart ?? 0) + (start - top.startTime) * top.effectiveSpeed
+            let ownGain = (top.hold == true || top.muted || trackMuted) ? 0.0 : Double(top.volume) / 5.0
+            let sourceStart = (top.sourceStart ?? 0) + (top.hold == true ? 0 : (start - top.startTime) * top.effectiveSpeed)
 
             // B-roll only replaces the picture: the clip underneath keeps
             // its sound, on an audio source of its own (its file, its
@@ -433,7 +440,7 @@ extension BuilderTimelineModel {
             var gain = ownGain
             var audio: PreviewSegment.AudioSource?
             var cutawayAudio: PreviewSegment.AudioSource?
-            if top.isCutaway {
+            if top.isCutaway && top.hold != true {
                 gain = 0
                 if ownGain > 0 {
                     cutawayAudio = PreviewSegment.AudioSource(url: url, sourceStart: sourceStart,
@@ -442,7 +449,7 @@ extension BuilderTimelineModel {
                 var best: Candidate?
                 for candidate in heap where candidate.end > start + 0.001 {
                     let clip = candidate.clip
-                    guard !clip.bumper, clip.role == .main, clip.track == top.track,
+                    guard !clip.bumper, clip.hold != true, clip.role == .main, clip.track == top.track,
                           clip.startTime <= start + 0.001, !clip.muted,
                           !(document.trackSettings[safe: clip.track]?.muted ?? false) else { continue }
                     if best == nil || outranks(candidate, best!) { best = candidate }
@@ -457,6 +464,7 @@ extension BuilderTimelineModel {
                 }
             }
             if let lastIndex = segments.indices.last,
+               top.hold != true, !segments[lastIndex].hold,
                segments[lastIndex].url == url,
                abs(segments[lastIndex].timelineStart + segments[lastIndex].duration - start) < 0.001,
                abs(segments[lastIndex].sourceStart + segments[lastIndex].duration * top.effectiveSpeed - sourceStart) < 0.001,
@@ -473,6 +481,7 @@ extension BuilderTimelineModel {
                                                timelineStart: start,
                                                duration: end - start,
                                                volume: gain, bumper: top.bumper, speed: top.effectiveSpeed,
+                                               hold: top.hold == true,
                                                audio: audio, cutawayAudio: cutawayAudio))
             }
         }

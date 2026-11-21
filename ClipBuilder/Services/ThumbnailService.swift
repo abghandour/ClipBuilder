@@ -169,9 +169,14 @@ actor ThumbnailService {
     ///
     /// Unlike `thumbnail(for:at:)`, this deliberately does not use the disk cache:
     /// analysis callers want a one-shot, consistently configured frame batch.
+    ///
+    /// `tolerance` is how far from each timestamp the decoder may land. The
+    /// default lets it snap to a nearby frame; stills closer together than
+    /// that (fight scoring samples every 0.25 s) pass 0 or they repeat.
     @concurrent
     static func jpegFrames(url: URL, at timestamps: [Double],
-                           maxDimension: CGFloat = 0, quality: CGFloat = 0.85) async -> [Data?] {
+                           maxDimension: CGFloat = 0, quality: CGFloat = 0.85,
+                           tolerance: Double = 0.3) async -> [Data?] {
         let timing = PerfSignpost.begin("Frames", metadata: "count=\(timestamps.count) edge=\(maxDimension)")
         defer { PerfSignpost.end(timing) }
         guard !timestamps.isEmpty else { return [] }
@@ -181,7 +186,8 @@ actor ThumbnailService {
             return Array(repeating: nil, count: timestamps.count)
         }
         defer { withExtendedLifetime(asset) {} }
-        var frames = await generatedFrames(asset: asset, at: timestamps, maxDimension: maxDimension, quality: quality)
+        var frames = await generatedFrames(asset: asset, at: timestamps, maxDimension: maxDimension,
+                                           quality: quality, tolerance: tolerance)
         guard !Task.isCancelled else { return Array(repeating: nil, count: timestamps.count) }
 
         // AVFoundation does not support every source container. Only retry the
@@ -200,14 +206,15 @@ actor ThumbnailService {
 
     @concurrent
     private static func generatedFrames(asset: AVURLAsset, at timestamps: [Double],
-                                        maxDimension: CGFloat, quality: CGFloat) async -> [Data?] {
+                                        maxDimension: CGFloat, quality: CGFloat,
+                                        tolerance: Double) async -> [Data?] {
         let requestedTimes = timestamps.map { CMTime(seconds: $0, preferredTimescale: 600) }
         guard let permit = try? await MediaWorkScheduler.current.acquire(.decoding, priority: MediaWorkScheduler.priority)
         else { return Array(repeating: nil, count: timestamps.count) }
         defer { withExtendedLifetime((asset, permit)) {} }
         guard !Task.isCancelled else { return Array(repeating: nil, count: timestamps.count) }
         let generator = AVAssetImageGenerator(asset: asset)
-        configure(generator, maxDimension: maxDimension)
+        configure(generator, maxDimension: maxDimension, tolerance: tolerance)
 
         let cancellation = GenerationCancellation(generator: generator)
         return await withTaskCancellationHandler {
@@ -236,10 +243,11 @@ actor ThumbnailService {
         }
     }
 
-    private static func configure(_ generator: AVAssetImageGenerator, maxDimension: CGFloat) {
+    private static func configure(_ generator: AVAssetImageGenerator, maxDimension: CGFloat,
+                                  tolerance: Double = 0.3) {
         generator.appliesPreferredTrackTransform = true
-        generator.requestedTimeToleranceBefore = CMTime(seconds: 0.3, preferredTimescale: 600)
-        generator.requestedTimeToleranceAfter = CMTime(seconds: 0.3, preferredTimescale: 600)
+        generator.requestedTimeToleranceBefore = CMTime(seconds: tolerance, preferredTimescale: 600)
+        generator.requestedTimeToleranceAfter = CMTime(seconds: tolerance, preferredTimescale: 600)
         if maxDimension > 0 {
             generator.maximumSize = CGSize(width: maxDimension, height: maxDimension)
         }

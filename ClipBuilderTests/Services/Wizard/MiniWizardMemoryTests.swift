@@ -47,7 +47,7 @@ struct MiniWizardMemoryTests {
             "interviewZoomMoves", "interviewCuts", "interviewPunchIn", "captions", "englishCaptions", "captionPosition", "speakerCaptionPositions", "captionStyleID", "introVideo", "outroVideo", "nameTags", "nameTagContent", "nameTagStyle", "nameTagStyleID", "nameTagPosition", "watermark", "outputMode",
             "overlay", "overlayTemplate", "overlayStart", "overlayDuration", "overlayTexts", "overlayPosition", "overlayEdits", "introBumper", "outroBumper", "watermarkOverlay", "watermarkOpacity", "transition", "look",
                                   "muteSourceAudio", "music", "musicTrack", "settingsTab", "safeAreaOnly", "safeAreaPlatforms",
-                                  "dub", "dubLanguage"]
+                                  "dub", "dubLanguage", "actionOverlays", "pauseOnContact", "pauseOnContactSeconds"]
         #expect(Set(MiniWizardMemory.Field.allCases.map(\.rawValue)) == names)
         for profile in ["First", "First.Second", "Profile with spaces", "عربي"] {
             let keys = MiniWizardMemory.Field.allCases.map { MiniWizardMemory.key(for: $0, profileName: profile) }
@@ -135,7 +135,7 @@ struct MiniWizardMemoryTests {
                          forKey: MiniWizardMemory.key(for: .footageKind, profileName: name))
             defaults.set(MiniWizardFlow.Length.fifteen.rawValue,
                          forKey: MiniWizardMemory.key(for: .length, profileName: name))
-            for field in MiniWizardMemory.Field.allCases where ![.cameraFocus, .interviewZoom, .interviewZoomMoves, .interviewCuts, .framing, .broll, .includeBRoll, .interviewPunchIn, .captionPosition, .speakerCaptionPositions, .captionStyleID, .nameTagContent, .nameTagStyle, .nameTagStyleID, .nameTagPosition, .overlayTemplate, .overlayDuration, .overlayPosition, .overlayEdits, .introBumper, .outroBumper, .watermarkOverlay, .watermarkOpacity, .musicTrack, .settingsTab, .safeAreaPlatforms, .dubLanguage].contains(field) {
+            for field in MiniWizardMemory.Field.allCases where ![.cameraFocus, .interviewZoom, .interviewZoomMoves, .interviewCuts, .framing, .broll, .includeBRoll, .interviewPunchIn, .captionPosition, .speakerCaptionPositions, .captionStyleID, .nameTagContent, .nameTagStyle, .nameTagStyleID, .nameTagPosition, .overlayTemplate, .overlayDuration, .overlayPosition, .overlayEdits, .introBumper, .outroBumper, .watermarkOverlay, .watermarkOpacity, .musicTrack, .settingsTab, .safeAreaPlatforms, .dubLanguage, .actionOverlays, .pauseOnContact, .pauseOnContactSeconds].contains(field) {
                 #expect(defaults.object(forKey: MiniWizardMemory.key(for: field, profileName: name)) != nil)
             }
         }

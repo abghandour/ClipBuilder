@@ -1,3 +1,6 @@
 // Empty fallback is safe for development. Local values are never tracked.
 INFOPLIST_FILE = Configuration/GoogleDrive-Info.plist
+// Voice Over records from the microphone. Set here as well as in the plist so a
+// build that swaps in the local plist (below) still carries the text.
+INFOPLIST_KEY_NSMicrophoneUsageDescription = Clip Builder records your voice when you hold Record in Voice Over.
 #include? "GoogleDrive-Local.xcconfig"

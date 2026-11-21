@@ -283,6 +283,7 @@ extension AppStore {
         let renderer = multitrackRenderer
         let project = projects.first { $0.id == projectID } ?? activeProject
         let roughOptions = WizardRoughCut.options(options, extras: extras)
+        let pauseEligibilityOptions = WizardRoughCut.pauseEligibilityOptions(options, extras: extras, oneReel: oneReel)
         let jobID = UUID()
         let directory = Self.roughCutDirectory(database: database, jobID: jobID)
         // The request outlives the job so the review sheet can run it again
@@ -325,6 +326,7 @@ extension AppStore {
             var failures: [String] = []
             var previewClips: [WizardPreviewClip] = []
             let editing = profile.editing ?? ProfileEditingDefaults(seedingFrom: SettingsStore.loadSettings())
+            try await WizardStrikeHighlightSnapshot.$current.withValue(WizardStrikeHighlightSnapshot()) {
             for (index, take) in prepared.takes.enumerated() {
                 try checkContext()
                 log("PROGRESS:\(Double(index) / Double(max(1, count)))")
@@ -337,7 +339,8 @@ extension AppStore {
                 do {
                     let document = WizardRoughCut.strip(try await wizard.editorDocument(take: take, options: prepared.options,
                         profile: profile, database: database, tagTextPrepared: true,
-                        preparedTagFields: prepared.tagFields, emit: log), extras: extras)
+                        preparedTagFields: prepared.tagFields, pauseEligibilityOptions: pauseEligibilityOptions,
+                        emit: log), extras: extras)
                     try checkContext()
                     let sceneIDs = Set(take.sceneIDs).union(document.videoTrack.compactMap(\.sceneID))
                     let scenes = try await database.fetchScenes(ids: sceneIDs)
@@ -366,6 +369,7 @@ extension AppStore {
                     self.logEvent("job", "Rough cut: \"\(name)\" failed: \(error.userMessage)")
                     log("Could not render \"\(name)\": \(error.userMessage)")
                 }
+            }
             }
             try checkContext()
             let failureNote = failures.isEmpty ? ""
@@ -447,6 +451,7 @@ extension AppStore {
             }
             var created: [(id: Int64, name: String)] = []
             var failures: [String] = []
+            try await WizardStrikeHighlightSnapshot.$current.withValue(WizardStrikeHighlightSnapshot()) {
             for (index, take) in prepared.takes.enumerated() {
                 try checkContext()
                 log("PROGRESS:\(Double(index) / Double(max(1, count)))")
@@ -476,6 +481,7 @@ extension AppStore {
                     self.logEvent("error", "Open in Editor: \"\(name)\" failed: \(reason)")
                     log("Could not build \"\(name)\": \(reason)")
                 }
+            }
             }
             try checkContext()
             let failureNote = failures.isEmpty ? ""

@@ -23,6 +23,9 @@ struct WizardPreviewListConfig {
     /// A third tab, Summary: what Generate will make. The column's footer is
     /// then only the action buttons, pinned without a split.
     var summary: AnyView? = nil
+    var strikeStatuses: [String: StrikeClipStatus] = [:]
+    var strikeStatusFallback: String? = nil
+    var strikeSummary: String? = nil
 }
 
 /// The Express preview's List tab: every kept clip in output order, with its
@@ -42,6 +45,8 @@ struct WizardPreviewList: View {
     /// Bumped when `lines` loads; the rebuild then reads the current clips
     /// rather than the ones the loading task started with.
     @State private var linesVersion = 0
+    /// The fight scorer's events per recording: what a clip without words shows.
+    @State private var events: [Int64: [FightEventRecord]] = [:]
     @State private var expanded: Set<String> = []
     @State private var draggingID: String?
     /// The drag started on an item's bar: all its passages move as one.
@@ -71,6 +76,11 @@ struct WizardPreviewList: View {
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceS) {
             header
+            if let summary = config.strikeSummary {
+                Text(summary).font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).fixedSize(horizontal: false, vertical: true)
+                    .help(summary)
+            }
             if !rows.isEmpty, config.onSelect != nil || config.onDelete != nil { selectedActions }
             if rows.isEmpty {
                 Text(emptyMessage).font(.caption).foregroundStyle(.secondary)
@@ -80,10 +90,13 @@ struct WizardPreviewList: View {
             }
         }
         // Transcript edits and re-transcriptions bump the counts version.
-        .task(id: "\(videoIDs) \(store.transcriptCountsVersion)") { await loadLines() }
+        // So does a re-score of a fight in the list.
+        .task(id: "\(videoIDs) \(store.transcriptCountsVersion) \(store.strikeHighlightRevision) \(scoredSignature)") { await loadLines() }
         .onChange(of: clips, initial: true) { _, _ in rebuildRows() }
         .speakerColors(for: Set(rows.flatMap { $0.segments.compactMap(\.speaker) }))
         .onChange(of: linesVersion) { _, _ in rebuildRows() }
+        // A renamed fighter shows in the action text at once.
+        .onChange(of: store.people.map { "\($0.key)=\($0.displayName)" }) { _, _ in rebuildRows() }
         .onChange(of: rows.map(\.id)) { _, ids in expanded.formIntersection(ids) }
     }
 
@@ -258,23 +271,28 @@ struct WizardPreviewList: View {
             Button { selectedIndex = index; listFocused = true } label: {
                 // Only who is talking and what they said; the Video tab's
                 // stepper carries the clip number and time.
-                Group {
+                VStack(alignment: .leading, spacing: Theme.spaceXS) {
                     if row.text.isEmpty {
-                        Text("No words or description for this clip")
+                        Text(events[row.videoID] != nil ? "Nothing scored in this clip" : "No words or description for this clip")
                             .font(.body).foregroundStyle(.secondary)
                     } else if !row.segments.isEmpty {
                         speakerTurns(row, expanded: isExpanded)
                     } else {
                         VStack(alignment: .leading, spacing: Theme.spaceXS) {
-                            durationLabel(row.duration).frame(maxWidth: .infinity, alignment: .trailing)
+                            HStack(spacing: Theme.spaceS) {
+                                if row.textKind == .action { sourcePill("Fight Metrics") }
+                                Spacer(minLength: Theme.spaceS)
+                                durationLabel(row.duration)
+                            }
                             Text(row.text)
                                 .font(.body)
-                                .foregroundStyle(row.textKind == .description ? .secondary : .primary)
-                                .italic(row.textKind == .description)
+                                .foregroundStyle(row.textKind == .transcript ? .primary : .secondary)
+                                .italic(row.textKind != .transcript)
                                 .lineLimit(isExpanded ? nil : Self.collapsedLines)
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
+                    StrikeClipStatusLine(status: config.strikeStatuses[row.id], fallback: config.strikeStatusFallback)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
@@ -282,7 +300,7 @@ struct WizardPreviewList: View {
             .buttonStyle(.plain)
             .simultaneousGesture(TapGesture(count: 2).onEnded { toggleExpanded(row) })
             .accessibilityLabel("Clip \(index + 1), \(row.title)")
-            .accessibilityValue("\(row.text). Duration \(Self.clock(row.duration))")
+            .accessibilityValue("\(row.text). Duration \(Self.clock(row.duration)). \(config.strikeStatuses[row.id]?.line ?? config.strikeStatusFallback ?? "")")
             .accessibilityAddTraits(selected ? .isSelected : [])
             .accessibilityAction(named: isExpanded ? "Collapse" : "Expand") { toggleExpanded(row) }
         }
@@ -337,7 +355,8 @@ struct WizardPreviewList: View {
                     // the row's right edge.
                     if index == 0 {
                         HStack(spacing: Theme.spaceS) {
-                            if let speaker = turn.speaker { SpeakerPill(speaker: speaker) }
+                            // Words nobody was matched to still say what the row is.
+                            if let speaker = turn.speaker { SpeakerPill(speaker: speaker) } else { sourcePill("Speaker") }
                             Spacer(minLength: Theme.spaceS)
                             durationLabel(row.duration)
                         }
@@ -353,6 +372,18 @@ struct WizardPreviewList: View {
                 }
             }
         }
+    }
+
+    /// A grey pill on a row's first line naming where its text comes from
+    /// when no speaker is known: "Speaker", "Fight Metrics".
+    private func sourcePill(_ text: String) -> some View {
+        Text(text)
+            .font(.callout.weight(.semibold))
+            .foregroundStyle(.secondary)
+            .lineLimit(1).fixedSize()
+            .padding(.horizontal, Theme.spaceS)
+            .padding(.vertical, 2)
+            .background(Color.gray.opacity(0.18), in: Capsule())
     }
 
     private func durationLabel(_ seconds: Double) -> some View {
@@ -443,7 +474,8 @@ struct WizardPreviewList: View {
     // MARK: - Transcript lines
 
     private func rebuildRows() {
-        let built = WizardPreviewRows.rows(clips: clips, lines: lines)
+        let names = Dictionary(store.people.map { ($0.key, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+        let built = WizardPreviewRows.rows(clips: clips, lines: lines, events: events, names: names)
         guard built != rows else { return }
         // The store can regroup a proposed order to keep linked passages together.
         selectedIndex = WizardPreviewRows.reconciledIndex(selectedIndex, previousIDs: rows.map(\.id),
@@ -452,11 +484,20 @@ struct WizardPreviewList: View {
     }
 
     /// Each recording's rows with their speaker labels, decoded off the main actor.
+    /// Changes when the store's scored events of a listed recording do.
+    private var scoredSignature: Int {
+        var hasher = Hasher()
+        for id in videoIDs { hasher.combine(store.fightEvents[id]?.map(\.id)) }
+        return hasher.finalize()
+    }
+
     private func loadLines() async {
         guard let database = store.database else { return }
         let people = store.people
         var result: [Int64: [WizardPreviewRows.Line]] = [:]
+        var scored: [Int64: [FightEventRecord]] = [:]
         for videoID in videoIDs {
+            if let events = try? await database.fetchFightEvents(videoID: videoID), !events.isEmpty { scored[videoID] = events }
             guard let rows = try? await database.fetchTranscripts(videoID: videoID) else { continue }
             let speakers = await store.speakerTurns(videoID: videoID)
             if Task.isCancelled { return }
@@ -467,7 +508,7 @@ struct WizardPreviewList: View {
                 }
             }.value
         }
-        if !Task.isCancelled { lines = result; linesVersion += 1 }
+        if !Task.isCancelled { lines = result; events = scored; linesVersion += 1 }
     }
 }
 

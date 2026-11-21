@@ -12,7 +12,7 @@ enum BuilderSilenceExpansion {
         var splits: [BuilderScriptStep] = []
         var removals: [BuilderScriptStep] = []
         var expectedSourceCuts: [Double] = []
-        for clip in clips.sorted(by: { $0.uid.uuidString < $1.uid.uuidString }) {
+        for clip in clips.sorted(by: { $0.uid.uuidString < $1.uid.uuidString }) where clip.hold != true {
             try Task.checkCancellation()
             guard started.duration(to: .now) < .seconds(10) else {
                 throw ScriptError.invalid("Silence expansion exceeded ten seconds; narrow the request.")

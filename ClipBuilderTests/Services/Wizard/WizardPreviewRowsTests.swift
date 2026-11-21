@@ -47,6 +47,55 @@ struct WizardPreviewRowsTests {
         #expect(rows[0].start == 0 && rows[0].duration == 5)
     }
 
+    @Test("A fight clip without words says what the scorer logged in it")
+    func fightActions() {
+        func event(_ time: Double, _ fighter: String, _ action: String, detail: String? = nil, outcome: String? = nil) -> FightEventRecord {
+            var record = FightEventRecord(id: Int64(time * 100), videoID: 1, time: time, fighterKey: fighter, action: action, points: 1)
+            record.detail = detail
+            record.outcome = outcome
+            return record
+        }
+        let events = [Int64(1): [event(12, "jan", "significant_strike", detail: "kick|right|body|left"),
+                                 event(13.5, "", "strike"),
+                                 event(14, "carlos", "takedown_attempt", outcome: "defended"),
+                                 event(30, "jan", "submission_attempt", detail: "rear-naked choke", outcome: "unresolved")]]
+        let names = ["jan": "Jan", "carlos": "Carlos"]
+        var scene = Fixtures.scene(id: 1, start: 0, end: 60)
+        scene.narrative = "They circle."
+        let rows = WizardPreviewRows.rows(clips: [
+            clip("fight-1", scene: scene, start: 11, end: 15),
+            clip("fight-2", scene: scene, start: 12.1, end: 12.1), // the held frame of the kick
+            clip("fight-3", scene: scene, start: 29, end: 31),
+            clip("fight-4", scene: scene, start: 40, end: 45)
+        ], lines: [:], events: events, names: names)
+        #expect(rows.map(\.text) == ["Jan: big right kick to the body; strike landed; Carlos: takedown attempt, defended",
+                                     "Jan: big right kick to the body",
+                                     "Jan: submission attempt, unresolved, rear-naked choke",
+                                     "They circle."])
+        #expect(rows.map(\.textKind) == [.action, .action, .action, .description])
+
+        // An action with a length is still going on in a clip trimmed inside it.
+        var hold = event(50, "jan", "submission_attempt", detail: "armbar", outcome: "unresolved")
+        hold.endTime = 60
+        let trimmed = WizardPreviewRows.rows(clips: [clip("fight-5", scene: scene, start: 55, end: 58),
+                                                     clip("fight-6", scene: scene, start: 60, end: 62)],
+                                             lines: [:], events: [1: [hold]], names: names)
+        #expect(trimmed.map(\.text) == ["Jan: submission attempt, unresolved, armbar", "They circle."])
+        // A held frame inside it says so too, unless a blow landed on that frame.
+        let frozen = WizardPreviewRows.rows(clips: [clip("fight-7", scene: scene, start: 55, end: 55),
+                                                    clip("fight-8", scene: scene, start: 57, end: 57)],
+                                            lines: [:], events: [1: [hold, event(57.1, "carlos", "strike")]], names: names)
+        #expect(frozen.map(\.text) == ["Jan: submission attempt, unresolved, armbar", "Carlos: strike landed"])
+        // A Fight metrics pick says its action even when the commentary talks over it;
+        // any other clip with words keeps them.
+        let spoken = [Int64(1): WizardPreviewRows.lines(words: [.init(id: 1, text: "Deep", start: 12, end: 12.4)])]
+        let talked = WizardPreviewRows.rows(clips: [clip("fight-1", scene: scene, start: 11.5, end: 12.5),
+                                                    clip("pick-1", scene: scene, start: 11.5, end: 12.5),
+                                                    clip("fight-4", scene: scene, start: 11.9, end: 11.95)],
+                                            lines: spoken, events: events, names: names)
+        #expect(talked.map(\.text) == ["Jan: big right kick to the body", "Deep", "Jan: big right kick to the body"])
+    }
+
     @Test func speakerNamesStartTheirStretches() {
         let scene = Fixtures.scene(id: 1, start: 0, end: 10)
         func word(_ id: Int, _ text: String, _ start: Double) -> TranscriptQATrim.Word {

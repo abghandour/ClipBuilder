@@ -38,6 +38,8 @@ struct WizardView: View {
     @AppStorage("wizard.critiqueTargetScore") var critiqueTargetScore = 85
     @AppStorage("wizard.critiqueMaxVersions") var critiqueMaxVersions = 3
     @AppStorage("wizard.strikeStats") var strikeStats = false
+    @AppStorage("wizard.strikeHighlights") var strikeHighlights = false
+    @AppStorage("wizard.strikeImpactFreeze") var strikeImpactFreeze = 0.0
     @AppStorage("wizard.strikeUnits") var strikeUnits = "km/h"
     @AppStorage("wizard.strikeSpeedCallouts") var strikeSpeedCallouts = true
     @AppStorage("wizard.strikeGrapplingCard") var strikeGrapplingCard = true
@@ -764,6 +766,8 @@ struct WizardView: View {
         let platforms = safeAreaPlatforms.split(separator: ",").compactMap { SocialPlatform(rawValue: String($0)) }
         options.safeAreaPlatforms = platforms.isEmpty ? nil : platforms
         options.strikeStats = strikeStats
+        options.strikeHighlights = strikeHighlights
+        options.strikeImpactFreeze = strikeImpactFreeze > 0 ? strikeImpactFreeze : nil
         options.strikeUnits = strikeUnits
         options.strikeSpeedCallouts = strikeSpeedCallouts
         options.strikeGrapplingCard = strikeGrapplingCard
@@ -1364,6 +1368,8 @@ struct WizardView: View {
         p.branding = brandingOverride == .savedDefault ? nil : brandingOverride.title
         p.format = effectiveRenderSettings.preset.label
         p.strikeStats = strikeStats
+        p.strikeHighlights = strikeHighlights
+        p.strikeImpactFreeze = strikeImpactFreeze > 0 ? strikeImpactFreeze : nil
         p.fightResearch = useFightResearch
         p.favoritesOnly = favoritesOnly
         let people = selectedSourcePeople
@@ -1598,6 +1604,8 @@ struct WizardView: View {
         let platforms = safeAreaPlatforms.split(separator: ",").compactMap { SocialPlatform(rawValue: String($0)) }
         options.safeAreaPlatforms = platforms.isEmpty ? nil : platforms
         options.strikeStats = strikeStats
+        options.strikeHighlights = strikeHighlights
+        options.strikeImpactFreeze = strikeImpactFreeze > 0 ? strikeImpactFreeze : nil
         options.strikeUnits = strikeUnits
         options.strikeSpeedCallouts = strikeSpeedCallouts
         options.strikeGrapplingCard = strikeGrapplingCard

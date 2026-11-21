@@ -416,6 +416,20 @@ actor Database {
         video_id INTEGER PRIMARY KEY REFERENCES videos(id) ON DELETE CASCADE,
         generation INTEGER NOT NULL
     );
+    -- Where each scored strike's limb and impact are in the picture
+    -- (StrikeHighlightRules.Track as JSON; NULL when none was found).
+    -- Derived from the file and fight_events, so it stays on this Mac.
+    CREATE TABLE IF NOT EXISTS strike_highlights (
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        at_time REAL NOT NULL,
+        fighter_key TEXT NOT NULL DEFAULT '',
+        contact_time REAL,
+        track_json TEXT,
+        rules_version INTEGER NOT NULL DEFAULT 1,
+        -- The fight_event_generations value of the events it describes.
+        generation INTEGER NOT NULL DEFAULT 0,
+        PRIMARY KEY(video_id, at_time, fighter_key)
+    );
     CREATE TABLE IF NOT EXISTS analysis_passes (
         video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
         pass TEXT NOT NULL,
@@ -827,6 +841,12 @@ actor Database {
         try FileManager.default.createDirectory(at: path.deletingLastPathComponent(),
                                                 withIntermediateDirectories: true)
         connection = try SQLiteConnection(path: path.path)
+        // Another connection can hold the lock for a moment: the Wizard's
+        // synchronous one, or another copy of the app on this library. Reads
+        // and writes wait for it instead of failing at once. Set as this
+        // initializer ends, not here: the app opens its library on the main
+        // actor, and opening must fail at once rather than freeze the window.
+        defer { try? connection.execute("PRAGMA busy_timeout=5000") }
         do {
             try connection.execute("PRAGMA journal_mode=WAL")
         } catch {
@@ -855,6 +875,14 @@ actor Database {
         }
         try connection.executeScript(Self.schema)
         try connection.executeScript(Self.dubTakesSchema)
+        try connection.executeScript(Self.voiceTakesSchema)
+        // Added the day the table shipped to Debug builds; no version bump.
+        if try !connection.columnNames(of: "voice_takes").contains("hold_offset") {
+            try connection.execute("ALTER TABLE voice_takes ADD COLUMN hold_offset REAL")
+        }
+        if try !connection.columnNames(of: "voice_takes").contains("occurrence") {
+            try connection.execute("ALTER TABLE voice_takes ADD COLUMN occurrence INTEGER")
+        }
         if stamped != Self.schemaVersion {
             try Self.migrate(connection)
             if try !connection.columnNames(of: "dub_takes").contains("drive_file_id") {
@@ -920,6 +948,11 @@ actor Database {
                     try connection.execute("ALTER TABLE \(table) ADD COLUMN project_id INTEGER REFERENCES projects(id) ON DELETE CASCADE")
                 }
                 try connection.execute("CREATE INDEX IF NOT EXISTS idx_\(table)_project ON \(table)(project_id, video_id)")
+            }
+            if try !connection.columnNames(of: "strike_highlights").contains("generation") {
+                // Rows saved before highlights were tied to their events cannot be trusted.
+                try connection.execute("DELETE FROM strike_highlights")
+                try connection.execute("ALTER TABLE strike_highlights ADD COLUMN generation INTEGER NOT NULL DEFAULT 0")
             }
             let eventColumns = try connection.columnNames(of: "fight_events")
             for (name, type) in [("target_key", "TEXT"), ("end_time", "REAL"), ("outcome", "TEXT"),

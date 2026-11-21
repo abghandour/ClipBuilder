@@ -15,7 +15,8 @@ struct BuilderRequestParser {
         "add b-roll of <tag> at <time> [on track N] [for N s]",
         "add file <file name> [at <time>] [on track N]",
         "split this clip at <time>", "trim this clip to N s",
-        "mute/unmute this clip", "cover all areas",
+        "mute/unmute this clip", "cover all areas", "show/hide strike highlights on this clip",
+        "freeze on impacts on this clip",
         "set this clip speed to N x", "captions off for this clip", "set music volume to V",
         "set track N captions to none/top/middle/bottom", "mute/unmute track N",
         "remove clip N on track T", "remove the selected clip", "duplicate this clip"
@@ -247,6 +248,13 @@ struct BuilderRequestParser {
             if let g = match(#"(mute|unmute) \#(Self.selectedClip)"#, text) {
                 return .script([.init(.setClipMuted(clip: try selection(context).uid.uuidString,
                                                    muted: g[0] == "mute"))])
+            }
+            if let g = match(#"(show|hide) strike highlights (?:on|for|in) \#(Self.selectedClip)"#, text) {
+                return .script([.init(.setClipStrikeHighlights(clip: try selection(context).uid.uuidString,
+                                                              enabled: g[0] == "show"))])
+            }
+            if match(#"freeze on impacts? (?:on|for|in) \#(Self.selectedClip)"#, text) != nil {
+                return .script([.init(.freezeClipOnImpacts(clip: try selection(context).uid.uuidString))])
             }
             if text == "cover all areas" {
                 return .script([.init(.setCutawayCoverAll(clip: try selection(context).uid.uuidString, coverAll: true))])

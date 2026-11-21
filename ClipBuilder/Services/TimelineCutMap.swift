@@ -59,6 +59,10 @@ nonisolated struct TimelineCutMap: Sendable, Equatable {
         let duration = time(end) - moved.startTime
         guard abs(duration - clip.duration) > 1e-9 else { return moved }
         guard duration >= minimumPiece else { return nil }
+        if clip.hold == true {
+            moved.duration = duration
+            return moved
+        }
         let speed = clip.effectiveSpeed
         let head = headTrim(from: start, to: end) * speed
         let base = clip.sourceStart ?? baseSource(clip) ?? 0

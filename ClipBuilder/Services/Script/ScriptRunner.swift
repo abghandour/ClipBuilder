@@ -252,6 +252,10 @@ final class ScriptRunner {
             guard duration.isFinite, (0...86400).contains(duration) else { throw ClipEditFailure.outOfBounds }
             let value = try clip(reference)
             let precision = policy ?? .ordinary
+            if value.hold == true {
+                try model.trimClip(value.uid, duration: duration, precision: precision).get()
+                break
+            }
             if value.bumper && precision == .speech { throw ClipEditFailure.bumper }
             guard let ceiling = value.bumper ? value.sourceEnd : library.sourceDuration(for: value),
                   ceiling.isFinite, let start = value.sourceStart, start.isFinite,
@@ -263,6 +267,10 @@ final class ScriptRunner {
             }
             let value = try clip(reference)
             let precision = policy ?? .ordinary
+            if value.hold == true {
+                try model.setClipSourceRange(value.uid, start: start, end: end, precision: precision).get()
+                break
+            }
             if value.bumper && precision == .speech { throw ClipEditFailure.bumper }
             guard let ceiling = value.bumper ? value.sourceEnd : library.sourceDuration(for: value),
                   ceiling.isFinite, end > start, end <= ceiling else { throw ClipEditFailure.outOfBounds }
@@ -372,6 +380,20 @@ final class ScriptRunner {
                 model.setCutawayAudio(value.uid, muted ? .muted : .mixed)
             } else {
                 model.updateClip(value.uid) { $0.muted = muted }
+            }
+        case .freezeClipOnImpacts(let reference, let hold):
+            let value = try clip(reference)
+            let videoID = library.videoID(for: value, scene: model.scene(for: value))
+            let contacts = videoID.flatMap { library.strikeContacts[$0] } ?? []
+            let count = try model.freezeOnImpacts(value.uid, contacts: contacts,
+                                                 hold: hold ?? StrikeHighlightRules.impactHold).get()
+            if count == 0 { return .unchanged(reason: "No impact far enough from the clip's edges") }
+            actual = .object(["impacts": .number(Double(count))])
+        case .setClipStrikeHighlights(let reference, let enabled):
+            let value = try clip(reference)
+            guard !value.bumper else { throw ScriptError.invalid("Strike highlights apply to footage, not bumpers.") }
+            if (value.strikeHighlights == true) != enabled {
+                model.updateClip(value.uid) { $0.strikeHighlights = enabled ? true : nil }
             }
         case .setCutawayCoverAll(let reference, let coverAll):
             let value = try clip(reference)

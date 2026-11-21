@@ -3,6 +3,86 @@ import Testing
 @testable import Clip_Builder
 
 struct WizardOptionsTests {
+    @MainActor @Test func strikeImpactFreezeRoundTripsAndTravelsThroughPreferences() throws {
+        let old = try JSONDecoder().decode(WizardOptions.self, from: Data("{}".utf8))
+        #expect(old.strikeImpactFreeze == nil)
+        #expect(try JSONDecoder().decode(WizardStep2Options.self, from: Data("{}".utf8)).strikeImpactFreeze == nil)
+        var options = old
+        options.strikeImpactFreeze = 1.2
+        #expect(try JSONDecoder().decode(WizardOptions.self, from: JSONEncoder().encode(options)).strikeImpactFreeze == 1.2)
+        let step = try JSONDecoder().decode(WizardStep2Options.self, from: JSONEncoder().encode(options.step2))
+        #expect(WizardOptions.merge(step1: options.step1, step2: step).strikeImpactFreeze == 1.2)
+        #expect(WizardOptions.merge(step1: options.step1, step2: .init(), base: options).strikeImpactFreeze == nil)
+        let suite = "wizard-strike-pause-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        AISettingsPreferences.write(["strikeImpactFreeze": .number(1.2)], kind: .wizard, scopes: [.options], defaults: defaults)
+        let fields = AISettingsPreferences.wizard(defaults: defaults, profile: Fixtures.brand())
+        #expect(fields["strikeImpactFreeze"] == .number(1.2))
+        #expect(WizardPresetStore.presetFields(fields)["strikeImpactFreeze"] == .number(1.2))
+    }
+
+    @Test func strikeHighlightsRoundTripAndAbsentKey() throws {
+        let old = try JSONDecoder().decode(WizardOptions.self, from: Data("{}".utf8))
+        #expect(old.strikeHighlights == nil)
+        #expect(try JSONDecoder().decode(WizardStep2Options.self, from: Data("{}".utf8)).strikeHighlights == nil)
+        let absent = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(old)) as? [String: Any])
+        #expect(absent["strikeHighlights"] == nil && absent["strikeStats"] == nil)
+        let absentStep = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(old.step2)) as? [String: Any])
+        #expect(absentStep["strikeHighlights"] == nil)
+        for enabled in [true, false] {
+            var options = old
+            options.strikeHighlights = enabled
+            options.strikeStats = false
+            let data = try JSONEncoder().encode(options)
+            let object = try #require(JSONSerialization.jsonObject(with: data) as? [String: Any])
+            #expect(object["strikeHighlights"] as? Bool == enabled)
+            let decoded = try JSONDecoder().decode(WizardOptions.self, from: data)
+            #expect(decoded.strikeHighlights == enabled && decoded.strikeStats == false)
+            let step = try JSONDecoder().decode(WizardStep2Options.self, from: JSONEncoder().encode(options.step2))
+            #expect(step.strikeHighlights == enabled)
+            #expect(WizardOptions.merge(step1: options.step1, step2: step).strikeHighlights == enabled)
+            #expect(WizardOptions.merge(step1: options.step1, step2: WizardStep2Options(), base: options).strikeHighlights == nil)
+        }
+    }
+
+    @MainActor @Test func strikeHighlightsSurvivePreferencesRememberedLookAndPresets() throws {
+        let suite = "wizard-strike-highlights-\(UUID().uuidString)"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        let fields: [String: JSONSetting] = ["strikeHighlights": .bool(true), "strikeStats": .bool(false)]
+        AISettingsPreferences.write(fields, kind: .wizard, scopes: [.options], defaults: defaults)
+        #expect(defaults.bool(forKey: "wizard.strikeHighlights"))
+        let profile = Fixtures.brand()
+        WizardMemory.remember(profile: profile, renderSettings: nil, pacing: nil, defaults: defaults)
+        let read = AISettingsPreferences.wizard(defaults: defaults, profile: profile)
+        #expect(read["strikeHighlights"] == .bool(true) && read["strikeStats"] == .bool(false))
+        let preset = WizardPresetStore.presetFields(read)
+        #expect(preset["strikeHighlights"] == .bool(true))
+        let loaded = WizardPresetStore.Loaded(name: "Fight", settings: preset)
+        var changed = preset
+        changed["strikeHighlights"] = .bool(false)
+        #expect(WizardPresetStore.cardTitle(loaded: loaded, current: changed)
+            != WizardPresetStore.cardTitle(loaded: loaded, current: preset))
+        AISettingsPreferences.write(changed, kind: .wizard, scopes: [.options], defaults: defaults)
+        #expect(!defaults.bool(forKey: "wizard.strikeHighlights"))
+        WizardMemory.restore(profileName: profile.profileName, defaults: defaults)
+        #expect(defaults.bool(forKey: "wizard.strikeHighlights"))
+        defaults.set(false, forKey: "wizard.strikeHighlights")
+        AISettingsPreferences.write(preset, kind: .wizard, scopes: [.options], defaults: defaults)
+        #expect(defaults.bool(forKey: "wizard.strikeHighlights"))
+    }
+
+    @MainActor @Test func expressOwnsStrikeHighlightsAndTheyStayOutOfPlainRoughCuts() {
+        var options = WizardOptions()
+        options.strikeStats = true
+        options.strikeHighlights = true
+        let preview = MiniWizardSettings().previewOptions(profile: Fixtures.brand(), base: options)
+        #expect(preview.strikeStats == true && preview.strikeHighlights == false)
+        let rough = WizardRoughCut.options(options)
+        #expect(rough.strikeStats == false && rough.strikeHighlights == false)
+    }
+
     @Test func safeAreaStep2MergeAndLegacyDecode() throws {
         var options = WizardOptions()
         options.safeAreaOnly = true

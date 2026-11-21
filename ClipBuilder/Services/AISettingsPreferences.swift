@@ -20,6 +20,8 @@ import Foundation
         "tastePreset": "wizard.tastePreset",
         "captionLanguage": "wizard.captionLanguage",
         "dubLanguage": "wizard.dubLanguage",
+        "strikeHighlights": "wizard.strikeHighlights",
+        "strikeImpactFreeze": "wizard.strikeImpactFreeze",
         "strikeStats": "wizard.strikeStats", "strikeUnits": "wizard.strikeUnits",
         "strikeSpeedCallouts": "wizard.strikeSpeedCallouts", "strikeGrapplingCard": "wizard.strikeGrapplingCard",
         "strikeRoundCard": "wizard.strikeRoundCard",

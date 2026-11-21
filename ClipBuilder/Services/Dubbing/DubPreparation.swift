@@ -69,10 +69,10 @@ nonisolated enum DubPreparation {
             // Match the renderer's source pass, before it splits clips at crop blocks.
             // A crop-boundary piece must never replace the original speech range.
             result.videoTrack[index].sourceStart = start
-            result.videoTrack[index].sourceEnd = start + duration * clip.effectiveSpeed
+            result.videoTrack[index].sourceEnd = start + (clip.hold == true ? 0 : duration * clip.effectiveSpeed)
             result.videoTrack[index].duration = duration
             result.videoTrack[index].videoFile = path
-            result.videoTrack[index].speed = clip.effectiveSpeed
+            result.videoTrack[index].speed = clip.hold == true ? nil : clip.effectiveSpeed
             result.videoTrack[index].track = min(max(0, clip.track), TimelineDocument.maxTracks - 1)
         }
         return result
@@ -86,7 +86,7 @@ nonisolated enum DubPreparation {
         let document = resolvedDocument(document, scenes: scenes)
         let videos = try await database.fetchVideos()
         var clipsByVideo: [Int64: [TimelineClip]] = [:]
-        for clip in document.videoTrack where !clip.muted && !clip.bumper && !clip.isCutaway {
+        for clip in document.videoTrack where clip.hold != true && !clip.muted && !clip.bumper && !clip.isCutaway {
             guard !(document.trackSettings[safe: clip.track]?.muted ?? false), clip.duration > 0 else { continue }
             let scene = scenes.first { $0.id == clip.sceneID }
             guard let videoID = scene?.videoID ?? videos.first(where: { $0.path == clip.videoFile })?.id,
@@ -358,7 +358,7 @@ nonisolated enum DubPreparation {
     /// UIDs are session-local. A reopened document finds the audible source at the line's absolute time.
     static func playbackClip(for line: DubLine, document: TimelineDocument) -> TimelineClip? {
         let clips = document.videoTrack.filter {
-            !$0.muted && !$0.bumper && !$0.isCutaway && $0.startTime <= line.start
+            $0.hold != true && !$0.muted && !$0.bumper && !$0.isCutaway && $0.startTime <= line.start
                 && line.start < $0.startTime + $0.duration
                 && !(document.trackSettings[safe: $0.track]?.muted ?? false)
         }

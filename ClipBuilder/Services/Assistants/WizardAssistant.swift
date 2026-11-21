@@ -162,6 +162,8 @@ nonisolated struct WizardAssistant: PageAssistant {
         var branding: String?
         var format: String?
         var strikeStats = false
+        var strikeHighlights = false
+        var strikeImpactFreeze: Double?
         var fightResearch = true
         var favoritesOnly = false
         var people: [String] = []
@@ -224,6 +226,8 @@ nonisolated struct WizardAssistant: PageAssistant {
         func add(_ key: String, _ label: String, _ value: String?) {
             if let value, !value.isEmpty { facts.append(AssistantFact(key, label, value)) }
         }
+        if m.actionOverlays == true { add("actionOverlays", "Action overlays", AssistantContext.on) }
+        if m.pauseOnContact == true { add("pauseOnContactSeconds", "Pause on contact (s)", String(m.resolvedPauseOnContactSeconds)) }
         if m.captions {
             add("captionStyle", "Caption style", captionStyleName ?? m.captionStyleID)
             add("captionPosition", "Caption position", m.captionPosition)
@@ -300,6 +304,8 @@ nonisolated struct WizardAssistant: PageAssistant {
             add("safeAreaPlatforms", "Safe area platforms", Self.platformLabels(p.safeAreaPlatforms))
         }
         if p.strikeStats { add("strikeStats", "Strike stats", AssistantContext.on) }
+        if p.strikeHighlights { add("strikeHighlights", "Highlight strikes", AssistantContext.on) }
+        if let seconds = p.strikeImpactFreeze, seconds > 0 { add("strikeImpactFreeze", "Pause on contact (s)", String(seconds)) }
         if !p.fightResearch { add("fightResearch", "Fight research", AssistantContext.off) }
         if p.favoritesOnly { add("favoritesOnly", "Favorite scenes only", AssistantContext.on) }
         if !p.people.isEmpty { add("people", "People", p.people.joined(separator: ", ")) }

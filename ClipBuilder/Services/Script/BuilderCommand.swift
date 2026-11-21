@@ -29,6 +29,9 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
     case setCutawayAudio(clip: String, audio: CutawayAudio)
     case setClipMuted(clip: String, muted: Bool)
     case setCutawayCoverAll(clip: String, coverAll: Bool)
+    /// Draw the clip's saved strike highlights (limb and impact) in the render.
+    case setClipStrikeHighlights(clip: String, enabled: Bool)
+    case freezeClipOnImpacts(clip: String, hold: Double? = nil)
     case duplicateClip(clip: String)
     case setTrackSequential(track: Int, sequential: Bool)
     case addCropBlock(layout: String, at: Double? = nil, duration: Double? = nil)
@@ -185,6 +188,14 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
             try c.only(["op", "clip", "muted"])
             self = .setClipMuted(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
                                  muted: try c.decode(Bool.self, forKey: ScriptKey("muted")))
+        case "freeze_clip_on_impacts":
+            try c.only(["op", "clip", "hold"])
+            self = .freezeClipOnImpacts(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                                       hold: try c.decodeIfPresent(Double.self, forKey: ScriptKey("hold")))
+        case "set_clip_strike_highlights":
+            try c.only(["op", "clip", "enabled"])
+            self = .setClipStrikeHighlights(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                                            enabled: try c.decode(Bool.self, forKey: ScriptKey("enabled")))
         case "set_cutaway_cover_all":
             try c.only(["op", "clip", "cover_all"])
             self = .setCutawayCoverAll(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
@@ -653,6 +664,14 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
             try c.encode("set_clip_muted", forKey: ScriptKey("op"))
             try c.encode(clip, forKey: ScriptKey("clip"))
             try c.encode(muted, forKey: ScriptKey("muted"))
+        case let .freezeClipOnImpacts(clip, hold):
+            try c.encode("freeze_clip_on_impacts", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encodeIfPresent(hold, forKey: ScriptKey("hold"))
+        case let .setClipStrikeHighlights(clip, enabled):
+            try c.encode("set_clip_strike_highlights", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encode(enabled, forKey: ScriptKey("enabled"))
         case let .setCutawayCoverAll(clip, coverAll):
             try c.encode("set_cutaway_cover_all", forKey: ScriptKey("op"))
             try c.encode(clip, forKey: ScriptKey("clip"))

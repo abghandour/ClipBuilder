@@ -5,6 +5,8 @@ struct MiniFootageCard: View {
     @Environment(AppStore.self) private var store
     let run: MiniWizardRun
     let pageHeight: CGFloat
+    var strikeStatuses: [String: StrikeClipStatus] = [:]
+    var strikeStatusFallback: String? = nil
     @State private var showTranscript = false
     @State private var showFightStory = false
     /// The review area's height once the user has dragged its bottom edge;
@@ -30,7 +32,7 @@ struct MiniFootageCard: View {
             resizable(MiniTranscriptPickView(run: run))
         } else if run.footageKind == .fightMetrics {
             fightStoryRow
-            resizable(MiniFightPickView(run: run))
+            resizable(MiniFightPickView(run: run, strikeStatuses: strikeStatuses, strikeStatusFallback: strikeStatusFallback))
         } else {
             resizable(MiniHighlightReviewView(run: run))
         }

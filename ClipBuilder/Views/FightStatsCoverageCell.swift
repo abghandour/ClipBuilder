@@ -36,10 +36,10 @@ struct FightStatsCoverageCell: View {
                                           ?? (fighter.key.isEmpty ? "Unattributed" : fighter.key))
                 }).joined(separator: "\n"))
             }
-            Button("Re-score v2") { store.scoreFightAction(video: video) }
+            Button("Re-score") { store.scoreFightAction(video: video) }
                 .controlSize(.small).lineLimit(1).fixedSize()
                 .disabled(store.fightScoringInFlight.contains(video.id) || !video.isPresent)
-                .help("Score attempt sequences and outcomes. Progress and Stop appear in the status bar.")
+                .help("Score the fight again: strikes, attempt sequences and outcomes. Progress and Stop appear in the status bar.")
             if outcomeCheck {
                 Image(systemName: "exclamationmark.triangle")
                     .font(.caption).foregroundStyle(.orange)

@@ -8,6 +8,7 @@ nonisolated enum MiniWizardMemory {
         case framing
         case quality, preset, cameraFocus, interviewZoom, interviewZoomMoves, interviewCuts, interviewPunchIn, captions, englishCaptions, captionPosition, speakerCaptionPositions, captionStyleID
         case safeAreaOnly, safeAreaPlatforms
+        case actionOverlays, pauseOnContact, pauseOnContactSeconds
         case nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case introVideo, outroVideo, nameTags, watermark, outputMode
         case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, overlayPosition, overlayEdits

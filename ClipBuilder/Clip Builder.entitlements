@@ -11,6 +11,10 @@
 	     keychain. -->
 	<key>com.apple.application-identifier</key>
 	<string>$(AppIdentifierPrefix)$(CFBundleIdentifier)</string>
+	<!-- Voice Over records from the microphone; the hardened runtime
+	     delivers silence without this. -->
+	<key>com.apple.security.device.audio-input</key>
+	<true/>
 	<key>keychain-access-groups</key>
 	<array>
 		<string>$(AppIdentifierPrefix)com.mokotti-solutions.clipbuilder.shared</string>

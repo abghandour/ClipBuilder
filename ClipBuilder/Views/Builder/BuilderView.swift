@@ -186,7 +186,7 @@ struct BuilderView: View {
                             .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
                             .layoutPriority(1)
                         BuilderInspector()
-                            .rememberedPaneWidth("pane.builder.inspector", min: 240, initial: 310, max: 1200)
+                            .rememberedPaneWidth("pane.builder.inspector", min: 300, initial: 310, max: 1200)
                             .frame(maxHeight: .infinity)
                     }
                     .frame(minHeight: 220, maxHeight: .infinity)

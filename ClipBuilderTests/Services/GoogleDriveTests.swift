@@ -409,6 +409,19 @@ struct GoogleDriveTests {
         #expect(!FileManager.default.fileExists(atPath: try #require(video.path)))
     }
 
+    @Test("A registered database whose folder is gone does not fail lookups")
+    func unreadableDatabase() async throws {
+        let gone = try await TempDatabase()
+        let live = try await TempDatabase()
+        let resolver = DriveMediaResolver()
+        await resolver.register(database: gone.database, profile: profile)
+        await resolver.register(database: live.database, profile: profile)
+        try FileManager.default.removeItem(at: gone.directory.url)
+        let unknown = live.directory.url.appendingPathComponent("missing.mp4")
+        #expect(try await resolver.ensureLocal(unknown) == unknown)
+        #expect(try await resolver.isDriveMedia(unknown) == false)
+    }
+
     @Test("Account mismatch names the required account and preserves the saved credentials")
     func mismatchedAccount() async throws {
         let scopes = GoogleDriveAuth.scopes.joined(separator: " ")

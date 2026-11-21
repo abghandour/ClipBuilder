@@ -77,6 +77,63 @@ struct StrikeStatsSummaryTests {
         #expect(StrikeStatsSummary.deduplicatedStrikes(rows + [other]).count == 3)
     }
 
+    private func strike(_ id: Int64, time: Double, action: String = "strike", limb: StrikeDetail.Side = .left,
+                        version: Int? = 3) -> FightEventRecord {
+        FightEventRecord(id: id, videoID: 1, time: time, fighterKey: "a", action: action,
+                         points: FightScoring.points(for: action),
+                         detail: StrikeDetail(technique: .punch, limb: limb, target: .head).encoded,
+                         scoringVersion: version)
+    }
+
+    @Test func denseScoringKeepsDoubleJabContacts() {
+        let rows = [strike(1, time: 10), strike(2, time: 10.25)]
+        #expect(StrikeStatsSummary.deduplicatedStrikes(rows).map(\.time) == [10, 10.25])
+        #expect(FightScoreDigest.fighters(events: rows).first?.strikes == 2)
+        #expect(FightScoreDigest.entries(events: rows, fighter: "a", category: .strikes).map(\.time) == [10, 10.25])
+    }
+
+    @Test func denseScoringMergesSameStampSeverityUpgradeInEitherOrder() {
+        let ordinary = strike(1, time: 10)
+        let significant = strike(2, time: 10, action: "significant_strike")
+        for rows in [[ordinary, significant], [significant, ordinary]] {
+            let kept = StrikeStatsSummary.deduplicatedStrikes(rows)
+            #expect(kept.count == 1)
+            #expect(kept.first?.id == significant.id)
+        }
+    }
+
+    @Test func denseScoringOnlyMergesDemonstrableDuplicatesUnderPointTwoSeconds() {
+        let first = strike(1, time: 10)
+        #expect(StrikeStatsSummary.deduplicatedStrikes([first, strike(2, time: 10)]).count == 1)
+        #expect(StrikeStatsSummary.deduplicatedStrikes([first, strike(2, time: 10.1)]).count == 1)
+        #expect(StrikeStatsSummary.deduplicatedStrikes([first, strike(2, time: 10.1, action: "significant_strike")])
+            .map(\.action) == ["significant_strike"])
+        #expect(StrikeStatsSummary.deduplicatedStrikes([first, strike(2, time: 10.2)]).count == 2)
+        #expect(StrikeStatsSummary.deduplicatedStrikes([first, strike(2, time: 10.25, action: "significant_strike")]).count == 2)
+        #expect(StrikeStatsSummary.deduplicatedStrikes([strike(1, time: 10, action: "significant_strike"),
+                                                      strike(2, time: 10.1)]).count == 2)
+        var otherTarget = strike(2, time: 10.1)
+        otherTarget.detail = StrikeDetail(technique: .punch, limb: .left, target: .body).encoded
+        #expect(StrikeStatsSummary.deduplicatedStrikes([first, otherTarget]).count == 2)
+        var unknown = first
+        unknown.detail = nil
+        #expect(StrikeStatsSummary.deduplicatedStrikes([unknown, strike(2, time: 10.1)]).count == 2)
+        // The anchor does not slide forward as a cluster grows.
+        #expect(StrikeStatsSummary.deduplicatedStrikes([first, strike(2, time: 10.15, action: "significant_strike"),
+                                                      strike(3, time: 10.3, action: "significant_strike")]).count == 2)
+    }
+
+    @Test func legacySameLimbStillMergesAndJabCrossStaysDistinct() {
+        for version in [nil, 1, 2] as [Int?] {
+            #expect(StrikeStatsSummary.deduplicatedStrikes([strike(1, time: 10, version: version),
+                                                          strike(2, time: 10.3, version: version)]).count == 1)
+        }
+        for version in [nil, 2, 3] as [Int?] {
+            #expect(StrikeStatsSummary.deduplicatedStrikes([strike(1, time: 10, version: version),
+                                                          strike(2, time: 10.1, limb: .right, version: version)]).count == 2)
+        }
+    }
+
     @Test func attemptParserAndPointsPreserveScoring() throws {
         for kind in AttemptKind.allCases {
             for resolution in ["completed", "defended", "unresolved"] {
@@ -122,10 +179,47 @@ struct StrikeStatsSummaryTests {
     }
 
     @Test func analyzedDurationUnionsOverlaps() {
-        var a = Fixtures.scene(start: 0, end: 8); a.tags = ["striking"]
-        var b = Fixtures.scene(id: 2, start: 5, end: 10); b.tags = a.tags
-        a.tags = [SmartSampling.actionTags.sorted().first!]; b.tags = a.tags
-        #expect(StrikeStatsSummary.analyzedSeconds(scenes: [a, b], start: 2, end: 9) == 7)
+        let note = FightSampling.coverageNote("scored", ranges: [(0, 8), (5, 10)])
+        var pass = AnalysisPassRecord(videoID: 1, pass: .fightScore, version: 3, status: .completed, startedAt: "1", note: note)
+        #expect(StrikeStatsSummary.analyzedSeconds(passes: [pass], videoID: 1, start: 2, end: 9) == 7)
+        pass.note = FightSampling.coverageNote("partial", ranges: [(0, 8), (9, 10)])
+        #expect(StrikeStatsSummary.analyzedSeconds(passes: [pass], videoID: 1, start: 0, end: 10) == 9)
+        #expect(FightSampling.noteSummary(pass) == "partial")
+        pass.version = 2
+        #expect(StrikeStatsSummary.analyzedSeconds(passes: [pass], videoID: 1, start: 0, end: 24) == 0)
+        pass.version = 3
+        pass.note = "old completed pass without saved coverage"
+        #expect(StrikeStatsSummary.analyzedSeconds(passes: [pass], videoID: 1, start: 0, end: 24) == 0)
+    }
+
+    @Test("A boundary takedown continuation keeps its entry time and final outcome")
+    func takedownBoundary() throws {
+        var entry = attempt(.takedown, "unresolved", time: 11)
+        entry.endTime = 11.75
+        var finish = attempt(.takedown, "completed", time: 12)
+        finish.endTime = 14
+        let merged = StrikeStatsSummary.takedownContinuations([((0, 12), [entry]), ((12, 24), [finish])])
+        let row = try #require(merged.first)
+        #expect(merged.count == 1 && row.time == 11 && row.endTime == 14 && row.outcome == "completed")
+        #expect(row.points == finish.points)
+        #expect(StrikeStatsSummary.pairs(events: merged).first?.attempts == 1)
+        #expect(StrikeStatsSummary.pairs(events: merged).first?.completed == 1)
+        // Same-window attempts, resolved shots, gaps, different targets and
+        // a shot beginning later in the next window must stay independent.
+        #expect(StrikeStatsSummary.takedownContinuations([((0, 24), [entry, finish])]).count == 2)
+        var resolved = entry; resolved.outcome = "defended"
+        #expect(StrikeStatsSummary.takedownContinuations([((0, 12), [resolved]), ((12, 24), [finish])]).count == 2)
+        var earlier = entry; earlier.endTime = 11
+        #expect(StrikeStatsSummary.takedownContinuations([((0, 12), [earlier]), ((12, 24), [finish])]).count == 2)
+        var later = finish; later.time = 12.5
+        #expect(StrikeStatsSummary.takedownContinuations([((0, 12), [entry]), ((12, 24), [later])]).count == 2)
+        var other = finish; other.targetKey = "c"
+        #expect(StrikeStatsSummary.takedownContinuations([((0, 12), [entry]), ((12, 24), [other])]).count == 2)
+        other = finish; other.fighterKey = "c"
+        #expect(StrikeStatsSummary.takedownContinuations([((0, 12), [entry]), ((12, 24), [other])]).count == 2)
+        #expect(StrikeStatsSummary.takedownContinuations([((0, 12), [entry]), ((24, 36), [finish])]).count == 2)
+        let separate = StrikeStatsSummary.takedownContinuations([((0, 12), [resolved]), ((12, 24), [finish])])
+        #expect(StrikeStatsSummary.pairs(events: separate).first?.attempts == 2)
     }
     @Test func legacyEmptyAttemptsAndOutOfScopeFinishesStayQualified() {
         var video = Fixtures.video(); video.videoType = VideoType.fight.rawValue

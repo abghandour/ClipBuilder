@@ -20,6 +20,74 @@ struct BuilderTimelineModelTests {
         undo.endUndoGrouping()
     }
 
+    @Test("freeze impacts grows one track, preserves every other lane, and undoes once")
+    func freezeImpactsAndUndo() throws {
+        let model = BuilderTimelineModel()
+        defer { model.cancelPendingAutosave() }
+        let original = Fixtures.timelineClip(sourceStart: 0, duration: 4)
+        let later = Fixtures.timelineClip(sourceStart: 0, duration: 2, startTime: 4)
+        let other = Fixtures.timelineClip(sourceStart: 0, duration: 6, track: 1)
+        var cutaway = Fixtures.timelineClip(sourceStart: 0, duration: 1, startTime: 3)
+        cutaway.role = .cutaway
+        var document = Fixtures.timelineDocument(clips: [original, later, other, cutaway])
+        document.trackCount = 2
+        document.cropBlocks = [CropBlockItem(layout: CropLayoutRef(name: "50-50 Horizontal"), startTime: 0, duration: 20)]
+        document.soundTrack = [SoundItem(name: "fixture.mp3")]
+        document.textOverlays = [TextOverlayItem(text: "Unmoved")]
+        document.imageOverlays = [ImageOverlayItem(path: "/tmp/fixture.png")]
+        document.overlayBlocks = [OverlayBlockItem()]
+        model.loadTimeline(id: 53, document: document)
+        model.onTimelineAutosave = { _, _ in }
+        let before = model.document
+        let undo = makeUndoManager()
+        model.undoManager = undo
+        // A long hold crosses the next clip's OLD start: packing must retain
+        // the original order rather than interleaving that clip and the tail.
+        #expect(try model.freezeOnImpacts(original.uid, contacts: [1, 3], hold: 2).get() == 2)
+        let pieces = model.document.videoTrack.filter { $0.originKey == original.originKey }
+        #expect(pieces.count == 5 && pieces.filter { $0.hold == true }.count == 2)
+        #expect(pieces.reduce(0) { $0 + $1.duration } == original.duration + 4)
+        #expect(pieces.map(\.startTime) == [0, 1, 3, 5, 7])
+        #expect(model.clip(later.uid)?.startTime == 8)
+        #expect(model.clip(other.uid) == before.videoTrack.first { $0.uid == other.uid })
+        #expect(model.clip(cutaway.uid) == before.videoTrack.first { $0.uid == cutaway.uid })
+        #expect(model.document.soundTrack == before.soundTrack)
+        #expect(model.document.textOverlays == before.textOverlays)
+        #expect(model.document.imageOverlays == before.imageOverlays)
+        #expect(model.document.overlayBlocks == before.overlayBlocks)
+        #expect(model.document.cropBlocks == before.cropBlocks)
+        #expect(undo.undoActionName == "Freeze on Impacts")
+        undo.undo()
+        #expect(model.document == before)
+        #expect(!undo.canUndo)
+    }
+
+    @Test("freeze impacts shares speed's free-track behavior and refuses unsupported clips")
+    func freezeFreeTrackAndRefusals() throws {
+        let clip = Fixtures.timelineClip(sourceStart: 0, duration: 4, startTime: 2)
+        let later = Fixtures.timelineClip(startTime: 8)
+        var document = Fixtures.timelineDocument(clips: [clip, later])
+        document.trackSequential[0] = false
+        let model = BuilderTimelineModel(mode: .transient)
+        model.seed(document: document, scenes: [])
+        let baseline = model.document
+        #expect(try model.freezeOnImpacts(clip.uid, contacts: [0.1, 3.9]).get() == 0)
+        #expect(model.document == baseline)
+        #expect(try model.freezeOnImpacts(clip.uid, contacts: [1]).get() == 1)
+        #expect(model.clip(later.uid) == later)
+        #expect(model.document.videoTrack.first?.startTime == 2)
+        let hold = try #require(model.document.videoTrack.first { $0.hold == true })
+        #expect(throws: ClipEditFailure.outOfBounds) { try model.freezeOnImpacts(hold.uid, contacts: [1]).get() }
+        var bumper = clip; bumper.bumper = true
+        var cutaway = clip; cutaway.role = .cutaway
+        for item in [bumper, cutaway] {
+            model.seed(document: Fixtures.timelineDocument(clips: [item]), scenes: [])
+            let before = model.document
+            if case .success = model.freezeOnImpacts(item.uid, contacts: [1]) { Issue.record("Unsupported freeze accepted") }
+            #expect(model.document == before)
+        }
+    }
+
     @Test("regression: trims and scrubbing respect playback speed")
     func speedAwareTrimAndScrub() throws {
         let scope = try DataFolderOverride()

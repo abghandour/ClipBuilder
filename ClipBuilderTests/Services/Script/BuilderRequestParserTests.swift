@@ -108,6 +108,28 @@ struct BuilderRequestParserTests {
                 == [.init(.addCutaway(scene: 1, at: 12, track: 0, coverAll: false))])
     }
 
+    @Test(arguments: ["freeze on impact on this clip", "freeze on impacts on this clip",
+                      "freeze on impact for this clip", "freeze on impacts for this clip",
+                      "freeze on impact in this clip", "freeze on impacts in this clip"])
+    func freezeOnImpacts(_ request: String) throws {
+        let context = context()
+        let id = try #require(context.selectedClipID).uuidString
+        #expect(try steps(request, context) == [.init(.freezeClipOnImpacts(clip: id))])
+    }
+
+    @Test func freezeRequiresSelectionAndRejectsExtraEdits() {
+        var context = context()
+        for request in ["freeze on impacts on this clip and mute it", "freeze on impacts on this clip for 2 s"] {
+            guard case .unrecognised = BuilderRequestParser().parse(request, context: context) else {
+                Issue.record("Partially accepted freeze request"); continue
+            }
+        }
+        context.selectedClipID = nil
+        guard case .unrecognised = BuilderRequestParser().parse("freeze on impacts on this clip", context: context) else {
+            Issue.record("Accepted freeze without selection"); return
+        }
+    }
+
     @Test func selectionCommands() throws {
         let context = context()
         let id = try #require(context.selectedClipID).uuidString
@@ -118,6 +140,8 @@ struct BuilderRequestParserTests {
         #expect(try steps("mute this clip", context) == [.init(.setClipMuted(clip: id, muted: true))])
         #expect(try steps("unmute this clip", context) == [.init(.setClipMuted(clip: id, muted: false))])
         #expect(try steps("cover all areas", context) == [.init(.setCutawayCoverAll(clip: id, coverAll: true))])
+        #expect(try steps("show strike highlights on this clip", context) == [.init(.setClipStrikeHighlights(clip: id, enabled: true))])
+        #expect(try steps("hide strike highlights for the selected scene", context) == [.init(.setClipStrikeHighlights(clip: id, enabled: false))])
     }
 
     @Test(arguments: ["remove clips with Alex Smith except the first", "remove clips with Alex Smith and add titles",

@@ -233,6 +233,7 @@ extension WizardView {
             case .audio: audioFields
             case .overlays: overlaysFields
             case .package: packageFields
+            case .voiceOver: EmptyView()
             }
         }
         .accessibilityLabel("Settings")

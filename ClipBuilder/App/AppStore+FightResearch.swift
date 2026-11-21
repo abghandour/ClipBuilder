@@ -85,15 +85,64 @@ extension AppStore {
 
     /// Manual (re-)run of the fight-scoring pass for one video — the same
     /// pass that runs automatically at the end of analysis.
+    /// The saved limb and impact highlight of one strike. A strike scored
+    /// before highlights were saved is found now and saved for next time.
+    func strikeHighlight(video: VideoRecord, time: Double, fighterKey: String, detail: StrikeDetail?,
+                         eventGeneration: Int64?) async -> StrikeHighlightRules.Track? {
+        let profile = profileGeneration
+        // Migrated legacy events predate the local counter and belong to zero.
+        let generation = eventGeneration ?? 0
+        guard let database,
+              (try? await database.isFightEventGenerationCurrent(videoID: video.id, generation: generation)) == true,
+              !Task.isCancelled, profile == profileGeneration, self.database === database else { return nil }
+        if let saved = try? await database.fetchStrikeHighlight(videoID: video.id, time: time, fighterKey: fighterKey,
+                                                               expectedGeneration: generation) {
+            guard !Task.isCancelled, profile == profileGeneration, self.database === database else { return nil }
+            return saved.track
+        }
+        guard !Task.isCancelled, profile == profileGeneration, self.database === database else { return nil }
+        let outcome = await StrikeHighlightFinder.find(url: video.url, time: time, detail: detail, duration: video.duration)
+        // Frames that could not be read say nothing: try again next time.
+        guard !Task.isCancelled, profile == profileGeneration, self.database === database,
+              let record = outcome.record(videoID: video.id, time: time, fighterKey: fighterKey) else { return nil }
+        guard (try? await database.saveStrikeHighlights(videoID: video.id, [record], generation: generation)) == true,
+              !Task.isCancelled, profile == profileGeneration, self.database === database else { return nil }
+        strikeHighlightRevision += 1
+        return outcome.track
+    }
+
+    /// Finds the limb and impact of every scored strike that has none saved,
+    /// from the events already there: no AI pass. For a fight whose events
+    /// arrived by sync, or whose marking was stopped part way.
+    func markStrikes(video: VideoRecord) {
+        guard let database, !fightScoringInFlight.contains(video.id),
+              fightEvents[video.id]?.isEmpty == false else { return }
+        let profile = profileGeneration
+        fightScoringJobsInFlight.insert(video.id)
+        jobs.start(.fightScore, title: "Mark strikes — \(video.filename)", project: activeProject,
+                   profileGeneration: profileGeneration, subjectID: String(video.id), cleanup: { [weak self] in
+            self?.fightScoringJobsInFlight.remove(video.id)
+        }) { [self] log in
+            try await StrikeHighlightMarker.mark(video: video, database: database,
+                isCurrent: { @MainActor [self] in
+                    profile == profileGeneration && self.database === database
+                }, didSave: { @MainActor [self] in
+                    guard profile == profileGeneration, self.database === database else { return }
+                    strikeHighlightRevision += 1
+                }, log: log)
+            return nil
+        }
+    }
+
     func scoreFightAction(video: VideoRecord) {
         guard let database, !fightScoringInFlight.contains(video.id) else { return }
-        fightScoringInFlight.insert(video.id)
+        fightScoringJobsInFlight.insert(video.id)
         let profile = activeProfile
         let generation = profileGeneration
         let projectID = activeProjectID
-        jobs.start(.fightScore, title: "Score v2 — \(video.filename)", project: activeProject,
+        jobs.start(.fightScore, title: "Score fight — \(video.filename)", project: activeProject,
                    profileGeneration: generation, subjectID: String(video.id), cleanup: { [weak self] in
-            self?.fightScoringInFlight.remove(video.id)
+            self?.fightScoringJobsInFlight.remove(video.id)
             self?.continueAnalysisStepBatch()
         }) { [self] jobLog in
             // The job row keeps lines in memory only; the analysis log persists them to app.log.
@@ -112,6 +161,7 @@ extension AppStore {
             let events = try await database.fetchFightEvents()
             fightEvents = Dictionary(grouping: events, by: \.videoID)
             analysisPasses = try await database.fetchAnalysisPasses()
+            strikeHighlightRevision += 1
             return nil
         }
     }

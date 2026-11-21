@@ -2,6 +2,19 @@ import SwiftUI
 
 // Presentation-only choices for the current take (or the next Automatic run).
 extension WizardView {
+    private var strikePauseEnabled: Binding<Bool> {
+        Binding(get: { strikeImpactFreeze.isFinite && strikeImpactFreeze > 0 },
+                set: { strikeImpactFreeze = $0 ? StrikeHighlightRules.impactHold : 0 })
+    }
+
+    private var strikePauseSeconds: Binding<Double> {
+        Binding(get: { strikeImpactFreeze }, set: { value in
+            strikeImpactFreeze = value.isFinite
+                ? min(StrikeFreezeRules.holdRange.upperBound, max(StrikeFreezeRules.holdRange.lowerBound, value))
+                : StrikeHighlightRules.impactHold
+        })
+    }
+
     private var safeAreaPlatformSelection: Binding<[SocialPlatform]> {
         Binding(get: {
             let selected = safeAreaPlatforms.split(separator: ",").compactMap { SocialPlatform(rawValue: String($0)) }
@@ -151,6 +164,16 @@ extension WizardView {
                 StrikeStatsLookControls(enabled: $strikeStats, units: $strikeUnits,
                                         speedCallouts: $strikeSpeedCallouts,
                                         grapplingCard: $strikeGrapplingCard, roundCard: $strikeRoundCard)
+                WizardControlRow("Highlight strikes") {
+                    Toggle("Highlight strikes", isOn: $strikeHighlights)
+                        .lineLimit(1).fixedSize()
+                }
+                .lineLimit(1).fixedSize(horizontal: false, vertical: true)
+                .help("Mark the attacking limb in green and the impact in red on clips from fight footage")
+                WizardControlRow("Pause on contact") {
+                    StrikePauseControls(enabled: strikePauseEnabled, seconds: strikePauseSeconds)
+                }
+                .lineLimit(1).fixedSize(horizontal: false, vertical: true)
             }
         }
         if lookCapabilities.branding {

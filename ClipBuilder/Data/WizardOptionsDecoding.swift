@@ -38,6 +38,9 @@ nonisolated extension WizardOptions {
         muteSource = try values.decodeIfPresent(Bool.self, forKey: .muteSource) ?? muteSource
         addCaptions = try values.decodeIfPresent(Bool.self, forKey: .addCaptions) ?? addCaptions
         strikeStats = try values.decodeIfPresent(Bool.self, forKey: .strikeStats)
+        strikeHighlights = try values.decodeIfPresent(Bool.self, forKey: .strikeHighlights)
+        strikeImpactFreeze = try values.decodeIfPresent(Double.self, forKey: .strikeImpactFreeze)
+        voiceOverBedLevel = try values.decodeIfPresent(Double.self, forKey: .voiceOverBedLevel)
         strikeUnits = try values.decodeIfPresent(String.self, forKey: .strikeUnits)
         strikeSpeedCallouts = try values.decodeIfPresent(Bool.self, forKey: .strikeSpeedCallouts)
         strikeGrapplingCard = try values.decodeIfPresent(Bool.self, forKey: .strikeGrapplingCard)

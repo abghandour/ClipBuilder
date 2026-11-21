@@ -18,7 +18,9 @@ actor DriveMediaResolver {
         guard url.isFileURL else { return url }
         if FileManager.default.fileExists(atPath: url.path) { return url }
         for entry in databases {
-            if let media = try await entry.database.driveMedia(path: url.path) {
+            // A registered database that cannot be read (its file is gone)
+            // must not fail a lookup another database could answer.
+            if let media = try? await entry.database.driveMedia(path: url.path) {
                 return try await GoogleDriveTransfers.shared.fetch(media, profile: entry.profile)
             }
         }
@@ -27,7 +29,7 @@ actor DriveMediaResolver {
 
     func isDriveMedia(_ url: URL) async throws -> Bool {
         for entry in databases {
-            if try await entry.database.driveMedia(path: url.path) != nil { return true }
+            if (try? await entry.database.driveMedia(path: url.path)) != nil { return true }
         }
         return false
     }
