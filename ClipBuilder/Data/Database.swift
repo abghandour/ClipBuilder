@@ -440,6 +440,41 @@ actor Database {
         note TEXT,
         PRIMARY KEY(video_id, pass, started_at)
     );
+    -- Reviewer decisions stay local; corrected event rows keep their existing sync identity.
+    CREATE TABLE IF NOT EXISTS fight_corrections (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        kind TEXT NOT NULL,
+        at_time REAL NOT NULL,
+        fighter_key TEXT NOT NULL,
+        action TEXT NOT NULL,
+        detail TEXT,
+        new_time REAL, new_fighter_key TEXT, new_action TEXT, new_detail TEXT,
+        new_end_time REAL, new_outcome TEXT, new_target_key TEXT,
+        created_at TEXT DEFAULT (datetime('now'))
+    );
+    CREATE INDEX IF NOT EXISTS idx_fight_corrections_video ON fight_corrections(video_id);
+    -- Local review learning; deliberately absent from SyncTable.
+    CREATE TABLE IF NOT EXISTS fight_scoring_lessons (
+        id INTEGER PRIMARY KEY, text TEXT NOT NULL, source_count INTEGER NOT NULL,
+        created_at TEXT DEFAULT (datetime('now')), enabled INTEGER NOT NULL DEFAULT 1
+    );
+    CREATE TABLE IF NOT EXISTS fight_correction_learning (
+        correction_id INTEGER PRIMARY KEY REFERENCES fight_corrections(id) ON DELETE CASCADE,
+        fingerprint TEXT NOT NULL
+    );
+    CREATE TABLE IF NOT EXISTS fight_scoring_learning_state (
+        id INTEGER PRIMARY KEY CHECK(id = 1), revision INTEGER NOT NULL DEFAULT 0,
+        source_count INTEGER NOT NULL DEFAULT 0
+    );
+    INSERT OR IGNORE INTO fight_scoring_learning_state(id) VALUES (1);
+    -- The plan's correction columns do not preserve original attempt metadata or
+    -- provenance. Keep a full undo snapshot and generation-checked row binding locally.
+    CREATE TABLE IF NOT EXISTS fight_correction_originals (
+        correction_id INTEGER PRIMARY KEY REFERENCES fight_corrections(id) ON DELETE CASCADE,
+        original_json TEXT, event_id INTEGER, generation INTEGER, siblings_json TEXT, added_siblings_json TEXT
+    );
+
     CREATE TABLE IF NOT EXISTS fight_events (
         id INTEGER PRIMARY KEY,
         video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
@@ -882,6 +917,12 @@ actor Database {
         }
         if try !connection.columnNames(of: "voice_takes").contains("occurrence") {
             try connection.execute("ALTER TABLE voice_takes ADD COLUMN occurrence INTEGER")
+        }
+        if try !connection.columnNames(of: "fight_correction_originals").contains("siblings_json") {
+            try connection.execute("ALTER TABLE fight_correction_originals ADD COLUMN siblings_json TEXT")
+        }
+        if try !connection.columnNames(of: "fight_correction_originals").contains("added_siblings_json") {
+            try connection.execute("ALTER TABLE fight_correction_originals ADD COLUMN added_siblings_json TEXT")
         }
         if stamped != Self.schemaVersion {
             try Self.migrate(connection)

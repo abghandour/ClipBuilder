@@ -31,7 +31,17 @@ nonisolated enum StrikeHighlightPainter {
         defer { context.restoreGState() }
         context.setShadow(offset: .zero, blur: radius * 0.5, color: green(0.9))
 
-        if let first = highlight.limb.first, highlight.limb.count >= 2 {
+        if let contour = highlight.contour, let first = contour.first, contour.count >= 3 {
+            context.beginPath()
+            context.move(to: place(first))
+            for point in contour.dropFirst() { context.addLine(to: place(point)) }
+            context.closePath()
+            context.setFillColor(green(0.35))
+            context.setStrokeColor(green(0.9))
+            context.setLineWidth(max(1.5, radius * 0.08))
+            context.setLineJoin(.round)
+            context.drawPath(using: .fillStroke)
+        } else if let first = highlight.limb.first, highlight.limb.count >= 2 {
             context.beginPath()
             context.move(to: place(first))
             for point in highlight.limb.dropFirst() { context.addLine(to: place(point)) }

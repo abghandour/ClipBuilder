@@ -42,6 +42,7 @@ struct SettingsView: View {
             }
         }
         .sheet(item: $languageProject) { project in ProjectLanguagesSheet(project: project) }
+        .sheet(item: Bindable(store).settingsAntigravitySignIn) { model in AntigravitySignInSheet(model: model) }
         .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 640)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             Label((selectedTab == "googleDrive" || selectedTab == "team") ? "Your connection is saved securely on this Mac" : "Changes save automatically", systemImage: "checkmark")
@@ -1114,9 +1115,11 @@ private struct AvailabilityRow: View {
                         Text("Installed").foregroundStyle(.green)
                     }
                     if signIn == .signedOut || signIn == .unknown {
-                        Button("Sign In…") { store.openProviderSignIn(providerKey) }
+                        Button("Sign In…") { store.openProviderSignIn(providerKey, fromSettings: true) }
                             .controlSize(.small)
-                            .help("Opens this CLI's sign-in in Terminal. Come back here once it finishes.")
+                            .help(providerKey == "antigravity"
+                                  ? "Opens the Google sign-in page and a place to paste the code it shows."
+                                  : "Opens this CLI's sign-in in Terminal. Come back here once it finishes.")
                     }
                 }
             case .some(false):
@@ -1140,6 +1143,11 @@ private struct AvailabilityRow: View {
         }
         .onChange(of: isInstalling) { _, installing in
             guard !installing else { return }
+            Task { await refresh() }
+        }
+        // The sign-in sheet closed: whatever it achieved shows here.
+        .onChange(of: store.settingsAntigravitySignIn == nil) { _, closed in
+            guard closed, providerKey == "antigravity" else { return }
             Task { await refresh() }
         }
     }

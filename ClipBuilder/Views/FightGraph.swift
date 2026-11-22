@@ -15,6 +15,8 @@ struct FightGraphView: View {
     var people: [PersonRecord] = []
     var height: CGFloat = 72
     var showsLegend = true
+    /// Detail hosts keep marker lanes and curves in the same fighter order.
+    var fighterKeys: [String]? = nil
     /// Tap-to-seek (source seconds); nil = inert graph.
     var onSeek: ((Double) -> Void)?
     /// Source time to mark with a vertical line (the action picked in the list).
@@ -23,6 +25,7 @@ struct FightGraphView: View {
     private struct ActivityKey: Equatable {
         var events: [FightEventRecord]
         var range: ClosedRange<Double>
+        var fighterKeys: [String]?
     }
 
     /// The bucketed curves are rebuilt only when the events or window
@@ -76,7 +79,7 @@ struct FightGraphView: View {
         // third detected person (rare) is ignored in the split view.
         var totals: [String: Double] = [:]
         for event in attributed { totals[event.fighterKey, default: 0] += event.points }
-        let ranked = totals.sorted { $0.value > $1.value }.map(\.key)
+        let ranked = fighterKeys ?? totals.sorted { $0.value > $1.value }.map(\.key)
         guard let topKey = ranked.first else { return nil }
         let bottomKey = ranked.count > 1 ? ranked[1] : ""
 
@@ -114,7 +117,7 @@ struct FightGraphView: View {
     // MARK: - View
 
     var body: some View {
-        let model = activityMemo(ActivityKey(events: events, range: range)) { activity() }
+        let model = activityMemo(ActivityKey(events: events, range: range, fighterKeys: fighterKeys)) { activity() }
         return VStack(alignment: .leading, spacing: Theme.spaceXS) {
             if showsLegend, let model {
                 HStack(spacing: 10) {

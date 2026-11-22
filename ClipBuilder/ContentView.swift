@@ -445,6 +445,9 @@ struct MainWindowView: View {
         } message: { error in
             Text(error.message)
         }
+        .sheet(item: $store.antigravitySignIn) { model in
+            AntigravitySignInSheet(model: model)
+        }
         .sheet(isPresented: $store.showTrainingGuide) {
             HelpSheet()
         }
@@ -528,6 +531,7 @@ struct MainWindowView: View {
             || store.pendingPeopleReview != nil || store.pendingRenameReview != nil || store.pendingAnalysisDuplicate != nil
             || store.showTrainingGuide || store.showResourceExport || store.resourceImportURL != nil
             || store.currentError != nil || store.currentNotice != nil || store.isLoadingProject
+            || store.antigravitySignIn != nil
     }
 
     private func checkForCrashesWhenReady() {

@@ -42,7 +42,9 @@ nonisolated enum ProviderAuth {
 
     /// Ask the CLI itself. Claude and Codex have status commands; Gemini
     /// and Qwen keep an OAuth credential file we can look for; Antigravity
-    /// and Kimi offer neither. An unreadable answer is `.unknown`.
+    /// answers `models` with its list or with a request to sign in (and,
+    /// unlike a prompt, never opens the browser for it); Kimi offers
+    /// nothing. An unreadable answer is `.unknown`.
     static func status(provider key: String, binary: URL?, timeout: TimeInterval = 20) async -> State {
         switch key {
         case "claude":
@@ -63,7 +65,13 @@ nonisolated enum ProviderAuth {
         case "qwen":
             return credentialFileState(".qwen/oauth_creds.json")
         case "antigravity":
-            return .unknown
+            guard let binary else { return .unknown }
+            // A pipe for stdin: with the app's own (the null device) the CLI
+            // takes itself for interactive.
+            guard let result = try? await ProcessRunner.run(
+                executable: binary, arguments: ["models"], stdin: Data(), timeout: timeout) else { return .unknown }
+            return parseAntigravityModels(stdout: result.stdoutText, stderr: result.stderrText,
+                                          exitCode: result.exitCode)
         default:
             return .unknown
         }
@@ -89,6 +97,17 @@ nonisolated enum ProviderAuth {
         if text.contains("not logged in") { return .signedOut }
         if text.contains("logged in") { return .signedIn }
         return exitCode == 0 ? .unknown : .signedOut
+    }
+
+    /// `agy models` prints "Please sign in to view available models." and
+    /// fails when signed out, and the model list when signed in.
+    static func parseAntigravityModels(stdout: String, stderr: String, exitCode: Int32) -> State {
+        let text = (stdout + "\n" + stderr).lowercased()
+        if text.contains("please sign in") || text.contains("not logged in") || text.contains("authentication required") {
+            return .signedOut
+        }
+        // Signed in only on the evidence of a list: tab-separated ids and names.
+        return exitCode == 0 && stdout.contains("\t") ? .signedIn : .unknown
     }
 
     private static func credentialFileState(_ relativePath: String) -> State {

@@ -43,22 +43,39 @@ nonisolated enum StrikeStatsSummary {
     /// scoring (v3 onward) keeps distinct contacts, merging only repeats or
     /// severity upgrades of the same named blow under 0.2 s from that anchor.
     static func deduplicatedStrikes(_ events: [FightEventRecord]) -> [FightEventRecord] {
-        let groups = Dictionary(grouping: events.filter { strikeFamily.contains($0.action) }) {
-            "\($0.videoID)|\($0.fighterKey)"
+        strikeUnits(events).map(\.shown)
+    }
+
+    /// One counted action and the stored rows it stands for, as indices into
+    /// the list it was built from. `shown` carries the id of the row at `stored`.
+    struct Unit: Sendable {
+        var shown: FightEventRecord
+        var stored: Int
+        var members: [Int]
+    }
+
+    static func strikeUnits(_ events: [FightEventRecord]) -> [Unit] {
+        let groups = Dictionary(grouping: events.indices.filter { strikeFamily.contains(events[$0].action) }) {
+            "\(events[$0].videoID)|\(events[$0].fighterKey)"
         }
-        return groups.values.flatMap { rows -> [FightEventRecord] in
-            var result: [FightEventRecord] = []
+        return groups.values.flatMap { rows -> [Unit] in
+            var result: [Unit] = []
             var anchor = -Double.infinity
-            for row in rows.sorted(by: { $0.time < $1.time }) {
-                if row.time - anchor <= 0.4, let last = result.last, sameBlow(row, last, anchor: anchor) {
-                    if row.points > last.points { result[result.count - 1] = row }
+            for index in rows.sorted(by: { events[$0].time < events[$1].time }) {
+                let row = events[index]
+                if row.time - anchor <= 0.4, let last = result.last, sameBlow(row, last.shown, anchor: anchor) {
+                    result[result.count - 1].members.append(index)
+                    if row.points > last.shown.points {
+                        result[result.count - 1].shown = row
+                        result[result.count - 1].stored = index
+                    }
                 } else {
                     anchor = row.time
-                    result.append(row)
+                    result.append(Unit(shown: row, stored: index, members: [index]))
                 }
             }
             return result
-        }.sorted { $0.time < $1.time }
+        }.sorted { $0.shown.time < $1.shown.time }
     }
 
     private static func sameBlow(_ first: FightEventRecord, _ second: FightEventRecord, anchor: Double) -> Bool {
@@ -84,21 +101,28 @@ nonisolated enum StrikeStatsSummary {
     /// Overlapping holds and a continuing chain through a short transition are
     /// one sequence, carrying the final hold and resolution. Legacy instants stay intact.
     static func attemptSequences(_ events: [FightEventRecord]) -> [FightEventRecord] {
-        var result: [FightEventRecord] = []
-        for row in events.sorted(by: { $0.time < $1.time }) {
+        attemptUnits(events).map(\.shown)
+    }
+
+    /// Every event as a unit; a submission chain is one unit of several rows.
+    static func attemptUnits(_ events: [FightEventRecord]) -> [Unit] {
+        var result: [Unit] = []
+        for position in events.indices.sorted(by: { events[$0].time < events[$1].time }) {
+            let row = events[position]
             if row.action == "submission_attempt", (row.scoringVersion ?? 1) >= 2,
                let index = result.lastIndex(where: {
-                   $0.videoID == row.videoID && $0.action == row.action && $0.fighterKey == row.fighterKey
-                       && $0.targetKey == row.targetKey && ($0.scoringVersion ?? 1) >= 2
-               }), let end = result[index].endTime, row.time <= end + 3,
-               result[index].outcome != "completed" {
+                   $0.shown.videoID == row.videoID && $0.shown.action == row.action && $0.shown.fighterKey == row.fighterKey
+                       && $0.shown.targetKey == row.targetKey && ($0.shown.scoringVersion ?? 1) >= 2
+               }), let end = result[index].shown.endTime, row.time <= end + 3,
+               result[index].shown.outcome != "completed" {
+                result[index].members.append(position)
                 if (row.endTime ?? row.time) >= end {
-                    result[index].endTime = row.endTime
-                    result[index].outcome = row.outcome
-                    result[index].detail = row.detail
+                    result[index].shown.endTime = row.endTime
+                    result[index].shown.outcome = row.outcome
+                    result[index].shown.detail = row.detail
                 }
             } else {
-                result.append(row)
+                result.append(Unit(shown: row, stored: position, members: [position]))
             }
         }
         return result
@@ -119,7 +143,9 @@ nonisolated enum StrikeStatsSummary {
                 index = pairs.count
                 pairs.append(Pair(kind: kind, attacker: row.fighterKey, defender: target))
             }
-            if (row.scoringVersion ?? 1) < 2 || row.action == "takedown" {
+            // An old row says nothing about how the attempt ended. Once it
+            // carries a result (the reviewer gave it one), it counts by it.
+            if row.action == "takedown" || ((row.scoringVersion ?? 1) < 2 && row.outcome == nil) {
                 pairs[index].legacy += 1
                 continue
             }

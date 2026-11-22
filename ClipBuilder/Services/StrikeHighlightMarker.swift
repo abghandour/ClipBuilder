@@ -123,7 +123,8 @@ nonisolated enum StrikeHighlightMarker {
             // Stop keeps partial results. A profile change prevents saving even
             // when the finder returns partial results from a cancelled task.
             guard await isCurrent() else { return Result() }
-            let accepted = try await database.saveStrikeHighlights(videoID: video.id, found, generation: state.generation)
+            let accepted = try await database.saveStrikeHighlights(videoID: video.id, found, generation: state.generation,
+                                                                  expectedEvents: state.events)
             if accepted {
                 await didSave()
                 // An accepted save may contain only some strikes. Only this

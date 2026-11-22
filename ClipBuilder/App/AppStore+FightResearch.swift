@@ -101,11 +101,16 @@ extension AppStore {
             return saved.track
         }
         guard !Task.isCancelled, profile == profileGeneration, self.database === database else { return nil }
+        // An in-place correction keeps the generation. Capture the actual row too,
+        // so a finder started before the edit cannot save its stale limb track.
+        guard let expectedEvent = (try? await database.fetchFightEvents(videoID: video.id))?.first(where: {
+            $0.time == time && $0.fighterKey == fighterKey && StrikeDetail($0.detail) == detail
+        }) else { return nil }
         let outcome = await StrikeHighlightFinder.find(url: video.url, time: time, detail: detail, duration: video.duration)
         // Frames that could not be read say nothing: try again next time.
         guard !Task.isCancelled, profile == profileGeneration, self.database === database,
               let record = outcome.record(videoID: video.id, time: time, fighterKey: fighterKey) else { return nil }
-        guard (try? await database.saveStrikeHighlights(videoID: video.id, [record], generation: generation)) == true,
+        guard (try? await database.saveStrikeHighlights(videoID: video.id, [record], generation: generation, expectedEvent: expectedEvent)) == true,
               !Task.isCancelled, profile == profileGeneration, self.database === database else { return nil }
         strikeHighlightRevision += 1
         return outcome.track
@@ -130,6 +135,38 @@ extension AppStore {
                     guard profile == profileGeneration, self.database === database else { return }
                     strikeHighlightRevision += 1
                 }, log: log)
+            return nil
+        }
+    }
+
+    /// Refines existing plain tracks only; the job owns the work after the popup closes.
+    func makeStrikeHighlightsHD(video: VideoRecord, events: [FightEventRecord]) {
+        guard let database, video.isLocal, !fightScoringInFlight.contains(video.id), !events.isEmpty else { return }
+        let profile = profileGeneration
+        fightScoringJobsInFlight.insert(video.id)
+        strikeHighlightsBecomingHD[video.id] = Set(events.map(\.id))
+        jobs.start(.fightScore, title: "HD highlight — \(video.filename)", project: activeProject,
+                   profileGeneration: profile, subjectID: String(video.id), cleanup: { [weak self] in
+            // A job stopped by a profile switch ends late; the same video id
+            // may by then belong to a job of the new profile.
+            guard let self, self.profileGeneration == profile else { return }
+            self.fightScoringJobsInFlight.remove(video.id)
+            self.strikeHighlightsBecomingHD[video.id] = nil
+        }) { [self] log in
+            do {
+                try await StrikeHighlightContour.makeHD(video: video, events: events, database: database,
+                    isCurrent: { @MainActor [self] in
+                        profile == self.profileGeneration && self.database === database
+                    }, didSave: { @MainActor [self] in
+                        guard profile == self.profileGeneration, self.database === database else { return }
+                        self.strikeHighlightRevision += 1
+                    }, log: log)
+            } catch {
+                if !Task.isCancelled, !(error is CancellationError) {
+                    ErrorLog.record("HD strike highlight", error.localizedDescription)
+                }
+                throw error
+            }
             return nil
         }
     }

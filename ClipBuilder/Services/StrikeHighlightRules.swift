@@ -50,6 +50,8 @@ nonisolated enum StrikeHighlightRules {
         var usesArm: Bool
         /// The attacker stands left of the defender.
         var attackerOnLeft: Bool
+        /// Closed clockwise outline, top-left origin; absent in plain/legacy tracks.
+        var contour: [CGPoint]? = nil
     }
 
     /// One moment of a highlight.
@@ -61,7 +63,7 @@ nonisolated enum StrikeHighlightRules {
     /// A track reduced to what is drawn: two tracks that paint the same
     /// pixels are equal, whatever the search that found them recorded.
     static func drawable(_ track: Track) -> Track {
-        var track = track
+        var track = track.current
         track.contact = 0
         for index in track.keyframes.indices {
             track.keyframes[index].highlight.cost = 0
@@ -81,11 +83,29 @@ nonisolated enum StrikeHighlightRules {
         var aspect: CGFloat
         var start: Double { keyframes.first?.time ?? 0 }
         var end: Double { keyframes.last?.time ?? 0 }
+        /// The contour rules its outlines were found with. Outlines of older
+        /// rules are neither drawn nor counted as HD: HD is made again.
+        var contourVersion: Int? = nil
+        var isHD: Bool {
+            contourVersion == StrikeHighlightRules.contourVersion && keyframes.contains { $0.highlight.contour != nil }
+        }
+        /// The track as it is drawn: outlines of older rules taken out.
+        var current: Track {
+            guard !isHD, keyframes.contains(where: { $0.highlight.contour != nil }) else { return self }
+            var track = self
+            for index in track.keyframes.indices { track.keyframes[index].highlight.contour = nil }
+            return track
+        }
     }
 
     /// Stored with every saved track. Bump when the rules change enough that
     /// saved tracks should be found again.
     static let version = 5
+    static let contourPoints = 48
+    /// Bump when the outline is found differently enough that saved HD
+    /// highlights should be made again. 2: the area follows the limb's own
+    /// width instead of a wide band that took in the other leg and the hips.
+    static let contourVersion = 2
     /// How long playback holds on the moment of impact when that is switched on.
     static let impactHold = 0.8
 
@@ -380,6 +400,7 @@ nonisolated enum StrikeHighlightRules {
     /// The highlight at `time`, blended between the keyframes either side,
     /// with its opacity (fading in and out at the ends). nil outside the track.
     static func sample(_ track: Track, at time: Double) -> (highlight: Highlight, opacity: Double)? {
+        let track = track.current
         guard let first = track.keyframes.first, let last = track.keyframes.last,
               time >= first.time - fade, time <= last.time + fade else { return nil }
         let opacity = min(1, max(0, min(time - (first.time - fade), (last.time + fade) - time) / fade))
@@ -387,6 +408,7 @@ nonisolated enum StrikeHighlightRules {
         if time >= last.time { return (last.highlight, opacity) }
         guard let next = track.keyframes.firstIndex(where: { $0.time >= time }), next > 0 else { return (first.highlight, opacity) }
         let a = track.keyframes[next - 1], b = track.keyframes[next]
+        if time == b.time { return (b.highlight, opacity) }
         let share = CGFloat((time - a.time) / max(0.0001, b.time - a.time))
         func blend(_ p: CGPoint, _ q: CGPoint) -> CGPoint {
             CGPoint(x: p.x + (q.x - p.x) * share, y: p.y + (q.y - p.y) * share)
@@ -399,6 +421,12 @@ nonisolated enum StrikeHighlightRules {
         }
         result.target = blend(a.highlight.target, b.highlight.target)
         result.radius = a.highlight.radius + (b.highlight.radius - a.highlight.radius) * share
+        if let left = a.highlight.contour, let right = b.highlight.contour,
+           left.count == contourPoints, right.count == contourPoints {
+            result.contour = zip(left, right).map(blend)
+        } else {
+            result.contour = nil
+        }
         return (result, opacity)
     }
 }

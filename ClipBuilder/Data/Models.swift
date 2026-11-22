@@ -317,7 +317,7 @@ nonisolated struct RenameReviewRequest: Identifiable, Sendable {
 /// One scored fight action from the fight-scoring pass: a timestamped event
 /// attributed to a fighter, worth points. The pace graph and the per-fighter
 /// "who is winning" lines both derive from these rows.
-nonisolated struct FightEventRecord: Identifiable, Sendable, Hashable {
+nonisolated struct FightEventRecord: Identifiable, Sendable, Hashable, Codable {
     var id: Int64
     var videoID: Int64
     var time: Double

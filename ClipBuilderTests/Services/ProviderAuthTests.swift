@@ -114,4 +114,83 @@ struct ProviderAuthTests {
         #expect(!script.contains("status="))
         #expect(script.contains("exit $result"))
     }
+
+    @Test("Antigravity's model list says whether it is signed in")
+    func antigravityModelsStatus() {
+        #expect(ProviderAuth.parseAntigravityModels(stdout: "", stderr: """
+            Fetching available models...
+            Error: Please sign in to view available models. Launch the CLI without arguments to sign in.
+            """, exitCode: 1) == .signedOut)
+        #expect(ProviderAuth.parseAntigravityModels(stdout: "gemini-3.8-flash-high\tGemini 3.8 Flash (High)\n",
+                                                    stderr: "Fetching available models...\n", exitCode: 0) == .signedIn)
+        #expect(ProviderAuth.parseAntigravityModels(stdout: "", stderr: "dial tcp: i/o timeout", exitCode: 1) == .unknown)
+        // What a prompt prints when signed out is a sign-in failure for the caller.
+        #expect(ProviderAuth.isAuthFailure("Error: authentication required. Run 'agy' to log in, then retry."))
+    }
+
+    @Test("The Antigravity sign-in reads the page address and the CLI's verdict")
+    func antigravitySignInParsing() {
+        let prompt = """
+            Authentication required. Please visit the URL to log in:
+              https://accounts.google.com/o/oauth2/auth?access_type=offline&response_type=code
+
+            Waiting for authentication (timeout 60s)...
+            Or, paste the authorization code here and press Enter:
+
+            """
+        #expect(AntigravitySignIn.page(in: prompt)?.host == "accounts.google.com")
+        // Not while the address is still arriving.
+        #expect(AntigravitySignIn.page(in: "Authentication required.\n  https://accounts.google.com/o/oau") == nil)
+        #expect(AntigravitySignIn.outcome(exitCode: 1, stderr: prompt + "Error: authentication timed out.\n") == .timedOut)
+        let refused = AntigravitySignIn.outcome(exitCode: 1, stderr: prompt
+            + "Error: authentication failed: token exchange failed: oauth2: \"invalid_grant\" \"Bad Request\"\n")
+        if case .failed(let message) = refused { #expect(message.contains("did not accept")) } else { Issue.record("\(refused)") }
+        #expect(AntigravitySignIn.outcome(exitCode: 0, stderr: prompt) == .signedIn)
+        #expect(AntigravitySignIn.outcome(exitCode: 1, stderr: "Error: authentication required. Run 'agy' to log in, then retry.\n")
+            == .failed("authentication required. Run 'agy' to log in, then retry."))
+        // Stopped, or failed for a reason that is not the sign-in: only the CLI's status can tell.
+        #expect(AntigravitySignIn.outcome(exitCode: 15, stderr: prompt) == .unclear("The Antigravity CLI stopped (status 15)."))
+        #expect(AntigravitySignIn.outcome(exitCode: 1, stderr: prompt + "error: model not found\n") == .unclear("error: model not found"))
+        // Only the first pasted line is typed, and never an endless one.
+        #expect(AntigravitySignIn.codeLine("\n  4/abc  \nsecond line\n") == "4/abc")
+        #expect(AntigravitySignIn.codeLine(String(repeating: "x", count: 5000)).count == 512)
+        // A list is the only evidence of being signed in.
+        #expect(ProviderAuth.parseAntigravityModels(stdout: "models\n", stderr: "", exitCode: 0) == .unknown)
+    }
+
+    @Test("A pasted code reaches the CLI on its terminal", .timeLimit(.minutes(1)))
+    func antigravitySignInTypesTheCode() async throws {
+        let folder = FileManager.default.temporaryDirectory.appendingPathComponent("agy-fake-\(UUID().uuidString)")
+        try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: folder) }
+        let binary = folder.appendingPathComponent("agy")
+        // Like the CLI: interactive only when stdin is a terminal.
+        try """
+            #!/bin/sh
+            if [ ! -t 0 ]; then echo "Error: authentication required. Run 'agy' to log in, then retry." >&2; exit 1; fi
+            echo "Authentication required. Please visit the URL to log in:" >&2
+            echo "  https://accounts.google.com/o/oauth2/auth?state=fake" >&2
+            echo "Or, paste the authorization code here and press Enter:" >&2
+            read code
+            if [ "$code" = "4/good" ]; then exit 0; fi
+            echo 'Error: authentication failed: token exchange failed: oauth2: "invalid_grant" "Bad Request"' >&2
+            exit 1
+
+            """.write(to: binary, atomically: true, encoding: .utf8)
+        try FileManager.default.setAttributes([.posixPermissions: 0o755], ofItemAtPath: binary.path)
+        for (code, accepted) in [("  4/good \n", true), ("4/bad", false)] {
+            let session = try AntigravitySignIn(binary: binary)
+            var events: [AntigravitySignIn.Event] = []
+            for await event in session.events {
+                events.append(event)
+                if case .page = event { session.submit(code: code) }
+            }
+            #expect(events.first == .page(URL(string: "https://accounts.google.com/o/oauth2/auth?state=fake")!))
+            if accepted {
+                #expect(events.last == .finished(.signedIn))
+            } else if case .finished(.failed)? = events.last {} else {
+                Issue.record("\(events)")
+            }
+        }
+    }
 }

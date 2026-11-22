@@ -527,6 +527,7 @@ extension Database {
         let changed = try connection.transaction {
             var changed = false
             var fightVideos = Set<Int64>()
+            let fightRowsBefore = table.name == "fight_events" ? try fightCorrectionRowIdentities() : [:]
             /// Waits for a parent row that has not arrived; retrySyncParents applies it later.
             func parkForParent(_ wire: SyncMapping.WireRow, id: String) throws {
                 let json = String(decoding: try JSONEncoder().encode(wire), as: UTF8.self)
@@ -797,6 +798,9 @@ extension Database {
                     """, [.text(table.name), .text(cursor.timestamp), .text(cursor.syncID)])
             }
             try connection.execute("UPDATE sync_control SET suspended = 0 WHERE id = 1")
+            // The generation moved on for these videos: local corrections are
+            // tied to their rows again. This writes no event.
+            for videoID in fightVideos { try rebindFightCorrections(videoID: videoID, before: fightRowsBefore) }
             return changed
         }
         try deleteDubTakeAudioFiles(dubFilesToRemove)

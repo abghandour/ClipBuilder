@@ -59,6 +59,7 @@ struct LearnedPreferencesView: View {
                     onboardingCard
                 }
                 ReelModelsLearnedSection(reloadToken: modelsToken)
+                FightScoringLessonsSection().id(store.profileGeneration)
                 if let document {
                     ForEach(document.sections) { section in
                         learnedSection(section, document: document)

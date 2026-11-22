@@ -102,7 +102,8 @@ struct AntigravityServiceTests {
             let directory = try #require(currentDirectory)
             await capture.append(directory)
             #expect(directory.path != "/")
-            #expect(stdin == nil && environment == nil && timeout == 10)
+            // An empty pipe, so a signed-out CLI fails at once instead of opening the browser.
+            #expect(stdin == Data() && environment == nil && timeout == 10)
             let request = AntigravityRequest(prompt: "fixture", frameLabels: frames.map(\.label),
                                              model: "gemini-3.8-flash-low", timeout: 10)
             #expect(arguments == request.arguments)

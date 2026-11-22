@@ -82,6 +82,17 @@ actor AIService {
         return cooldowns
     }
 
+    /// The providers calls are skipping right now, with the reason in a
+    /// few words: cooling down after a failure, or refused for this account.
+    func providerProblems(now: Date = Date()) -> [String: String] {
+        var problems = activeCooldowns(now: now).mapValues { cooldown in
+            let minutes = max(1, Int((cooldown.until.timeIntervalSince(now) / 60).rounded(.up)))
+            return "\(String(cooldown.reason.prefix(120))); skipped for \(minutes) more min"
+        }
+        for key in unavailableProviders { problems[key] = "not available for this account" }
+        return problems
+    }
+
     /// Ends a provider's cooldown, e.g. after the user signs in again.
     func clearCooldown(provider: String) {
         cooldowns[provider] = nil
@@ -802,7 +813,12 @@ actor AIService {
         }
         PerfSignpost.end(preparation)
         preparation = nil
-        let result = try await runRequest(executable: binary, arguments: request.arguments,
+        // An empty pipe for stdin, not the app's own (the null device): with
+        // that the CLI takes itself for interactive when it is signed out,
+        // opens the Google sign-in page in the browser and waits a minute
+        // for a code nobody can type. With a pipe it fails at once and the
+        // error offers Clip Builder's own sign-in.
+        let result = try await runRequest(executable: binary, arguments: request.arguments, stdin: Data(),
                                           timeout: timeout, currentDirectory: directory)
         do {
             return try AntigravityResponse.parse(stdout: result.stdoutText, stderr: result.stderrText,

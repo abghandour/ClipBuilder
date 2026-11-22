@@ -11,6 +11,7 @@ struct FightStatsCoverageCell: View {
     /// Selects the video and reveals the Fight Action section in the inspector.
     let onShowStats: () -> Void
     @State private var outcomeCheck = false
+    @State private var outcomes: [FightOutcome] = []
 
     private var events: [FightEventRecord] { store.fightEvents[video.id] ?? [] }
     private var message: String {
@@ -31,7 +32,7 @@ struct FightStatsCoverageCell: View {
                 .buttonStyle(.plain)
                 .foregroundStyle(.green)
                 .accessibilityLabel("Show fight stats")
-                .help(([message] + FightScoreDigest.fighters(events: events).map { fighter in
+                .help(([message] + FightScoreDigest.fighters(events: events, outcomes: outcomes).map { fighter in
                     FightScoreDigest.line(fighter, name: store.people.first { $0.key == fighter.key }?.displayName
                                           ?? (fighter.key.isEmpty ? "Unattributed" : fighter.key))
                 }).joined(separator: "\n"))
@@ -52,6 +53,7 @@ struct FightStatsCoverageCell: View {
             guard !events.isEmpty else { outcomeCheck = false; return }
             let outcomes = (try? await store.database?.fetchOutcomes()) ?? []
             guard !Task.isCancelled else { return }
+            self.outcomes = outcomes
             outcomeCheck = StrikeStatsSummary.pairs(events: events, outcomes: outcomes).contains { $0.outcomeCheck }
         }
     }

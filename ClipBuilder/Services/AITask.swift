@@ -125,6 +125,8 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     /// `distillLessons`), performance lessons from Instagram insights
     /// (`PerformanceLessons.prompt` in `AppStore+AITools`).
     case distill
+    /// General fight scoring rules from corrections. Prompt: FightCorrections.lessonsPrompt.
+    case fightLessons = "fight_lessons"
     /// Profile starter: writes a brand's founding rubric. Prompt:
     /// `ProfileStarter`.
     case onboard
@@ -142,7 +144,7 @@ nonisolated enum AITask: String, CaseIterable, Sendable, Codable {
     /// Order is the Settings order.
     static let configurable: [AITask] = [
         .analysis, .people, .exchanges, .highlights, .proofread, .framing, .broll, .wizard, .critique, .research, .fightResearch, .personResearch,
-        .parse, .captions, .hooks, .tagText, .storyCard, .distill, .overlay, .naming, .curate, .search, .soundbites, .cover, .dedupe, .trim,
+        .parse, .captions, .hooks, .tagText, .storyCard, .distill, .fightLessons, .overlay, .naming, .curate, .search, .soundbites, .cover, .dedupe, .trim,
         .gap, .report, .assist, .onboard, .route,
     ]
     // `.imageGeneration` is not routable: it only runs through the Gemini CLI's

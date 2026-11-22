@@ -362,6 +362,11 @@ final class AppStore {
     var strikeHighlightRevision = 0
     /// Videos whose fight-scoring pass is running right now.
     var fightScoringJobsInFlight: Set<Int64> = []
+    /// The fight events (by video) whose highlight an HD job is working
+    /// through: their rows spin until each is saved or the job ends.
+    var strikeHighlightsBecomingHD: [Int64: Set<Int64>] = [:]
+    var fightRetryResults: [Int64: String] = [:]
+    var fightLessonsRevision = 0
     var wizardStrikeMarkingInFlight: Set<Int64> = []
     var fightScoringInFlight: Set<Int64> { fightScoringJobsInFlight.union(wizardStrikeMarkingInFlight) }
     var generatedVideos: [GeneratedVideoRecord] = []
@@ -377,6 +382,15 @@ final class AppStore {
     /// Filename proposals from the just-finished analysis, for files whose
     /// names looked auto-generated — presented after the people review.
     var pendingRenameReview: RenameReviewRequest?
+    /// The in-app Antigravity sign-in, shown as a sheet from the root view,
+    /// or from the Settings window when it was asked for there. Showing it
+    /// starts the CLI; taking it away ends it.
+    var antigravitySignIn: AntigravitySignInModel? {
+        didSet { if oldValue !== antigravitySignIn { oldValue?.stop() } }
+    }
+    var settingsAntigravitySignIn: AntigravitySignInModel? {
+        didSet { if oldValue !== settingsAntigravitySignIn { oldValue?.stop() } }
+    }
     var comparisonQueue: [ComparisonBatch] = []
     /// AI Lessons teaching queue: the reels and pairs where the models, the
     /// critic and human judgments disagree most (AppStore+TeachingQueue).
@@ -1149,10 +1163,24 @@ final class AppStore {
     /// Open the provider CLI's sign-in in Terminal (from the error alert
     /// or Settings → AI). The CLI runs its own browser flow; the app just
     /// gets the user there.
-    func openProviderSignIn(_ key: String) {
+    func openProviderSignIn(_ key: String, fromSettings: Bool = false) {
         let label = AICatalog.provider(key)?.label ?? key
         Task {
             let binary = await ai.binaryURL(forProvider: key)
+            // Antigravity's sign-in ends with a code to type back to the CLI:
+            // the app runs it and takes the code in a sheet of its own.
+            if key == "antigravity", let binary {
+                let model = AntigravitySignInModel(binary: binary) { [weak self] in
+                    guard let self else { return }
+                    appendLog(\.analysisLog, ["Signed in to \(label)"])
+                    Task { await self.ai.clearCooldown(provider: key) }
+                }
+                antigravitySignIn = nil
+                settingsAntigravitySignIn = nil
+                if fromSettings { settingsAntigravitySignIn = model } else { antigravitySignIn = model }
+                model.start()
+                return
+            }
             do {
                 try ProviderAuth.openSignInTerminal(provider: key, binary: binary)
                 // Signing in is the fix for the failure that started the
@@ -1269,6 +1297,10 @@ final class AppStore {
         personResearchVideoIDs = [:]
         personTagFieldsVersion &+= 1
         fightEvents = [:]
+        fightRetryResults = [:]
+        fightScoringJobsInFlight = []
+        strikeHighlightsBecomingHD = [:]
+        fightLessonsRevision += 1
         igBenchmarks = nil
         pendingComparison = nil
         comparisonQueue = []

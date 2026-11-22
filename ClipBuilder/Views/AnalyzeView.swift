@@ -38,6 +38,7 @@ struct AnalyzeView: View {
     @State private var pendingDispatch: PendingDispatch?
     @State private var fightResearchTarget: VideoRecord?
     @State private var fightStoryTarget: VideoRecord?
+    @State private var fightActionTarget: VideoRecord?
     @State private var soundbiteVideo: VideoRecord?
     @State private var showDuplicateScan = false
     @State private var showAnalyzeWizard = false
@@ -201,6 +202,7 @@ struct AnalyzeView: View {
                                          fightStatsFocusRequest: fightStatsFocusVideoID == video.id ? fightStatsFocusRequest : nil,
                                          onResearch: { fightResearchTarget = video },
                                          onStory: { fightStoryTarget = video },
+                                         onFightAction: { fightActionTarget = video },
                                          onNameWizard: { showNameWizard = true },
                                          onCompareBatches: { batchComparison = ScenesView.CompareRequest(runs: $0, video: video) },
                                          onSelectVideo: { selection = [$0.id] },
@@ -408,6 +410,9 @@ struct AnalyzeView: View {
         }
         .sheet(item: $fightResearchTarget) { video in
             FightResearchSheet(video: video)
+        }
+        .sheet(item: $fightActionTarget) { video in
+            FightActionDetailSheet(video: video)
         }
         .sheet(item: $fightStoryTarget) { video in
             FightStorySheet(fightVideo: video)
@@ -1392,6 +1397,9 @@ private struct VideoPreviewPane: View {
         var category: FightScoreDigest.Category
     }
     @State private var fightListPick: FightListPick?
+    /// The saved fight results: a finished submission counts as done only
+    /// when it agrees with them, as in the Fight Action popup.
+    @State private var fightOutcomes: [FightOutcome] = []
     @State private var fightMarkerTime: Double?
     /// The action playing on repeat: its entry id and the player's time
     /// observer that rewinds it. Dropped with the player.
@@ -1495,6 +1503,7 @@ private struct VideoPreviewPane: View {
     let onResearch: () -> Void
     /// Opens the fight story sheet — same parent-presented sheet rule.
     var onStory: (() -> Void)? = nil
+    var onFightAction: (() -> Void)? = nil
     /// Opens the File Name Wizard for this video — same parent-presented
     /// sheet rule.
     let onNameWizard: () -> Void
@@ -1800,11 +1809,24 @@ private struct VideoPreviewPane: View {
                             HStack {
                                 Text("Fight Action")
                                     .font(.caption.weight(.medium))
-                                Spacer()
+                                    .lineLimit(1).fixedSize()
+                                Button("Details", systemImage: "arrow.up.left.and.arrow.down.right") {
+                                    stopFightLoop()
+                                    player?.pause()
+                                    onFightAction?()
+                                }
+                                .controlSize(.small)
+                                .lineLimit(1).fixedSize()
+                                Spacer(minLength: 0)
                                 if store.fightScoringInFlight.contains(video.id) {
                                     ProgressView()
                                         .controlSize(.small)
                                 }
+                            }
+                            // On rows of their own, wrapping: one row of five
+                            // controls is wider than a narrow inspector and
+                            // pushed the whole column past both of its edges.
+                            FlowLayout(spacing: 6) {
                                 Toggle("Highlight", isOn: $showStrikeHighlight)
                                     .toggleStyle(.button)
                                     .controlSize(.small)
@@ -1833,6 +1855,7 @@ private struct VideoPreviewPane: View {
                                 .disabled(store.fightScoringInFlight.contains(video.id))
                                 .help("AI pass over the fight scenes logging strikes, takedowns, and submission attempts per fighter — runs automatically after analysis; progress shows in the analysis log")
                             }
+                            .frame(maxWidth: .infinity, alignment: .leading)
                             if let events = store.fightEvents[video.id], !events.isEmpty {
                                 FightGraphView(events: events,
                                                range: 0...max(1, video.duration),
@@ -1860,7 +1883,7 @@ private struct VideoPreviewPane: View {
                                 // Per-fighter totals behind the graph; the grid's
                                 // stats badge lands here. Each count opens the
                                 // frames behind it.
-                                ForEach(FightScoreDigest.fighters(events: events)) { fighter in
+                                ForEach(FightScoreDigest.fighters(events: events, outcomes: fightOutcomes)) { fighter in
                                     fightCountsRow(fighter, events: events)
                                 }
                                 if let pick = fightListPick, pick.videoID == video.id {
@@ -1873,6 +1896,10 @@ private struct VideoPreviewPane: View {
                         }
                         .frame(maxWidth: .infinity, alignment: .leading)
                         .id("fightAction")
+                        .task(id: store.fightEvents[video.id]) {
+                            let outcomes = (try? await store.database?.fetchOutcomes()) ?? []
+                            if !Task.isCancelled { fightOutcomes = outcomes }
+                        }
                     }
 
                     // The video's people roster: build it here, ahead of any run —

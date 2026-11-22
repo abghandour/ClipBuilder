@@ -1315,8 +1315,9 @@ actor Analyzer {
 
     // MARK: - Fight scoring pass
 
-    private static func fightScorePrompt(domain: String, windowStart: Double, windowEnd: Double,
-                                         roster: [VideoPersonRecord], hasReferences: Bool) -> String {
+    nonisolated static func fightScorePrompt(domain: String, windowStart: Double, windowEnd: Double,
+                                         roster: [VideoPersonRecord], hasReferences: Bool,
+                                         corrections: [FightCorrectionRecord] = [], lessons: [String] = []) -> String {
         let fighters = roster.isEmpty
             ? "  (nobody identified yet — use \"unknown\" for every event)"
             : roster.map { person in
@@ -1334,6 +1335,7 @@ actor Analyzer {
         \(referenceNote)
         FIGHTERS — attribute every event to one of these keys:
         \(fighters)
+        \(FightCorrections.promptNotes(for: (windowStart, windowEnd), corrections: corrections, roster: roster) ?? "")
 
         Go through the stills in order and log EVERY scoring action as its own event. A minute of stand-up fighting normally holds 10 to 30 strikes; three or four events for a busy window means most of it was skipped. Action types:
         \(actions)
@@ -1373,6 +1375,7 @@ actor Analyzer {
           mounted triangle into armbar at window end = ONE unresolved attempt, detail armbar.
         - significant_strike, hurt and knockdown REPLACE strike for the same physical blow; never log both.
 
+        \(FightCorrections.lessonsBlock(lessons))
         OTHER RULES:
         - Only log actions you can SEE in the stills, but do not hold back: every blow of a combination is its own event with its own at_time, and both fighters' blows in an exchange are logged. The same blow visible in two or three consecutive stills is ONE event, at the still where it connects.
         - A strike that clearly misses or falls short is not logged. When contact is likely but hidden by a body or the camera angle, log it as "strike".
@@ -1394,16 +1397,18 @@ actor Analyzer {
     /// the number of events saved.
     func scoreFightAction(video: VideoRecord, profile: BrandProfile,
                           database: Database, provider: String? = nil, model: String? = nil, runKey: String? = nil,
+                          retryScope: FightCorrections.RetryScope? = nil,
                           log: @escaping @Sendable (String) -> Void) async throws -> Int {
         try await FightWorkCoordinator.shared.withClaim(key: .init(database: database, videoID: video.id)) {
             try await self.scoreFightActionClaimed(video: video, profile: profile, database: database,
-                provider: provider, model: model, runKey: runKey, log: log)
+                provider: provider, model: model, runKey: runKey, retryScope: retryScope, log: log)
         }
     }
 
     /// The claim includes end-of-pass marking; it must not claim a second time.
     private func scoreFightActionClaimed(video: VideoRecord, profile: BrandProfile,
                                          database: Database, provider: String?, model: String?, runKey: String?,
+                                         retryScope: FightCorrections.RetryScope?,
                                          log: @escaping @Sendable (String) -> Void) async throws -> Int {
         let scenes: [SceneRecord]
         if let runKey { scenes = try await database.fetchScenes(videoID: video.id, runKey: runKey) }
@@ -1412,6 +1417,8 @@ actor Analyzer {
                                                          version: AnalysisPipeline.fightScorePass, runKey: runKey)
         do {
             let generation = try await database.fightEventGeneration(videoID: video.id)
+            let corrections = retryScope == nil ? [] : try await database.fetchFightCorrections(videoID: video.id)
+            let lessons = FightCorrections.enabledLessons(try await database.fetchFightScoringLessons())
             try video.requirePresent()
             guard FFmpeg.isAvailable else { throw FFmpegError.toolNotFound("ffmpeg") }
             // Only footage typed fight/recap gets the pass — anything else
@@ -1423,6 +1430,7 @@ actor Analyzer {
             guard currentType?.supportsFightFeatures == true else {
                 log("\(video.filename): \(currentType?.label ?? "untyped") video — skipping the fight scoring pass (set the Type to Fight to score it)")
                 try await database.finishAnalysisPass(pass, status: .cancelled, note: "Video does not support fight scoring")
+                if retryScope != nil { throw AIError.notConfigured("Set the video type to Fight before retrying scoring.") }
                 return 0
             }
             let fightTags = SmartSampling.actionTags
@@ -1432,6 +1440,7 @@ actor Analyzer {
             let ranges = FightSampling.scoredRanges(actionRanges: targets.map { ($0.startTime, $0.endTime) },
                                                     type: currentType, duration: video.duration)
             guard !ranges.isEmpty else {
+                if retryScope != nil { throw AIError.notConfigured("No fight-action footage is available to retry.") }
                 try Task.checkCancellation()
                 guard try await database.replaceFightEventRecords(videoID: video.id, events: [], expectedGeneration: generation) else {
                     throw CancellationError()
@@ -1471,7 +1480,8 @@ actor Analyzer {
                 return try await self.scoreFightWindow(
                     url: url, videoID: videoID, window: window, position: "\(index + 1)/\(windowCount)",
                     domain: domain, roster: roster, referenceFrames: referenceFrames,
-                    validKeys: validKeys, keyByName: keyByName, model: model, provider: provider, log: log)
+                    validKeys: validKeys, keyByName: keyByName, model: model, provider: provider,
+                    corrections: corrections, lessons: lessons, log: log)
             }
             // A window that timed out or came back unreadable gets one more
             // try, alone, once the others are done. Not when every window
@@ -1484,7 +1494,8 @@ actor Analyzer {
                     scored[index] = try await scoreFightWindow(
                         url: url, videoID: videoID, window: windows[index], position: "\(index + 1)/\(windowCount)",
                         domain: domain, roster: roster, referenceFrames: referenceFrames,
-                        validKeys: validKeys, keyByName: keyByName, model: model, provider: provider, log: log)
+                        validKeys: validKeys, keyByName: keyByName, model: model, provider: provider,
+                        corrections: corrections, lessons: lessons, log: log)
                 }
             }
             var events: [FightEventRecord] = []
@@ -1523,7 +1534,7 @@ actor Analyzer {
                 events[index].model = scoringProvenance?.model
             }
             try Task.checkCancellation()
-            let summary = "\(windows.count) window(s), \(events.count) event(s)"
+            let summary = (retryScope == nil ? "" : "Whole-fight retry: ") + "\(windows.count) window(s), \(events.count) event(s)"
                 + (failedWindows > 0 ? ", \(failedWindows) failed" : "")
                 + (emptyWindows > 0 ? ", \(emptyWindows) without frames" : "")
             // Every window failing is a failed pass, not a completed pass with
@@ -1531,6 +1542,7 @@ actor Analyzer {
             if failedWindows + emptyWindows >= windows.count {
                 try await database.finishAnalysisPass(pass, status: .failed, note: summary)
                 log("\(video.filename): fight scoring failed in every window — the earlier events are kept")
+                if retryScope != nil { throw AIError.notConfigured("Retry failed in every window; the earlier actions were kept.") }
                 return 0
             }
             if !unscored.isEmpty {
@@ -1540,9 +1552,13 @@ actor Analyzer {
             }
             guard let saved = try await database.replaceFightEventRecordsReturningGeneration(videoID: video.id, events: events,
                                                               expectedGeneration: generation,
-                                                              roundRanges: StrikeStatsScope.merged(roundRanges)) else {
+                                                              roundRanges: StrikeStatsScope.merged(roundRanges),
+                                                              kept: unscored) else {
                 throw CancellationError()
             }
+            // Replacement reapplies the local reviews. Mark and report those
+            // saved actions, including changed attribution, technique and time.
+            events = try await database.fetchFightEvents(videoID: video.id)
             try await database.finishAnalysisPass(pass, status: unscored.isEmpty ? .completed : .failed,
                 note: FightSampling.coverageNote(summary, ranges: successful.map(\.range)))
             // Save where each strike's limb and impact are, for the player
@@ -1554,7 +1570,7 @@ actor Analyzer {
                 let highlights = await StrikeHighlightFinder.records(url: video.url, videoID: video.id,
                                                                      events: events, duration: video.duration)
                 if (try? await database.saveStrikeHighlights(videoID: video.id, highlights, generation: saved,
-                                                             replacing: true)) == true, !highlights.isEmpty {
+                                                             replacing: true, expectedEvents: events)) == true, !highlights.isEmpty {
                     log("\(video.filename): limb and impact marked on \(highlights.count { $0.track != nil }) of \(highlights.count) strike(s)"
                         + (Task.isCancelled ? " before stopping" : ""))
                 }
@@ -1591,6 +1607,7 @@ actor Analyzer {
                                   domain: String, roster: [VideoPersonRecord], referenceFrames: [AIFrame],
                                   validKeys: Set<String>, keyByName: [String: String],
                                   model: String?, provider: String?,
+                                  corrections: [FightCorrectionRecord], lessons: [String],
                                   log: @escaping @Sendable (String) -> Void) async throws -> FightWindowScore {
         let probes = try await FightFrameSheets.probes(url: url, window: window)
         let far = FightSampling.farRanges(probes: probes.readings)
@@ -1599,19 +1616,22 @@ actor Analyzer {
         try Task.checkCancellation()
         guard extraction.isComplete else {
             log("Scoring window \(position) has incomplete frames — keeping its earlier events")
+            ErrorLog.record("Fight scoring window \(position)", "Incomplete frames; the earlier events were kept.")
             return FightWindowScore(status: .failed)
         }
         let frames = extraction.frames
         log(String(format: "Scoring fight action %@ [%.1fs–%.1fs]: %d stills on %d sheets…",
                    position, window.start, window.end, sheets.reduce(0) { $0 + $1.count }, frames.count))
         let prompt = Self.fightScorePrompt(domain: domain, windowStart: window.start, windowEnd: window.end,
-                                           roster: roster, hasReferences: !referenceFrames.isEmpty)
+                                           roster: roster, hasReferences: !referenceFrames.isEmpty,
+                                           corrections: corrections, lessons: lessons)
         do {
             let response = try await callThinningFrames(prompt: prompt, auxiliary: referenceFrames,
                                                         sampled: frames, model: model, provider: provider, log: log)
             guard let object = AIResponseParser.jsonObject(from: response.text),
                   let raw = object["events"] as? [[String: Any]] else {
                 log("Scoring window \(position) returned no usable events JSON — continuing")
+                ErrorLog.record("Fight scoring window \(position)", "No usable events JSON.")
                 return FightWindowScore(status: .failed)
             }
             let parsed = raw.compactMap {
@@ -1630,6 +1650,7 @@ actor Analyzer {
             throw CancellationError()
         } catch {
             log("Fight scoring window \(position) failed (\(error)) — continuing")
+            ErrorLog.record("Fight scoring window \(position)", error.localizedDescription)
             return FightWindowScore(status: .failed)
         }
     }

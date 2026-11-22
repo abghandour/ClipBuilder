@@ -19,7 +19,9 @@ nonisolated enum FightScoreDigest {
     }
 
     /// One row per fighter, most active first; unattributed events land on "".
-    static func fighters(events: [FightEventRecord]) -> [Fighter] {
+    /// Without the saved fight outcomes a completed submission cannot be
+    /// checked against the result and counts as unclear.
+    static func fighters(events: [FightEventRecord], outcomes: [FightOutcome] = []) -> [Fighter] {
         var rows: [String: Fighter] = [:]
         for strike in StrikeStatsSummary.deduplicatedStrikes(events) {
             var row = rows[strike.fighterKey, default: Fighter(key: strike.fighterKey)]
@@ -31,7 +33,7 @@ nonisolated enum FightScoreDigest {
             }
             rows[strike.fighterKey] = row
         }
-        for pair in StrikeStatsSummary.pairs(events: events) {
+        for pair in StrikeStatsSummary.pairs(events: events, outcomes: outcomes) {
             var row = rows[pair.attacker, default: Fighter(key: pair.attacker)]
             switch pair.kind {
             case .takedown:
@@ -82,7 +84,7 @@ extension FightScoreDigest {
     /// One scored action, ready to show as a frame: strike clusters are
     /// collapsed and attempt chains merged exactly as the totals count them,
     /// so the list and its count always agree.
-    struct Entry: Equatable, Sendable, Identifiable {
+    nonisolated struct Entry: Equatable, Sendable, Identifiable {
         var id: Int64
         var time: Double
         var endTime: Double?
