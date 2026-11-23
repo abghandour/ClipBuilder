@@ -114,7 +114,7 @@ struct CaptionStylePreview: View {
         }
         .frame(width: 216)
         .accessibilityElement(children: .ignore)
-        .accessibilityLabel("Word states: Text, Highlight, Emphasis as the style draws them")
+        .accessibilityLabel("Word states: Text, Highlight, Emphasis, Emphasis 2 as the style draws them")
     }
 }
 

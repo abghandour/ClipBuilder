@@ -1,6 +1,20 @@
 import Foundation
 
 extension Database {
+    /// Marks travel in the existing words JSON, including translated rows.
+    /// A line the edit no longer fits is skipped, as Mark Right does.
+    func markTranscriptEmphasis(_ edits: [Int64: TranscriptEmphasisRules.Edit]) throws {
+        for (id, edit) in edits {
+            guard let row = try connection.query("SELECT text, words, start_time, end_time FROM transcripts WHERE id = ?", [.integer(id)]).first,
+                  let text = row["text"]?.stringValue else { continue }
+            let words = row["words"]?.stringValue.flatMap { $0.data(using: .utf8) }
+                .flatMap { try? JSONDecoder().decode([TranscriptWord].self, from: $0) }
+            guard let marked = TranscriptEmphasisRules.applying(edit, text: text, words: words,
+                start: row["start_time"]?.doubleValue ?? 0, end: row["end_time"]?.doubleValue ?? 0) else { continue }
+            try storeWords(marked, id: id)
+        }
+    }
+
     /// Mark words right: a words-only write, the text and the transcriber's
     /// originals stay untouched. A line whose word is no longer the one
     /// expected is skipped whole.

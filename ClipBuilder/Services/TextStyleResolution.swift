@@ -20,7 +20,7 @@ nonisolated extension CaptionStyle {
     }
 
     var hasTextDecor: Bool {
-        decor != nil || text?.decor != nil || highlightDecor?.decor != nil || emphasisDecor?.decor != nil
+        decor != nil || text?.decor != nil || highlightDecor?.decor != nil || emphasisDecor?.decor != nil || emphasis2Decor?.decor != nil
     }
 
     /// The page box is distinct from each word state's box.
@@ -30,6 +30,7 @@ nonisolated extension CaptionStyle {
     }
 
     func resolvedTextDecor(for state: WordState) -> TextDecor {
+        if state == .emphasis2 { return alternateEmphasisStyle.resolvedTextDecor(for: .emphasis) }
         let old = resolvedDecor(for: state)
         var legacy = old.legacyDecor.merged(over: legacyDecor)
         legacy.bgOn = old.resolvedBackground
@@ -49,6 +50,7 @@ nonisolated extension CaptionStyle {
         case .text: stateDecor = text?.decor
         case .highlight: stateDecor = highlightDecor?.decor
         case .emphasis: stateDecor = emphasisDecor?.decor
+        case .emphasis2: stateDecor = emphasis2Decor?.decor
         }
         var result = (stateDecor ?? TextDecor()).resolved(over: base)
         // Modern Text backgrounds belong to the whole caption/line; the

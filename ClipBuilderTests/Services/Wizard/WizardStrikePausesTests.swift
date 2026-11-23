@@ -184,8 +184,12 @@ struct WizardStrikePausesTests {
         #expect(dubbed.timings.values.allSatisfy { $0.pauses.isEmpty })
         #expect(dubbed.messages == ["Pause on contact: skipped for dubbed reels; holds have no speech."])
         options.dubLanguage = nil
+        // Several pictures at once pause together since 4b; a cutaway over
+        // the held frame is what still skips.
         var multi = cut
-        multi.videoTrack.append(cut.videoTrack[0])
+        var cutaway = cut.videoTrack[0]
+        cutaway.role = .cutaway
+        multi.videoTrack.append(cutaway)
         let skipped = WizardStrikePauses.prepare(plan: plan, cuts: [0: multi], sceneMap: map,
             sourceTypes: [scene.videoID: .fight], contacts: [scene.videoPath: [4]], options: options, xfadeDuration: 0.5)
         #expect(skipped.cuts[0] == multi && skipped.timings[0]?.pauses.isEmpty == true)
@@ -507,11 +511,11 @@ struct WizardStrikePausesTests {
             candidate.clips[0].layout = mode == "composed" ? "Two areas" : nil
             let paths = WizardStrikePauses.contactPaths(plan: candidate, cuts: [0: cut], sceneMap: map,
                 sourceTypes: [scene.videoID: .fight], options: settings)
-            #expect(paths.isEmpty == (mode != "allowed"))
+            #expect(paths.isEmpty == (mode != "allowed" && mode != "composed"))
             for overlays in [false, true] {
                 WizardStrikeHighlights.apply(to: &cut, enabled: overlays, sourceTypes: [scene.videoPath: .fight])
                 let marked = WizardStrikeHighlights.sourcePaths(in: [cut]).union(paths)
-                #expect(marked.isEmpty == (!overlays && mode != "allowed"))
+                #expect(marked.isEmpty == (!overlays && mode != "allowed" && mode != "composed"))
             }
         }
     }

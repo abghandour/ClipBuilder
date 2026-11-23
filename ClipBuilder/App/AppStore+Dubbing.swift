@@ -43,7 +43,7 @@ extension AppStore {
         }
     }
 
-    func reviewTimelineDub() {
+    func reviewTimelineDub(at lineID: UUID? = nil) {
         guard let settings = builder.document.dub, let lines = builder.document.dubLines, !lines.isEmpty else { return }
         let document = builder.document, scenes = builder.scenes
         let database = database
@@ -53,7 +53,7 @@ extension AppStore {
         jobs.start(.dub, title: "Review dub", project: activeProject, profileGeneration: generation) { _ in
             let prepared = await DubPreparation.reopening(document: document, scenes: scenes,
                                                          settings: settings, lines: lines, speakerNames: names, database: database)
-            return .dub(DubReview(prepared: prepared, target: target, profileGeneration: generation))
+            return .dub(DubReview(prepared: prepared, target: target, profileGeneration: generation, initialLineID: lineID))
         }
     }
 

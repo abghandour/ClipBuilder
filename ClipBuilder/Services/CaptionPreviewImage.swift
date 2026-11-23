@@ -29,7 +29,7 @@ nonisolated struct CaptionPreviewImage: Sendable {
     /// One word in each styling state the editor controls, so a change to
     /// the Text, Highlight or Emphasis group shows up on its own swatch.
     struct WordState: Sendable, Identifiable {
-        enum Kind: String, CaseIterable, Sendable { case text = "Text", highlight = "Highlight", emphasis = "Emphasis" }
+        enum Kind: String, CaseIterable, Sendable { case text = "Text", highlight = "Highlight", emphasis = "Emphasis", emphasis2 = "Emphasis 2" }
         var kind: Kind
         var image: CaptionPreviewImage
         var id: Kind { kind }
@@ -46,7 +46,8 @@ nonisolated struct CaptionPreviewImage: Sendable {
             try Task.checkCancellation()
             let caption = try renderer.render(text: kind.rawValue,
                                               activeIndex: kind == .highlight ? 0 : nil,
-                                              emphasis: kind == .emphasis ? [0] : [], to: scratch)
+                                              emphasis: kind == .emphasis || kind == .emphasis2 ? [0] : [],
+                                              alternateEmphasis: kind == .emphasis2 ? [0] : [], to: scratch)
             let image = Self(data: try Data(contentsOf: caption.pngURL),
                              size: CGSize(width: caption.width, height: caption.height), origin: .zero)
             return WordState(kind: kind, image: image)
@@ -55,6 +56,14 @@ nonisolated struct CaptionPreviewImage: Sendable {
 
     static func render(style: CaptionStyle, text: String? = nil) throws -> Self {
         let frames = try frames(style: style, text: text)
+        if style.resolvedReveal == "word", style.resolvedFixedReveal {
+            let sample = Self.text(text)
+            let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style, safeArea: nil)
+            let firstEnd = renderer.pages(for: TranscriptSegment(start: 0, end: duration(of: sample), text: sample)).first?.end ?? 0
+            // A fixed-layout thumbnail shows the first completed page, with
+            // both retained text and the newest word in their actual slots.
+            if let settled = frames.last(where: { $0.start < firstEnd }) { return settled }
+        }
         // Show the settled entrance, not the transparent first frame of a fade.
         return frames.first { $0.start <= 0.3 && $0.end > 0.3 } ?? frames[0]
     }
@@ -87,7 +96,7 @@ nonisolated struct CaptionPreviewImage: Sendable {
             }
             let raster = overlay.raster
             let caption = try renderer.render(text: raster.text, activeIndex: raster.activeIndex,
-                emphasis: raster.emphasis, textColor: raster.textColor, highlightColor: raster.highlightColor, frame: raster.frame, to: scratch)
+                emphasis: raster.emphasis, alternateEmphasis: raster.alternateEmphasis, textColor: raster.textColor, highlightColor: raster.highlightColor, frame: raster.frame, to: scratch)
             let position = renderer.position(for: caption)
             let image = Self(data: try Data(contentsOf: caption.pngURL),
                              size: CGSize(width: caption.width, height: caption.height),

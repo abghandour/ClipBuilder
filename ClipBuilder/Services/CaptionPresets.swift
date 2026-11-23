@@ -29,7 +29,7 @@ nonisolated enum CaptionPresets {
     }
 
     // Keep each style construction in its own function. CaptionStyle contains
-    // several large decor values; building all 31 in one stack frame overflows
+    // several large decor values; building every preset in one stack frame overflows
     // Swift's small cooperative-thread stack in Debug.
     private static func makeStyles() -> [NamedCaptionStyle] {
         let definitions: [Definition] = [
@@ -64,6 +64,7 @@ nonisolated enum CaptionPresets {
             Definition(name: "Beast", family: .creator, make: { beast }),
             Definition(name: "Iman", family: .creator, make: { iman }),
             Definition(name: "Ali", family: .creator, make: { ali }),
+            Definition(name: "PG Preferred", family: .creator, make: { pgPreferred }),
         ]
         return definitions.map { NamedCaptionStyle(name: $0.name, style: $0.make(), family: $0.family) }
     }
@@ -392,5 +393,49 @@ nonisolated enum CaptionPresets {
 
     private static func shadow(_ name: String) -> TextDecor? {
         TextShadowPresets.all.first { $0.name == name }.map { TextShadowPresets.apply($0, to: nil) }
+    }
+
+    private static var pgPreferred: CaptionStyle {
+        var style = clean
+        // Closest measured stock macOS face; no external font dependency.
+        style.font = "HelveticaNeue-Medium"
+        style.color = "#fcfcfc"
+        style.text = CaptionWordDecor(decor: TextDecor(size: 1.25), size: 120)
+        style.strokeWidth = 0
+        style.letterSpacing = -6.7
+        style.highlight = "color"
+        style.highlightColor = "#de1600"
+        style.emphasis = "color"
+        style.emphasisColor = "#fcfcfc"
+        style.emphasisFont = "HelveticaNeue-Medium"
+        // Joint word-edge fit across the reference pages. Tracking and space
+        // advance are independent: tightening spaces does not tighten glyphs.
+        // Keep the complete emphasis line inside the measured 940px band.
+        style.emphasisDecor = CaptionWordDecor(
+            decor: TextDecor(size: 1.92375, maxWidthFrac: 0.87),
+            size: 120, letterSpacing: -6.48, fitLineMinimumScale: 0.6, highlightHold: false)
+        // Emphasis 2: the reference's italic serif word ("belt?"), white, on
+        // an ordinary two-line page. Bodoni 72 is the closest stock macOS face.
+        style.emphasis2 = "color"
+        style.emphasis2Color = "#fcfcfc"
+        style.emphasis2Font = "Bodoni 72"
+        style.emphasis2Decor = CaptionWordDecor(decor: TextDecor(size: 2.0), italic: true, size: 120,
+                                                letterSpacing: -3, highlightHold: false,
+                                                takesHighlightColor: false)
+        style.colorSpace = "srgb"
+        style.reveal = "word"
+        style.revealLayout = "fixed"
+        style.highlightHold = true
+        style.animation = "soft-fade"
+        style.revealMotion = true
+        style.animationMinimumWordDuration = 0.2
+        style.lineBreaks = "sentence"
+        style.lineSpacing = 136
+        style.wordSpacing = 19.15
+        style.position = "custom:0.50325,0.5531"
+        style.decor = TextDecor(shadowOn: true, shadowColor: "#000000", shadowOpacity: 0.35,
+                               shadowX: 0, shadowY: -0.02, shadowBlur: 0.04, shadowStyle: "soft",
+                               maxWidthFrac: 0.86)
+        return style
     }
 }

@@ -381,6 +381,15 @@ final class ScriptRunner {
             } else {
                 model.updateClip(value.uid) { $0.muted = muted }
             }
+        case .slowClipIntoImpacts(let reference, let strength):
+            let value = try clip(reference)
+            let videoID = library.videoID(for: value, scene: model.scene(for: value))
+            let contacts = videoID.flatMap { library.strikeContacts[$0] } ?? []
+            let result = try model.slowIntoImpacts(value.uid, contacts: contacts, strength: strength ?? .medium).get()
+            if result.count == 0 { return .unchanged(reason: "No impact can be slowed safely") }
+            actual = .object(["impacts": .number(Double(result.count)), "skipped": .number(Double(result.skipped))])
+        case .removeClipSlowMotion(let reference):
+            try model.removeImpactSlowMotion(try clip(reference).uid).get()
         case .freezeClipOnImpacts(let reference, let hold):
             let value = try clip(reference)
             let videoID = library.videoID(for: value, scene: model.scene(for: value))

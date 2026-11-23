@@ -239,17 +239,24 @@ struct DubReviewSheet: View {
                 Label(error, systemImage: "exclamationmark.triangle.fill")
                     .font(.caption).foregroundStyle(.red)
             }
-            ScrollView {
-                LazyVStack(alignment: .leading, spacing: Theme.spaceM) {
-                    ForEach($lines) { $line in
-                        DubReviewLineRow(line: $line, original: review.prepared.lines.first { $0.id == line.id } ?? line,
-                            speakers: speakerKeys.map { ($0, name($0)) },
-                            isPlaying: playback.lineID == line.id,
-                            play: { play(line) }, stop: { playback.stop() }, update: update)
-                        Divider()
+            let freezes = DubFreezes.intervals(in: review.prepared.document)
+            ScrollViewReader { reader in
+                ScrollView {
+                    LazyVStack(alignment: .leading, spacing: Theme.spaceM) {
+                        ForEach($lines) { $line in
+                            DubReviewLineRow(line: $line, original: review.prepared.lines.first { $0.id == line.id } ?? line,
+                                freezes: freezes, speakers: speakerKeys.map { ($0, name($0)) },
+                                isPlaying: playback.lineID == line.id,
+                                play: { play(line) }, stop: { playback.stop() }, update: update)
+                                .id(line.id)
+                            Divider()
+                        }
                     }
+                    .padding(.trailing, Theme.spaceS)
                 }
-                .padding(.trailing, Theme.spaceS)
+                .onAppear {
+                    if let lineID = review.initialLineID { reader.scrollTo(lineID, anchor: .center) }
+                }
             }
             .disabled(isUpdating)
         }

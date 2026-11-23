@@ -21,6 +21,26 @@ nonisolated enum TelestrationPainter {
 
     static func draw(_ state: TelestrationRules.State, in context: CGContext, rect: CGRect, topLeftOrigin: Bool) {
         guard state.opacity > 0, rect.width > 0, rect.height > 0 else { return }
+        // Keep the original single composite layer for ordinary drawings.
+        // Consecutive equal-opacity figures may share a layer without changing
+        // their paint order, including where their outlines intersect.
+        if state.figures.contains(where: { $0.opacity != 1 }) {
+            var start = 0
+            while start < state.figures.count {
+                let opacity = state.figures[start].opacity
+                var end = start + 1
+                while end < state.figures.count, state.figures[end].opacity == opacity { end += 1 }
+                let figures = state.figures[start..<end].map { item in
+                    var item = item
+                    item.opacity = 1
+                    return item
+                }
+                draw(.init(figures: figures, opacity: state.opacity * opacity),
+                     in: context, rect: rect, topLeftOrigin: topLeftOrigin)
+                start = end
+            }
+            return
+        }
         context.saveGState()
         defer { context.restoreGState() }
         context.clip(to: rect)

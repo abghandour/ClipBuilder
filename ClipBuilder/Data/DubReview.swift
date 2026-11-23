@@ -8,4 +8,5 @@ nonisolated struct DubReview: Equatable, Sendable {
     var prepared: DubPreparation.Prepared
     var target: Target
     var profileGeneration: Int
+    var initialLineID: UUID? = nil
 }

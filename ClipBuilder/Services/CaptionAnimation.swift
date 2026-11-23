@@ -7,10 +7,15 @@ nonisolated enum CaptionAnimation {
         var offsetY: CGFloat = 0
         var alpha: CGFloat = 1
         var at: Double = 0
+        /// Nil preserves whole-page animation and visibility. Fixed reveals
+        /// carry these through every renderer and the raster cache together.
+        var visibleWords: Int?
+        var wordIndex: Int?
     }
 
     static func duration(for style: String) -> Double {
-        ["pop", "bounce"].contains(style) ? 0.18 : (["slide-up", "fade"].contains(style) ? 0.16 : 0)
+        if style == "soft-fade" { return 0.1 }
+        return ["pop", "bounce"].contains(style) ? 0.18 : (["slide-up", "fade"].contains(style) ? 0.16 : 0)
     }
 
     /// Reserve the same raster envelope throughout an entrance, including its overshoot.
@@ -27,6 +32,13 @@ nonisolated enum CaptionAnimation {
     static func frames(for style: String, duration: Double) -> [Frame] {
         guard duration.isFinite, duration > 0 else { return [Frame()] }
         switch style {
+        case "soft-fade":
+            // Three 30-fps intervals, sampled from a short linear entrance.
+            // Opacity-only approximation: the source does not isolate subtle
+            // blur from compression and the moving background.
+            return [0.13, 0.49, 0.83, 1].enumerated().map {
+                Frame(alpha: $0.element, at: Double($0.offset) / 3 * duration)
+            }
         case "bounce":
             // A damped spring: compress, overshoot, then settle on both sides of identity.
             return zip([0.72, 1.12, 0.95, 1.025, 0.992, 1.003, 1.0],

@@ -246,6 +246,11 @@ actor CenterStageService {
 
     // MARK: - Entry points
 
+    /// Read-only observation of the actual decoder input for framing regressions.
+    @TaskLocal nonisolated static var trackingInputObserver: (@Sendable (URL, Double, Double) -> Void)?
+    @TaskLocal nonisolated static var trackingPathOverride: (@Sendable (URL, Double, Double) async throws -> [CameraPathKeyframe])?
+    @TaskLocal nonisolated static var pictureCorrectionObserver: (@Sendable () -> Void)?
+
     /// Reframe `[start, start+duration]` of a widescreen source into a 9:16
     /// clip at `output`. The camera frames the union of all detected people;
     /// `focusRanges` (clip-relative) optionally mark when the people the user
@@ -254,18 +259,35 @@ actor CenterStageService {
     /// `frame` is the output size (default 1080×1920): a screen-crop area's
     /// bounding box makes the camera track people at THAT aspect, so the
     /// footage fills the area instead of a 9:16 window.
+    /// `tracking` separates analysis of the pre-drawing picture from export.
     // Output/tracking changes must bump MultitrackRenderer.framingVersion.
     func reframeClip(source: URL, start: Double, duration: Double,
+                     tracking: (source: URL, start: Double)? = nil,
                      focusRanges: [(start: Double, end: Double)] = [],
                      focusPortraits: [Data] = [],
                      avoidPortraits: [Data] = [],
                      hints: [(time: Double, crop: CGRect)] = [],
                      tuning: Tuning = .balanced,
                      frame: CGSize? = nil,
+                     pictureWindow: FreeCropRect? = nil,
                      log: (@Sendable (String) -> Void)? = nil) async throws -> URL {
+        if let override = Self.trackingPathOverride {
+            let path = try await override(tracking?.source ?? source, tracking?.start ?? start, duration)
+            // Same ordering as cameraPath(from:): source bounds, then the
+            // content-window bounds in the export. Observe at the first clamp.
+            let bounded = Self.boundedPath(path)
+            return try await reframeClip(source: source, start: start, duration: duration, path: bounded,
+                frame: frame, pictureWindow: pictureWindow, log: log)
+        }
         let emit = log ?? { _ in }
         let renderSize = frame ?? Self.defaultRenderSize
         let info = try await loadSource(source, requireWide: frame == nil)
+        let trackingInfo: SourceInfo
+        if let tracking {
+            trackingInfo = try await loadSource(tracking.source, requireWide: frame == nil)
+        } else {
+            trackingInfo = info
+        }
 
         // Rotated sources (portrait-stored with a rotation flag) need Vision
         // told the display orientation, or people are hunted in sideways
@@ -275,12 +297,12 @@ actor CenterStageService {
         if tuning.stabilizes {
             collectMotion = { (sample: CameraMotionSample) in motion.withLock { $0.append(sample) } }
         }
-        let targets = try await trackPeople(asset: info.asset, track: info.track,
-                                            start: start, duration: duration,
+        let targets = try await trackPeople(asset: trackingInfo.asset, track: trackingInfo.track,
+                                            start: tracking?.start ?? start, duration: duration,
                                             focusRanges: focusRanges,
                                             focusPortraits: focusPortraits,
                                             avoidPortraits: avoidPortraits,
-                                            orientation: Self.displayOrientation(of: info.preferredTransform),
+                                            orientation: Self.displayOrientation(of: trackingInfo.preferredTransform),
                                             tuning: tuning, motion: collectMotion, log: emit)
         let analyzed = targets.filter(\.inFocus)
         let trackedShare = analyzed.isEmpty ? 0
@@ -298,9 +320,11 @@ actor CenterStageService {
             emit(CameraMotionPlanning.summary(CameraMotionPlanning.profile(shakes), duration: duration,
                                               cuts: CameraMotionPlanning.cuts(in: shakes)))
         }
-        let keyframes = cameraPath(from: targets, size: info.size, duration: duration,
+        let trackedKeyframes = cameraPath(from: targets, size: info.size, duration: duration,
                                    tuning: tuning, hints: hints,
                                    aspect: renderSize.width / renderSize.height, motion: shakes)
+        let keyframes = boundedKeyframes(trackedKeyframes, size: info.size, picture: pictureWindow ?? FreeCropRect())
+        guard keyframes.count >= 2 else { throw CenterStageError(message: "No usable camera path.") }
         let output = FileManager.default.temporaryDirectory
             .appendingPathComponent("centerstage_\(UUID().uuidString).mp4")
         log?("Encode: Center Stage camera path export")
@@ -322,12 +346,15 @@ actor CenterStageService {
     func reframeClip(source: URL, start: Double, duration: Double,
                      path: [CameraPathKeyframe],
                      frame: CGSize? = nil,
+                     pictureWindow: FreeCropRect? = nil,
                      log: (@Sendable (String) -> Void)? = nil) async throws -> URL {
         guard path.count >= 2 else {
             throw CenterStageError(message: "The stored camera path is too short to render.")
         }
         let info = try await loadSource(source, requireWide: frame == nil)
-        let keyframes = path.map { keyframe in
+        let bounded = Self.boundedPath(path, picture: pictureWindow ?? FreeCropRect())
+        guard bounded.count >= 2 else { throw CenterStageError(message: "No usable camera path.") }
+        let keyframes = bounded.map { keyframe in
             Keyframe(time: keyframe.t,
                      crop: CGRect(x: keyframe.x * info.size.width,
                                   y: keyframe.y * info.size.height,
@@ -355,20 +382,27 @@ actor CenterStageService {
                     hints: [(time: Double, crop: CGRect)] = [],
                     tuning: Tuning = .balanced,
                     aspect: Double = Double(RenderEngine.outputWidth) / Double(RenderEngine.outputHeight),
-                    fighterFocus: Bool = false, fighterHasVIP: Bool = false, fighterRegion: FreeCropRect? = nil) async throws
+                    fighterFocus: Bool = false, fighterHasVIP: Bool = false, fighterRegion: FreeCropRect? = nil,
+                    requireWide: Bool = true, matchExport: Bool = false) async throws
         -> (keyframes: [CameraPathKeyframe], trackedShare: Double) {
-        let info = try await loadSource(source, requireWide: !fighterFocus)
+        let info = try await loadSource(source, requireWide: requireWide && !fighterFocus)
+        let motion = Mutex<[CameraMotionSample]>([])
+        var collectMotion: (@Sendable (CameraMotionSample) -> Void)?
+        if matchExport && tuning.stabilizes {
+            collectMotion = { sample in motion.withLock { $0.append(sample) } }
+        }
         let targets = try await trackPeople(asset: info.asset, track: info.track,
                                             start: start, duration: duration,
                                             focusRanges: [],
                                             focusPortraits: focusPortraits,
                                             avoidPortraits: avoidPortraits,
                                             orientation: Self.displayOrientation(of: info.preferredTransform),
-                                            tuning: tuning, fighterFocus: fighterFocus, fighterHasVIP: fighterHasVIP, fighterRegion: fighterRegion)
+                                            tuning: tuning, fighterFocus: fighterFocus, fighterHasVIP: fighterHasVIP, fighterRegion: fighterRegion,
+                                            motion: collectMotion)
         let trackedShare = targets.isEmpty ? 0
             : Double(targets.filter(\.tracked).count) / Double(targets.count)
         let keyframes = cameraPath(from: targets, size: info.size, duration: duration,
-                                   tuning: tuning, hints: hints, aspect: aspect)
+                                   tuning: tuning, hints: hints, aspect: aspect, motion: motion.withLock { $0 })
         var normalized = keyframes.map { keyframe in
             CameraPathKeyframe(t: keyframe.time,
                                x: keyframe.crop.minX / info.size.width,
@@ -636,6 +670,7 @@ actor CenterStageService {
         let decodePermit = try await MediaWorkScheduler.current.acquire(.decoding)
         defer { withExtendedLifetime(decodePermit) {} }
         try Task.checkCancellation()
+        Self.trackingInputObserver?(asset.url, start, duration)
         // Identity focus: reference fingerprints from the user's person
         // markers. With positive references, only detections matching one of
         // them are framed; detections matching a NEGATIVE reference (an
@@ -1082,7 +1117,35 @@ actor CenterStageService {
                             motion: [CameraMotionSample] = []) -> [Keyframe] {
         let path = smoothedPath(from: targets, size: size, duration: duration, tuning: tuning, hints: hints, aspect: aspect,
                                 cuts: tuning.stabilizes ? CameraMotionPlanning.cuts(in: motion) : [])
-        return stabilized(path, targets: targets, motion: motion, size: size, duration: duration, tuning: tuning, aspect: aspect)
+        return boundedKeyframes(stabilized(path, targets: targets, motion: motion, size: size,
+            duration: duration, tuning: tuning, aspect: aspect), size: size)
+    }
+
+    /// Both production path construction and export use this boundary. The
+    /// observer fires where the correction happens, before export sees it.
+    nonisolated static func boundedPath(_ path: [CameraPathKeyframe],
+                                       picture: FreeCropRect = FreeCropRect()) -> [CameraPathKeyframe] {
+        let bounded = TrackedPictureBounds.clamped(path, to: picture)
+        if bounded != path { pictureCorrectionObserver?() }
+        return bounded
+    }
+
+    private func boundedKeyframes(_ path: [Keyframe], size: CGSize,
+                                  picture: FreeCropRect = FreeCropRect()) -> [Keyframe] {
+        guard size.width.isFinite, size.height.isFinite, size.width > 0, size.height > 0 else { return [] }
+        let normalized = path.map {
+            CameraPathKeyframe(t: $0.time, x: $0.crop.origin.x / size.width, y: $0.crop.origin.y / size.height,
+                w: $0.crop.size.width / size.width, h: $0.crop.size.height / size.height)
+        }
+        let bounded = Self.boundedPath(normalized, picture: picture)
+        guard bounded.count == path.count else { return [] }
+        return zip(path, zip(normalized, bounded)).map { original, pair in
+            // Preserve valid pixel coordinates exactly (no normalization round trip).
+            guard pair.0 != pair.1 else { return original }
+            let key = pair.1
+            return Keyframe(time: key.t, crop: CGRect(x: key.x * size.width, y: key.y * size.height,
+                width: key.w * size.width, height: key.h * size.height))
+        }
     }
 
     /// Reduce camera motion: where the measured shake profile says the

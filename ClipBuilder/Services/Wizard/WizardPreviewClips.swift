@@ -13,6 +13,7 @@ nonisolated struct WizardPreviewClip: Identifiable, Sendable, Hashable {
     var outputStart: Double? = nil
     var outputDuration: Double? = nil
     var chosenSubject: Framing.Subject? = nil
+    var drawingCompanions: [TelestrationSource] = []
 
     var range: ClosedRange<Double> { start...max(start, end) }
     var duration: Double { max(0, end - start) }
@@ -32,6 +33,7 @@ nonisolated enum WizardPreviewClips {
     static func kept(run: MiniWizardRun, scenes: [SceneRecord]) -> [WizardPreviewClip] {
         // Only this recording's scenes: a pick without a scene must never
         // borrow a longer overlapping scene from another video.
+        let allByID = Dictionary(scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let scenes = scenes.filter { $0.videoID == run.video.id }
         let byID = Dictionary(scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         var result: [WizardPreviewClip] = []
@@ -50,6 +52,7 @@ nonisolated enum WizardPreviewClips {
                     return clip.sceneID == piece.scene.id && abs(clip.start - piece.start) < 0.001 && abs(clip.end - piece.end) < 0.001
                 }
                 picked[index].brollCuts = exact?.brollCuts
+                if let exact { picked[index].drawingCompanions = TelestrationSource.companions(clip: exact, sceneMap: allByID) }
             }
             return picked
         }
@@ -62,7 +65,8 @@ nonisolated enum WizardPreviewClips {
                         ? "\(candidate.selection.name) · \(index + 1)" : candidate.selection.name
                     result.append(.init(id: "take-\(candidate.id)-\(index)", title: title,
                                         scene: scene, start: clip.start, end: clip.end, brollCuts: clip.brollCuts,
-                                        chosenSubject: candidate.take.plan.framing))
+                                        chosenSubject: candidate.take.plan.framing,
+                                        drawingCompanions: TelestrationSource.companions(clip: clip, sceneMap: allByID)))
                 }
             }
             return result
@@ -76,6 +80,8 @@ nonisolated enum WizardPreviewClips {
     /// snapshot stands in.
     static func reel(items: [MiniReelItem], runs: [MiniWizardFlow.FootageKind: MiniWizardRun],
                      videoID: Int64, scenes: [SceneRecord]) -> [WizardPreviewClip] {
+        let allScenes = scenes
+        let allByID = Dictionary(scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let scenes = scenes.filter { $0.videoID == videoID }
         let byID = Dictionary(scenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
         let runs = runs.filter { $0.value.video.id == videoID }
@@ -85,7 +91,7 @@ nonisolated enum WizardPreviewClips {
             // batch cannot speak for it, so its snapshot stands in.
             if let run = runs[item.kind],
                item.kind != .highlights || run.candidates.contains(where: { $0.id == item.itemID }) {
-                result += liveClips(item, run: run, scenes: scenes, byID: byID)
+                result += liveClips(item, run: run, scenes: scenes, byID: byID, companionScenes: allScenes)
             } else if let scene = containing(item.range, id: item.sceneID, scenes: scenes, byID: byID) {
                 result.append(.init(id: item.clipID, title: item.title, scene: scene,
                                     start: item.range.lowerBound, end: item.range.upperBound))
@@ -102,12 +108,13 @@ nonisolated enum WizardPreviewClips {
                 return clip.sceneID == piece.scene.id && abs(clip.start - piece.start) < 0.001 && abs(clip.end - piece.end) < 0.001
             }
             result[index].brollCuts = exact?.brollCuts
+            if let exact { result[index].drawingCompanions = TelestrationSource.companions(clip: exact, sceneMap: allByID) }
         }
         return result
     }
 
     private static func liveClips(_ item: MiniReelItem, run: MiniWizardRun, scenes: [SceneRecord],
-                                  byID: [Int64: SceneRecord]) -> [WizardPreviewClip] {
+                                  byID: [Int64: SceneRecord], companionScenes: [SceneRecord]) -> [WizardPreviewClip] {
         switch item.kind {
         case .qa:
             guard let qa = run.qa, qa.kept.contains(item.itemID),
@@ -127,7 +134,8 @@ nonisolated enum WizardPreviewClips {
                           start: pick.range.lowerBound, end: pick.range.upperBound)]
         case .highlights:
             guard let candidate = run.candidates.first(where: { $0.id == item.itemID }), candidate.kept,
-                  let plan = WizardSelectionRules.resolvedPlan(candidate.take.plan, scenes: scenes) else { return [] }
+                  let plan = WizardSelectionRules.resolvedPlan(candidate.take.plan, scenes: companionScenes) else { return [] }
+            let companionMap = Dictionary(companionScenes.map { ($0.id, $0) }, uniquingKeysWith: { first, _ in first })
             var result: [WizardPreviewClip] = []
             for (index, clip) in plan.clips.enumerated() where clip.end > clip.start {
                 guard let scene = byID[clip.sceneID] else { continue }
@@ -135,7 +143,8 @@ nonisolated enum WizardPreviewClips {
                     ? "\(candidate.selection.name) · \(index + 1)" : candidate.selection.name
                 result.append(.init(id: "take-\(candidate.id)-\(index)", title: title, scene: scene,
                                     start: clip.start, end: clip.end, brollCuts: clip.brollCuts,
-                                    chosenSubject: plan.framing))
+                                    chosenSubject: plan.framing,
+                                    drawingCompanions: TelestrationSource.companions(clip: clip, sceneMap: companionMap)))
             }
             return result
         }
@@ -155,7 +164,8 @@ nonisolated enum WizardPreviewClips {
                 let title = take.plan.clips.count > 1 ? "\(base) · \(index + 1)" : base
                 result.append(.init(id: "take-\(take.id)-\(index)", title: title,
                                     scene: scene, start: clip.start, end: clip.end, brollCuts: clip.brollCuts,
-                                    chosenSubject: take.plan.framing))
+                                    chosenSubject: take.plan.framing,
+                                    drawingCompanions: TelestrationSource.companions(clip: clip, sceneMap: byID)))
             }
         }
         return result

@@ -21,7 +21,10 @@ nonisolated enum FightScoreDigest {
     /// One row per fighter, most active first; unattributed events land on "".
     /// Without the saved fight outcomes a completed submission cannot be
     /// checked against the result and counts as unclear.
-    static func fighters(events: [FightEventRecord], outcomes: [FightOutcome] = []) -> [Fighter] {
+    /// `validationEvents`: the whole fight when `events` is one round of it, so
+    /// two finishes in different rounds are still seen as conflicting.
+    static func fighters(events: [FightEventRecord], outcomes: [FightOutcome] = [],
+                         validationEvents: [FightEventRecord]? = nil) -> [Fighter] {
         var rows: [String: Fighter] = [:]
         for strike in StrikeStatsSummary.deduplicatedStrikes(events) {
             var row = rows[strike.fighterKey, default: Fighter(key: strike.fighterKey)]
@@ -33,7 +36,7 @@ nonisolated enum FightScoreDigest {
             }
             rows[strike.fighterKey] = row
         }
-        for pair in StrikeStatsSummary.pairs(events: events, outcomes: outcomes) {
+        for pair in StrikeStatsSummary.pairs(events: events, outcomes: outcomes, validationEvents: validationEvents) {
             var row = rows[pair.attacker, default: Fighter(key: pair.attacker)]
             switch pair.kind {
             case .takedown:

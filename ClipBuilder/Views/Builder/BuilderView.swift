@@ -10,6 +10,8 @@ struct BuilderView: View {
     @Environment(\.undoManager) private var undoManager
 
     @State private var playingClip: TimelineClip?
+    @State private var drawingRequest: BuilderTelestratorRequest?
+    @State private var drawingError: String?
     @State private var showScenePicker = false
     /// Width of the timeline pane. Under `compactControlsWidth` the controls
     /// bar drops its menu titles; under `tightControlsWidth` also the
@@ -118,6 +120,26 @@ struct BuilderView: View {
         }
     }
 
+    private func openDrawing(_ clip: TimelineClip) {
+        guard let request = BuilderTelestratorRequest(clip: clip, store: store) else {
+            reportDrawingError("The clip's source file is unavailable.")
+            return
+        }
+        store.stopBuilderPreview()
+        drawingRequest = request
+    }
+
+    private func removeDrawing(_ clip: TimelineClip) {
+        if case .failure(let error) = store.builder.setDrawing(clip.uid, drawing: nil) {
+            reportDrawingError(error.reason)
+        }
+    }
+
+    private func reportDrawingError(_ message: String) {
+        ErrorLog.record("Builder drawing", message)
+        drawingError = message
+    }
+
     /// Developer script tools, shown as buttons in the Scripts tab.
     private var scriptTools: BuilderScriptTools? {
         #if DEBUG
@@ -185,7 +207,7 @@ struct BuilderView: View {
                         BuilderWorkspacePreview(onAddClip: { showScenePicker = true })
                             .frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
                             .layoutPriority(1)
-                        BuilderInspector()
+                        BuilderInspector(onDrawing: openDrawing, onRemoveDrawing: removeDrawing)
                             .rememberedPaneWidth("pane.builder.inspector", min: 300, initial: 310, max: 1200)
                             .frame(maxHeight: .infinity)
                     }
@@ -341,6 +363,21 @@ struct BuilderView: View {
             get: { store.finishedBuilderRender },
             set: { if $0 == nil { store.finishedBuilderRender = nil } })) { render in
             PlayerSheet(url: render.url, title: "\(render.title) · \(render.duration.timecode)")
+        }
+        .sheet(item: $drawingRequest) { request in
+            TelestratorSheet(videoURL: request.videoURL, initialTime: request.sourceTime,
+                             duration: request.duration, aspect: request.aspect,
+                             visibleRect: request.visibleRect, range: nil,
+                             existing: request.clip.telestration, lockTime: true,
+                             allowsMotion: false) { drawing in
+                request.save(drawing, store: store)
+            }
+        }
+        .alert("Drawing not changed", isPresented: Binding(
+            get: { drawingError != nil }, set: { if !$0 { drawingError = nil } })) {
+            Button("OK") { drawingError = nil }
+        } message: {
+            Text(drawingError ?? "")
         }
         .sheet(item: $playingClip) { clip in
             PlayerSheet(url: model.sourceURL(for: clip) ?? URL(fileURLWithPath: "/"),
@@ -583,6 +620,7 @@ struct BuilderView: View {
         switch model.selection {
         case .clip(let uid): model.removeClip(uid)
         case .sound(let uid): model.removeSound(uid)
+        case .dubLine: break // Placement and deletion belong to Review lines.
         case .text(let uid): model.removeText(uid)
         case .image(let uid): model.removeImage(uid)
         case .overlay(let uid): model.removeOverlayBlock(uid)

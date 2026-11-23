@@ -78,6 +78,7 @@ nonisolated struct RangeReviewItem: Identifiable, Sendable {
     /// Kept, but not all of it: some of its passages were taken out of the
     /// reel. Its keep box shows the mixed state.
     var keptMixed = false
+    var drawingCompanions: [TelestrationSource] = []
 
     var isTrimmed: Bool {
         ProposedCutTrim.differs(range, proposedStart: originalRange.lowerBound, proposedEnd: originalRange.upperBound)

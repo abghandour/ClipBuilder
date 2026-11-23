@@ -43,13 +43,55 @@ extension AppStore {
                   builder.clip(clip.uid) == clip else { return }
             // No suspension between these identity checks and the edit.
             let count = try builder.freezeOnImpacts(clip.uid, contacts: contacts).get()
-            presentNotice("Freeze on Impacts", count > 0 ? "Froze \(count) impacts"
+            presentNotice("Freeze on Impacts", count > 0 ? "Froze \(count) \(count == 1 ? "impact" : "impacts")"
                 : "No impact far enough from the clip's edges")
         } catch {
             guard !Task.isCancelled, generation == profileGeneration, self.database === database,
                   project == activeProjectID, timeline == openTimelineID,
                   builder.clip(clip.uid) == clip else { return }
             presentError("Could not freeze impacts", error)
+        }
+    }
+
+    func slowIntoImpacts(_ clip: TimelineClip, strength: StrikeImpactRules.Strength = .medium) async {
+        let generation = profileGeneration
+        let database = database
+        let project = activeProjectID
+        let timeline = openTimelineID
+        do {
+            guard let contacts = try await savedStrikeContacts(for: clip),
+                  !Task.isCancelled, generation == profileGeneration, self.database === database,
+                  project == activeProjectID, timeline == openTimelineID,
+                  builder.clip(clip.uid) == clip else { return }
+            let result = try builder.slowIntoImpacts(clip.uid, contacts: contacts, strength: strength).get()
+            presentNotice("Slow into Impacts", "Slowed \(result.count) \(result.count == 1 ? "impact" : "impacts")"
+                + (result.skipped > 0 ? " · skipped \(result.skipped)" : ""))
+        } catch {
+            guard !Task.isCancelled, generation == profileGeneration, self.database === database,
+                  project == activeProjectID, timeline == openTimelineID else { return }
+            ErrorLog.record("Slow into Impacts", error.localizedDescription)
+            presentError("Could not slow impacts", error)
+        }
+    }
+
+    func flashOnImpacts(_ clip: TimelineClip) async {
+        let generation = profileGeneration
+        let database = database
+        let project = activeProjectID
+        let timeline = openTimelineID
+        do {
+            guard let contacts = try await savedStrikeContacts(for: clip),
+                  !Task.isCancelled, generation == profileGeneration, self.database === database,
+                  project == activeProjectID, timeline == openTimelineID,
+                  builder.clip(clip.uid) == clip else { return }
+            let count = try builder.flashOnImpacts(clip.uid, contacts: contacts).get()
+            presentNotice("Flash on Impacts", "Flashed \(count) impacts")
+        } catch {
+            guard !Task.isCancelled, generation == profileGeneration, self.database === database,
+                  project == activeProjectID, timeline == openTimelineID,
+                  builder.clip(clip.uid) == clip else { return }
+            ErrorLog.record("Flash on Impacts", error.localizedDescription)
+            presentError("Could not flash impacts", error)
         }
     }
 }

@@ -9,11 +9,23 @@ nonisolated struct Telestration: Codable, Equatable, Sendable {
     var stay: Double
     var drawSpeed: Double
     var fade: Double
+    /// Seconds of the animation already shown before this hold begins. Set
+    /// only on a copy cut for a preview window that starts inside the pause.
+    var offset: Double?
+    /// The picture's speed while the figures are drawn (0.25...1 of the
+    /// clip's own speed). Nil: the picture is paused, as in older drawings.
+    var motion: Double?
+
+    static let motionRates: [Double] = [0.25, 0.5, 1]
 
     var duration: Double { Double(figures.count) * drawSpeed + stay + fade }
+    /// Source seconds the picture advances under the drawing; 0 when paused.
+    var sourceSpan: Double { duration * (motion ?? 0) }
 
     init(time: Double = 0, figures: [Figure] = [], stay: Double = 2,
-         drawSpeed: Double = 0.5, fade: Double = 0.3) {
+         drawSpeed: Double = 0.5, fade: Double = 0.3, offset: Double? = nil, motion: Double? = nil) {
+        self.offset = offset.flatMap { $0.isFinite && $0 > 0 ? $0 : nil }
+        self.motion = motion.flatMap { $0.isFinite && $0 > 0 ? min(1, max(0.25, $0)) : nil }
         self.time = time.isFinite ? max(0, time) : 0
         self.figures = Array(figures.prefix(Self.maximumFigures)).map { $0.normalized }
         self.stay = stay.isFinite ? min(10, max(0.5, stay)) : 2
@@ -21,7 +33,7 @@ nonisolated struct Telestration: Codable, Equatable, Sendable {
         self.fade = fade.isFinite ? max(0, fade) : 0.3
     }
 
-    private nonisolated enum CodingKeys: String, CodingKey { case time, figures, stay, drawSpeed, fade }
+    private nonisolated enum CodingKeys: String, CodingKey { case time, figures, stay, drawSpeed, fade, offset, motion }
 
     private nonisolated struct DecodedFigure: Decodable {
         let value: Figure?
@@ -34,7 +46,9 @@ nonisolated struct Telestration: Codable, Equatable, Sendable {
                   figures: try values.decodeIfPresent([DecodedFigure].self, forKey: .figures)?.compactMap { $0.value } ?? [],
                   stay: try values.decodeIfPresent(Double.self, forKey: .stay) ?? 2,
                   drawSpeed: try values.decodeIfPresent(Double.self, forKey: .drawSpeed) ?? 0.5,
-                  fade: try values.decodeIfPresent(Double.self, forKey: .fade) ?? 0.3)
+                  fade: try values.decodeIfPresent(Double.self, forKey: .fade) ?? 0.3,
+                  offset: try values.decodeIfPresent(Double.self, forKey: .offset),
+                  motion: try values.decodeIfPresent(Double.self, forKey: .motion))
     }
 
     nonisolated struct Figure: Codable, Equatable, Sendable {
@@ -80,9 +94,11 @@ nonisolated struct Telestration: Codable, Equatable, Sendable {
         var head: Bool?
         var style: Style?
         var symbol: String?
+        /// Screen seconds after the pause; absent in older drawings.
+        var linger: Double?
 
         init(kind: Kind = .arrow, points: [CGPoint] = [], color: Color = .yellow, width: CGFloat = 0.010,
-             head: Bool? = nil, style: Style? = nil, symbol: String? = nil) {
+             head: Bool? = nil, style: Style? = nil, symbol: String? = nil, linger: Double? = nil) {
             self.kind = kind
             let bounded = points.map(TelestrationRules.clamped)
             self.points = kind == .free ? TelestrationRules.simplify(bounded) : Array(bounded.prefix(2))
@@ -92,13 +108,14 @@ nonisolated struct Telestration: Codable, Equatable, Sendable {
             self.head = head
             self.style = style
             self.symbol = symbol.map { Self.symbols.contains($0) ? $0 : Self.symbols[0] }
+            self.linger = linger.map { $0.isFinite ? min(3, max(0, $0)) : 0 }
         }
 
         var normalized: Self {
-            Self(kind: kind, points: points, color: color, width: width, head: head, style: style, symbol: symbol)
+            Self(kind: kind, points: points, color: color, width: width, head: head, style: style, symbol: symbol, linger: linger)
         }
 
-        private nonisolated enum CodingKeys: String, CodingKey { case kind, points, color, width, head, style, symbol }
+        private nonisolated enum CodingKeys: String, CodingKey { case kind, points, color, width, head, style, symbol, linger }
 
         init(from decoder: Decoder) throws {
             let values = try decoder.container(keyedBy: CodingKeys.self)
@@ -108,7 +125,8 @@ nonisolated struct Telestration: Codable, Equatable, Sendable {
                       width: try values.decodeIfPresent(CGFloat.self, forKey: .width) ?? 0.010,
                       head: try values.decodeIfPresent(Bool.self, forKey: .head),
                       style: (try values.decodeIfPresent(String.self, forKey: .style)).flatMap(Style.init(rawValue:)),
-                      symbol: try values.decodeIfPresent(String.self, forKey: .symbol))
+                      symbol: try values.decodeIfPresent(String.self, forKey: .symbol),
+                      linger: try values.decodeIfPresent(Double.self, forKey: .linger))
         }
     }
 }
@@ -117,6 +135,7 @@ nonisolated enum TelestrationRules {
     nonisolated struct FigureState: Equatable, Sendable {
         var figure: Telestration.Figure
         var progress: Double
+        var opacity: Double = 1
     }
 
     nonisolated struct State: Equatable, Sendable {
@@ -125,17 +144,59 @@ nonisolated enum TelestrationRules {
     }
 
     static func state(of drawing: Telestration, at elapsed: Double) -> State {
+        // A pause can outlast its drawing (several pictures share the longest
+        // one): figures that stay into the motion wait there, fully drawn.
+        if elapsed.isFinite, elapsed >= drawing.duration, lingerDuration(of: drawing) > 0 {
+            return lingerState(of: drawing, at: 0)
+        }
         guard elapsed.isFinite, elapsed >= 0, elapsed < drawing.duration, !drawing.figures.isEmpty else {
             return State(figures: [], opacity: 0)
         }
         let fadeStart = Double(drawing.figures.count) * drawing.drawSpeed + drawing.stay
         let opacity = elapsed <= fadeStart ? 1 : max(0, 1 - (elapsed - fadeStart) / max(drawing.fade, .leastNonzeroMagnitude))
+        let hasLinger = lingerDuration(of: drawing) > 0
         let figures = drawing.figures.enumerated().compactMap { index, figure -> FigureState? in
             let linear = min(1, max(0, (elapsed - Double(index) * drawing.drawSpeed) / drawing.drawSpeed))
             guard linear > 0 else { return nil }
-            return FigureState(figure: figure, progress: 1 - pow(1 - linear, 3))
+            return FigureState(figure: figure, progress: 1 - pow(1 - linear, 3),
+                               opacity: hasLinger && linger(of: figure) <= 0 ? opacity : 1)
         }
-        return State(figures: figures, opacity: opacity)
+        return State(figures: figures, opacity: hasLinger ? 1 : opacity)
+    }
+
+    static func lingerDuration(of drawing: Telestration) -> Double {
+        drawing.figures.map { linger(of: $0) }.max() ?? 0
+    }
+
+    /// Moving drawings start their carried clock at the first drawn frame.
+    /// A paused drawing keeps the established post-hold clock exactly.
+    static func carriedDuration(of drawing: Telestration) -> Double {
+        guard drawing.motion != nil else { return lingerDuration(of: drawing) }
+        return drawing.duration + lingerDuration(of: drawing)
+    }
+
+    static func carriedState(of drawing: Telestration, at elapsed: Double) -> State {
+        guard drawing.motion != nil else { return lingerState(of: drawing, at: elapsed) }
+        if elapsed >= carriedDuration(of: drawing) { return State(figures: [], opacity: 0) }
+        return elapsed < drawing.duration ? state(of: drawing, at: elapsed)
+            : lingerState(of: drawing, at: elapsed - drawing.duration)
+    }
+
+    private static func linger(of figure: Telestration.Figure) -> Double {
+        guard let value = figure.linger, value.isFinite else { return 0 }
+        return min(3, max(0, value))
+    }
+
+    static func lingerState(of drawing: Telestration, at elapsed: Double) -> State {
+        guard elapsed.isFinite, elapsed >= 0 else { return State(figures: [], opacity: 0) }
+        let figures = drawing.figures.compactMap { figure -> FigureState? in
+            let linger = Self.linger(of: figure)
+            guard linger > elapsed else { return nil }
+            let fade = min(drawing.fade, linger)
+            let opacity = fade > 0 ? min(1, (linger - elapsed) / fade) : 1
+            return FigureState(figure: figure, progress: 1, opacity: opacity)
+        }
+        return State(figures: figures, opacity: figures.isEmpty ? 0 : 1)
     }
 
     /// Iterative Douglas–Peucker avoids recursion for long freehand strokes.

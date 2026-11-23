@@ -20,8 +20,12 @@ import Foundation
         "tastePreset": "wizard.tastePreset",
         "captionLanguage": "wizard.captionLanguage",
         "dubLanguage": "wizard.dubLanguage",
+        "drawnPauses": "wizard.drawnPauses",
+        "strikeHighlightStyle": "wizard.strikeHighlightStyle",
         "strikeHighlights": "wizard.strikeHighlights",
         "strikeImpactFreeze": "wizard.strikeImpactFreeze",
+        "strikeSlowMotion": "wizard.strikeSlowMotion",
+        "strikeFlash": "wizard.strikeFlash",
         "strikeStats": "wizard.strikeStats", "strikeUnits": "wizard.strikeUnits",
         "strikeSpeedCallouts": "wizard.strikeSpeedCallouts", "strikeGrapplingCard": "wizard.strikeGrapplingCard",
         "strikeRoundCard": "wizard.strikeRoundCard",
@@ -194,6 +198,14 @@ import Foundation
         }
         for (field, key) in mapping where allowed.contains(field) {
             guard let value = result[field] else { continue }
+            if key == "wizard.strikeImpactFreeze" {
+                if case .null = value {
+                    defaults.removeObject(forKey: key)
+                } else {
+                    StrikePausePreference.setActive(value.number ?? 0, defaults: defaults)
+                }
+                continue
+            }
             switch value {
             case .null: defaults.removeObject(forKey: key)
             case .bool(let v): defaults.set(v, forKey: key)

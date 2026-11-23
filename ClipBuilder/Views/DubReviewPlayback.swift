@@ -43,7 +43,10 @@ final class DubReviewPlayback {
             }
             player.play()
         } catch {
-            if token == request { self.error = error.userMessage }
+            if token == request, !Task.isCancelled {
+                self.error = error.userMessage
+                ErrorLog.record("Dub playback", error.userMessage)
+            }
         }
     }
 

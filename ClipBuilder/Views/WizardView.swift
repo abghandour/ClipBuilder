@@ -10,6 +10,7 @@ import SwiftUI
 struct WizardView: View {
     // Internal members are shared only with this view's step/field extensions.
     @Environment(\.workspacePageVisible) private var pageVisible
+    @State private var drawingRequest: TelestratorRequest?
     @Environment(AppStore.self) var store
     @Environment(\.openSettings) private var openSettings
     @AppStorage("settings.selectedTab") private var settingsTab = "profile"
@@ -38,8 +39,13 @@ struct WizardView: View {
     @AppStorage("wizard.critiqueTargetScore") var critiqueTargetScore = 85
     @AppStorage("wizard.critiqueMaxVersions") var critiqueMaxVersions = 3
     @AppStorage("wizard.strikeStats") var strikeStats = false
+    @AppStorage("wizard.drawnPauses") var drawnPauses = true
+    @AppStorage("wizard.strikeHighlightStyle") var strikeHighlightStyle = "outline"
     @AppStorage("wizard.strikeHighlights") var strikeHighlights = false
     @AppStorage("wizard.strikeImpactFreeze") var strikeImpactFreeze = 0.0
+    @AppStorage("wizard.strikeImpactFreezeSeconds") var strikeImpactFreezeSeconds = StrikeHighlightRules.impactHold
+    @AppStorage("wizard.strikeSlowMotion") var strikeSlowMotion = ""
+    @AppStorage("wizard.strikeFlash") var strikeFlash = false
     @AppStorage("wizard.strikeUnits") var strikeUnits = "km/h"
     @AppStorage("wizard.strikeSpeedCallouts") var strikeSpeedCallouts = true
     @AppStorage("wizard.strikeGrapplingCard") var strikeGrapplingCard = true
@@ -579,6 +585,14 @@ struct WizardView: View {
                 }
             }
         }
+        .environment(\.requestTelestration, { drawingRequest = $0 })
+        .sheet(item: $drawingRequest) { request in
+            TelestratorSheet(videoURL: request.videoURL, initialTime: request.initialTime,
+                duration: request.duration, aspect: request.aspect, range: request.range,
+                clipRange: request.clipRange, existing: request.existing?.drawing) { drawing in
+                    await request.save(drawing, store: store)
+                }
+        }
         .sheet(isPresented: $showTrainingGuide) {
             HelpSheet()
         }
@@ -766,8 +780,12 @@ struct WizardView: View {
         let platforms = safeAreaPlatforms.split(separator: ",").compactMap { SocialPlatform(rawValue: String($0)) }
         options.safeAreaPlatforms = platforms.isEmpty ? nil : platforms
         options.strikeStats = strikeStats
+        options.drawnPauses = drawnPauses
+        options.strikeHighlightStyle = strikeHighlightStyle == "outline" ? nil : strikeHighlightStyle
         options.strikeHighlights = strikeHighlights
         options.strikeImpactFreeze = strikeImpactFreeze > 0 ? strikeImpactFreeze : nil
+        options.strikeSlowMotion = StrikeImpactRules.strength(saved: strikeSlowMotion)
+        options.strikeFlash = strikeFlash ? true : nil
         options.strikeUnits = strikeUnits
         options.strikeSpeedCallouts = strikeSpeedCallouts
         options.strikeGrapplingCard = strikeGrapplingCard
@@ -1368,8 +1386,12 @@ struct WizardView: View {
         p.branding = brandingOverride == .savedDefault ? nil : brandingOverride.title
         p.format = effectiveRenderSettings.preset.label
         p.strikeStats = strikeStats
+        p.drawnPauses = drawnPauses
+        p.strikeHighlightStyle = strikeHighlightStyle == "outline" ? nil : strikeHighlightStyle
         p.strikeHighlights = strikeHighlights
         p.strikeImpactFreeze = strikeImpactFreeze > 0 ? strikeImpactFreeze : nil
+        p.strikeSlowMotion = StrikeImpactRules.strength(saved: strikeSlowMotion)
+        p.strikeFlash = strikeFlash ? true : nil
         p.fightResearch = useFightResearch
         p.favoritesOnly = favoritesOnly
         let people = selectedSourcePeople
@@ -1604,8 +1626,12 @@ struct WizardView: View {
         let platforms = safeAreaPlatforms.split(separator: ",").compactMap { SocialPlatform(rawValue: String($0)) }
         options.safeAreaPlatforms = platforms.isEmpty ? nil : platforms
         options.strikeStats = strikeStats
+        options.drawnPauses = drawnPauses
+        options.strikeHighlightStyle = strikeHighlightStyle == "outline" ? nil : strikeHighlightStyle
         options.strikeHighlights = strikeHighlights
         options.strikeImpactFreeze = strikeImpactFreeze > 0 ? strikeImpactFreeze : nil
+        options.strikeSlowMotion = StrikeImpactRules.strength(saved: strikeSlowMotion)
+        options.strikeFlash = strikeFlash ? true : nil
         options.strikeUnits = strikeUnits
         options.strikeSpeedCallouts = strikeSpeedCallouts
         options.strikeGrapplingCard = strikeGrapplingCard

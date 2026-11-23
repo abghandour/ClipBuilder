@@ -17,8 +17,16 @@ nonisolated enum WizardPresetBridge {
         // Keep the remembered choice even when the toggle is off in an Express preset.
         fields["dub"] = .bool(settings.dub)
         fields["miniDubLanguage"] = settings.dubLanguage.map(JSONSetting.string) ?? .null
+        fields["drawnPauses"] = settings.drawnPauses.map(JSONSetting.bool) ?? .null
+        fields["strikeHighlightStyle"] = settings.strikeHighlightStyle.map(JSONSetting.string) ?? .null
         fields["strikeHighlights"] = settings.actionOverlays.map(JSONSetting.bool) ?? .null
         fields["strikeImpactFreeze"] = settings.pauseOnContact == true ? .number(settings.resolvedPauseOnContactSeconds) : .null
+        // Off is sent too, so a preset saved with these untouched switches them off in the Wizard.
+        fields["strikeSlowMotion"] = settings.slowIntoContact == true ? .string(settings.resolvedSlowIntoContactStrength) : .null
+        fields["strikeFlash"] = settings.flashOnContact == true ? .bool(true) : .null
+        if let value = settings.slowIntoContact { fields["slowIntoContact"] = .bool(value) }
+        if let value = settings.slowIntoContactStrength { fields["slowIntoContactStrength"] = .string(value) }
+        if let value = settings.flashOnContact { fields["flashOnContact"] = .bool(value) }
         fields["pauseOnContact"] = settings.pauseOnContact.map(JSONSetting.bool) ?? .null
         fields["pauseOnContactSeconds"] = settings.pauseOnContactSeconds.map(JSONSetting.number) ?? .null
         fields["addCaptions"] = .bool(settings.captions)
@@ -93,11 +101,22 @@ nonisolated enum WizardPresetBridge {
         }
         if let value = fields["miniDubLanguage"] { settings.dubLanguage = value.string }
         if let value = fields["dub"]?.bool { settings.dub = value }
+        if let value = fields["drawnPauses"] { settings.drawnPauses = value.bool }
+        if let value = fields["strikeHighlightStyle"] { settings.strikeHighlightStyle = value.string }
         if let value = fields["strikeHighlights"] { settings.actionOverlays = value.bool }
         if let value = fields["strikeImpactFreeze"] {
             settings.pauseOnContact = (value.number ?? 0) > 0
             settings.pauseOnContactSeconds = value.number
         }
+        if let value = fields["strikeSlowMotion"] {
+            // Off from the Wizard reads as untouched; Express's own keys below say off explicitly.
+            settings.slowIntoContact = value.string?.isEmpty == false ? true : nil
+            settings.slowIntoContactStrength = value.string
+        }
+        if let value = fields["strikeFlash"] { settings.flashOnContact = value.bool }
+        if let value = fields["slowIntoContact"] { settings.slowIntoContact = value.bool }
+        if let value = fields["slowIntoContactStrength"] { settings.slowIntoContactStrength = value.string }
+        if let value = fields["flashOnContact"] { settings.flashOnContact = value.bool }
         if let value = fields["pauseOnContact"] { settings.pauseOnContact = value.bool }
         if let value = fields["pauseOnContactSeconds"] { settings.pauseOnContactSeconds = value.number }
         if let captions = fields["addCaptions"]?.bool { settings.captions = captions }

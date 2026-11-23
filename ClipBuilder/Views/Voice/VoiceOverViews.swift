@@ -459,7 +459,7 @@ struct VoiceOverTab: View {
 }
 
 /// The input level while recording.
-private struct LevelMeter: View {
+struct LevelMeter: View {
     let level: Double
 
     var body: some View {

@@ -97,6 +97,7 @@ nonisolated enum CutawaySource: Sendable {
 nonisolated enum TimelineSelection: Codable, Sendable, Equatable {
     case clip(UUID)
     case sound(UUID)
+    case dubLine(UUID)
     case text(UUID)
     case image(UUID)
     case overlay(UUID)
@@ -104,7 +105,7 @@ nonisolated enum TimelineSelection: Codable, Sendable, Equatable {
 
     var uid: UUID {
         switch self {
-        case .clip(let id), .sound(let id), .text(let id), .image(let id), .overlay(let id), .crop(let id): id
+        case .clip(let id), .sound(let id), .dubLine(let id), .text(let id), .image(let id), .overlay(let id), .crop(let id): id
         }
     }
 
@@ -113,6 +114,7 @@ nonisolated enum TimelineSelection: Codable, Sendable, Equatable {
         switch self {
         case .clip: "clip"
         case .sound: "sound"
+        case .dubLine: "dubLine"
         case .text: "text"
         case .image: "image"
         case .overlay: "overlay"
@@ -210,11 +212,68 @@ final class BuilderTimelineModel {
     var selection: TimelineSelection? {
         didSet { notifyUIStateChange() }
     }
+    var missingDubAudio: Set<String> = []
+    let livePreview = BuilderLivePreview()
+    let dubAudition = DubReviewPlayback()
+    @ObservationIgnored private var dubAuditionTask: Task<Void, Never>?
+    @ObservationIgnored private var playerWritesPlayhead = false
+
+    enum PlaybackOwner: Equatable { case exact, live, line }
+
+    func claimPlayback(_ owner: PlaybackOwner, stopExact: () -> Void = {}) {
+        dubAuditionTask?.cancel()
+        dubAuditionTask = nil
+        dubAudition.stop()
+        if owner != .live { livePreview.stop() }
+        if owner != .exact { stopExact() }
+    }
+
+    func audition(_ line: DubLine, stopExact: () -> Void) {
+        claimPlayback(.line, stopExact: stopExact)
+        guard let settings = document.dub else { return }
+        let prepared = DubPreparation.Prepared(document: document, settings: settings,
+            lines: document.dubLines ?? [], slots: [:], overlaps: [])
+        dubAuditionTask = Task { [weak self] in
+            guard let self, !Task.isCancelled else { return }
+            await dubAudition.play(line, prepared: prepared, withVideo: false)
+        }
+    }
+
+    func stopAudition() {
+        dubAuditionTask?.cancel()
+        dubAuditionTask = nil
+        dubAudition.stop()
+    }
+
+    func reportLivePlayhead(_ time: Double) {
+        playerWritesPlayhead = true
+        playhead = time
+        playerWritesPlayhead = false
+    }
+    var liveDubEnabled = true {
+        didSet {
+            if mode == .persistent, !profileName.isEmpty {
+                BuilderStateStore.setLiveDubEnabled(liveDubEnabled, profileName: profileName)
+            }
+        }
+    }
+
+    func selectDubLine(_ id: UUID) {
+        guard document.dubLines?.contains(where: { $0.id == id }) == true else { return }
+        selection = .dubLine(id)
+    }
+
+    func dubLineBlock(_ id: UUID) -> BuilderDubLayout.Block? {
+        BuilderDubLayout.layout(document: document, missingAudio: missingDubAudio).blocks.first { $0.id == id }
+    }
     var pointsPerSecond: CGFloat = 60 {          // timeline zoom
         didSet { notifyUIStateChange() }
     }
     var playhead: Double = 0 {
-        didSet { notifyUIStateChange() }
+        didSet {
+            if !playerWritesPlayhead { livePreview.scrubbed(to: playhead) }
+            notifyUIStateChange()
+        }
     }
     /// The video track the user last clicked (its header or one of its
     /// clips). The cropping row paints that track's area green.
@@ -281,7 +340,52 @@ final class BuilderTimelineModel {
         registerUndo("Change dub")
         document.dub = settings
         document.dubLines = lines
+        if case .dubLine(let id) = selection, lines?.contains(where: { $0.id == id }) != true {
+            selection = nil
+        }
         documentDidChange()
+    }
+
+    private(set) var dubAudioGeneration = 0
+    private var savedDubAudioGeneration = 0
+    private var restoredDubAudio: [UUID: [DubLine]] = [:]
+    var hasPendingDubAudioSave: Bool { dubAudioGeneration != savedDubAudioGeneration }
+
+    func acknowledgeDubAudioSave(_ generation: Int) {
+        savedDubAudioGeneration = max(savedDubAudioGeneration, generation)
+    }
+
+    private func hydratedDubAudio(in snapshot: TimelineDocument) -> TimelineDocument {
+        var snapshot = snapshot
+        snapshot.dubLines = snapshot.dubLines?.map { original in
+            guard let restored = restoredDubAudio[original.id]?.last(where: {
+                DubSynthesizer.sameAudioTake(original, $0)
+            }) else { return original }
+            var line = original
+            line.audio = restored.audio
+            line.duration = restored.duration
+            line.takeID = restored.takeID
+            return line
+        }
+        return snapshot
+    }
+
+    /// Cache restoration hydrates reviewed audio, without an edit/undo step or
+    /// playback-invalidating revision. The Live caller checks its revision first.
+    func restoreDubAudio(_ lines: [DubLine], missingAudio: Set<String>) {
+        if document.dubLines != lines {
+            for line in lines {
+                restoredDubAudio[line.id, default: []].removeAll { DubSynthesizer.sameAudioTake($0, line) }
+                restoredDubAudio[line.id, default: []].append(line)
+            }
+            dubAudioGeneration += 1
+            installingExactSnapshot = true
+            document.dubLines = lines
+            installingExactSnapshot = false
+            cachedTimelineLayout = nil
+            scheduleDocumentAutosave()
+        }
+        missingDubAudio = missingAudio
     }
 
     // MARK: - Undo
@@ -322,7 +426,7 @@ final class BuilderTimelineModel {
     }
 
     private func restore(_ snapshot: TimelineDocument) {
-        document = snapshot
+        document = hydratedDubAudio(in: snapshot)
         lastUndoKey = nil
         hydrateClips()
         if let selection, !contains(selection) { self.selection = nil }
@@ -415,7 +519,7 @@ final class BuilderTimelineModel {
         suppressAutosave = true
         defer { suppressAutosave = wasSuppressed }
         installingExactSnapshot = true
-        document = snapshot
+        document = hydratedDubAudio(in: snapshot)
         installingExactSnapshot = false
         revision += 1
         cachedTimelineLayout = nil
@@ -429,6 +533,7 @@ final class BuilderTimelineModel {
         switch selection {
         case .clip(let uid): return document.videoTrack.contains { $0.uid == uid }
         case .sound(let uid): return document.soundTrack.contains { $0.uid == uid }
+        case .dubLine(let uid): return document.dubLines?.contains { $0.id == uid } == true
         case .text(let uid): return document.textOverlays.contains { $0.uid == uid }
         case .image(let uid): return document.imageOverlays.contains { $0.uid == uid }
         case .overlay(let uid): return document.overlayBlocks.contains { $0.uid == uid }
@@ -437,6 +542,8 @@ final class BuilderTimelineModel {
     }
 
     private func resetUndoHistory() {
+        restoredDubAudio = [:]
+        savedDubAudioGeneration = dubAudioGeneration
         // Only this model's steps: the window's manager also carries the
         // inspector text fields' own undo stack.
         if mode == .persistent { undoManager?.removeAllActions(withTarget: self) }
@@ -447,12 +554,16 @@ final class BuilderTimelineModel {
     // MARK: - Load / persistence
 
     func load(profileName: String, defaultRenderSettings: RenderSettings = RenderSettings()) {
+        livePreview.stop()
+        stopAudition()
         flushPendingAutosave()
         resetUndoHistory()
         pendingGenerateImagePrompt = nil
         pendingAssistantWizard = nil
         reviewFlags = []
         self.profileName = profileName
+        liveDubEnabled = BuilderStateStore.liveDubEnabled(profileName: profileName)
+        missingDubAudio = []
         timelineID = nil
         // Remembered B-roll picks belong to the document they were made in.
         lastBRollPick = nil
@@ -1666,10 +1777,19 @@ final class BuilderTimelineModel {
                   sourceDuration: Double? = nil) -> Result<Void, ClipEditFailure> {
         if let index = clipIndex(uid), document.videoTrack[index].hold == true {
             let clip = document.videoTrack[index]
-            guard duration.isFinite else { return .failure(.outOfBounds) }
+            guard clip.telestration == nil, duration.isFinite else { return .failure(.outOfBounds) }
+            // Another picture of the same pause carries a drawing: its timing sets the length.
+            if let group = clip.pauseGroup, TimelinePauseRules.owner(group: group, in: document) != nil,
+               TimelinePauseRules.hasDrawing(group: group, in: document) { return .failure(.outOfBounds) }
             registerUndo("Trim Freeze Frame")
-            document.videoTrack[index].duration = HoldClipRules.duration(duration, precision: precision)
-            resolveLayout(track: clip.track)
+            let length = HoldClipRules.duration(duration, precision: precision)
+            if let group = clip.pauseGroup,
+               let resized = TimelinePauseRules.resized(group: group, in: document, to: length) {
+                document = resized
+            } else {
+                document.videoTrack[index].duration = length
+                resolveLayout(track: clip.track)
+            }
             documentDidChange()
             return .success(())
         }
@@ -1774,7 +1894,7 @@ final class BuilderTimelineModel {
         return .success(())
     }
 
-    /// Insert held impact frames as one edit, using the speed edit's track packing.
+    /// Insert held impact frames across the timeline as one edit.
     @discardableResult
     func freezeOnImpacts(_ uid: UUID, contacts: [Double],
                          hold: Double = StrikeHighlightRules.impactHold) -> Result<Int, ClipEditFailure> {
@@ -1783,24 +1903,182 @@ final class BuilderTimelineModel {
         guard !original.bumper else { return .failure(.bumper) }
         guard !original.isCutaway, original.hold != true,
               hold.isFinite, StrikeFreezeRules.holdRange.contains(hold) else { return .failure(.outOfBounds) }
-        var source = original
+        let source = drawingSource(original)
+        guard let start = source.sourceStart else { return .success(0) }
+        let boundaries = contacts.filter { contact in
+            guard contact.isFinite, contact >= start - 1e-9, contact <= start + source.sourceSpan + 1e-9 else { return false }
+            let time = original.startTime + (contact - start) / source.effectiveSpeed
+            return TimelinePauseRules.slowBoundary(at: time, owner: uid, in: document) != nil
+        }
+        let selected = Array(Set(StrikeFreezeRules.contacts(source, contacts: contacts) + boundaries)).sorted()
+        guard !selected.isEmpty else { return .success(0) }
+        let requests = selected.map {
+            TimelinePauseRules.Request(time: original.startTime + ($0 - start) / source.effectiveSpeed,
+                                       duration: hold, owner: uid)
+        }
+        guard let first = requests.first,
+              TimelinePauseRules.slowBoundary(at: first.time, owner: uid, in: document) != nil
+                || TelestrationHoldRules.insertionReason(in: source, at: first.time) == nil else {
+            return .failure(.outOfBounds)
+        }
+        guard let paused = TimelinePauseRules.insert(requests, into: document, resolve: drawingSource) else {
+            return .success(0)
+        }
+        // Preserve the existing selection policy: a selected source becomes its head.
+        let head = paused.document.videoTrack.first {
+            $0.originKey == original.originKey && $0.track == original.track
+                && abs($0.startTime - original.startTime) < 1e-9
+        }
+        registerUndo("Freeze on Impacts")
+        document = paused.document
+        if selection == .clip(uid), let head { selection = .clip(head.uid) }
+        documentDidChange()
+        return .success(paused.count)
+    }
+
+    @discardableResult
+    func slowIntoImpacts(_ uid: UUID, contacts: [Double], strength: StrikeImpactRules.Strength = .medium)
+        -> Result<(count: Int, skipped: Int), ClipEditFailure> {
+        guard let original = clip(uid) else { return .failure(.notFound) }
+        guard !original.bumper else { return .failure(.bumper) }
+        guard original.hold != true, !original.isCutaway else { return .failure(.outOfBounds) }
+        let source = drawingSource(original)
+        guard let start = source.sourceStart, start.isFinite, source.effectiveSpeed.isFinite,
+              source.effectiveSpeed > 0 else { return .failure(.outOfBounds) }
+        // A contact at the end of a head split by Freeze on Impacts is valid
+        // for slowing. The stretch rule checks the resulting piece lengths.
+        let eligible = contacts.filter { $0.isFinite && $0 > start && $0 <= start + source.sourceSpan }
+        let times = eligible.map { original.startTime + ($0 - start) / source.effectiveSpeed }
+        var resolved = document
+        resolved.videoTrack = resolved.videoTrack.map(drawingSource)
+        guard var slowed = TimelineSlowRules.insert(times, owner: uid, strength: strength, into: resolved) else {
+            return .success((0, eligible.count))
+        }
+        if document.slowMotion == nil {
+            slowed.document.slowMotion?.originals = TimelineSlowState.saved(document.videoTrack)
+        }
+        registerUndo("Slow into Impacts")
+        document = slowed.document
+        documentDidChange()
+        return .success((slowed.count, slowed.skipped))
+    }
+
+    @discardableResult
+    func removeImpactSlowMotion(_ uid: UUID) -> Result<Void, ClipEditFailure> {
+        guard let clip = clip(uid), let group = clip.slowGroup else { return .failure(.notFound) }
+        guard let restored = TimelineSlowRules.removed(group: group, in: document) else { return .failure(.outOfBounds) }
+        registerUndo("Remove Slow Motion")
+        document = restored
+        if selection == .clip(uid), !document.videoTrack.contains(where: { $0.uid == uid }) {
+            selection = document.videoTrack.first {
+                $0.track == clip.track && $0.videoFile == clip.videoFile
+                    && ($0.sourceStart ?? 0) <= (clip.sourceStart ?? 0)
+                    && ($0.sourceStart ?? 0) + $0.sourceSpan >= (clip.sourceStart ?? 0)
+            }.map { .clip($0.uid) }
+        }
+        documentDidChange()
+        return .success(())
+    }
+
+    /// Flash splits only the selected picture; every other lane stays in place.
+    @discardableResult
+    func flashOnImpacts(_ uid: UUID, contacts: [Double]) -> Result<Int, ClipEditFailure> {
+        guard let index = clipIndex(uid) else { return .failure(.notFound) }
+        let original = document.videoTrack[index]
+        guard !original.bumper else { return .failure(.bumper) }
+        guard !original.isCutaway, original.hold != true else { return .failure(.outOfBounds) }
+        let source = drawingSource(original)
+        let pieces = StrikeImpactRules.flashed([source], contacts: contacts)
+        let count = pieces.filter { $0.flashIn != nil }.count - (source.flashIn == nil ? 0 : 1)
+        guard pieces != [source] else { return .success(0) }
+        registerUndo("Flash on Impacts")
+        document.videoTrack.replaceSubrange(index...index, with: pieces)
+        documentDidChange()
+        return .success(max(0, count))
+    }
+
+    func removeImpactFlash(_ uid: UUID) {
+        guard let index = clipIndex(uid), document.videoTrack[index].flashIn != nil else { return }
+        registerUndo("Remove Flash")
+        document.videoTrack[index].flashIn = nil
+        documentDidChange()
+    }
+
+    /// Resolve legacy scene-backed bounds without changing the document before Save.
+    func drawingSource(_ clip: TimelineClip) -> TimelineClip {
+        var source = clip
         source.sourceStart = source.sourceStart ?? scene(for: source)?.startTime
         source.sourceEnd = source.sourceEnd ?? scene(for: source)?.endTime
-        let selected = StrikeFreezeRules.contacts(source, contacts: contacts)
-        guard !selected.isEmpty else { return .success(0) }
-        let pieces = StrikeFreezeRules.pieces(source, contacts: selected, hold: hold)
-        guard !pieces.isEmpty else { return .failure(.outOfBounds) }
-        // Expanded pieces may start past the next clip's OLD position. Preserve
-        // the pre-edit order when handing them to the existing packing routine.
-        let order = clips(inTrack: original.track).filter { !$0.bumper && !$0.isCutaway }
-            .sorted { $0.startTime < $1.startTime }
-            .flatMap { $0.uid == uid ? pieces.map(\.uid) : [$0.uid] }
-        registerUndo("Freeze on Impacts")
-        document.videoTrack.replaceSubrange(index...index, with: pieces)
-        resolveLayout(track: original.track, order: order)
-        if selection == .clip(uid) { selection = .clip(pieces[0].uid) }
+        return source
+    }
+
+    @discardableResult
+    func drawOnPause(_ uid: UUID, at time: Double,
+                     drawing: Telestration) -> Result<UUID, ClipEditFailure> {
+        guard let index = clipIndex(uid) else { return .failure(.notFound) }
+        let original = document.videoTrack[index]
+        guard !original.bumper else { return .failure(.bumper) }
+        let request = TimelinePauseRules.Request(time: time, duration: drawing.duration, drawing: drawing, owner: uid)
+        guard let paused = TimelinePauseRules.insert([request], into: document, resolve: drawingSource),
+              let hold = paused.holds.first else { return .failure(.outOfBounds) }
+        registerUndo("Draw on Pause")
+        document = paused.document
+        selection = .clip(hold)
         documentDidChange()
-        return .success(selected.count)
+        return .success(hold)
+    }
+
+    @discardableResult
+    func setDrawing(_ uid: UUID, drawing: Telestration?) -> Result<Void, ClipEditFailure> {
+        guard let index = clipIndex(uid) else { return .failure(.notFound) }
+        let original = document.videoTrack[index]
+        guard !original.bumper else { return .failure(.bumper) }
+        guard original.hold == true else { return .failure(.outOfBounds) }
+        if let drawing {
+            guard drawing.duration.isFinite, StrikeFreezeRules.drawingHoldRange.contains(drawing.duration) else {
+                return .failure(.outOfBounds)
+            }
+            // The later part of a split drawing has nothing left to show when
+            // the new animation ends before the split.
+            if let offset = original.telestration?.offset,
+               drawing.duration - offset < StrikeFreezeRules.minimumPiece {
+                return .failure(.outOfBounds)
+            }
+        }
+        let order = clips(inTrack: original.track).filter { !$0.bumper && !$0.isCutaway }
+            .sorted { $0.startTime < $1.startTime }.map(\.uid)
+        registerUndo(drawing == nil ? "Remove Drawing" : original.telestration == nil ? "Add Drawing" : "Edit Drawing")
+        let edited = TelestrationHoldRules.applying(drawing, to: original)
+        // A pause lasts as long as its longest drawing; a shorter one on
+        // another picture fades and leaves its freeze plain for the rest.
+        if let group = original.pauseGroup,
+           let resized = TimelinePauseRules.resized(group: group, in: document,
+               to: TimelinePauseRules.drawingLength(group: group, in: document, replacing: uid, with: drawing)
+                   ?? edited.duration) {
+            let length = resized.videoTrack.first { $0.uid == uid }?.duration ?? edited.duration
+            document = resized
+            var placed = edited
+            placed.duration = length
+            if let path = placed.cameraPath { placed.cameraPath = HoldClipRules.cameraPath(path, duration: length) }
+            document.videoTrack[index] = placed
+        } else {
+            document.videoTrack[index] = edited
+            // Legacy and orphaned holds keep the existing single-track behavior.
+            let track = original.track
+            let delta = edited.duration - original.duration
+            if track >= 0, track < TimelineDocument.maxTracks, !document.trackSequential[track],
+               delta.isFinite, abs(delta) > 1e-9 {
+                for i in document.videoTrack.indices
+                where document.videoTrack[i].track == track && !document.videoTrack[i].bumper
+                    && !document.videoTrack[i].isCutaway && document.videoTrack[i].uid != uid
+                    && document.videoTrack[i].startTime >= original.startTime - 1e-6 {
+                    document.videoTrack[i].startTime = max(0, document.videoTrack[i].startTime + delta)
+                }
+            }
+            resolveLayout(track: original.track, order: order)
+        }
+        documentDidChange()
+        return .success(())
     }
 
     /// A cut preserves source continuity and identity without opening a gap.
@@ -1832,10 +2110,11 @@ final class BuilderTimelineModel {
         var source = original
         source.sourceStart = sourceStart
         if precision == .speech { source.precision = .speech }
-        guard let pieces = TimelineSplit.pieces(source, at: at, minimum: precision.minimumDuration, ceiling: ceiling),
+        guard var pieces = TimelineSplit.pieces(source, at: at, minimum: precision.minimumDuration, ceiling: ceiling),
               let cut = pieces.tail.sourceStart, let end = pieces.tail.sourceEnd else {
             return .failure(.outOfBounds)
         }
+        pieces.tail.stayCut = true
         registerUndo("Split Clip")
         document.videoTrack[index] = pieces.head
         document.videoTrack.insert(pieces.tail, at: index + 1)
@@ -1887,6 +2166,7 @@ final class BuilderTimelineModel {
         switch selection {
         case .clip(let uid) where clip(uid) == nil: selection = nil
         case .sound(let uid) where !document.soundTrack.contains(where: { $0.uid == uid }): selection = nil
+        case .dubLine(let uid) where document.dubLines?.contains(where: { $0.id == uid }) != true: selection = nil
         case .text(let uid) where !document.textOverlays.contains(where: { $0.uid == uid }): selection = nil
         case .image(let uid) where !document.imageOverlays.contains(where: { $0.uid == uid }): selection = nil
         case .overlay(let uid) where !document.overlayBlocks.contains(where: { $0.uid == uid }): selection = nil
@@ -1901,6 +2181,14 @@ final class BuilderTimelineModel {
     func removeClip(_ uid: UUID) {
         guard let index = clipIndex(uid) else { return }
         registerUndo("Delete Clip")
+        let clip = document.videoTrack[index]
+        if clip.hold == true, let group = clip.pauseGroup,
+           let closed = TimelinePauseRules.removed(group: group, in: document) {
+            document = closed
+            if case .clip(let selected) = selection, self.clip(selected) == nil { selection = nil }
+            documentDidChange()
+            return
+        }
         let removed = document.videoTrack.remove(at: index)
         if selection == .clip(uid) { selection = nil }
         if removed.bumper, removed.bumperMode == .pause {
@@ -1920,6 +2208,8 @@ final class BuilderTimelineModel {
         // A duplicate is a new clip, not a piece of the original: it gets
         // its own origin identity so the draw order can separate them.
         copy.originKey = UUID().uuidString
+        // A copy of a freeze is its own freeze, not another picture of the same pause.
+        copy.pauseGroup = nil
         copy.startTime = Self.snap(original.startTime + original.duration)
         if copy.bumper {
             copy.startTime = nonOverlappingBumperStart(copy.startTime, duration: copy.duration, excluding: nil)

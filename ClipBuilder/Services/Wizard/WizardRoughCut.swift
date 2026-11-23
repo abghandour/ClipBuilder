@@ -60,6 +60,8 @@ nonisolated enum WizardRoughCut {
         // independent of this flag; Express's shared rows may override both.
         rough.strikeHighlights = false
         rough.strikeImpactFreeze = options.strikeImpactFreeze
+        rough.strikeSlowMotion = options.strikeSlowMotion
+        rough.strikeFlash = options.strikeFlash
         rough.strikeSpeedCallouts = false
         rough.strikeGrapplingCard = false
         rough.strikeRoundCard = false
@@ -79,6 +81,8 @@ nonisolated enum WizardRoughCut {
             if !overlays.showsStrikeActions {
                 settings.actionOverlays = false
                 settings.pauseOnContact = false
+                settings.slowIntoContact = nil
+                settings.flashOnContact = nil
             }
             settings.applyOverlayOptions(to: &step2)
             rough = WizardOptions.merge(step1: rough.step1, step2: step2, base: rough)
@@ -97,8 +101,13 @@ nonisolated enum WizardRoughCut {
                                         oneReel: Bool) -> WizardOptions {
         var final = options
         if let overlays = extras.overlays {
+            final.drawnPauses = overlays.settings.drawnPauses
+            final.strikeHighlightStyle = overlays.settings.strikeHighlightStyle
             final.strikeImpactFreeze = overlays.showsStrikeActions && overlays.settings.resolvedPauseOnContact
                 ? overlays.settings.resolvedPauseOnContactSeconds : nil
+            final.strikeSlowMotion = overlays.showsStrikeActions && overlays.settings.resolvedSlowIntoContact
+                ? overlays.settings.resolvedSlowIntoContactStrength : nil
+            final.strikeFlash = overlays.showsStrikeActions && overlays.settings.resolvedFlashOnContact ? true : nil
             final.dubLanguage = overlays.settings.dub
                 ? overlays.settings.dubLanguage ?? DubLanguageChoices.defaultLanguage : nil
         }
@@ -223,6 +232,8 @@ nonisolated struct RoughCutReview: Equatable, Sendable {
     /// The takes' footage (ids `take-<takeID>-<index>`), for the still the
     /// sheet draws over a cut once its settings have changed.
     var previewClips: [WizardPreviewClip] = []
+    var strikeRevision: Int? = nil
+    var drawingRevision: Int? = nil
 
     /// False while the sheet shows prepared cuts that Play has yet to render.
     var isRendered: Bool { cuts.allSatisfy(\.isRendered) }

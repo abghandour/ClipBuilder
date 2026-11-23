@@ -29,7 +29,8 @@ nonisolated enum MiniHighlightReview {
                     title: title, titleHelp: title, keepLabel: "", captions: [], video: source,
                     range: scene == nil ? range : ProposedCutTrim.clamp(start: clip.start, end: clip.end, scene: limits),
                     originalRange: ProposedCutTrim.range(start: proposed.start, end: proposed.end),
-                    limits: limits, trimPolicy: .wizard, isAvailable: scene != nil)
+                    limits: limits, trimPolicy: .wizard, isAvailable: scene != nil,
+                    drawingCompanions: TelestrationSource.companions(clip: clip, sceneMap: sceneMap))
             }
             var item = cuts.first ?? RangeReviewItem(
                 id: .init(ownerID: candidate.id, revisionID: candidate.take.id), title: "", titleHelp: "",

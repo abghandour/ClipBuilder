@@ -4,6 +4,8 @@ import SwiftUI
 /// text overlay (transitions, position, crop, mute, volume, captions, fonts).
 struct BuilderInspector: View {
     @Environment(AppStore.self) private var store
+    var onDrawing: (TimelineClip) -> Void
+    var onRemoveDrawing: (TimelineClip) -> Void
 
     var body: some View {
         let model = store.builder
@@ -30,13 +32,19 @@ struct BuilderInspector: View {
             switch model.selection {
             case .clip(let uid):
                 if let clip = model.clip(uid) {
-                    ClipInspector(clip: clip)
+                    ClipInspector(clip: clip, onDrawing: onDrawing, onRemoveDrawing: onRemoveDrawing)
                 } else {
                     placeholder
                 }
             case .sound(let uid):
                 if let index = model.soundIndex(uid) {
                     SoundInspector(item: model.document.soundTrack[index])
+                } else {
+                    placeholder
+                }
+            case .dubLine(let uid):
+                if let block = model.dubLineBlock(uid) {
+                    DubLineInspector(block: block)
                 } else {
                     placeholder
                 }
@@ -116,6 +124,8 @@ struct ClipInspector: View {
         }
     }
     let clip: TimelineClip
+    var onDrawing: (TimelineClip) -> Void
+    var onRemoveDrawing: (TimelineClip) -> Void
 
 
     /// Wide-clip framing controls (slot position, 9:16 crop, tracking
@@ -222,6 +232,11 @@ struct ClipInspector: View {
 
             // Trim against the raw video, right under the clip identity.
             if clip.hold == true {
+                // Another picture of the same pause carries the drawing that sets its length.
+                let drawnElsewhere = clip.pauseGroup.map {
+                    TimelinePauseRules.owner(group: $0, in: model.document) != nil
+                        && TimelinePauseRules.hasDrawing(group: $0, in: model.document)
+                } ?? false
                 InspectorSection("Freeze frame") {
                     InspectorRow("Duration") {
                         TextField("Seconds", value: Binding(
@@ -229,12 +244,40 @@ struct ClipInspector: View {
                             set: { model.trimClip(clip.uid, duration: $0, precision: clip.precision) }),
                             format: .number.precision(.fractionLength(2)))
                             .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-                            .help("Screen time in seconds, up to 5 seconds")
+                            .disabled(clip.telestration != nil || drawnElsewhere)
+                            .help(clip.telestration != nil ? "Set by the drawing's timing"
+                                  : drawnElsewhere ? "Set by the drawing on another picture of this pause"
+                                  : "Screen time in seconds, up to 5 seconds")
+                    }
+                    ViewThatFits(in: .horizontal) {
+                        HStack { drawingButtons }
+                        VStack(alignment: .leading) { drawingButtons }
                     }
                 }
             } else {
                 InspectorSection("Trim") {
                     ClipTrimEditor(clip: clip)
+                }
+            }
+
+            if let group = clip.slowGroup,
+               let strength = TimelineSlowRules.strength(group: group, in: model.document) {
+                InspectorSection("Slow motion · \(strength.label)") {
+                    Button("Remove", systemImage: "xmark") {
+                        do { try model.removeImpactSlowMotion(clip.uid).get() }
+                        catch {
+                            ErrorLog.record("Remove Slow Motion", error.localizedDescription)
+                            store.presentError("Could not remove slow motion", error)
+                        }
+                    }
+                    .lineLimit(1).fixedSize().accessibilityLabel("Remove slow motion")
+                }
+            }
+
+            if clip.flashIn != nil {
+                InspectorSection("Flash") {
+                    Button("Remove", systemImage: "xmark") { model.removeImpactFlash(clip.uid) }
+                        .lineLimit(1).fixedSize().accessibilityLabel("Remove flash")
                 }
             }
 
@@ -429,6 +472,12 @@ struct ClipInspector: View {
                     if !clip.isCutaway, clip.hold != true {
                         StrikeFreezeControls(clip: clip)
                             .id(clip.uid)
+                        Button { onDrawing(clip) } label: {
+                            Label("Draw on pause", systemImage: "pencil.tip")
+                                .lineLimit(1).fixedSize()
+                        }
+                        .disabled(drawingUnavailableReason != nil)
+                        .help(drawingUnavailableReason ?? "Pause at the playhead and draw on the held frame. Save inserts the pause; Cancel leaves the clip unchanged.")
                     }
                 }
             }
@@ -463,6 +512,11 @@ struct ClipInspector: View {
                     .labelsHidden()
                     .help("Effects are previewed in Resources → Effects")
                 }
+                if TelestrationTransition.notice(document: model.document, scenes: model.scenes, clipID: clip.uid, entering: true) {
+                    Text("Plays as a cut: a figure stays across this join")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
+                }
                 InspectorRow("Out") {
                     Picker("Transition out", selection: transitionBinding(\.transOut)) {
                         ForEach(transitionChoices, id: \.self) { name in
@@ -470,6 +524,11 @@ struct ClipInspector: View {
                         }
                     }
                     .labelsHidden()
+                }
+                if TelestrationTransition.notice(document: model.document, scenes: model.scenes, clipID: clip.uid, entering: false) {
+                    Text("Plays as a cut: a figure stays across this join")
+                        .font(.caption).foregroundStyle(.secondary).lineLimit(2)
+                        .fixedSize(horizontal: false, vertical: true)
                 }
             }
 
@@ -593,6 +652,27 @@ struct ClipInspector: View {
                             }
                         }
                     }
+            }
+        }
+    }
+
+    private var drawingUnavailableReason: String? {
+        let model = store.builder
+        guard model.sourceURL(for: clip) != nil else { return "The clip's source file is unavailable." }
+        return TelestrationHoldRules.insertionReason(in: model.drawingSource(clip), at: model.playhead)
+    }
+
+    @ViewBuilder
+    private var drawingButtons: some View {
+        Button { onDrawing(clip) } label: {
+            Label(clip.telestration == nil ? "Add drawing" : "Edit drawing", systemImage: "pencil.tip")
+                .lineLimit(1).fixedSize()
+        }
+        .disabled(store.builder.sourceURL(for: clip) == nil)
+        .help(store.builder.sourceURL(for: clip) == nil ? "The clip's source file is unavailable." : "Draw on this held frame")
+        if clip.telestration != nil {
+            Button(role: .destructive) { onRemoveDrawing(clip) } label: {
+                Text("Remove drawing").lineLimit(1).fixedSize()
             }
         }
     }
@@ -1245,6 +1325,7 @@ private struct StrikeFreezeControls: View {
     @State private var contacts: [Double]?
     @State private var loadFailed = false
     @State private var isFreezing = false
+    @State private var slowStrength: StrikeImpactRules.Strength = .medium
 
     private var loadKey: [String] {
         [clip.uid.uuidString, String(store.profileGeneration), String(describing: store.activeProjectID),
@@ -1258,18 +1339,10 @@ private struct StrikeFreezeControls: View {
 
     var body: some View {
         VStack(alignment: .leading, spacing: Theme.spaceXS) {
-            Button {
-                isFreezing = true
-                Task {
-                    defer { isFreezing = false }
-                    await store.freezeOnImpacts(clip)
-                }
-            } label: {
-                Label("Freeze on impacts", systemImage: "snowflake")
-                    .lineLimit(1).fixedSize()
+            ViewThatFits(in: .horizontal) {
+                HStack { freezeButton; slowControls; flashButton }
+                VStack(alignment: .leading) { freezeButton; slowControls; flashButton }
             }
-            .disabled(contacts?.isEmpty != false || isFreezing)
-            .help("Split at saved impacts and insert a short, silent freeze frame. Undo restores the original clip.")
             if contacts?.isEmpty == true {
                 Text("Mark strikes in Sources first")
                     .font(.caption).foregroundStyle(.secondary)
@@ -1280,18 +1353,73 @@ private struct StrikeFreezeControls: View {
                     .lineLimit(1).fixedSize()
             }
         }
-        .task(id: loadKey) {
-            let requested = loadKey
-            contacts = nil
-            loadFailed = false
-            do {
-                let loaded = try await store.savedStrikeContacts(for: clip)
-                guard !Task.isCancelled, requested == loadKey, let loaded else { return }
-                contacts = loaded
-            } catch {
-                guard !Task.isCancelled, requested == loadKey else { return }
-                loadFailed = true
+        .task(id: loadKey) { await loadContacts() }
+    }
+
+    private var freezeButton: some View {
+        Button {
+            isFreezing = true
+            Task {
+                defer { isFreezing = false }
+                await store.freezeOnImpacts(clip)
             }
+        } label: {
+            Label("Freeze on impacts", systemImage: "snowflake")
+                .lineLimit(1).fixedSize()
+        }
+        .disabled(contacts?.isEmpty != false || isFreezing)
+        .help("Split at saved impacts and insert a short, silent freeze frame. Undo restores the original clip.")
+    }
+
+    private var slowControls: some View {
+        HStack {
+            Button {
+                isFreezing = true
+                Task {
+                    defer { isFreezing = false }
+                    await store.slowIntoImpacts(clip, strength: slowStrength)
+                }
+            } label: {
+                Label("Slow into impacts", systemImage: "tortoise.fill").lineLimit(1).fixedSize()
+            }
+            .disabled(contacts?.isEmpty != false || isFreezing)
+            .help("Slow every picture into saved impacts. Music keeps playing at normal speed.")
+            Picker("Strength", selection: $slowStrength) {
+                ForEach(StrikeImpactRules.Strength.allCases, id: \.self) { strength in
+                    Text(strength.label).tag(strength)
+                }
+            }
+            .labelsHidden().pickerStyle(.menu).lineLimit(1).fixedSize()
+            .accessibilityLabel("Slow motion strength")
+        }
+    }
+
+    private var flashButton: some View {
+        Button {
+            isFreezing = true
+            Task {
+                defer { isFreezing = false }
+                await store.flashOnImpacts(clip)
+            }
+        } label: {
+            Label("Flash on impacts", systemImage: "bolt.fill").lineLimit(1).fixedSize()
+        }
+        .disabled(contacts?.isEmpty != false || isFreezing)
+        .help("Add a short white flash at saved impacts. Undo restores the original clip.")
+    }
+
+    private func loadContacts() async {
+        let requested = loadKey
+        contacts = nil
+        loadFailed = false
+        do {
+            let loaded = try await store.savedStrikeContacts(for: clip)
+            guard !Task.isCancelled, requested == loadKey, let loaded else { return }
+            contacts = loaded
+        } catch {
+            guard !Task.isCancelled, requested == loadKey else { return }
+            loadFailed = true
+            ErrorLog.record("Read saved strikes", error.localizedDescription)
         }
     }
 }

@@ -4,10 +4,11 @@ import SwiftUI
 struct StrikeClipStatusLine: View {
     var status: StrikeClipStatus?
     var fallback: String? = nil
+    var symbol: String = "viewfinder"
 
     var body: some View {
         if let text = status?.line ?? fallback {
-            Label(text, systemImage: (status?.pause ?? .off) == .off ? "viewfinder" : "snowflake")
+            Label(text, systemImage: symbol)
                 .font(.caption)
                 .foregroundStyle(.secondary)
                 .lineLimit(1)

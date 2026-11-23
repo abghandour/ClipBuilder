@@ -117,6 +117,18 @@ struct BuilderRequestParserTests {
         #expect(try steps(request, context) == [.init(.freezeClipOnImpacts(clip: id))])
     }
 
+
+    @Test func slowIntoImpacts() throws {
+        let context = context()
+        let id = try #require(context.selectedClipID).uuidString
+        #expect(try steps("slow into impacts on this clip", context) == [.init(.slowClipIntoImpacts(clip: id))])
+        #expect(try steps("slow into impacts on this clip strong", context) == [.init(.slowClipIntoImpacts(clip: id, strength: .strong))])
+        #expect(try steps("remove slow motion from this clip", context) == [.init(.removeClipSlowMotion(clip: id))])
+        guard case .unrecognised = BuilderRequestParser().parse("slow into impacts on this clip and mute it", context: context) else {
+            Issue.record("Partially accepted slow request"); return
+        }
+    }
+
     @Test func freezeRequiresSelectionAndRejectsExtraEdits() {
         var context = context()
         for request in ["freeze on impacts on this clip and mute it", "freeze on impacts on this clip for 2 s"] {

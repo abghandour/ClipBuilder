@@ -86,7 +86,19 @@ nonisolated enum CaptionPaging {
         return ranges.enumerated().map { index, range in
             let next = index == ranges.count - 1 ? end : time + lengths[index]
             defer { time = next }
-            return CaptionPage(text: joined(range), start: time, end: next)
+            var page = CaptionPage(text: joined(range), start: time, end: next)
+            if let words, words.count == tokens.count,
+               zip(words, tokens).allSatisfy({ $0.word.trimmingCharacters(in: .whitespacesAndNewlines) == $1 }),
+               words[range].contains(where: { $0.emphasis != nil }) {
+                let step = (next - time) / Double(range.count)
+                page.words = range.enumerated().map { offset, index in
+                    var word = words[index]
+                    word.start = time + Double(offset) * step
+                    word.end = time + Double(offset + 1) * step
+                    return word
+                }
+            }
+            return page
         }
     }
 }

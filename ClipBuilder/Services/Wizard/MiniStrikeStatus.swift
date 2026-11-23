@@ -13,7 +13,10 @@ nonisolated struct MiniStrikeStatusRequest: Equatable, Sendable {
                 && lhs.plan.speed == rhs.plan.speed && lhs.plan.replay == rhs.plan.replay
                 && lhs.plan.reason == rhs.plan.reason && lhs.plan.layout == rhs.plan.layout
                 && lhs.plan.screenCrop == rhs.plan.screenCrop
-                && lhs.plan.areaClips.isEmpty == rhs.plan.areaClips.isEmpty
+                && lhs.plan.areaClips.count == rhs.plan.areaClips.count
+                && zip(lhs.plan.areaClips, rhs.plan.areaClips).allSatisfy {
+                    $0.area == $1.area && $0.sceneID == $1.sceneID && $0.start == $1.start && $0.end == $1.end
+                }
         }
     }
 
@@ -24,12 +27,20 @@ nonisolated struct MiniStrikeStatusRequest: Equatable, Sendable {
     var options: WizardOptions
     var xfadeDuration: Double
 
-    var visible: Bool { isFight && (options.strikeHighlights == true || WizardStrikePauses.requested(options)) }
+    var companionSceneIDs: Set<Int64> { Set(clips.flatMap { $0.plan.areaClips.map(\.sceneID) }) }
+    var snapshotKey: String { "\(dataKey):\(companionSceneIDs.sorted())" }
+
+    var visible: Bool {
+        (isFight && options.strikeHighlights == true)
+            || (WizardStrikePauses.contactsRequested(options) && (isFight || clips.contains { !$0.plan.areaClips.isEmpty }))
+    }
 
     static func == (lhs: Self, rhs: Self) -> Bool {
         let a = lhs.options, b = rhs.options
         return lhs.dataKey == rhs.dataKey && lhs.videoID == rhs.videoID && lhs.isFight == rhs.isFight
             && lhs.clips == rhs.clips && lhs.xfadeDuration == rhs.xfadeDuration
+            && a.drawnPauses == b.drawnPauses && a.strikeHighlightStyle == b.strikeHighlightStyle
+            && a.strikeSlowMotion == b.strikeSlowMotion && a.strikeFlash == b.strikeFlash
             && a.strikeHighlights == b.strikeHighlights && a.strikeImpactFreeze == b.strikeImpactFreeze
             && a.transitionChoice == b.transitionChoice && a.allowedTransitions == b.allowedTransitions
             && a.dubLanguage == b.dubLanguage && a.includeIntroBumper == b.includeIntroBumper
@@ -69,7 +80,9 @@ nonisolated struct MiniStrikeStatusRequest: Equatable, Sendable {
     }
 
     func evaluate(saved: StrikeClipStatusRules.Saved) -> Result {
-        guard visible else { return Result(statuses: [:], summary: "") }
+        var saved = saved
+        if options.drawnPauses == false { saved.drawings = []; saved.companionDrawings = [:] }
+        guard visible || saved.hasDrawings || (WizardStrikePauses.contactsRequested(options) && saved.companionTypes.values.contains(.fight)) else { return Result(statuses: [:], summary: "") }
         var plan = WizardPlan(targetDuration: 0, rationale: "", musicName: nil, musicVolume: 0,
                               clips: clips.map(\.plan), transitions: [])
         plan.framing = clips.first?.preview.chosenSubject
@@ -92,28 +105,34 @@ nonisolated struct MiniStrikeStatusRequest: Equatable, Sendable {
         }
         // Resolve the whole reel once so the neighbour also reports a changed
         // join, even when only the other side has an eligible contact.
-        let sceneMap = Dictionary(clips.map { ($0.preview.scene.id, $0.preview.scene) }, uniquingKeysWith: { first, _ in first })
-        let sourceTypes = Dictionary(clips.map { ($0.preview.scene.videoID, VideoType.fight) }, uniquingKeysWith: { first, _ in first })
-        let contacts = Dictionary(clips.map { ($0.preview.scene.videoPath, saved.contacts) }, uniquingKeysWith: { first, _ in first })
+        var sceneMap = Dictionary(clips.map { ($0.preview.scene.id, $0.preview.scene) }, uniquingKeysWith: { first, _ in first })
+        var sourceTypes: [Int64: VideoType] = isFight
+            ? Dictionary(clips.map { ($0.preview.scene.videoID, VideoType.fight) }, uniquingKeysWith: { first, _ in first }) : [:]
+        var contacts = Dictionary(clips.map { ($0.preview.scene.videoPath, saved.contacts) }, uniquingKeysWith: { first, _ in first })
+        var drawings = Dictionary(clips.map { ($0.preview.scene.videoPath, saved.drawings) }, uniquingKeysWith: { first, _ in first })
+        sceneMap.merge(saved.companionScenes, uniquingKeysWith: { main, _ in main })
+        sourceTypes.merge(saved.companionTypes, uniquingKeysWith: { main, _ in main })
+        contacts.merge(saved.companionContacts, uniquingKeysWith: { main, _ in main })
+        drawings.merge(saved.companionDrawings, uniquingKeysWith: { main, _ in main })
         var cuts: [Int: TimelineDocument] = [:]
         for (index, input) in clips.enumerated() where input.planAvailable {
             let clip = plan.clips[index]
             guard clip.start.isFinite, clip.end.isFinite, clip.end > clip.start,
                   clip.speed.isFinite, clip.speed > 0 else { continue }
             cuts[index] = StrikeClipStatusRules.cutDocument(clip: clip, plan: plan,
-                scene: input.preview.scene, sourceType: .fight, options: options)
+                scene: input.preview.scene, sourceType: isFight ? .fight : nil, options: options, sceneMap: sceneMap)
         }
         let prepared = WizardStrikePauses.prepare(plan: plan, cuts: cuts, sceneMap: sceneMap,
-            sourceTypes: sourceTypes, contacts: contacts, options: options, xfadeDuration: xfadeDuration)
+            sourceTypes: sourceTypes, contacts: contacts, drawings: drawings, options: options, xfadeDuration: xfadeDuration)
         var statuses: [String: StrikeClipStatus] = [:]
         for (index, input) in clips.enumerated() {
             var status = StrikeClipStatusRules.status(index: index, plan: plan, scene: input.preview.scene,
-                sourceType: .fight, saved: saved, options: options, xfadeDuration: xfadeDuration, unknownJoins: unknown,
+                sourceType: isFight ? .fight : nil, saved: saved, options: options, xfadeDuration: xfadeDuration, unknownJoins: unknown,
                 randomRecipes: pool.contains { TransitionRecipes.isRecipe($0) }, cut: cuts[index], preparation: prepared)
             if !input.planAvailable { status.unavailableReason = "Strike status awaits the saved Highlight take" }
             statuses[input.preview.id] = status
         }
         return Result(statuses: statuses, summary: StrikeClipStatusRules.summary(clips.compactMap { statuses[$0.preview.id] },
-            marks: options.strikeHighlights == true, pauses: WizardStrikePauses.requested(options)))
+            marks: options.strikeHighlights == true, pauses: WizardStrikePauses.requested(options) || saved.hasDrawings))
     }
 }

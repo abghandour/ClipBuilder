@@ -140,11 +140,23 @@ actor DubSynthesizer {
         return Double(file.length) / file.processingFormat.sampleRate
     }
 
+    /// Restoration may repair a filename/duration, never the inputs that made
+    /// the take. Timeline placement is independent of those inputs.
+    nonisolated static func sameAudioTake(_ lhs: DubLine, _ rhs: DubLine) -> Bool {
+        lhs.id == rhs.id && lhs.text == rhs.text && lhs.voice == rhs.voice
+            && lhs.speakerKey == rhs.speakerKey && lhs.rate == rhs.rate && lhs.stretch == rhs.stretch
+            && lhs.takeID == rhs.takeID && lhs.takeSource == rhs.takeSource
+            && lhs.sourceStart == rhs.sourceStart && lhs.sourceEnd == rhs.sourceEnd
+            && lhs.takeIsOverride == rhs.takeIsOverride && lhs.draft == rhs.draft
+    }
+
     /// Reviewed lines retain text, voice and rate. A cleared cache does not
     /// require a new translation or review, and never silently omits speech.
-    func restoringAudio(lines: [DubLine], database: Database? = nil) async throws -> [DubLine] {
+    func restoringAudio(lines: [DubLine], database: Database? = nil, allowSynthesis: Bool = true) async throws -> [DubLine] {
         guard !lines.contains(where: { $0.draft == true }) else {
-            throw ScriptError.invalid("Apply the dub review to finalize draft voices before rendering.")
+            throw ScriptError.invalid(allowSynthesis
+                ? "Apply the dub review to finalize draft voices before rendering."
+                : "Prepare the dub again to hear it live")
         }
         var result = lines
         for index in result.indices {
@@ -155,12 +167,15 @@ actor DubSynthesizer {
                 return directory.appendingPathComponent(name)
             }
             let url: URL
-            if let cached, (try? duration(of: cached)) ?? 0 > 0 {
+            // The document owns this text/file pairing, including undo snapshots.
+            // A durable row can already contain a newer take for the same line.
+            if let cached, FileManager.default.fileExists(atPath: cached.path) {
                 url = cached
-            } else if let database, let take = try await DubTakeStore.shared.audio(for: line, database: database, directory: directory) {
+            } else if let database, let take = try await DubTakeStore.shared.audio(for: line, database: database, directory: directory, reuseOnly: !allowSynthesis) {
                 url = line.rate > 1 ? try await DubTakeStore.fitted(take.url, rate: line.rate, directory: directory) : take.url
                 result[index].takeID = take.line.takeID
             } else {
+                guard allowSynthesis else { throw ScriptError.invalid("Prepare the dub again to hear it live") }
                 url = try await synthesize(text: line.text, voice: line.voice, rate: line.rate)
             }
             result[index].audio = url.lastPathComponent

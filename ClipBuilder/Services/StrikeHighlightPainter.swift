@@ -14,7 +14,7 @@ nonisolated enum StrikeHighlightPainter {
     /// says which way the context's y axis runs (SwiftUI: true; a bitmap
     /// context: false).
     static func draw(_ highlight: StrikeHighlightRules.Highlight, opacity: Double, in context: CGContext,
-                     rect: CGRect, topLeftOrigin: Bool) {
+                     rect: CGRect, topLeftOrigin: Bool, style: String = "outline") {
         guard opacity > 0, rect.width > 0, rect.height > 0 else { return }
         func place(_ point: CGPoint) -> CGPoint {
             CGPoint(x: rect.minX + point.x * rect.width,
@@ -36,8 +36,10 @@ nonisolated enum StrikeHighlightPainter {
             context.move(to: place(first))
             for point in contour.dropFirst() { context.addLine(to: place(point)) }
             context.closePath()
-            context.setFillColor(green(0.35))
-            context.setStrokeColor(green(0.9))
+            let solid = style == "solid"
+            context.setShadow(offset: .zero, blur: radius * 0.5, color: solid ? red(0.9) : green(0.9))
+            context.setFillColor(solid ? red(0.75) : green(0.35))
+            context.setStrokeColor(solid ? red(0.9) : green(0.9))
             context.setLineWidth(max(1.5, radius * 0.08))
             context.setLineJoin(.round)
             context.drawPath(using: .fillStroke)

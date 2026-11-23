@@ -51,6 +51,7 @@ nonisolated enum TimelineSplit {
               let end = pieces.tail.sourceEnd else { return nil }
         var head = pieces.head
         var tail = pieces.tail
+        tail.stayCut = true
         if precision == .speech { head.precision = .speech; tail.precision = .speech }
         document.videoTrack[index] = head
         document.videoTrack.insert(tail, at: index + 1)
@@ -77,12 +78,14 @@ nonisolated enum TimelineSplit {
         head.transOut = nil
         head.fadeOut = 0
         tail.uid = UUID()
+        tail.stayCut = false
         tail.startTime = at
         tail.sourceStart = cut
         tail.sourceEnd = playedEnd
         tail.duration = tailDuration
         tail.transIn = nil
         tail.fadeIn = 0
+        tail.flashIn = nil
         // A custom camera path counts from the clip's source start: each
         // piece keeps the part it plays, on its own clock.
         if let path = clip.cameraPath, path.count >= 2 {

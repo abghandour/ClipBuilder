@@ -20,6 +20,11 @@ nonisolated enum MiniWizardMemory {
         "mini.\(profileName).\(field.rawValue)"
     }
 
+    /// Drawing presentation is stored together, apart from the legacy scalar field catalog.
+    static func impactOptionsKey(profileName: String) -> String { "mini.\(profileName).impactOptions" }
+
+    static func drawingOptionsKey(profileName: String) -> String { "mini.\(profileName).drawingOptions" }
+
     static func field(forKey key: String, profileName: String) -> Field? {
         let prefix = "mini.\(profileName)."
         guard key.hasPrefix(prefix) else { return nil }

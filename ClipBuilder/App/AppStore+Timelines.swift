@@ -245,6 +245,8 @@ extension AppStore {
     struct TimelineSaveSnapshot {
         let version: UInt64
         let revision: Int
+        let dubAudioGeneration: Int
+        let forceDubAudio: Bool
         let runUUID: String?
         let runStatus: BuilderRunStatus?
         let document: TimelineDocument
@@ -260,11 +262,12 @@ extension AppStore {
         guard let database else { return }
         // Quit and timeline switches may flush a document autosave already
         // persisted. Do not submit that revision to the database CAS again.
-        guard builder.revision != builder.persistedRevision else { return }
+        guard builder.revision != builder.persistedRevision || builder.hasPendingDubAudioSave else { return }
         let key = TimelineSaveKey(database: ObjectIdentifier(database), id: id)
         timelineSaveVersion += 1
         pendingTimelineSaves[key] = TimelineSaveSnapshot(
             version: timelineSaveVersion, revision: builder.revision,
+            dubAudioGeneration: builder.dubAudioGeneration, forceDubAudio: builder.hasPendingDubAudioSave,
             runUUID: builder.scriptRunStatus?.uuid, runStatus: builder.scriptRunStatus?.status, document: document,
             thumbnailVideoID: knownVideoID(document.videoTrack.first?.sceneID
                 .flatMap { sceneID in builder.scenes.first(where: { $0.id == sceneID })?.videoID }))
@@ -274,19 +277,28 @@ extension AppStore {
         timelineSaveTasks[key] = Task {
             defer { timelineSaveTasks[key] = nil }
             var savedRevision: Int?
+            var savedDubAudioGeneration: Int?
             while let snapshot = pendingTimelineSaves.removeValue(forKey: key) {
                 // A second flush can arrive while the first write is suspended.
-                if snapshot.revision == savedRevision { continue }
+                if snapshot.revision == savedRevision && snapshot.dubAudioGeneration == savedDubAudioGeneration { continue }
                 do {
                     let json = try await Self.encodeTimeline(snapshot.document)
                     if let newer = pendingTimelineSaves[key], newer.version > snapshot.version { continue }
-                    try await database.saveTimelineRevision(id: id, documentJSON: json, revision: snapshot.revision,
-                                                           thumbnailVideoID: snapshot.thumbnailVideoID,
-                                                           runUUID: snapshot.runUUID, status: snapshot.runStatus)
+                    if snapshot.forceDubAudio,
+                       let row = try await database.fetchTimeline(id: id), row.documentRevision == snapshot.revision {
+                        try await database.saveRestoredDubAudio(id: id, lines: snapshot.document.dubLines ?? [],
+                            revision: snapshot.revision)
+                    } else {
+                        try await database.saveTimelineRevision(id: id, documentJSON: json, revision: snapshot.revision,
+                                                               thumbnailVideoID: snapshot.thumbnailVideoID,
+                                                               runUUID: snapshot.runUUID, status: snapshot.runStatus)
+                    }
                     savedRevision = snapshot.revision
+                    savedDubAudioGeneration = snapshot.dubAudioGeneration
                     timelineSaveFailures[key] = nil
                     if self.database === database, builder.timelineID == id {
                         builder.acknowledgePersistedRevision(snapshot.revision)
+                        builder.acknowledgeDubAudioSave(snapshot.dubAudioGeneration)
                     }
                     let row = try await database.fetchTimeline(id: id)
                     guard self.database === database, let row,
@@ -433,7 +445,7 @@ extension AppStore {
                          status: status, baselineRevision: session.baselineRevision, appliedRevision: appliedRevision)
     }
 
-    private func drainTimelineSaves(database: Database, id: Int64) async throws {
+    func drainTimelineSaves(database: Database, id: Int64) async throws {
         let key = TimelineSaveKey(database: ObjectIdentifier(database), id: id)
         if self.database === database, builder.timelineID == id { builder.flushPendingAutosave() }
         while let task = timelineSaveTasks[key] {
@@ -571,7 +583,21 @@ extension AppStore {
         isBuilderPreviewRendering = true
         defer { isBuilderPreviewRendering = false }
         let window = Self.exactPreviewRange(from: playhead, seconds: seconds, totalDuration: builder.totalDuration)
-        var document = MultitrackRenderer.windowed(builder.document, from: window.lowerBound, to: window.upperBound)
+        let transitions = (activeProfile.editing ?? ProfileEditingDefaults(seedingFrom: SettingsStore.loadSettings())).transitions
+        let dubState = DubRenderWindow.state(document: builder.document)
+        let renderWindow = RenderContext.$transitions.withValue(transitions) {
+            MultitrackRenderer.windowed(builder.document, scenes: builder.scenes, centerStageCamera: WizardDefaults.fallbackFramingCamera,
+                from: window.lowerBound, to: window.upperBound)
+        }
+        var document = renderWindow.document
+        if builder.document.dubLines?.isEmpty == false {
+            document.dubLines = RenderContext.$transitions.withValue(transitions) {
+                let clock = DubRenderWindow.clock(document: builder.document, window: document,
+                    scenes: builder.scenes, camera: WizardDefaults.fallbackFramingCamera, lower: window.lowerBound)
+                return DubRenderWindow.lines(builder.document, clock: clock,
+                    lower: window.lowerBound, upper: window.upperBound)
+            }
+        }
         // The Speech Polish audition renders the unpolished mix and polishes it itself.
         if withoutSpeechPolish { document.renderSettings.speechPolish = nil }
         appendLog(\.builderLog, ["— Exact preview: rendering \(window.lowerBound.timecode)–\(window.upperBound.timecode) (\(document.videoTrack.count) clip(s)) —"], channel: "builder-preview")
@@ -584,7 +610,10 @@ extension AppStore {
                 try await renderer.render(document: document, scenes: scenes,
                                           profile: profile, database: database,
                                           centerStageCamera: WizardDefaults.fallbackFramingCamera,
-                                          preview: true, emit: logSink(\.builderLog, channel: "builder-preview"))
+                                          preview: true, lingering: renderWindow.lingering, lingerHolds: renderWindow.lingerHolds,
+                                          continuity: renderWindow.continuity, stayTransitions: renderWindow.stayTransitions,
+                                          dubState: dubState,
+                                          emit: logSink(\.builderLog, channel: "builder-preview"))
             }
             appendLog(\.builderLog, ["Exact preview ready: \(result.duration.timecode)"], channel: "builder-preview")
             return result.url
@@ -604,6 +633,7 @@ extension AppStore {
     /// the next one is rendered ahead, so playback continues past the first
     /// slice whenever the following one is ready. Nothing enters the Library.
     func startBuilderPreview(from time: Double? = nil) {
+        builder.claimPlayback(.exact)
         stopBuilderPreview()
         guard !builder.document.videoTrack.isEmpty else { presentError("Add clips to the timeline first."); return }
         guard !isBuilderRendering else { presentError("Wait for the render to Exports to finish."); return }
@@ -766,12 +796,12 @@ extension AppStore {
     private func builderPreviewKey(for window: ClosedRange<Double>) -> String? {
         Self.builderPreviewKey(document: builder.document, scenes: builder.scenes, profile: activeProfile,
                                camera: WizardDefaults.fallbackFramingCamera, window: window,
-                               strikeRevision: strikeHighlightRevision)
+                               strikeRevision: strikeHighlightRevision, drawingRevision: telestrationRevision)
     }
 
     nonisolated static func builderPreviewKey(document: TimelineDocument, scenes: [SceneRecord], profile: BrandProfile,
                                               camera: String, window: ClosedRange<Double>,
-                                              strikeRevision: Int = 0) -> String? {
+                                              strikeRevision: Int = 0, drawingRevision: Int = 0) -> String? {
         struct SceneFacts: Encodable {
             var id: Int64; var videoPath: String; var startTime: Double; var endTime: Double
             var centerStagePathJSON: String?; var cropXFrac: Double?; var freeCropsJSON: String?; var wide: Bool
@@ -789,19 +819,46 @@ extension AppStore {
             /// Only for a window that draws strike highlights: they come
             /// from the database, not the document.
             var strikes: Int?
+            var drawings: Int?
+            var lingering: [Telestration?]?
+            var stayHolds: [MultitrackRenderer.ResolvedClip?]?
+            var continuity: [CenterStageContinuity.Run]?
+            var stayTransitions: [Double?]?
+            var dubWindow: DubRenderWindow.Evidence?
         }
-        let windowed = MultitrackRenderer.windowed(document, from: window.lowerBound, to: window.upperBound)
+        let transitions = (profile.editing ?? ProfileEditingDefaults(seedingFrom: SettingsStore.loadSettings())).transitions
+        let renderWindow = RenderContext.$transitions.withValue(transitions) {
+            MultitrackRenderer.windowed(document, scenes: scenes, centerStageCamera: camera, from: window.lowerBound, to: window.upperBound)
+        }
+        var windowed = renderWindow.document
+        let dubClock = RenderContext.$transitions.withValue(transitions) {
+            DubRenderWindow.clock(document: document, window: windowed, scenes: scenes,
+                camera: camera, lower: window.lowerBound)
+        }
+        windowed.dubLines = DubRenderWindow.lines(document, clock: dubClock,
+            lower: window.lowerBound, upper: window.upperBound)
+        let clips = MultitrackRenderer.resolveClips(document: windowed, scenes: scenes, lingering: renderWindow.lingering, lingerHolds: renderWindow.lingerHolds)
         let used = Set(windowed.videoTrack.compactMap(\.sceneID))
         let facts = scenes.filter { used.contains($0.id) }.sorted { $0.id < $1.id }.map {
             SceneFacts(id: $0.id, videoPath: $0.videoPath, startTime: $0.startTime, endTime: $0.endTime,
                        centerStagePathJSON: $0.centerStagePathJSON, cropXFrac: $0.cropXFrac,
                        freeCropsJSON: $0.freeCropsJSON, wide: $0.wide)
         }
-        let evidence = Evidence(document: windowed, clips: MultitrackRenderer.resolveClips(document: windowed, scenes: scenes),
+        let evidence = Evidence(document: windowed, clips: clips,
                                 scenes: facts, profile: profile, camera: camera,
                                 seconds: window.upperBound - window.lowerBound,
-                                strikes: windowed.videoTrack.contains { $0.strikeHighlights == true } ? strikeRevision : nil)
-        return try? RenderSegmentCache.key(evidence, version: "builder-preview-slice-v1")
+                                strikes: windowed.videoTrack.contains { $0.strikeHighlights == true } ? strikeRevision : nil,
+                                drawings: windowed.videoTrack.contains { $0.telestration != nil } ? drawingRevision : nil,
+                                lingering: TelestrationLingerResolution.cacheEvidence(clips),
+                                stayHolds: TelestrationLingerResolution.holdEvidence(clips),
+                                continuity: renderWindow.continuity.isEmpty ? nil : renderWindow.continuity,
+                                stayTransitions: renderWindow.stayTransitions.isEmpty ? nil : windowed.videoTrack.map { clip in
+                                    let holdID = renderWindow.lingerHolds[clip.uid]?.stayHoldID
+                                    return renderWindow.stayTransitions[clip.uid]
+                                        ?? holdID.flatMap { renderWindow.stayTransitions[$0] }
+                                }, dubWindow: DubRenderWindow.evidence(document: document, clock: dubClock,
+                                    lower: window.lowerBound, upper: window.upperBound))
+        return try? RenderSegmentCache.key(evidence, version: "builder-preview-slice-v3-vip-paths")
     }
 
     /// The preview window: `seconds` from the playhead, pulled back so it
@@ -928,6 +985,33 @@ extension AppStore {
             appendLog(\.wizardLog, ["Exact preview failed: \(error.userMessage)"])
             presentError("Exact preview failed", error)
             return nil
+        }
+    }
+}
+
+// Metadata hydration is a same-revision write, serialized by the ordinary
+// save queue. Patch only the restored fields; never replace another editor's
+// document or weaken the normal autosave/Wizard revision CAS.
+extension Database {
+    func saveRestoredDubAudio(id: Int64, lines: [DubLine], revision: Int) throws {
+        try connection.transaction {
+            guard let row = try fetchTimeline(id: id), row.documentRevision == revision,
+                  let data = row.documentJSON.data(using: .utf8) else { throw ApplyFailure.staleRevision }
+            var document = try JSONDecoder().decode(TimelineDocument.self, from: data)
+            let restored = Dictionary(lines.map { ($0.id, $0) }, uniquingKeysWith: { _, last in last })
+            document.dubLines = document.dubLines?.map { original in
+                guard let value = restored[original.id] else { return original }
+                var line = original
+                line.audio = value.audio
+                line.duration = value.duration
+                line.takeID = value.takeID
+                return line
+            }
+            let json = String(decoding: try JSONEncoder().encode(document), as: UTF8.self)
+            try connection.execute("""
+                UPDATE timelines SET document_json = ?, edited_at = datetime('now')
+                WHERE id = ? AND document_revision = ?
+                """, [.text(json), .integer(id), .integer(Int64(revision))])
         }
     }
 }

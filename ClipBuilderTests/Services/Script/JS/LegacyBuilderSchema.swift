@@ -180,6 +180,8 @@ enum LegacyBuilderSchema {
             ("set_cutaway_cover_all", ["clip", "cover_all"], ["clip", "cover_all"]),
             ("set_clip_strike_highlights", ["clip", "enabled"], ["clip", "enabled"]),
             ("freeze_clip_on_impacts", ["clip", "hold"], ["clip"]),
+            ("slow_clip_into_impacts", ["clip", "strength"], ["clip"]),
+            ("remove_clip_slow_motion", ["clip"], ["clip"]),
             ("duplicate_clip", ["clip"], ["clip"]),
             ("set_track_sequential", ["track", "sequential"], ["track", "sequential"]),
             ("add_crop_block", ["layout", "at", "duration"], ["layout"]),
@@ -209,6 +211,9 @@ enum LegacyBuilderSchema {
             if ["set_crop_block_duration", "add_overlay"].contains(op) { properties["duration"] = bounded(0.5, 86400) }
             if ["split_crop_block", "add_overlay"].contains(op) { properties["at"] = bounded(0, 86400) }
             if op == "set_clip_speed" { properties["speed"] = bounded(0.5, 2) }
+            if op == "slow_clip_into_impacts" {
+                properties["strength"] = .object(["enum": .array([.string("subtle"), .string("medium"), .string("strong")])])
+            }
             if op == "freeze_clip_on_impacts" {
                 properties["hold"] = bounded(StrikeFreezeRules.holdRange.lowerBound, StrikeFreezeRules.holdRange.upperBound)
             }

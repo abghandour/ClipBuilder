@@ -10,6 +10,7 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
     var pacing = EditPacing()
     var dub: DubSettings?
     var dubLines: [DubLine]?
+    var slowMotion: TimelineSlowState?
     var videoTrack: [TimelineClip] = []
     var soundTrack: [SoundItem] = []
     var textOverlays: [TextOverlayItem] = []
@@ -101,6 +102,7 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         case renderSettings = "render_settings"
         case pacing, dub
         case dubLines = "dub_lines"
+        case slowMotion = "slow_motion"
         case videoTrack = "video_track"
         case soundTrack = "sound_track"
         case textOverlays = "text_overlays"
@@ -131,6 +133,7 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         pacing = try container.decodeIfPresent(EditPacing.self, forKey: .pacing) ?? EditPacing()
         dub = try container.decodeIfPresent(DubSettings.self, forKey: .dub)
         dubLines = try container.decodeIfPresent([DubLine].self, forKey: .dubLines)
+        slowMotion = try container.decodeIfPresent(TimelineSlowState.self, forKey: .slowMotion)
         videoTrack = try container.decodeIfPresent([TimelineClip].self, forKey: .videoTrack) ?? []
         soundTrack = try container.decodeIfPresent([SoundItem].self, forKey: .soundTrack) ?? []
         textOverlays = try container.decodeIfPresent([TextOverlayItem].self, forKey: .textOverlays) ?? []
@@ -162,6 +165,9 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         brandLayerStage = try container.decodeIfPresent(String.self, forKey: .brandLayerStage)
         framingCamera = try container.decodeIfPresent(String.self, forKey: .framingCamera)
         musicMix = try container.decodeIfPresent(String.self, forKey: .musicMix)
+        slowMotion?.lanes?.restoreIDs()
+        slowMotion?.appliedLanes?.restoreIDs()
+        if let lanes = slowMotion?.appliedLanes { lanes.restoreIDs(in: &self) }
     }
 
     /// Flatten overlay blocks into concrete text/image items (for rendering
@@ -437,10 +443,11 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         if let lines = dubLines {
             // A line moves with its footage and stays owned by the piece it
             // now starts in; a line whose speech was cut goes with it.
+            let freezes = DubFreezes.intervals(in: self)
             let surviving = Dictionary(document.videoTrack.map { ($0.uid, $0) }, uniquingKeysWith: { first, _ in first })
             document.dubLines = lines.compactMap { line in
                 let start = map.time(line.start)
-                if map.isRemoved(line.start), map.time(line.start + line.duration) - start < minimumPiece { return nil }
+                if map.isRemoved(line.start), map.time(line.start + line.timelineDuration(freezes: freezes)) - start < minimumPiece { return nil }
                 var moved = line
                 moved.start = start
                 if let parts = replacements[line.clipUID] {
@@ -896,7 +903,7 @@ nonisolated struct EffectSpec: Codable, Sendable, Equatable {
 /// video_file/start/end triple — the same dual form the web serializer emits
 /// (a trimmed scene clip loses its id so the Python side renders the trim).
 nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
-    /// SwiftUI identity only — never encoded.
+    /// Grouped holds persist their identity so their pause owner survives reload.
     var uid = UUID()
 
     var bumper: Bool = false
@@ -1008,13 +1015,28 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
     /// Playback speed (nil = 1×). 0.5 = slow motion; `duration` is screen
     /// time, so the source span consumed is duration × speed.
     var speed: Double?
-    /// Draw the saved strike highlights (attacking limb in green, impact in
-    /// red) on this clip when it is rendered. nil = off.
+    /// Draw saved strike highlights on this clip when rendered. nil = off.
     var strikeHighlights: Bool?
+    /// nil/outline keeps the green outline; solid fills an HD contour in red.
+    var strikeHighlightStyle: String?
     /// This piece already belongs to a Freeze on Impacts edit, including a capped tail.
     var strikeImpactsFrozen: Bool?
+    /// Animation on this held source frame; absent in older documents.
+    var telestration: Telestration?
     /// One source frame, held for `duration` seconds of screen time.
+    /// White flash at the first frame, clearing over this many screen seconds.
+    var flashIn: Double?
+    /// A reel cut split for slow motion or a flash: assembled on the planned clock.
+    var timedAssembly: Bool?
     var hold: Bool?
+    /// Builder pause identity: the uid of the owner's hold, nil for legacy holds.
+    var pauseGroup: UUID?
+    /// Every picture slowed for one contact shares this identity.
+    var slowGroup: UUID?
+    /// Original identity across automatic slow/flash splits, including normal-speed pieces.
+    var slowLineage: UUID?
+    /// True for a user cut, false for an automatic split; nil in older documents.
+    var stayCut: Bool?
 
     /// Full duration of the referenced scene — editor state used to decide
     /// whether the clip is trimmed. Never encoded; refilled on hydration.
@@ -1128,9 +1150,18 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         case framingRequest = "framing_request"
         case framingProgramAudio = "framing_program_audio"
         case speed
+        case strikeHighlightStyle = "strike_highlight_style"
         case strikeHighlights = "strike_highlights"
         case strikeImpactsFrozen = "strike_impacts_frozen"
+        case telestration
         case hold
+        case flashIn = "flash_in"
+        case timedAssembly = "timed_assembly"
+        case pauseGroup = "pause_group"
+        case slowGroup = "slow_group"
+        case slowLineage = "slow_lineage"
+        case stayCut = "stay_cut"
+        case uid
         case provenance
         case contentWindow = "content_window"
     }
@@ -1182,9 +1213,18 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             cameraPathSource = try container.decodeIfPresent(String.self, forKey: .cameraPathSource)
         }
         speed = try container.decodeIfPresent(Double.self, forKey: .speed)
+        strikeHighlightStyle = try container.decodeIfPresent(String.self, forKey: .strikeHighlightStyle)
         strikeHighlights = try container.decodeIfPresent(Bool.self, forKey: .strikeHighlights)
         strikeImpactsFrozen = try container.decodeIfPresent(Bool.self, forKey: .strikeImpactsFrozen)
+        telestration = try container.decodeIfPresent(Telestration.self, forKey: .telestration)
+        flashIn = try container.decodeIfPresent(Double.self, forKey: .flashIn)
+        timedAssembly = try container.decodeIfPresent(Bool.self, forKey: .timedAssembly)
         hold = try container.decodeIfPresent(Bool.self, forKey: .hold)
+        pauseGroup = try container.decodeIfPresent(UUID.self, forKey: .pauseGroup)
+        slowGroup = try container.decodeIfPresent(UUID.self, forKey: .slowGroup)
+        slowLineage = try container.decodeIfPresent(UUID.self, forKey: .slowLineage)
+        stayCut = try container.decodeIfPresent(Bool.self, forKey: .stayCut)
+        if pauseGroup != nil || slowGroup != nil || slowLineage != nil { uid = try container.decodeIfPresent(UUID.self, forKey: .uid) ?? uid }
         if hold == true { sourceEnd = sourceStart; speed = nil }
         provenance = try container.decodeIfPresent(StoryProvenance.self, forKey: .provenance)
         contentWindow = try container.decodeIfPresent(FreeCropRect.self, forKey: .contentWindow)
@@ -1262,8 +1302,17 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             try container.encodeIfPresent(cameraPathSource, forKey: .cameraPathSource)
         }
         try encodeOrNull(hold == true ? nil : speed, in: &container, forKey: .speed)
+        try container.encodeIfPresent(strikeHighlightStyle, forKey: .strikeHighlightStyle)
         if strikeHighlights == true { try container.encode(true, forKey: .strikeHighlights) }
         if strikeImpactsFrozen == true { try container.encode(true, forKey: .strikeImpactsFrozen) }
+        try container.encodeIfPresent(flashIn, forKey: .flashIn)
+        if timedAssembly == true { try container.encode(true, forKey: .timedAssembly) }
+        try container.encodeIfPresent(telestration, forKey: .telestration)
+        try container.encodeIfPresent(pauseGroup, forKey: .pauseGroup)
+        try container.encodeIfPresent(slowGroup, forKey: .slowGroup)
+        try container.encodeIfPresent(slowLineage, forKey: .slowLineage)
+        try container.encodeIfPresent(stayCut, forKey: .stayCut)
+        if pauseGroup != nil || slowGroup != nil || slowLineage != nil { try container.encode(uid, forKey: .uid) }
         if hold == true {
             try container.encode(true, forKey: .hold)
             try container.encode(duration, forKey: .duration)
@@ -1287,6 +1336,17 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
         } else if let sceneID {
             try container.encode(sceneID, forKey: .sceneID)
         }
+        if slowLineage != nil {
+            // Persist the actual edited extent, even on an untrimmed scene.
+            // Remove must survive saving without consulting stale snapshots.
+            try container.encodeIfPresent(sceneID, forKey: .sceneID)
+            try container.encodeIfPresent(videoFile, forKey: .videoFile)
+            try container.encodeIfPresent(sourceStart, forKey: .sourceStart)
+            try container.encodeIfPresent(sourceEnd, forKey: .sourceEnd)
+            try container.encode(duration, forKey: .duration)
+            if fadeIn > 0 { try container.encode(fadeIn, forKey: .fadeIn) }
+            if fadeOut > 0 { try container.encode(fadeOut, forKey: .fadeOut) }
+        }
     }
 
     static func == (lhs: TimelineClip, rhs: TimelineClip) -> Bool {
@@ -1299,8 +1359,16 @@ nonisolated struct TimelineClip: Codable, Sendable, Equatable, Identifiable {
             && lhs.stackOrder == rhs.stackOrder && lhs.volume == rhs.volume && lhs.muted == rhs.muted
             && lhs.position == rhs.position && lhs.transIn == rhs.transIn && lhs.transOut == rhs.transOut
             && lhs.centerStage == rhs.centerStage && lhs.speed == rhs.speed
+            && lhs.strikeHighlightStyle == rhs.strikeHighlightStyle
             && lhs.strikeHighlights == rhs.strikeHighlights && lhs.hold == rhs.hold
+            && lhs.flashIn == rhs.flashIn
+            && lhs.timedAssembly == rhs.timedAssembly
+            && lhs.pauseGroup == rhs.pauseGroup
+            && lhs.slowGroup == rhs.slowGroup
+            && lhs.slowLineage == rhs.slowLineage
+            && lhs.stayCut == rhs.stayCut
             && lhs.strikeImpactsFrozen == rhs.strikeImpactsFrozen
+            && lhs.telestration == rhs.telestration
             && lhs.effect == rhs.effect && lhs.cropXFrac == rhs.cropXFrac && lhs.freeCrops == rhs.freeCrops && lhs.captions == rhs.captions
             && lhs.screenCrop == rhs.screenCrop && lhs.areaWindow == rhs.areaWindow && lhs.areaRegion == rhs.areaRegion
             && lhs.areaFocus == rhs.areaFocus && lhs.framingPlan == rhs.framingPlan

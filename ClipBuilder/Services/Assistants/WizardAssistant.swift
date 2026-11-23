@@ -162,8 +162,12 @@ nonisolated struct WizardAssistant: PageAssistant {
         var branding: String?
         var format: String?
         var strikeStats = false
+        var drawnPauses: Bool?
+        var strikeHighlightStyle: String?
         var strikeHighlights = false
         var strikeImpactFreeze: Double?
+        var strikeSlowMotion: String?
+        var strikeFlash: Bool?
         var fightResearch = true
         var favoritesOnly = false
         var people: [String] = []
@@ -227,6 +231,8 @@ nonisolated struct WizardAssistant: PageAssistant {
             if let value, !value.isEmpty { facts.append(AssistantFact(key, label, value)) }
         }
         if m.actionOverlays == true { add("actionOverlays", "Action overlays", AssistantContext.on) }
+        if m.slowIntoContact == true { add("slowIntoContactStrength", "Slow motion into contact", m.resolvedSlowIntoContactStrength) }
+        if m.flashOnContact == true { add("flashOnContact", "Flash on contact", "On") }
         if m.pauseOnContact == true { add("pauseOnContactSeconds", "Pause on contact (s)", String(m.resolvedPauseOnContactSeconds)) }
         if m.captions {
             add("captionStyle", "Caption style", captionStyleName ?? m.captionStyleID)
@@ -305,6 +311,8 @@ nonisolated struct WizardAssistant: PageAssistant {
         }
         if p.strikeStats { add("strikeStats", "Strike stats", AssistantContext.on) }
         if p.strikeHighlights { add("strikeHighlights", "Highlight strikes", AssistantContext.on) }
+        if let strength = p.strikeSlowMotion { add("strikeSlowMotion", "Slow motion into contact", strength) }
+        if p.strikeFlash == true { add("strikeFlash", "Flash on contact", "On") }
         if let seconds = p.strikeImpactFreeze, seconds > 0 { add("strikeImpactFreeze", "Pause on contact (s)", String(seconds)) }
         if !p.fightResearch { add("fightResearch", "Fight research", AssistantContext.off) }
         if p.favoritesOnly { add("favoritesOnly", "Favorite scenes only", AssistantContext.on) }

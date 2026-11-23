@@ -26,7 +26,8 @@ nonisolated enum TranscriptWordAlignment {
                 let unchanged = word.word.trimmingCharacters(in: .whitespacesAndNewlines) == tokens[j]
                 result.append(.init(word: tokens[j], start: lower, end: finish,
                                     confidence: unchanged ? word.confidence : nil,
-                                    suggestion: unchanged ? word.suggestion : nil))
+                                    suggestion: unchanged ? word.suggestion : nil,
+                                    emphasis: unchanged ? word.emphasis : nil))
                 cursor = finish
                 j += 1
             } else {

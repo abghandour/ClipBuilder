@@ -133,13 +133,21 @@ nonisolated struct BumperPlanner {
                 var tail = clip
                 tail.uid = UUID()
                 let consumed = time - clip.startTime
-                tail.sourceStart = (clip.sourceStart ?? 0) + consumed * clip.effectiveSpeed
+                if clip.hold == true {
+                    // A freeze stays on its frame, and its drawing carries on
+                    // after the bumper from where the head left it.
+                    if tail.telestration != nil {
+                        tail.telestration?.offset = (clip.telestration?.offset ?? 0) + consumed
+                    }
+                } else {
+                    tail.sourceStart = (clip.sourceStart ?? 0) + consumed * clip.effectiveSpeed
+                }
                 tail.startTime = time + duration
                 tail.duration -= consumed
                 tail.transIn = nil
                 // The camera path runs from the clip's source start: the tail
                 // continues it from the split instead of replaying it.
-                if let path = clip.cameraPath {
+                if clip.hold != true, let path = clip.cameraPath {
                     let sliced = CenterStageService.slice(path, from: consumed * clip.effectiveSpeed,
                                                           duration: tail.duration * clip.effectiveSpeed)
                     tail.cameraPath = sliced.count >= 2 ? sliced : nil
@@ -150,7 +158,7 @@ nonisolated struct BumperPlanner {
                 tail.fadeIn = 0
                 clip.fadeOut = 0
                 clip.duration = consumed
-                clip.sourceEnd = (clip.sourceStart ?? 0) + clip.sourceSpan
+                if clip.hold != true { clip.sourceEnd = (clip.sourceStart ?? 0) + clip.sourceSpan }
                 clip.transOut = nil
                 clips.append(tail)
             }

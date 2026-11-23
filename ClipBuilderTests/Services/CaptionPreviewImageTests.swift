@@ -36,7 +36,7 @@ extension CaptionPreviewImageTests {
         style.highlightColor = "#ff0000"
         style.emphasis = "scale"
         let states = try CaptionPreviewImage.wordStates(style: style)
-        #expect(states.map(\.kind) == [.text, .highlight, .emphasis])
+        #expect(states.map(\.kind) == [.text, .highlight, .emphasis, .emphasis2])
         for state in states {
             #expect(!state.image.data.isEmpty)
             #expect(state.image.size.width > 0 && state.image.size.height > 0)

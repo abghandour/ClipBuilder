@@ -11,9 +11,92 @@ actor RenderSegmentCache {
     // v6 uses half-open caption windows at page boundaries.
     // v7 folds Express burn-ins/mute and feed paths into the segment graph.
     // v8 preserves muted AAC, validates saved paths, and grades the whole composite.
-    nonisolated static let rendererVersion = "multitrack-segment-v14-pause-clock"
+    nonisolated static let rendererVersion = "multitrack-segment-v16-vip-paths"
     private let root: URL?
     private let byteLimit: Int64
+    private var continuousPaths: [String: Task<CenterStageContinuity.Outcome, Error>] = [:]
+    private var continuousFailures: [String: CenterStageContinuity.Outcome] = [:]
+    private var continuousFailureOrder: [String] = []
+    private func rememberFailure(_ outcome: CenterStageContinuity.Outcome, key: String) {
+        guard !Task.isCancelled else { return }
+        if continuousFailures[key] == nil {
+            if continuousFailureOrder.count == 256 {
+                continuousFailures.removeValue(forKey: continuousFailureOrder.removeFirst())
+            }
+            continuousFailureOrder.append(key)
+        }
+        continuousFailures[key] = outcome
+    }
+
+    /// Renders waiting on each shared analysis, and how many of them were cancelled.
+    private var continuousWaiters: [Task<CenterStageContinuity.Outcome, Error>: (waiting: Int, cancelled: Int)] = [:]
+
+    /// The shared analysis outlives one cancelled waiter, but stops once
+    /// nobody is left to use it. A cancelled producer throws and caches nothing.
+    private func waiterCancelled(_ pending: Task<CenterStageContinuity.Outcome, Error>) {
+        guard var count = continuousWaiters[pending] else { return }
+        count.cancelled += 1
+        continuousWaiters[pending] = count
+        if count.cancelled >= count.waiting {
+            pending.cancel()
+            // A render starting now must not join the analysis that was just stopped.
+            for (key, task) in continuousPaths where task == pending { continuousPaths[key] = nil }
+            CenterStageContinuity.unionCancellationObserver?()
+        }
+    }
+
+    private func awaitContinuous(_ pending: Task<CenterStageContinuity.Outcome, Error>)
+        async throws -> CenterStageContinuity.Outcome {
+        continuousWaiters[pending, default: (0, 0)].waiting += 1
+        // Counts are per task and only ever cancel that task, so a late
+        // cancellation notice cannot reach a newer analysis of the same key.
+        defer {
+            if var count = continuousWaiters[pending] {
+                count.waiting -= 1
+                continuousWaiters[pending] = count.waiting <= 0 ? nil : count
+            }
+        }
+        return try await withTaskCancellationHandler {
+            try await pending.value
+        } onCancel: {
+            Task { await self.waiterCancelled(pending) }
+        }
+    }
+
+    /// Unstructured tasks inherit render settings/test evidence, but not a
+    /// waiter's cancellation. Publish before awaiting so concurrent previews
+    /// and exports cannot both miss the same union. The producer owns caching.
+    func continuousPath(key: String, cacheEnabled: Bool,
+                        produce: @escaping @Sendable () async throws -> CenterStageContinuity.Outcome)
+        async throws -> (outcome: CenterStageContinuity.Outcome, reused: Bool) {
+        try Task.checkCancellation()
+        CenterStageContinuity.unionRequestObserver?()
+        if let pending = continuousPaths[key] {
+            let outcome = try await awaitContinuous(pending)
+            try Task.checkCancellation()
+            return (outcome, true)
+        }
+        if cacheEnabled, let failed = continuousFailures[key] { return (failed, true) }
+        if cacheEnabled, let cached = readJSON(CenterStageContinuity.Outcome.self, key: key), cached.path != nil {
+            return (cached, true)
+        }
+        let pending = Task {
+            let outcome = try await produce()
+            try Task.checkCancellation()
+            if cacheEnabled, outcome.cacheable != false {
+                // "Nobody to follow" cannot always be told from a tracker that
+                // failed quietly, so a failure is remembered for this launch
+                // only; a path is kept on disk.
+                if outcome.path == nil { self.rememberFailure(outcome, key: key) } else { self.storeJSON(outcome, key: key) }
+            }
+            return outcome
+        }
+        continuousPaths[key] = pending
+        defer { if continuousPaths[key] == pending { continuousPaths[key] = nil } }
+        let outcome = try await awaitContinuous(pending)
+        try Task.checkCancellation()
+        return (outcome, false)
+    }
 
     init(directory: URL? = nil, byteLimit: Int64 = 2 * 1024 * 1024 * 1024) {
         root = directory
@@ -82,7 +165,6 @@ actor RenderSegmentCache {
         store([Entry(key: key, source: source)])
     }
 
-    /// Called only after the entire render (including persistence) succeeded.
     /// Publish a batch without actor suspension; roll back newly added entries
     /// if cancellation arrives during copying. Readers never see partial files.
     func store(_ entries: [Entry]) {
@@ -156,4 +238,10 @@ nonisolated struct RenderSegmentKey: Encodable, Sendable {
     /// Wizard brand layers drawn in their own stage, and whether below cutaways.
     var brandLayers: [MultitrackRenderer.CaptionOverlay]? = nil
     var brandUnderCutaways: Bool? = nil
+    var lingering: [Telestration?]? = nil
+    var screenStays: [TelestrationScreenStay.Mapping?]? = nil
+    var stayTransitions: [Double?]? = nil
+    var fixedStayFlash: Bool? = nil
+    /// Speeds under 0.5 used to get audio clamped at 0.5; segments cached then must not be reused.
+    var slowAudio: Bool? = nil
 }

@@ -180,6 +180,10 @@ struct RangeReviewView<Footer: View>: View {
         return parent.children.first { $0.id == selectedID } ?? parent.children.first ?? parent
     }
     private var video: VideoRecord? { selected?.video }
+    /// The selected clip when it can be drawn on: fight footage only.
+    private var drawTarget: RangeReviewItem? {
+        selected.flatMap { !$0.isDraft && $0.video.type == .fight ? $0 : nil }
+    }
     /// The recording whose transcript shows even while nothing is selected.
     private var contextVideo: VideoRecord? { video ?? items.first?.video }
     private var range: ClosedRange<Double>? { selected?.range }
@@ -777,7 +781,7 @@ struct RangeReviewView<Footer: View>: View {
             }
             // The list's toolbar: Play All at the leading edge, Select All or
             // Remove All at the trailing edge, level with the transcript's footer.
-            if playAll || onDeleteAll != nil || kept != nil {
+            if playAll || onDeleteAll != nil || kept != nil || drawTarget != nil {
                 HStack(spacing: Theme.spaceS) {
                     if playAll {
                         let playsCuts = RangeReviewPlayAll.playsCuts(items: items, selectedOwnerID: selectedID?.ownerID)
@@ -794,6 +798,14 @@ struct RangeReviewView<Footer: View>: View {
                               : kept != nil ? "Play the kept items in order, or every item when none is kept"
                               : "Play every item in order")
                         .accessibilityLabel(playingAll ? "Stop" : playsSelected ? "Play the selection" : "Play all")
+                    }
+                    // A new drawing on the selected clip. Rows show the pencil
+                    // only where a drawing already exists.
+                    if let item = drawTarget {
+                        TelestrationRowMenu(videoID: item.video.id, videoURL: item.video.url, range: item.range,
+                            areaName: item.drawingCompanions.first?.mainAreaName,
+                            companions: item.drawingCompanions, style: .toolbar)
+                            .disabled(!isEnabled)
                     }
                     Spacer(minLength: 0)
                     if let onLink {
@@ -1026,115 +1038,125 @@ struct RangeReviewView<Footer: View>: View {
 
     private func itemRow(_ item: RangeReviewItem) -> some View {
         let isChild = item.id.cutIndex != nil
-        return ZStack(alignment: .topLeading) {
-            // Clicking the selected row clears the selection.
-            Button {
-                if highlight(item) { return }
-                highlighted = []
-                if selectedID == item.id {
-                    selectedID = nil
-                    userCleared = true
-                } else {
-                    selectedID = item.id
-                    userCleared = false
+        return VStack(alignment: .trailing, spacing: 0) {
+            ZStack(alignment: .topLeading) {
+                // Clicking the selected row clears the selection.
+                Button {
+                    if highlight(item) { return }
+                    highlighted = []
+                    if selectedID == item.id {
+                        selectedID = nil
+                        userCleared = true
+                    } else {
+                        selectedID = item.id
+                        userCleared = false
+                    }
+                } label: {
+                    VStack(alignment: .leading, spacing: 4) {
+                        HStack(alignment: .firstTextBaseline, spacing: 6) {
+                            if let badge = item.badge {
+                                // The passage's number, as on its words in the transcript.
+                                Text("\(badge)")
+                                    .font(.caption2.weight(.bold)).monospacedDigit()
+                                    .foregroundStyle(.white)
+                                    .lineLimit(1).fixedSize()
+                                    .frame(minWidth: 16, minHeight: 16)
+                                    .padding(.horizontal, badge > 9 ? 3 : 0)
+                                    .background(Color.accentColor, in: Capsule())
+                                    .accessibilityLabel("Passage \(badge)")
+                            }
+                            Text(item.title)
+                                .font(.callout.weight(.medium)).italic(item.isDraft)
+                                .foregroundStyle(item.isDraft ? Color.secondary : Color.primary)
+                                .lineLimit(item.titleLines == 0 ? nil : item.titleLines).truncationMode(.tail)
+                                .fixedSize(horizontal: false, vertical: true)
+                                .help(item.titleHelp)
+                        }
+                        ForEach(item.captions.indices, id: \.self) { index in
+                            let caption = item.captions[index]
+                            Group {
+                                if caption.monospaced { FormCaption(caption.text).monospacedDigit() }
+                                else { FormCaption(caption.text) }
+                            }
+                            .lineLimit(caption.lineLimit).help(caption.text)
+                        }
+                        if !item.isDraft {
+                            StrikeClipStatusLine(status: strikeStatuses[item.id.ownerID], fallback: strikeStatusFallback,
+                                symbol: strikeStatuses[item.id.ownerID]?.symbol ?? "viewfinder")
+                        }
+                    }
+                    // A keep box is 18 wide at 8 in; the text starts 5 past it.
+                    .padding(.leading, (isChild ? 0 : kept != nil ? 15 : 0) + (item.isDraft ? 0 : RangeReviewPalette.barWidth + Theme.spaceXS))
+                    // Room for the pencil (and its count), then unlink and delete.
+                    .padding(.trailing, (item.isDraft ? 0 : 36) + (onDelete != nil && !item.isDraft && !isChild
+                             ? (onUnlink != nil && !item.children.isEmpty ? 56 : 30) : 0))
+                    .frame(maxWidth: .infinity, alignment: .leading)
+                    .padding(.vertical, Theme.spaceS)
+                    .padding(.horizontal, Theme.spaceS)
+                    .contentShape(Rectangle())
                 }
-            } label: {
-                VStack(alignment: .leading, spacing: 4) {
-                    HStack(alignment: .firstTextBaseline, spacing: 6) {
-                        if let badge = item.badge {
-                            // The passage's number, as on its words in the transcript.
-                            Text("\(badge)")
-                                .font(.caption2.weight(.bold)).monospacedDigit()
-                                .foregroundStyle(.white)
-                                .lineLimit(1).fixedSize()
-                                .frame(minWidth: 16, minHeight: 16)
-                                .padding(.horizontal, badge > 9 ? 3 : 0)
-                                .background(Color.accentColor, in: Capsule())
-                                .accessibilityLabel("Passage \(badge)")
+                .buttonStyle(.plain)
+                .overlay(alignment: .leading) { bars(item) }
+                .accessibilityAddTraits(item.id == selectedID ? .isSelected : [])
+                .accessibilityValue(item.isDraft ? "" : strikeStatuses[item.id.ownerID]?.line ?? strikeStatusFallback ?? "")
+                // A row moves from anywhere on its body: a passage inside its
+                // item, an item among the items (a passage row's bar moves the item).
+                .highPriorityGesture(reorderGesture(item, barMoves: isChild ? owner(of: item) : nil),
+                                     including: canReorder(item) ? .all : .subviews)
+                .help(!canReorder(item) ? "" : isChild ? "Drag up or down to reorder inside this item" : "Drag up or down to reorder")
+                if let kept, !isChild, !item.isDraft {
+                    Group {
+                        if item.keptMixed, let onKeepWhole {
+                            // One source on and one off draws the mixed box; a
+                            // click turns every source on, which keeps the rest.
+                            Toggle(item.keepLabel,
+                                   sources: [Binding.constant(true),
+                                             Binding(get: { false }, set: { keep in if keep { onKeepWhole(item) } })],
+                                   isOn: \.self)
+                            .accessibilityValue("Partly kept")
+                        } else {
+                            Toggle(item.keepLabel, isOn: Binding(
+                                get: { kept.wrappedValue.contains(item.id.ownerID) },
+                                set: { keep in
+                                    if keep { kept.wrappedValue.insert(item.id.ownerID) }
+                                    else { kept.wrappedValue.remove(item.id.ownerID) }
+                                }))
                         }
-                        Text(item.title)
-                            .font(.callout.weight(.medium)).italic(item.isDraft)
-                            .foregroundStyle(item.isDraft ? Color.secondary : Color.primary)
-                            .lineLimit(item.titleLines == 0 ? nil : item.titleLines).truncationMode(.tail)
-                            .fixedSize(horizontal: false, vertical: true)
-                            .help(item.titleHelp)
                     }
-                    ForEach(item.captions.indices, id: \.self) { index in
-                        let caption = item.captions[index]
-                        Group {
-                            if caption.monospaced { FormCaption(caption.text).monospacedDigit() }
-                            else { FormCaption(caption.text) }
-                        }
-                        .lineLimit(caption.lineLimit).help(caption.text)
-                    }
-                    if !item.isDraft {
-                        StrikeClipStatusLine(status: strikeStatuses[item.id.ownerID], fallback: strikeStatusFallback)
-                    }
-                }
-                // A keep box is 18 wide at 8 in; the text starts 5 past it.
-                .padding(.leading, (isChild ? 0 : kept != nil ? 15 : 0) + (item.isDraft ? 0 : RangeReviewPalette.barWidth + Theme.spaceXS))
-                .padding(.trailing, onDelete != nil && !item.isDraft && !isChild
-                         ? (onUnlink != nil && !item.children.isEmpty ? 56 : 30) : 0)
-                .frame(maxWidth: .infinity, alignment: .leading)
-                .padding(.vertical, Theme.spaceS)
-                .padding(.horizontal, Theme.spaceS)
-                .contentShape(Rectangle())
-            }
-            .buttonStyle(.plain)
-            .overlay(alignment: .leading) { bars(item) }
-            .accessibilityAddTraits(item.id == selectedID ? .isSelected : [])
-            .accessibilityValue(item.isDraft ? "" : strikeStatuses[item.id.ownerID]?.line ?? strikeStatusFallback ?? "")
-            // A row moves from anywhere on its body: a passage inside its
-            // item, an item among the items (a passage row's bar moves the item).
-            .highPriorityGesture(reorderGesture(item, barMoves: isChild ? owner(of: item) : nil),
-                                 including: canReorder(item) ? .all : .subviews)
-            .help(!canReorder(item) ? "" : isChild ? "Drag up or down to reorder inside this item" : "Drag up or down to reorder")
-            if let onDelete, !item.isDraft, !isChild {
-                HStack(spacing: Theme.spaceXS) {
-                    if let onUnlink, !item.children.isEmpty {
-                        Button("Unlink", systemImage: "link") {
-                            dropDraft()
-                            onUnlink(item)
-                        }
-                        .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
-                        .controlSize(.small)
+                        .toggleStyle(.checkbox)
+                        .labelsHidden()
                         .fixedSize()
-                        .disabled(!isEnabled)
-                        .help("Unlink: its \(item.children.count) passages become separate items")
+                        .frame(width: 18)
+                        .padding(.vertical, Theme.spaceS)
+                        .padding(.leading, Theme.spaceS)
+                        .accessibilityLabel(item.keepLabel)
+                }
+                // Compact, at the row's right edge, over the space the label keeps free.
+                HStack(spacing: Theme.spaceXS) {
+                    if !item.isDraft {
+                        TelestrationRowMenu(videoID: item.video.id, videoURL: item.video.url, range: item.range,
+                            areaName: item.drawingCompanions.first?.mainAreaName,
+                            companions: item.drawingCompanions)
                     }
-                    deleteButton(item, onDelete: onDelete)
+                    if let onDelete, !item.isDraft, !isChild {
+                        if let onUnlink, !item.children.isEmpty {
+                            Button("Unlink", systemImage: "link") {
+                                dropDraft()
+                                onUnlink(item)
+                            }
+                            .labelStyle(.iconOnly)
+                            .buttonStyle(.borderless)
+                            .controlSize(.small)
+                            .fixedSize()
+                            .disabled(!isEnabled)
+                            .help("Unlink: its \(item.children.count) passages become separate items")
+                        }
+                        deleteButton(item, onDelete: onDelete)
+                    }
                 }
                     .frame(maxWidth: .infinity, alignment: .trailing)
                     .padding(.vertical, Theme.spaceS)
                     .padding(.trailing, Theme.spaceXS)
-            }
-            if let kept, !isChild, !item.isDraft {
-                Group {
-                    if item.keptMixed, let onKeepWhole {
-                        // One source on and one off draws the mixed box; a
-                        // click turns every source on, which keeps the rest.
-                        Toggle(item.keepLabel,
-                               sources: [Binding.constant(true),
-                                         Binding(get: { false }, set: { keep in if keep { onKeepWhole(item) } })],
-                               isOn: \.self)
-                        .accessibilityValue("Partly kept")
-                    } else {
-                        Toggle(item.keepLabel, isOn: Binding(
-                            get: { kept.wrappedValue.contains(item.id.ownerID) },
-                            set: { keep in
-                                if keep { kept.wrappedValue.insert(item.id.ownerID) }
-                                else { kept.wrappedValue.remove(item.id.ownerID) }
-                            }))
-                    }
-                }
-                    .toggleStyle(.checkbox)
-                    .labelsHidden()
-                    .fixedSize()
-                    .frame(width: 18)
-                    .padding(.vertical, Theme.spaceS)
-                    .padding(.leading, Theme.spaceS)
-                    .accessibilityLabel(item.keepLabel)
             }
         }
     }

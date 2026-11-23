@@ -31,6 +31,7 @@ struct TimelineView: View {
         let model = store.builder
         let contentWidth = max(800, CGFloat(model.totalDuration + 15) * model.pointsPerSecond)
         let layout = model.timelineLayout()
+        let dubLayout = BuilderDubLayout.layout(document: model.document, missingAudio: model.missingDubAudio)
 
         // Three bands share one horizontal offset: the pinned ruler + Screen
         // row on top, the vertically scrolling tracks in the middle, and a
@@ -46,7 +47,7 @@ struct TimelineView: View {
                 Divider()
                 ScrollView(.vertical) {
                     HStack(alignment: .top, spacing: 0) {
-                        trackHeaders(model: model, layout: layout)
+                        trackHeaders(model: model, layout: layout, dubRows: dubLayout.rows)
                             .frame(width: Self.headerWidth)
                         ScrollView(.horizontal) {
                             VStack(alignment: .leading, spacing: BuilderTimelineModel.laneSpacing) {
@@ -56,6 +57,9 @@ struct TimelineView: View {
                                                    visibleRect: viewportRect,
                                                    cullClips: model.document.videoTrack.count >= 40,
                                                    onPlayClip: onPlayClip)
+                                }
+                                if !dubLayout.isEmpty {
+                                    DubLane(layout: dubLayout, contentWidth: contentWidth, rowHeight: Self.soundLaneHeight)
                                 }
                                 OverlayLane(layout: layout, contentWidth: contentWidth)
                                 SoundLane(contentWidth: contentWidth, height: Self.soundLaneHeight)
@@ -188,11 +192,15 @@ struct TimelineView: View {
 
     /// Pinned headers for the scrolling band: one per video track, then Sound and Overlays.
     @ViewBuilder
-    private func trackHeaders(model: BuilderTimelineModel, layout: TimelineLayoutSnapshot) -> some View {
+    private func trackHeaders(model: BuilderTimelineModel, layout: TimelineLayoutSnapshot, dubRows: Int) -> some View {
         VStack(alignment: .leading, spacing: BuilderTimelineModel.laneSpacing) {
             ForEach(0..<model.document.trackCount, id: \.self) { track in
                 TrackHeader(track: track)
                     .frame(height: layout.videoTracks[track].laneHeight)
+            }
+            if dubRows > 0 {
+                laneHeader(title: "Dub", systemImage: "waveform.badge.mic", shade: .purple.opacity(0.15))
+                    .frame(height: CGFloat(dubRows) * Self.soundLaneHeight)
             }
             laneHeader(title: "Overlays", systemImage: "square.on.square", shade: TimelineTrackStyle.overlays)
                 .frame(height: CGFloat(layout.overlayRowCount)
@@ -218,7 +226,7 @@ struct TimelineView: View {
 }
 
 /// The same neutral shade joins each pinned header to its video lane.
-private enum TimelineTrackStyle {
+enum TimelineTrackStyle {
     // Alternate light/dark values so neighbouring tracks are easy to separate.
     static func background(track: Int) -> Color {
         let shades = [0.025, 0.17, 0.065, 0.21, 0.105, 0.25]
@@ -753,6 +761,13 @@ struct TimelineClipBlock: View {
                             .foregroundStyle(.white)
                             .help("Freeze frame")
                             .accessibilityLabel("Freeze frame")
+                        if clip.telestration != nil {
+                            Image(systemName: "pencil.tip")
+                                .font(.badgeCompact)
+                                .foregroundStyle(.white)
+                                .help("Drawing on this freeze frame")
+                                .accessibilityLabel("Drawing")
+                        }
                     }
                     if clip.bumper {
                         Label("Bumper · " + store.bumperDisplayName(for: clip), systemImage: "film.stack")

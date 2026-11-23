@@ -79,4 +79,37 @@ struct FightActionDetailTests {
         // With no saved result the finish stays unclear, as in the inspector.
         #expect(try counts([]).submissions == 0)
     }
+
+    @Test func oneRoundStillSeesTheOtherRoundsFinish() throws {
+        func finish(_ id: Int64, _ time: Double) -> FightEventRecord {
+            var row = event(id, time, "a", "submission_attempt", detail: "armbar")
+            row.targetKey = "b"; row.endTime = time + 4; row.outcome = "completed"
+            return row
+        }
+        let events = [finish(1, 20), finish(2, 120)]
+        let rounds = [FightRoundRange(round: 1, start: 0, end: 100), FightRoundRange(round: 2, start: 100, end: 200)]
+        let result = FightOutcome(id: 1, videoID: 1, runID: 1, method: "submission", winnerKey: "a", loserKey: "b")
+        func submissions(_ round: Int?) throws -> Int {
+            try #require(FightActionDetail.build(events: events, people: [], rounds: rounds, round: round, outcomes: [result])
+                .fighters.first { $0.id == "a" }).counts.submissions
+        }
+        // Two finishes cannot both be the fight's end; a single round must not hide that.
+        let whole = try submissions(nil)
+        #expect(try submissions(1) == whole && submissions(2) == whole)
+        #expect(whole == 0)
+    }
+
+    @Test func roundTotalsCountTheRowsThatRoundLists() throws {
+        // One blow logged on both sides of the round edge is one row.
+        let events = [event(1, 99.9), event(2, 100.1), event(3, 50), event(4, 150)]
+        let rounds = [FightRoundRange(round: 1, start: 0, end: 100), FightRoundRange(round: 2, start: 100, end: 200)]
+        for round in [1, 2] {
+            let model = FightActionDetail.build(events: events, people: [], rounds: rounds, round: round)
+            let rows = model.rows.filter { $0.event.fighterKey == "a" && $0.event.action == "strike" }.count
+            let counts = try #require(model.fighters.first { $0.id == "a" }).counts
+            #expect(counts.strikes == rows, "round \(round)")
+        }
+        let whole = FightActionDetail.build(events: events, people: [], rounds: rounds)
+        #expect(whole.rows.count == 3)
+    }
 }

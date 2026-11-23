@@ -235,7 +235,7 @@ struct KeptClipsPlayer: View {
     /// The recording's displayed width / height: the video track's natural
     /// size turned by its preferred transform (a portrait phone clip is
     /// stored landscape). Nil when it cannot be read.
-    nonisolated private static func displayAspect(of url: URL) async -> CGFloat? {
+    nonisolated static func displayAspect(of url: URL) async -> CGFloat? {
         guard let track = try? await AVURLAsset(url: url).loadTracks(withMediaType: .video).first,
               let (size, transform) = try? await track.load(.naturalSize, .preferredTransform) else { return nil }
         let shown = size.applying(transform)

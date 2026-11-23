@@ -6,6 +6,13 @@ import CoreText
 nonisolated struct TextDecorPainter {
     var scale: CGFloat = 1 // pixels per reference pixel at 1080 wide
     var naturalKerning = false
+    var usesSRGB = false
+
+    private func color(_ hex: String?) -> CGColor {
+        guard usesSRGB, let space = CGColorSpace(name: CGColorSpace.sRGB) else { return TextColor.cgColor(hex) }
+        let (r, g, b) = TextColor.parseColor(hex)
+        return CGColor(colorSpace: space, components: [r, g, b, 1]) ?? TextColor.cgColor(hex)
+    }
 
     static func font(family: String?, size: CGFloat, decor: TextDecor) -> CTFont {
         let d = decor.resolved()
@@ -36,7 +43,7 @@ nonisolated struct TextDecorPainter {
         let d = decor.resolved()
         var attributes: [NSAttributedString.Key: Any] = [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
-            NSAttributedString.Key(kCTForegroundColorAttributeName as String): TextColor.cgColor(d.color),
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): color(d.color),
         ]
         if !naturalKerning || d.letterSpacing != 0 {
             attributes[NSAttributedString.Key(kCTKernAttributeName as String)] = (d.letterSpacing ?? 0) * scale
@@ -53,7 +60,7 @@ nonisolated struct TextDecorPainter {
         let radius = radius ?? (d.bgRadius ?? 6) * scale
         if d.bgOn == true {
             context.addPath(CGPath(roundedRect: rect, cornerWidth: radius, cornerHeight: radius, transform: nil))
-            context.setFillColor(TextColor.cgColor(d.bgColor).copy(alpha: d.bgOpacity ?? 1)!)
+            context.setFillColor(color(d.bgColor).copy(alpha: d.bgOpacity ?? 1)!)
             context.fillPath()
         }
         if d.borderOn == true {
@@ -61,7 +68,7 @@ nonisolated struct TextDecorPainter {
             let border = rect.insetBy(dx: -width / 2, dy: -width / 2)
             context.addPath(CGPath(roundedRect: border, cornerWidth: radius + width / 2,
                                    cornerHeight: radius + width / 2, transform: nil))
-            context.setStrokeColor(TextColor.cgColor(d.borderColor))
+            context.setStrokeColor(color(d.borderColor))
             context.setLineWidth(width)
             context.strokePath()
         }
@@ -84,7 +91,7 @@ nonisolated struct TextDecorPainter {
         let opacity = d.textOpacity ?? 1
         if opacity < 1 { context.setAlpha(opacity); context.beginTransparencyLayer(auxiliaryInfo: nil) }
         let shadowOffset = CGSize(width: (d.shadowX ?? 0) * size, height: (d.shadowY ?? -0.08) * size)
-        let shadowColor = TextColor.cgColor(d.shadowColor).copy(alpha: d.shadowOpacity ?? 0.75)!
+        let shadowColor = color(d.shadowColor).copy(alpha: d.shadowOpacity ?? 0.75)!
         if d.shadowOn == true, d.shadowStyle == "soft" {
             context.setShadow(offset: shadowOffset, blur: (d.shadowBlur ?? 0.15) * size, color: shadowColor)
         }
@@ -92,13 +99,13 @@ nonisolated struct TextDecorPainter {
         var attributes: [NSAttributedString.Key: Any] = [
             NSAttributedString.Key(kCTFontAttributeName as String): font,
             NSAttributedString.Key(kCTKernAttributeName as String): (d.letterSpacing ?? 0) * scale,
-            NSAttributedString.Key(kCTForegroundColorAttributeName as String): TextColor.cgColor(d.color),
+            NSAttributedString.Key(kCTForegroundColorAttributeName as String): color(d.color),
         ]
         if naturalKerning && d.letterSpacing == 0 {
             attributes.removeValue(forKey: NSAttributedString.Key(kCTKernAttributeName as String))
         }
         if stroke > 0 {
-            attributes[NSAttributedString.Key(kCTStrokeColorAttributeName as String)] = TextColor.cgColor(d.strokeColor).copy(alpha: d.strokeOpacity ?? 0.86)
+            attributes[NSAttributedString.Key(kCTStrokeColorAttributeName as String)] = color(d.strokeColor).copy(alpha: d.strokeOpacity ?? 0.86)
             attributes[NSAttributedString.Key(kCTStrokeWidthAttributeName as String)] = -100 * stroke / size
         }
         let line = CTLineCreateWithAttributedString(NSAttributedString(string: text, attributes: attributes))
@@ -157,12 +164,12 @@ nonisolated struct TextDecorPainter {
             CTLineDraw(line, context)
         }
         if stroke > 0 {
-            context.setStrokeColor(TextColor.cgColor(d.strokeColor).copy(alpha: d.strokeOpacity ?? 0.86)!)
+            context.setStrokeColor(color(d.strokeColor).copy(alpha: d.strokeOpacity ?? 0.86)!)
             context.setLineWidth(stroke * 2)
             for rect in rules { context.stroke(rect) }
         }
         for (index, rect) in rules.enumerated() {
-            context.setFillColor(TextColor.cgColor(index == 0 && d.underline == true ? d.underlineColor ?? d.color : d.color))
+            context.setFillColor(color(index == 0 && d.underline == true ? d.underlineColor ?? d.color : d.color))
             context.fill(rect)
             if let end = d.fillEndColor, d.underlineColor == nil {
                 context.saveGState(); context.clip(to: rect)
@@ -250,8 +257,9 @@ nonisolated struct TextDecorPainter {
         let radians = angle * .pi / 180
         let dx = cos(radians), dy = -sin(radians) // 90 degrees goes top to bottom
         let half = (abs(dx) * rect.width + abs(dy) * rect.height) / 2
-        guard let gradient = CGGradient(colorsSpace: CGColorSpaceCreateDeviceRGB(),
-            colors: [TextColor.cgColor(start), TextColor.cgColor(end)] as CFArray, locations: [0, 1]) else { return }
+        let space = usesSRGB ? CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB() : CGColorSpaceCreateDeviceRGB()
+        guard let gradient = CGGradient(colorsSpace: space,
+            colors: [color(start), color(end)] as CFArray, locations: [0, 1]) else { return }
         context.drawLinearGradient(gradient,
             start: CGPoint(x: rect.midX - dx * half, y: rect.midY - dy * half),
             end: CGPoint(x: rect.midX + dx * half, y: rect.midY + dy * half),

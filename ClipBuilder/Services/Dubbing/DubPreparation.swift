@@ -202,8 +202,9 @@ nonisolated enum DubPreparation {
             throw ScriptError.invalid(elevenLabsSetupMessage(language: settings.language))
         }
         let settings = try assigningVoices(lines: lines, settings: settings, installed: installed, genders: genders)
+        let freezes = DubFreezes.intervals(in: document)
         let slots = Dictionary(uniqueKeysWithValues: lines.indices.map { index in
-            (lines[index].id, DubPlanning.slot(for: lines[index], next: lines[safe: index + 1]))
+            (lines[index].id, DubPlanning.slot(for: lines[index], next: lines[safe: index + 1], freezes: freezes))
         })
         let overlaps = Set(lines.filter(\.tight).map(\.id))
         if settings.engine == .elevenLabs {
@@ -315,8 +316,10 @@ nonisolated enum DubPreparation {
             catch { ErrorLog.record("Dub", "Could not resolve earlier dub rows: \(error.localizedDescription)") }
         }
         // Reconstruct planned spans from source times, never from synthesized durations.
+        let freezes = DubFreezes.intervals(in: document)
         let planned = lines.sorted { $0.start < $1.start }.map { line in
             var planned = line
+            planned.start = DubFreezes.motionTime(line.start, freezes: freezes)
             let speed = playbackClip(for: line, document: document)?.effectiveSpeed ?? 1
             planned.duration = (line.sourceEnd - line.sourceStart) / speed
             return planned

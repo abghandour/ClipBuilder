@@ -47,7 +47,8 @@ nonisolated enum WizardFootageReview {
             return RangeReviewItem(id: .init(ownerID: take.id, revisionID: take.id, cutIndex: index),
                 title: title, titleHelp: title, keepLabel: "", captions: [], video: source,
                 range: scene == nil ? range : ProposedCutTrim.clamp(start: clip.start, end: clip.end, scene: limits),
-                originalRange: range, limits: limits, trimPolicy: .wizard, isAvailable: scene != nil)
+                originalRange: range, limits: limits, trimPolicy: .wizard, isAvailable: scene != nil,
+                drawingCompanions: TelestrationSource.companions(clip: clip, sceneMap: sceneMap))
         }
         var item = cuts.first ?? RangeReviewItem(
             id: .init(ownerID: take.id, revisionID: take.id), title: "", titleHelp: "",

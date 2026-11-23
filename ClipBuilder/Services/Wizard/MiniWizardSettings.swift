@@ -38,9 +38,14 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var nameTagPosition: String?
     var safeAreaOnly = false
     var safeAreaPlatforms: [String]?
+    var drawnPauses: Bool?
+    var strikeHighlightStyle: String?
     var actionOverlays: Bool?
     var pauseOnContact: Bool?
     var pauseOnContactSeconds: Double?
+    var slowIntoContact: Bool?
+    var slowIntoContactStrength: String?
+    var flashOnContact: Bool?
     var watermark = true
     /// A saved overlay used as the watermark; nil or empty = the brand logo.
     var watermarkOverlay: String?
@@ -82,6 +87,21 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         set { actionOverlays = newValue }
     }
 
+    var resolvedSlowIntoContact: Bool {
+        get { slowIntoContact == true }
+        set { slowIntoContact = newValue }
+    }
+
+    var resolvedSlowIntoContactStrength: String {
+        get { (StrikeImpactRules.Strength(rawValue: slowIntoContactStrength ?? "") ?? .medium).rawValue }
+        set { slowIntoContactStrength = newValue }
+    }
+
+    var resolvedFlashOnContact: Bool {
+        get { flashOnContact == true }
+        set { flashOnContact = newValue }
+    }
+
     var resolvedPauseOnContact: Bool {
         get { pauseOnContact == true }
         set { pauseOnContact = newValue }
@@ -118,7 +138,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         case safeAreaOnly, safeAreaPlatforms
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
         case watermark, watermarkOverlay, watermarkOpacity
-        case actionOverlays, pauseOnContact, pauseOnContactSeconds
+        case drawnPauses, strikeHighlightStyle
+        case actionOverlays, pauseOnContact, pauseOnContactSeconds, slowIntoContact, slowIntoContactStrength, flashOnContact
         case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, overlayPosition, overlayEdits, outputMode, transition, look
         case muteSourceAudio, music, musicTrack, dub, dubLanguage
     }
@@ -145,9 +166,14 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         try c.encodeIfPresent(nameTagStyle, forKey: .nameTagStyle)
         try c.encodeIfPresent(nameTagStyleID, forKey: .nameTagStyleID)
         try c.encodeIfPresent(nameTagPosition, forKey: .nameTagPosition)
+        try c.encodeIfPresent(drawnPauses, forKey: .drawnPauses)
+        try c.encodeIfPresent(strikeHighlightStyle, forKey: .strikeHighlightStyle)
         try c.encodeIfPresent(actionOverlays, forKey: .actionOverlays)
         try c.encodeIfPresent(pauseOnContact, forKey: .pauseOnContact)
         try c.encodeIfPresent(pauseOnContactSeconds, forKey: .pauseOnContactSeconds)
+        try c.encodeIfPresent(slowIntoContact, forKey: .slowIntoContact)
+        try c.encodeIfPresent(slowIntoContactStrength, forKey: .slowIntoContactStrength)
+        try c.encodeIfPresent(flashOnContact, forKey: .flashOnContact)
         try c.encodeIfPresent(watermark, forKey: .watermark)
         try c.encodeIfPresent(watermarkOverlay, forKey: .watermarkOverlay)
         try c.encodeIfPresent(watermarkOpacity, forKey: .watermarkOpacity)
@@ -198,9 +224,14 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         safeAreaOnly = try c.decodeIfPresent(Bool.self, forKey: .safeAreaOnly) ?? false
         safeAreaPlatforms = try c.decodeIfPresent([String].self, forKey: .safeAreaPlatforms)
         nameTagPosition = try c.decodeIfPresent(String.self, forKey: .nameTagPosition)
+        drawnPauses = try c.decodeIfPresent(Bool.self, forKey: .drawnPauses)
+        strikeHighlightStyle = try c.decodeIfPresent(String.self, forKey: .strikeHighlightStyle)
         actionOverlays = try c.decodeIfPresent(Bool.self, forKey: .actionOverlays)
         pauseOnContact = try c.decodeIfPresent(Bool.self, forKey: .pauseOnContact)
         pauseOnContactSeconds = try c.decodeIfPresent(Double.self, forKey: .pauseOnContactSeconds)
+        slowIntoContact = try c.decodeIfPresent(Bool.self, forKey: .slowIntoContact)
+        slowIntoContactStrength = try c.decodeIfPresent(String.self, forKey: .slowIntoContactStrength)
+        flashOnContact = try c.decodeIfPresent(Bool.self, forKey: .flashOnContact)
         watermark = try c.decodeIfPresent(Bool.self, forKey: .watermark) ?? base.watermark
         watermarkOverlay = try c.decodeIfPresent(String.self, forKey: .watermarkOverlay)
         watermarkOpacity = try c.decodeIfPresent(Double.self, forKey: .watermarkOpacity)
@@ -291,8 +322,12 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     /// and the rough cut sheet's Overlays tab puts them back on a cut that
     /// `WizardRoughCut.options` stripped, so both render the same picture.
     func applyOverlayOptions(to result: inout WizardStep2Options) {
+        result.drawnPauses = drawnPauses
+        result.strikeHighlightStyle = strikeHighlightStyle
         result.strikeHighlights = actionOverlays == true
         result.strikeImpactFreeze = pauseOnContact == true ? resolvedPauseOnContactSeconds : nil
+        result.strikeSlowMotion = slowIntoContact == true ? resolvedSlowIntoContactStrength : nil
+        result.strikeFlash = flashOnContact == true ? true : nil
         result.addCaptions = captions
         result.captionPosition = captionPosition
         result.speakerCaptionPositions = speakerCaptionPositions
@@ -329,10 +364,15 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     /// chosen, so the page keeps its own.
     func adoptingOverlays(from other: Self, nameTags: Bool = true, captionLanguage: Bool = true, strikeActions: Bool = true) -> Self {
         var result = self
+        result.drawnPauses = other.drawnPauses
         if strikeActions {
+            result.strikeHighlightStyle = other.strikeHighlightStyle
             result.actionOverlays = other.actionOverlays
             result.pauseOnContact = other.pauseOnContact
             result.pauseOnContactSeconds = other.pauseOnContactSeconds
+            result.slowIntoContact = other.slowIntoContact
+            result.slowIntoContactStrength = other.slowIntoContactStrength
+            result.flashOnContact = other.flashOnContact
         }
         result.captions = other.captions
         if captionLanguage, other.captions { result.englishCaptions = other.englishCaptions }
@@ -396,6 +436,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
             // nil, so hiding the rows leaves untouched settings equal.
             if result.actionOverlays == true { result.actionOverlays = false }
             if result.pauseOnContact == true { result.pauseOnContact = false }
+            if result.slowIntoContact == true { result.slowIntoContact = false }
+            if result.flashOnContact == true { result.flashOnContact = false }
         }
         if !flow.showsNameTags { result.nameTags = false }
         if !flow.showsCaptionLanguage { result.englishCaptions = false }
@@ -432,6 +474,13 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         if result.quality == .custom { result.quality = .balanced }
         if result.preset == .custom { result.preset = .portrait1080 }
         if defaults.object(forKey: key(.includeBRoll)) != nil { result.includeBRoll = defaults.bool(forKey: key(.includeBRoll)) }
+        let impactOptions = defaults.dictionary(forKey: MiniWizardMemory.impactOptionsKey(profileName: profile.profileName))
+        result.slowIntoContact = impactOptions?["slowIntoContact"] as? Bool
+        result.slowIntoContactStrength = impactOptions?["slowIntoContactStrength"] as? String
+        result.flashOnContact = impactOptions?["flashOnContact"] as? Bool
+        let drawingOptions = defaults.dictionary(forKey: MiniWizardMemory.drawingOptionsKey(profileName: profile.profileName))
+        result.drawnPauses = drawingOptions?["drawnPauses"] as? Bool
+        result.strikeHighlightStyle = drawingOptions?["strikeHighlightStyle"] as? String
         if defaults.object(forKey: key(.actionOverlays)) != nil { result.actionOverlays = defaults.bool(forKey: key(.actionOverlays)) }
         if defaults.object(forKey: key(.pauseOnContact)) != nil { result.pauseOnContact = defaults.bool(forKey: key(.pauseOnContact)) }
         if defaults.object(forKey: key(.pauseOnContactSeconds)) != nil { result.pauseOnContactSeconds = defaults.double(forKey: key(.pauseOnContactSeconds)) }
@@ -496,6 +545,17 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         func key(_ field: MiniWizardMemory.Field) -> String { MiniWizardMemory.key(for: field, profileName: profileName) }
         var changed = false
         func set(_ value: Any?, forKey key: String) { if defaults.setIfChanged(value, forKey: key) { changed = true } }
+        var impactOptions: [String: Any] = [:]
+        if let slowIntoContact { impactOptions["slowIntoContact"] = slowIntoContact }
+        if let slowIntoContactStrength { impactOptions["slowIntoContactStrength"] = slowIntoContactStrength }
+        if let flashOnContact { impactOptions["flashOnContact"] = flashOnContact }
+        set(impactOptions.isEmpty ? nil : impactOptions,
+            forKey: MiniWizardMemory.impactOptionsKey(profileName: profileName))
+        var drawingOptions: [String: Any] = [:]
+        if let drawnPauses { drawingOptions["drawnPauses"] = drawnPauses }
+        if let strikeHighlightStyle { drawingOptions["strikeHighlightStyle"] = strikeHighlightStyle }
+        set(drawingOptions.isEmpty ? nil : drawingOptions,
+            forKey: MiniWizardMemory.drawingOptionsKey(profileName: profileName))
         set(actionOverlays, forKey: key(.actionOverlays))
         set(pauseOnContact, forKey: key(.pauseOnContact))
         set(pauseOnContactSeconds, forKey: key(.pauseOnContactSeconds))

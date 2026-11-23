@@ -12,6 +12,7 @@ struct BuilderCommandCatalogTests {
         #expect(try encoder.encode(BuilderCommandCatalog.commandSchema) == encoder.encode(LegacyBuilderSchema.commandSchema))
         #expect(try encoder.encode(BuilderCommandCatalog.querySchema) == encoder.encode(LegacyBuilderSchema.querySchema))
         let legacy = try #require(LegacyBuilderSchema.commandSchema.objectValue?["oneOf"]?.arrayValue)
+        #expect(legacy.count == 66)
         #expect(legacy.count == BuilderCommandCatalog.operations.count)
         for schema in legacy {
             let op = try #require(schema.objectValue?["properties"]?.objectValue?["op"]?.objectValue?["const"]?.stringValue)

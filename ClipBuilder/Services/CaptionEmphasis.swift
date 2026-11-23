@@ -2,9 +2,30 @@ import Foundation
 import NaturalLanguage
 
 nonisolated enum CaptionEmphasis {
+    struct Selection: Equatable, Sendable {
+        var primary: [Int] = []
+        var alternate: [Int] = []
+        var indices: [Int] { (primary + alternate).sorted() }
+    }
+
+    static func selection(for page: CaptionPage, language: String) -> Selection {
+        let tokens = page.text.split(whereSeparator: \.isWhitespace).map(String.init)
+        if let words = page.words, words.count == tokens.count,
+           zip(words, tokens).allSatisfy({ $0.word.trimmingCharacters(in: .whitespacesAndNewlines) == $1 }),
+           words.contains(where: { ["none", "primary", "alternate"].contains($0.emphasis ?? "") }) {
+            return Selection(primary: words.indices.filter { words[$0].emphasis == "primary" },
+                             alternate: words.indices.filter { words[$0].emphasis == "alternate" })
+        }
+        return Selection(primary: automaticIndices(for: page, language: language))
+    }
+
+    static func indices(for page: CaptionPage, language: String) -> [Int] {
+        selection(for: page, language: language).indices
+    }
+
     /// Priority: numeric facts, named entities, then the highest-confidence
     /// noun. Ties use transcript order, never randomized hashing.
-    static func indices(for page: CaptionPage, language: String) -> [Int] {
+    static func automaticIndices(for page: CaptionPage, language: String) -> [Int] {
         let text = page.text
         let tokens = text.split(whereSeparator: \.isWhitespace)
         guard !tokens.isEmpty else { return [] }

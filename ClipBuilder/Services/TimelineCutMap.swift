@@ -61,6 +61,11 @@ nonisolated struct TimelineCutMap: Sendable, Equatable {
         guard duration >= minimumPiece else { return nil }
         if clip.hold == true {
             moved.duration = duration
+            // Time cut from the front of a drawn freeze is animation already past.
+            let skipped = headTrim(from: start, to: end)
+            if skipped > 0, moved.telestration != nil {
+                moved.telestration?.offset = (clip.telestration?.offset ?? 0) + skipped
+            }
             return moved
         }
         let speed = clip.effectiveSpeed

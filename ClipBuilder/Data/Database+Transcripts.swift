@@ -540,9 +540,11 @@ extension Database {
     /// `fixes` names the lines whose change is a list of word fixes.
     func updateTranscriptTexts(_ changes: [(id: Int64, text: String)],
                                confirming: [Int64: [Int: String]] = [:],
-                               fixes: [Int64: [Int: String]] = [:]) throws {
+                               fixes: [Int64: [Int: String]] = [:],
+                               emphasis: [Int64: TranscriptEmphasisRules.Edit] = [:]) throws {
         try connection.transaction {
             try confirmTranscriptWords(confirming)
+            try markTranscriptEmphasis(emphasis)
             for change in changes {
                 try updateTranscriptText(id: change.id, text: change.text, fixes: fixes[change.id])
             }

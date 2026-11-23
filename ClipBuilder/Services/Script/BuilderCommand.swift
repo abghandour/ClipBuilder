@@ -32,6 +32,8 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
     /// Draw the clip's saved strike highlights (limb and impact) in the render.
     case setClipStrikeHighlights(clip: String, enabled: Bool)
     case freezeClipOnImpacts(clip: String, hold: Double? = nil)
+    case slowClipIntoImpacts(clip: String, strength: StrikeImpactRules.Strength? = nil)
+    case removeClipSlowMotion(clip: String)
     case duplicateClip(clip: String)
     case setTrackSequential(track: Int, sequential: Bool)
     case addCropBlock(layout: String, at: Double? = nil, duration: Double? = nil)
@@ -188,6 +190,13 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
             try c.only(["op", "clip", "muted"])
             self = .setClipMuted(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
                                  muted: try c.decode(Bool.self, forKey: ScriptKey("muted")))
+        case "slow_clip_into_impacts":
+            try c.only(["op", "clip", "strength"])
+            self = .slowClipIntoImpacts(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
+                strength: try c.decodeIfPresent(StrikeImpactRules.Strength.self, forKey: ScriptKey("strength")))
+        case "remove_clip_slow_motion":
+            try c.only(["op", "clip"])
+            self = .removeClipSlowMotion(clip: try c.decode(String.self, forKey: ScriptKey("clip")))
         case "freeze_clip_on_impacts":
             try c.only(["op", "clip", "hold"])
             self = .freezeClipOnImpacts(clip: try c.decode(String.self, forKey: ScriptKey("clip")),
@@ -664,6 +673,13 @@ nonisolated enum BuilderCommand: Codable, Sendable, Equatable {
             try c.encode("set_clip_muted", forKey: ScriptKey("op"))
             try c.encode(clip, forKey: ScriptKey("clip"))
             try c.encode(muted, forKey: ScriptKey("muted"))
+        case let .slowClipIntoImpacts(clip, strength):
+            try c.encode("slow_clip_into_impacts", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
+            try c.encodeIfPresent(strength, forKey: ScriptKey("strength"))
+        case let .removeClipSlowMotion(clip):
+            try c.encode("remove_clip_slow_motion", forKey: ScriptKey("op"))
+            try c.encode(clip, forKey: ScriptKey("clip"))
         case let .freezeClipOnImpacts(clip, hold):
             try c.encode("freeze_clip_on_impacts", forKey: ScriptKey("op"))
             try c.encode(clip, forKey: ScriptKey("clip"))

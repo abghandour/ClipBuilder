@@ -61,4 +61,8 @@ nonisolated struct DubLine: Codable, Sendable, Identifiable, Equatable {
     var reviewedEarlier: Bool?
     /// Preview audio only; Apply replaces it with the configured final model.
     var draft: Bool?
+    /// Timeline extent is derived from the document, never persisted on a line.
+    func timelineDuration(freezes: [Range<Double>]) -> Double {
+        DubPauseRules.layout(self, freezes: freezes).end - start
+    }
 }

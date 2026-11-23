@@ -702,7 +702,7 @@ extension MultitrackRendererPlanningTests {
         var changed = clip
         changed.effect = nil
         #expect(changed != clip)
-        #expect(RenderSegmentCache.rendererVersion == "multitrack-segment-v14-pause-clock")
+        #expect(RenderSegmentCache.rendererVersion == "multitrack-segment-v16-vip-paths")
     }
 }
 

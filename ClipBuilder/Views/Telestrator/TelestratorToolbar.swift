@@ -57,7 +57,7 @@ struct TelestratorToolbar: View {
                     .disabled(editor.drawing.figures.isEmpty)
             }
             .buttonStyle(.bordered)
-            .disabled(editor.isDragging || editor.playStarted != nil)
+            .disabled(editor.isDragging || editor.isPlaying)
             FlowLayout(spacing: 8) {
                 Toggle(isOn: Binding(get: { editor.head }, set: { editor.setHead($0) })) {
                     Text("Head").lineLimit(1).fixedSize()
@@ -83,9 +83,23 @@ struct TelestratorToolbar: View {
                         .help(symbolLabel(symbol))
                     }
                 }
+                if editor.selected != nil {
+                    HStack(spacing: 6) {
+                        Text(editor.drawing.motion == nil ? "Stays after the pause" : "Stays after the drawing")
+                            .lineLimit(1).fixedSize()
+                        Slider(value: Binding(get: { editor.selectedLinger }, set: { editor.setLinger($0) }),
+                               in: 0...3, step: 0.1, onEditingChanged: editor.controlEditing)
+                            .frame(width: 120)
+                            .accessibilityLabel("Stays after the pause")
+                            .accessibilityValue("\(editor.selectedLinger.formatted(.number.precision(.fractionLength(1)))) seconds")
+                        Text("\(editor.selectedLinger.formatted(.number.precision(.fractionLength(1)))) s")
+                            .monospacedDigit().lineLimit(1).fixedSize()
+                    }
+                    .help("Keeps this figure on screen while the picture moves again")
+                }
             }
             .buttonStyle(.bordered)
-            .disabled(editor.isDragging || editor.playStarted != nil)
+            .disabled(editor.isDragging || editor.isPlaying)
             if editor.atLimit {
                 Text("12-figure limit reached. Delete a figure to draw another.")
                     .font(.caption).foregroundStyle(.secondary).lineLimit(1).fixedSize()

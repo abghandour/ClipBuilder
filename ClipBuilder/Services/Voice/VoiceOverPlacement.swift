@@ -16,6 +16,7 @@ nonisolated enum VoiceOverPlacement {
         var reelDuration: Double
         /// Pauses on contact inside the cut, on its unpaused clock.
         var pauses: [WizardStrikePauses.Pause] = []
+        var stretches: [StrikeImpactRules.Stretch] = []
 
         /// Seconds from the start of the cut at which a source second shows.
         /// The frame a pause holds shows twice, at the start of the pause and
@@ -26,7 +27,7 @@ nonisolated enum VoiceOverPlacement {
             // stays clear of it. Pause times are on the played clock, so it is scaled.
             let reach = afterPause ? 0.02 / max(0.01, speed) : -1e-9
             let held = pauses.reduce(0) { $0 + ($1.time < planned + reach ? $1.duration : 0) }
-            return min(reelDuration, planned + held)
+            return min(reelDuration, planned + held + stretches.reduce(0) { $0 + $1.addedTime(at: planned) })
         }
 
         func contains(source time: Double) -> Bool {
@@ -50,7 +51,8 @@ nonisolated enum VoiceOverPlacement {
             guard let pause = pauses.min(by: { abs($0.time - planned) < abs($1.time - planned) }),
                   abs(pause.time - planned) < 0.05 else { return nil }
             let before = pauses.reduce(0) { $0 + ($1.time < pause.time - 1e-9 ? $1.duration : 0) }
-            return min(reelDuration, pause.time + before + min(offset, max(0, pause.duration - 0.05)))
+            let stretched = stretches.reduce(0) { $0 + $1.addedTime(at: pause.time) }
+            return min(reelDuration, pause.time + before + stretched + min(offset, max(0, pause.duration - 0.05)))
         }
     }
 
@@ -318,6 +320,19 @@ extension WizardStrikePauses.Timing {
     /// The inverse of `outputTime`: the unpaused second showing at an output
     /// second. Every second of a hold maps to the held frame.
     func plannedTime(forOutput output: Double) -> Double {
+        if !stretches.isEmpty {
+            for pause in pauses {
+                let start = outputTime(pause.time)
+                if output >= start, output < start + pause.duration { return pause.time }
+            }
+            if output >= outputDuration { return max(0, output - addedDuration) }
+            var lower = 0.0, upper = plannedDuration
+            for _ in 0..<64 {
+                let middle = (lower + upper) / 2
+                if outputTime(middle) < output { lower = middle } else { upper = middle }
+            }
+            return (lower + upper) / 2
+        }
         var shift = 0.0
         for pause in pauses.sorted(by: { $0.time < $1.time }) {
             if output <= pause.time + shift { break }

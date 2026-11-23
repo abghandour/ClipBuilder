@@ -7,10 +7,6 @@ nonisolated enum DubPreview {
     @concurrent
     static func item(for line: DubLine, prepared: DubPreparation.Prepared,
                      includeVideo: Bool = true) async throws -> sending AVPlayerItem {
-        guard let clip = DubPreparation.playbackClip(for: line, document: prepared.document),
-              let path = clip.videoFile, let sourceStart = clip.sourceStart else {
-            throw ScriptError.invalid("The source clip for this line is unavailable.")
-        }
         guard let audio = line.audio, audio == URL(fileURLWithPath: audio).lastPathComponent,
               FileManager.default.fileExists(atPath: DubSynthesizer.cacheDirectory.appendingPathComponent(audio).path) else {
             throw ScriptError.invalid("The dub audio is missing. Use Update line to prepare it again.")
@@ -19,6 +15,10 @@ nonisolated enum DubPreview {
         let speech = AVURLAsset(url: DubSynthesizer.cacheDirectory.appendingPathComponent(audio))
         var parameters: [AVAudioMixInputParameters] = []
         if includeVideo {
+            guard let clip = DubPreparation.playbackClip(for: line, document: prepared.document),
+                  let path = clip.videoFile, let sourceStart = clip.sourceStart else {
+                throw ScriptError.invalid("The source clip for this line is unavailable.")
+            }
             try await addSource(path: path, sourceStart: sourceStart, line: line, clip: clip,
                                 prepared: prepared, to: composition, parameters: &parameters)
         }

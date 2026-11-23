@@ -18,7 +18,8 @@ nonisolated enum TelestratorFrameLoader {
     }
 
     @concurrent
-    static func load(url: URL, time: Double, duration: Double) async throws -> Frame {
+    static func load(url: URL, time: Double, duration: Double, range: ClosedRange<Double>? = nil,
+                     lockTime: Bool = false) async throws -> Frame {
         try Task.checkCancellation()
         let asset = AVURLAsset(url: url)
         let tracks = try await asset.loadTracks(withMediaType: .video)
@@ -27,7 +28,10 @@ nonisolated enum TelestratorFrameLoader {
             let nominal = try await track.load(.nominalFrameRate)
             if nominal.isFinite, nominal > 0 { rate = Double(nominal) }
         }
-        let target = TelestrationRules.sourceTime(time, duration: duration, frameRate: rate)
+        // Builder holds own the exact source moment, including a frame closer
+        // to EOF than the nominal frame interval. Never move their cut clock.
+        var target = lockTime ? time : TelestrationRules.sourceTime(time, duration: duration, frameRate: rate)
+        if let range { target = min(range.upperBound, max(range.lowerBound, target)) }
         let generator = AVAssetImageGenerator(asset: asset)
         generator.appliesPreferredTrackTransform = true
         generator.requestedTimeToleranceBefore = .zero

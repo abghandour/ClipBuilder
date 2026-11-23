@@ -40,8 +40,12 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var addCaptions: Bool?
     var enableTextOverlays: Bool?
     var strikeStats: Bool?
+    var drawnPauses: Bool?
+    var strikeHighlightStyle: String?
     var strikeHighlights: Bool?
     var strikeImpactFreeze: Double?
+    var strikeSlowMotion: String?
+    var strikeFlash: Bool?
     var voiceOverBedLevel: Double?
     var strikeUnits: String?
     var strikeSpeedCallouts: Bool?
@@ -105,8 +109,10 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         case addCaptions
         case enableTextOverlays
         case strikeStats
+        case drawnPauses, strikeHighlightStyle
         case strikeHighlights
         case strikeImpactFreeze
+        case strikeSlowMotion, strikeFlash
         case voiceOverBedLevel
         case strikeUnits
         case strikeSpeedCallouts
@@ -173,8 +179,12 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         try c.encodeIfPresent(addCaptions, forKey: .addCaptions)
         try c.encodeIfPresent(enableTextOverlays, forKey: .enableTextOverlays)
         try c.encodeIfPresent(strikeStats, forKey: .strikeStats)
+        try c.encodeIfPresent(drawnPauses, forKey: .drawnPauses)
+        try c.encodeIfPresent(strikeHighlightStyle, forKey: .strikeHighlightStyle)
         try c.encodeIfPresent(strikeHighlights, forKey: .strikeHighlights)
         try c.encodeIfPresent(strikeImpactFreeze, forKey: .strikeImpactFreeze)
+        try c.encodeIfPresent(strikeSlowMotion, forKey: .strikeSlowMotion)
+        try c.encodeIfPresent(strikeFlash, forKey: .strikeFlash)
         try c.encodeIfPresent(voiceOverBedLevel, forKey: .voiceOverBedLevel)
         try c.encodeIfPresent(strikeUnits, forKey: .strikeUnits)
         try c.encodeIfPresent(strikeSpeedCallouts, forKey: .strikeSpeedCallouts)
@@ -268,8 +278,12 @@ nonisolated extension WizardOptions {
         result.addCaptions = addCaptions
         result.enableTextOverlays = enableTextOverlays
         result.strikeStats = strikeStats
+        result.drawnPauses = drawnPauses
+        result.strikeHighlightStyle = strikeHighlightStyle
         result.strikeHighlights = strikeHighlights
         result.strikeImpactFreeze = strikeImpactFreeze
+        result.strikeSlowMotion = strikeSlowMotion
+        result.strikeFlash = strikeFlash
         result.voiceOverBedLevel = voiceOverBedLevel
         result.strikeUnits = strikeUnits
         result.strikeSpeedCallouts = strikeSpeedCallouts
@@ -365,8 +379,12 @@ nonisolated extension WizardOptions {
         result.addCaptions = step2.addCaptions ?? base.addCaptions
         result.enableTextOverlays = step2.enableTextOverlays ?? base.enableTextOverlays
         result.strikeStats = step2.strikeStats
+        result.drawnPauses = step2.drawnPauses
+        result.strikeHighlightStyle = step2.strikeHighlightStyle
         result.strikeHighlights = step2.strikeHighlights
         result.strikeImpactFreeze = step2.strikeImpactFreeze
+        result.strikeSlowMotion = step2.strikeSlowMotion
+        result.strikeFlash = step2.strikeFlash
         result.voiceOverBedLevel = step2.voiceOverBedLevel
         result.strikeUnits = step2.strikeUnits
         result.strikeSpeedCallouts = step2.strikeSpeedCallouts

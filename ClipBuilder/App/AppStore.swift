@@ -360,6 +360,7 @@ final class AppStore {
     /// Goes up whenever fight events or saved strike highlights change, so a
     /// cached Builder preview of a clip that draws them is not replayed stale.
     var strikeHighlightRevision = 0
+    var telestrationRevision = 0
     /// Videos whose fight-scoring pass is running right now.
     var fightScoringJobsInFlight: Set<Int64> = []
     /// The fight events (by video) whose highlight an HD job is working

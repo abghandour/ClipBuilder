@@ -10,7 +10,8 @@ nonisolated enum CaptionWordStates {
 
     /// Only exact token clocks qualify. Silence is an unlit state, including
     /// gaps within a page; overlapping clocks are clipped at the next onset.
-    static func states(for page: CaptionPage, words: [TranscriptWord]?) -> [State] {
+    static func states(for page: CaptionPage, words: [TranscriptWord]?, holdHighlight: Bool = false,
+                       unheldIndices: Set<Int> = [], heldIndices: Set<Int> = []) -> [State] {
         let tokens = page.text.split(whereSeparator: \.isWhitespace).map(String.init)
         guard !tokens.isEmpty, page.start.isFinite, page.end.isFinite, page.end > page.start else { return [] }
         let clocks = words ?? page.words
@@ -30,7 +31,8 @@ nonisolated enum CaptionWordStates {
             let start = min(page.end, max(cursor, word.start))
             if start > cursor { result.append(State(page: page, start: cursor, end: start)) }
             let next = index + 1 < clocks.count ? clocks[index + 1].start : page.end
-            let end = min(page.end, min(word.end, next))
+            let held = (holdHighlight || heldIndices.contains(index)) && !unheldIndices.contains(index)
+            let end = min(page.end, held ? next : min(word.end, next))
             if end > start { result.append(State(page: page, activeIndex: index, start: start, end: end)) }
             cursor = max(start, end)
         }

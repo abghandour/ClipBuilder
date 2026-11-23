@@ -16,6 +16,19 @@ nonisolated struct CaptionWordDecor: Codable, Sendable, Hashable {
     var strokeWidth: Double?
     var letterSpacing: Double?
     var shadow: Bool?
+    /// Fit an emphasis page on one baseline, preserving the state size ratio.
+    /// Nil uses historical wrapping; below this scale the page wraps normally.
+    var fitLineMinimumScale: Double?
+    /// Nil inherits the page's highlight hold; false ends at the word clock.
+    var highlightHold: Bool?
+    /// False keeps an emphasis word in its own colour while it is spoken;
+    /// nil takes the spoken colour, as before.
+    var takesHighlightColor: Bool?
+
+    var resolvedFitLineMinimumScale: Double? {
+        guard let value = fitLineMinimumScale, value.isFinite else { return nil }
+        return min(1, max(0.25, value))
+    }
 
     var resolvedWeight: String { ["bold", "black"].contains(weight ?? "") ? weight! : "regular" }
     var resolvedStrokeWidth: Double { min(6, max(0, strokeWidth ?? 1)) }
@@ -39,5 +52,8 @@ nonisolated struct CaptionWordDecor: Codable, Sendable, Hashable {
         case strokeWidth = "stroke_width"
         case letterSpacing = "letter_spacing"
         case shadow
+        case fitLineMinimumScale = "fit_line_minimum_scale"
+        case highlightHold = "highlight_hold"
+        case takesHighlightColor = "takes_highlight_color"
     }
 }

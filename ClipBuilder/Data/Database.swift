@@ -911,6 +911,7 @@ actor Database {
         try connection.executeScript(Self.schema)
         try connection.executeScript(Self.dubTakesSchema)
         try connection.executeScript(Self.voiceTakesSchema)
+        try connection.executeScript(Self.telestrationsSchema)
         // Added the day the table shipped to Debug builds; no version bump.
         if try !connection.columnNames(of: "voice_takes").contains("hold_offset") {
             try connection.execute("ALTER TABLE voice_takes ADD COLUMN hold_offset REAL")

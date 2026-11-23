@@ -75,6 +75,31 @@ struct BuilderExpansionTests {
         }
     }
 
+
+    @Test func slowImpactsScriptAndSummary() throws {
+        let source = Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 4)
+        let model = ScriptFixtures.model(clips: [source])
+        let before = model.document
+        var library = ScriptFixtures.library()
+        library.strikeContacts[library.videos[0].id] = [2]
+        let command = BuilderCommand.slowClipIntoImpacts(clip: source.uid.uuidString, strength: .medium)
+        let data = try JSONEncoder().encode(command)
+        #expect(try JSONDecoder().decode(BuilderCommand.self, from: data) == command)
+        let outcomes = ScriptRunner().run([.init(command)], model: model, library: library)
+        #expect(!outcomes.contains { $0.isRefused })
+        let slow = try #require(model.document.videoTrack.first { $0.slowGroup != nil })
+        let summary = try BuilderDocumentSummary(document: model.document, offset: 0, limit: 200)
+        let row = try #require(summary.rows.first { $0.id == slow.uid.uuidString })
+        #expect(row.slowGroup == slow.slowGroup && row.slowStrength == .medium)
+        let object = try #require(JSONSerialization.jsonObject(with: JSONEncoder().encode(row)) as? [String: Any])
+        #expect(object["slow_group"] as? String == slow.slowGroup?.uuidString)
+        let remove = BuilderCommand.removeClipSlowMotion(clip: slow.uid.uuidString)
+        #expect(try JSONDecoder().decode(BuilderCommand.self, from: JSONEncoder().encode(remove)) == remove)
+        let removed = ScriptRunner().run([.init(remove)], model: model, library: library)
+        #expect(!removed.contains { $0.isRefused })
+        #expect(model.document == before)
+    }
+
     @Test func everyOperationRoundTripsAndRejectsUnknownOrMissingFields() throws {
         for command in commands(model()) {
             let data = try JSONEncoder().encode(command)

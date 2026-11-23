@@ -106,6 +106,9 @@ struct PreviewPane: View {
                 if let preview = store.builderPreview {
                     InPlacePreviewPlayer(preview: preview)
                         .frame(width: frame.width, height: frame.height)
+                } else if let player = model.livePreview.player {
+                    MonitorPlayerView(player: player)
+                        .frame(width: frame.width, height: frame.height)
                 }
             }
             .overlay {
@@ -173,10 +176,11 @@ struct PreviewPane: View {
     }
 
     /// `window` of the source scaled so it fills `size`.
-    private func windowCrop(url: URL, time: Double, window: FreeCropRect, size: CGSize) -> some View {
+    private func windowCrop(url: URL, time: Double, window: FreeCropRect, size: CGSize,
+                            drawing: Telestration? = nil) -> some View {
         let fullWidth = size.width / max(0.01, window.wFrac)
         let fullHeight = size.height / max(0.01, window.hFrac)
-        return VideoThumbnail(url: url, time: time, cornerRadius: 0)
+        return VideoThumbnail(url: url, time: time, cornerRadius: 0, telestration: drawing)
             .frame(width: fullWidth, height: fullHeight)
             .offset(x: -window.xFrac * fullWidth, y: -window.yFrac * fullHeight)
             .frame(width: size.width, height: size.height, alignment: .topLeading)
@@ -190,11 +194,23 @@ struct PreviewPane: View {
             let sourceTime = model.sourceTime(for: clip, atTimeline: sampledTime(for: clip, at: time))
             let settings = model.document.trackSettings[safe: clip.track] ?? TrackSettings()
             let cropped = clip.wide && (clip.cropXFrac ?? settings.defaultCropXFrac) != nil
+            let hasDrawing = clip.hold == true && clip.telestration != nil
+            let camera = hasDrawing ? model.cameraRect(for: clip, atTimeline: time) : nil
+            let staticPlan = !clip.isCutaway && clip.framingPlan?.isStatic == true
+            let areaHasWindow = clip.areaWindow != nil
+                || (clip.cameraPath == nil ? clip.areaRegion != nil : camera != nil)
+            let approximateDrawing = hasDrawing && (clip.framingPlan.map { !$0.isStatic } == true
+                || (!staticPlan && area != nil && !areaHasWindow)
+                || (!staticPlan && area == nil && clip.wide && clip.centerStage && camera == nil)
+                // An off-centre crop of a wide picture is not modelled by the plain fill below.
+                || (!staticPlan && area == nil && cropped && camera == nil
+                    && abs((clip.cropXFrac ?? settings.defaultCropXFrac ?? 0.5) - 0.5) > 0.001))
+            let drawing = hasDrawing && !approximateDrawing ? clip.telestration : nil
             Group {
                 if clip.isCutaway, clip.coverAllAreas, let window = clip.cutawaySourceWindow {
                     let fullWidth = frame.width / max(0.01, window.wFrac)
                     let fullHeight = frame.height / max(0.01, window.hFrac)
-                    VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
+                    VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0, telestration: drawing)
                         .frame(width: fullWidth, height: fullHeight)
                         .offset(x: -window.xFrac * fullWidth, y: -window.yFrac * fullHeight)
                         .frame(width: frame.width, height: frame.height, alignment: .topLeading)
@@ -214,12 +230,12 @@ struct PreviewPane: View {
                         ZStack {
                             windowCrop(url: url, time: sourceTime, window: window, size: frame)
                                 .blur(radius: 6 + 24 * plan.blur)
-                            windowCrop(url: url, time: sourceTime, window: window, size: fitted)
+                            windowCrop(url: url, time: sourceTime, window: window, size: fitted, drawing: drawing)
                         }
                         .frame(width: frame.width, height: frame.height)
                         .clipped()
                     } else {
-                        windowCrop(url: url, time: sourceTime, window: window, size: frame)
+                        windowCrop(url: url, time: sourceTime, window: window, size: frame, drawing: drawing)
                     }
                 } else if let area {
                     let bounds = area.bounds
@@ -240,7 +256,7 @@ struct PreviewPane: View {
                         // scaled so the window fills the area's box.
                         let fullWidth = boxSize.width / max(0.01, window.wFrac)
                         let fullHeight = boxSize.height / max(0.01, window.hFrac)
-                        VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
+                        VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0, telestration: drawing)
                             .frame(width: fullWidth, height: fullHeight)
                             .offset(x: -window.xFrac * fullWidth, y: -window.yFrac * fullHeight)
                             .frame(width: boxSize.width, height: boxSize.height, alignment: .topLeading)
@@ -249,7 +265,7 @@ struct PreviewPane: View {
                     } else {
                         // Tracking camera: approximate with a center-filled
                         // thumbnail in the area's bounding box.
-                        VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
+                        VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0, telestration: drawing)
                             .aspectRatio(contentMode: .fill)
                             .frame(width: boxSize.width, height: boxSize.height)
                             .clipped()
@@ -261,7 +277,7 @@ struct PreviewPane: View {
                     // shows at this instant, scaled to fill the frame.
                     let fullWidth = frame.width / max(0.01, rect.w)
                     let fullHeight = frame.height / max(0.01, rect.h)
-                    VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
+                    VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0, telestration: drawing)
                         .frame(width: fullWidth, height: fullHeight)
                         .offset(x: -rect.x * fullWidth, y: -rect.y * fullHeight)
                         .frame(width: frame.width, height: frame.height, alignment: .topLeading)
@@ -270,17 +286,30 @@ struct PreviewPane: View {
                     // Slot band: 1080x640 at top/center/bottom.
                     let position = clip.position ?? settings.defaultPosition
                     let slotIndex = ["top": 0, "center": 1, "bottom": 2][position] ?? 0
-                    VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
+                    VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0, telestration: drawing)
                         .frame(width: frame.width, height: frame.height / 3)
                         .offset(y: CGFloat(slotIndex) * frame.height / 3)
                 } else {
-                    VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0)
+                    VideoThumbnail(url: url, time: sourceTime, cornerRadius: 0, telestration: drawing)
                         .frame(width: frame.width, height: frame.height)
                 }
             }
             // Screen crop: only the named area stays visible, like the
             // render's alpha mask — lower layers show through the rest.
             .frame(width: frame.width, height: frame.height, alignment: .topLeading)
+            .overlay(alignment: .topLeading) {
+                if clip.hold == true, clip.telestration != nil, approximateDrawing {
+                    Label("drawing", systemImage: "pencil.tip")
+                        .font(.caption).lineLimit(1).fixedSize()
+                        .padding(4)
+                        .foregroundStyle(.white)
+                        .background(.black.opacity(0.7), in: .capsule)
+                        .padding(6)
+                        .offset(x: (area?.bounds.x ?? 0) * frame.width,
+                                y: (area?.bounds.y ?? 0) * frame.height)
+                        .help("Use the exact preview to see the drawing with tracked framing")
+                }
+            }
             .mask {
                 if let area {
                     ScreenCropPolygon(points: area.points)
@@ -329,6 +358,10 @@ private struct CropEditorLayer: View {
                 let fitted = fittedRect(imageSize: image.size)
                 Image(nsImage: image)
                     .resizable()
+                    .frame(width: fitted.width, height: fitted.height)
+                    .offset(x: fitted.minX, y: fitted.minY)
+                // The crop editor covers the preview: a drawn freeze keeps its drawing here.
+                TelestrationStillOverlay(drawing: clip.hold == true ? clip.telestration : nil)
                     .frame(width: fitted.width, height: fitted.height)
                     .offset(x: fitted.minX, y: fitted.minY)
                 ForEach(crops.indices, id: \.self) { index in

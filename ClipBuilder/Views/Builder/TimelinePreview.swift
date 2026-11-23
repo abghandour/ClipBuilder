@@ -59,6 +59,7 @@ nonisolated struct PreviewComposition {
     var audioMix: AVMutableAudioMix
     /// Source assets whose Drive leases the item must keep alive.
     var sources: [AVURLAsset]
+    var hasDub = false
 }
 
 nonisolated enum TimelinePreviewComposer {
@@ -67,12 +68,17 @@ nonisolated enum TimelinePreviewComposer {
     @MainActor
     static func makePlayerItem(segments: [PreviewSegment],
                                music: [PreviewMusicBlock],
-                               settings: RenderSettings = RenderSettings()) async throws -> sending AVPlayerItem {
-        let built = try await makeComposition(segments: segments, music: music, settings: settings)
+                               settings: RenderSettings = RenderSettings(),
+                               dubDocument: TimelineDocument? = nil, dubEnabled: Bool = true) async throws -> sending AVPlayerItem {
+        let built = try await makeComposition(segments: segments, music: music, settings: settings,
+            dubDocument: dubDocument, dubEnabled: dubEnabled)
         let item = AVPlayerItem(asset: built.composition)
         item.videoComposition = built.videoComposition
         DriveLocalAsset.retainSources(built.sources, on: item)
         item.audioMix = built.audioMix
+        // AVFoundation's spectral time scaling can differ in pitch/timbre
+        // from export's FFmpeg atempo. Source offsets and durations agree.
+        if built.hasDub { item.audioTimePitchAlgorithm = .spectral }
         return item
     }
 
@@ -81,7 +87,8 @@ nonisolated enum TimelinePreviewComposer {
     @concurrent
     static func makeComposition(segments: [PreviewSegment],
                                 music: [PreviewMusicBlock],
-                                settings: RenderSettings = RenderSettings()) async throws -> sending PreviewComposition {
+                                settings: RenderSettings = RenderSettings(),
+                                dubDocument: TimelineDocument? = nil, dubEnabled: Bool = true) async throws -> sending PreviewComposition {
         let composition = AVMutableComposition()
         guard let videoTrack = composition.addMutableTrack(withMediaType: .video,
                                                            preferredTrackID: kCMPersistentTrackID_Invalid),
@@ -255,6 +262,75 @@ nonisolated enum TimelinePreviewComposer {
 
         var mixParameters = [clipAudioParams]
         if let extraAudioParams { mixParameters.append(extraAudioParams) }
+        var dubPlan = PreviewDubPlan.Plan.empty
+        if dubEnabled, let document = dubDocument, document.dub?.enabled == true,
+           document.dubLines?.isEmpty == false {
+            let missing = await BuilderDubLayout.missingAudio(lines: document.dubLines ?? [])
+            guard missing.isEmpty, (document.dubLines ?? []).allSatisfy({ $0.audio?.isEmpty == false }) else {
+                throw ScriptError.invalid("Prepare the dub again to hear it live")
+            }
+            dubPlan = PreviewDubPlan.make(document: document, missingAudio: missing)
+            var failures = missing.sorted()
+            var played: [PreviewDubPlan.Block] = []
+            var tracks: [UUID: AVMutableCompositionTrack] = [:]
+            var parameters: [UUID: AVMutableAudioMixInputParameters] = [:]
+            for block in dubPlan.blocks {
+                do {
+                    try Task.checkCancellation()
+                    let source = try await asset(for: block.url)
+                    guard let audio = try await source.loadTracks(withMediaType: .audio).first else {
+                        throw PreviewError.compositionFailed
+                    }
+                    let length = try await source.load(.duration).seconds
+                    guard length + 0.01 >= block.sourceStart + block.duration * block.stretch,
+                          block.duration > 0 else { throw PreviewError.compositionFailed }
+                    let track: AVMutableCompositionTrack
+                    let params: AVMutableAudioMixInputParameters
+                    if let existing = tracks[block.lineID], let gain = parameters[block.lineID] {
+                        track = existing; params = gain
+                    } else {
+                        guard let created = composition.addMutableTrack(withMediaType: .audio,
+                            preferredTrackID: kCMPersistentTrackID_Invalid) else { throw PreviewError.compositionFailed }
+                        track = created
+                        params = AVMutableAudioMixInputParameters(track: created)
+                        tracks[block.lineID] = track; parameters[block.lineID] = params
+                    }
+                    let sourceRange = CMTimeRange(start: time(block.sourceStart), duration: time(block.duration * block.stretch))
+                    try track.insertTimeRange(sourceRange, of: audio, at: time(block.start))
+                    track.scaleTimeRange(CMTimeRange(start: time(block.start), duration: sourceRange.duration),
+                        toDuration: time(block.duration))
+                    params.setVolume(1, at: time(block.start))
+                    let fadeIn = min(block.fadeIn, block.duration / 2), fadeOut = min(block.fadeOut, block.duration / 2)
+                    if fadeIn > 0 {
+                        params.setVolumeRamp(fromStartVolume: 0, toEndVolume: 1,
+                            timeRange: CMTimeRange(start: time(block.start), duration: time(fadeIn)))
+                    }
+                    if fadeOut > 0 {
+                        params.setVolumeRamp(fromStartVolume: 1, toEndVolume: 0,
+                            timeRange: CMTimeRange(start: time(block.end - fadeOut), duration: time(fadeOut)))
+                    }
+                    played.append(block)
+                } catch is CancellationError { throw CancellationError() }
+                catch { failures.append("\(block.url.lastPathComponent): \(error.userMessage)") }
+            }
+            if !failures.isEmpty {
+                throw ScriptError.invalid("Prepare the dub again to hear it live")
+            }
+            dubPlan.duckRanges = PreviewDubPlan.duckRanges(plan: dubPlan, played: played)
+            dubPlan.blocks = played
+            mixParameters += parameters.values
+            for segment in segments where !segment.hold {
+                let span = segment.timelineStart..<(segment.timelineStart + segment.duration)
+                func apply(_ params: AVMutableAudioMixInputParameters, volume: Double) {
+                    for ramp in PreviewDubPlan.ramps(plan: dubPlan, within: span, volume: volume, bumper: segment.bumper) {
+                        params.setVolumeRamp(fromStartVolume: Float(ramp.from), toEndVolume: Float(ramp.to),
+                            timeRange: CMTimeRange(start: time(ramp.start), end: time(ramp.end)))
+                    }
+                }
+                apply(clipAudioParams, volume: segment.audio?.volume ?? segment.volume)
+                if let extraAudioParams, let extra = segment.cutawayAudio { apply(extraAudioParams, volume: extra.volume) }
+            }
+        }
         if !music.isEmpty,
            let musicTrack = composition.addMutableTrack(withMediaType: .audio,
                                                         preferredTrackID: kCMPersistentTrackID_Invalid) {
@@ -292,7 +368,7 @@ nonisolated enum TimelinePreviewComposer {
         let mix = AVMutableAudioMix()
         mix.inputParameters = mixParameters
         return PreviewComposition(composition: composition, videoComposition: videoComposition,
-                                  audioMix: mix, sources: Array(assets.values))
+                                  audioMix: mix, sources: Array(assets.values), hasDub: !dubPlan.blocks.isEmpty)
     }
 }
 
@@ -548,6 +624,7 @@ struct TimelinePreviewSheet: View {
     @State private var exactPreviewTask: Task<Void, Never>?
     @State private var mode: Mode = .fast
     @State private var failure: String?
+    @State private var fastRequest = UUID()
 
     var body: some View {
         VStack(spacing: 0) {
@@ -595,6 +672,7 @@ struct TimelinePreviewSheet: View {
             }
         }
         .onDisappear {
+            fastRequest = UUID()
             fastPlayer?.pause()
             exactPlayer?.pause()
             exactPreviewTask?.cancel()
@@ -668,6 +746,12 @@ struct TimelinePreviewSheet: View {
 
     private func prepareFastPreview() async {
         let model = store.builder
+        let request = UUID()
+        fastRequest = request
+        let revision = model.revision, generation = store.profileGeneration
+        let document = model.document
+        let playhead = fastPlayer?.currentTime().seconds ?? model.playhead
+        fastPlayer?.pause()
         let plan = model.previewPlan()
         guard !plan.segments.isEmpty else {
             failure = "Add clips to the timeline first."
@@ -675,15 +759,18 @@ struct TimelinePreviewSheet: View {
         }
         do {
             let item = try await TimelinePreviewComposer.makePlayerItem(segments: plan.segments,
-                                                                        music: plan.music, settings: model.document.renderSettings)
+                music: plan.music, settings: document.renderSettings)
+            guard !Task.isCancelled, request == fastRequest, revision == model.revision,
+                  generation == store.profileGeneration else { return }
             let player = AVPlayer(playerItem: item)
-            let playhead = model.playhead
             if playhead > 0.1 && playhead < model.totalDuration - 0.1 {
                 await player.seek(to: CMTime(seconds: playhead, preferredTimescale: 600))
             }
-            player.play()
+            guard !Task.isCancelled, request == fastRequest, generation == store.profileGeneration else { return }
+            if mode == .fast { player.play() }
             fastPlayer = player
         } catch {
+            guard !Task.isCancelled, request == fastRequest else { return }
             failure = "Could not build the preview: \(error.logged())"
         }
     }

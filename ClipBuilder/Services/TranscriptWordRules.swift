@@ -163,6 +163,7 @@ nonisolated enum TranscriptWordRules {
             guard before.word.trimmingCharacters(in: .whitespacesAndNewlines) == words[new].word else { continue }
             words[new].confidence = before.confidence
             words[new].suggestion = before.suggestion
+            words[new].emphasis = before.emphasis
         }
         return words
     }
@@ -177,6 +178,7 @@ nonisolated enum TranscriptWordRules {
             var word = word
             word.confidence = now.confidence
             word.suggestion = now.suggestion
+            word.emphasis = now.emphasis
             return word
         }
     }

@@ -108,6 +108,8 @@ struct VideoThumbnail: View {
     /// Only this part of the frame (fractions, top-left origin), scaled to
     /// fill the view: a speaker's cell of a call, a tracked crop.
     var window: FreeCropRect? = nil
+    /// Builder holds paint on the source image, before the thumbnail's crop.
+    var telestration: Telestration? = nil
 
     @State private var image: NSImage?
     @State private var loadedKey: String?
@@ -143,12 +145,14 @@ struct VideoThumbnail: View {
                                 Image(nsImage: image)
                                     .resizable()
                                     .frame(width: fullWidth, height: fullHeight)
+                                    .overlay { TelestrationStillOverlay(drawing: telestration) }
                                     .offset(x: -window.xFrac * fullWidth, y: -window.yFrac * fullHeight)
                             }
                         } else {
                             Image(nsImage: image)
                                 .resizable()
                                 .aspectRatio(contentMode: contentMode)
+                                .overlay { TelestrationStillOverlay(drawing: telestration) }
                         }
                     }
             } else {

@@ -3,6 +3,7 @@ import SwiftUI
 /// The Express cards share the full Wizard’s saved selections and renderer.
 struct MiniWizardView: View {
     @Environment(\.workspacePageVisible) private var pageVisible
+    @State private var drawingRequest: TelestratorRequest?
     @Environment(AppStore.self) private var store
     let profileName: String
 
@@ -88,6 +89,15 @@ struct MiniWizardView: View {
     /// Transcript picks of this source kept off the list because they were
     /// made on another transcript, counted per transcript set.
     private var selectedVideo: VideoRecord? { projectVideos.first { $0.path == videoPath } }
+
+    /// A voice over can be recorded in the drawing editor over the reel's own
+    /// video: it joins that reel's Voice Over recordings.
+    private func drawingVoice(_ request: TelestratorRequest) -> TelestratorVoice? {
+        guard let run = currentRun, run.video.id == request.videoID, request.clipRange != nil else { return nil }
+        return TelestratorVoice(owner: .init(projectID: run.projectID, videoIDs: [run.video.id],
+                                             library: store.database?.path.path ?? ""),
+                                videoID: request.videoID)
+    }
 
     private var currentRun: MiniWizardRun? {
         guard let video = selectedVideo else { return nil }
@@ -182,37 +192,45 @@ struct MiniWizardView: View {
 
     private var visibleStrikeStatuses: [String: StrikeClipStatus] {
         let request = strikeStatusRequest
-        guard request.visible, completedStrikeRequest == request else { return [:] }
-        return strikeResult?.statuses ?? [:]
+        guard completedStrikeRequest == request else { return [:] }
+        let statuses = strikeResult?.statuses ?? [:]
+        // With the strike controls off, only a clip that has something to say
+        // about a drawing gets a line; "no strike" is not news on a podcast.
+        return request.visible ? statuses : statuses.filter { $0.value.line != StrikeClipStatus.noStrike }
     }
 
     private var strikeStatusFallback: String? {
         let request = strikeStatusRequest
-        guard request.visible else { return nil }
+        guard request.visible || (request.options.drawnPauses != false && strikeSnapshot?.hasDrawings == true) else { return nil }
         guard completedStrikeRequest == request else { return "Checking strike status…" }
         return strikeStatusError
     }
 
     private var strikeSummary: String? {
         let request = strikeStatusRequest
-        guard request.visible else { return nil }
+        guard request.visible || (request.options.drawnPauses != false && strikeSnapshot?.hasDrawings == true) else { return nil }
         guard completedStrikeRequest == request else { return "Checking strike status…" }
         return strikeStatusError ?? strikeResult?.summary
     }
 
     private func refreshStrikeStatuses() async {
         let request = strikeStatusRequest
-        guard request.visible, let videoID = request.videoID, let database = store.database else { return }
+        guard request.visible || request.options.drawnPauses != false,
+              let videoID = request.videoID, let database = store.database else {
+            strikeResult = nil
+            completedStrikeRequest = request
+            return
+        }
         do {
             let saved: StrikeClipStatusRules.Saved
-            if strikeSnapshotKey == request.dataKey, let strikeSnapshot {
+            if strikeSnapshotKey == request.snapshotKey, let strikeSnapshot {
                 saved = strikeSnapshot
             } else {
-                saved = try await database.strikeClipStatusSnapshot(videoID: videoID)
+                saved = try await database.sharedStrikeClipStatusSnapshot(videoID: videoID, companionSceneIDs: request.companionSceneIDs)
             }
             guard !Task.isCancelled, request == strikeStatusRequest else { return }
             strikeSnapshot = saved
-            strikeSnapshotKey = request.dataKey
+            strikeSnapshotKey = request.snapshotKey
             let result = await Task.detached(priority: .userInitiated) { request.evaluate(saved: saved) }.value
             guard !Task.isCancelled, request == strikeStatusRequest else { return }
             strikeResult = result
@@ -221,6 +239,7 @@ struct MiniWizardView: View {
         } catch {
             guard !Task.isCancelled, request == strikeStatusRequest else { return }
             strikeResult = nil
+            ErrorLog.record("Strike status", error.localizedDescription)
             strikeStatusError = "Strike status unavailable — could not read saved marks"
             completedStrikeRequest = request
         }
@@ -303,6 +322,15 @@ struct MiniWizardView: View {
             }
             Button("Cancel", role: .cancel) {}
         } message: { Text("The kept footage will stay in the reel.") }
+        .environment(\.requestTelestration, { drawingRequest = $0 })
+        .sheet(item: $drawingRequest) { request in
+            TelestratorSheet(videoURL: request.videoURL, initialTime: request.initialTime,
+                duration: request.duration, aspect: request.aspect, range: request.range,
+                clipRange: request.clipRange, existing: request.existing?.drawing,
+                voice: drawingVoice(request)) { drawing in
+                    await request.save(drawing, store: store)
+                }
+        }
         .sheet(item: $presetSheet) { sheet in
             let lastUsed = UserDefaults.standard.string(forKey: MiniWizardPresetStore.lastUsedKey(profileName: profileName))
             switch sheet {
@@ -927,7 +955,7 @@ struct MiniWizardView: View {
     }
 
     private var transcriptKey: String {
-        "\(store.profileGeneration):\(selectedVideo?.id ?? -1):\(store.videosVersion):\(store.scenesVersion):\(store.transcriptCountsVersion):\(store.strikeHighlightRevision)"
+        "\(store.profileGeneration):\(selectedVideo?.id ?? -1):\(store.videosVersion):\(store.scenesVersion):\(store.transcriptCountsVersion):\(store.strikeHighlightRevision):\(store.telestrationRevision)"
     }
 
     private func loadTranscriptLanguage() async {

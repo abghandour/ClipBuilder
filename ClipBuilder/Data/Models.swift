@@ -1051,6 +1051,8 @@ nonisolated struct TranscriptWord: Codable, Sendable, Equatable {
     /// What Proofread thinks was said instead; cleared when the word is
     /// fixed, marked right or edited.
     var suggestion: TranscriptWordSuggestion? = nil
+    /// nil = automatic; none, primary or alternate override this caption page.
+    var emphasis: String? = nil
 }
 
 nonisolated struct TranscriptWordSuggestion: Codable, Sendable, Equatable {

@@ -5,6 +5,24 @@ import Testing
 @MainActor
 @Suite("Script split and precision", .serialized)
 struct TimelineSplitTests {
+    @Test("Ordinary cuts and pauses slice saved zooms in rectangle space")
+    func cameraInterpolationDomain() throws {
+        var clip = Fixtures.timelineClip(sceneID: nil, sourceStart: 0, duration: 2)
+        clip.cameraPath = [.init(t: 0, x: 0.1, y: 0.1, w: 0.8, h: 0.8),
+                           .init(t: 2, x: 0.3, y: 0.2, w: 0.4, h: 0.4)]
+        let ordinary = try #require(TimelineSplit.pieces(clip, at: 1))
+        let ordinaryWidth = try #require(ordinary.tail.cameraPath?.first).w
+        let headWidth = try #require(ordinary.head.cameraPath?.last).w
+        #expect(abs(ordinaryWidth - 0.6) < 1e-9)
+        #expect(abs(headWidth - ordinaryWidth) < 1e-9)
+        let pieces = StrikeFreezeRules.pieces(clip, pauses: [.init(time: 1, duration: 0.8)])
+        let heldWidth = try #require(pieces.first { $0.hold == true }?.cameraPath?.first).w
+        #expect(abs(heldWidth - 0.6) < 1e-9)
+        let recut = try #require(TimelineSplit.pieces(pieces[0], at: 0.5))
+        let recutWidth = try #require(recut.tail.cameraPath?.first).w
+        #expect(abs(recutWidth - 0.7) < 1e-9)
+    }
+
     @Test("Split keeps speed-adjusted source continuity, identities and outer boundaries", arguments: [ClipRole.main, .cutaway])
     func sourceMath(role: ClipRole) throws {
         var clip = Fixtures.timelineClip(sceneID: nil, sourceStart: 2, duration: 4, startTime: 3, speed: 0.5)

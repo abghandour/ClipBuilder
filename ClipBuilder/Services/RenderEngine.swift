@@ -67,6 +67,108 @@ actor RenderEngine {
         return (recipe, headTrim, tailTrim)
     }
 
+    /// Shared with stay synchronization. Recipe bridges remove their neighbours'
+    /// heads/tails before the remaining xfade runs are clamped. Assembly itself
+    /// passes the already-trimmed file lengths and leaves this flag off.
+    nonisolated static func crossfadeOverlaps(durations input: [Double], transitions inputTransitions: [String?],
+                                              transitionDuration: Double, applyingRecipeTrims: Bool = false) -> [Int: Double] {
+        var durations = input
+        var transitions = inputTransitions
+        if applyingRecipeTrims {
+            let plan = affordableRecipes(durations: durations, transitions: transitions)
+            durations = recipeRemainders(durations: durations, headTrim: plan.headTrim, tailTrim: plan.tailTrim)
+            transitions = transitions.map { $0 == "cut" || TransitionRecipes.isRecipe($0) ? nil : $0 }
+        }
+        var overlaps: [Int: Double] = [:]
+        var runStart = 0
+        func close(_ end: Int) {
+            // Clips runStart...end joined by crossfades at gaps runStart..<end.
+            guard end > runStart else { return }
+            let names = (runStart..<end).map { transitions[safe: $0].flatMap { $0 } ?? "fade" }
+            let used = (try? RenderEngine.resolvedGaps(durations: Array(durations[runStart...end]), transitions: names,
+                                                       configured: transitionDuration, maximumOverlap: nil))?
+                .map(\.duration)
+            for (offset, gap) in (runStart..<end).enumerated() { overlaps[gap] = used?[offset] ?? 0 }
+        }
+        for gap in 0..<max(0, durations.count - 1) where (transitions[safe: gap] ?? nil) == nil {
+            close(gap)
+            runStart = gap + 1
+        }
+        close(durations.count - 1)
+        return overlaps
+    }
+
+    /// The frame-bounded compositor and exact-preview clock share both the
+    /// affordability/fallback rule and the final 30 fps quantization.
+    nonisolated static func frameCrossfadeOverlaps(durations: [Double], transitions: [String?],
+                                                   transitionDuration: Double,
+                                                   maximumOverlap: Double? = nil) -> [Int: Double] {
+        let names = transitions.map { $0 == "cut" ? nil : $0 }
+        return crossfadeOverlaps(durations: durations, transitions: names,
+            transitionDuration: transitionDuration).mapValues {
+                let requested = min($0, maximumOverlap ?? .greatestFiniteMagnitude)
+                return Double(max(0, Int((requested * 30).rounded()))) / 30
+            }
+    }
+
+    /// The expanded frame clock for dubbed bumper documents. Their recipe
+    /// pieces are bounded to editorial lengths, rather than encoder padding.
+    nonisolated static func frameAssemblyJoins(durations: [Double], transitions: [String?],
+                                               transitionDuration: Double) -> JoinOverlaps {
+        let joins = JoinOverlaps()
+        let plan = affordableRecipes(durations: durations, transitions: transitions)
+        guard plan.recipe.contains(where: { $0 != nil }) else {
+            let plain = transitions.map { TransitionRecipes.isRecipe($0) ? nil : $0 }
+            for (gap, overlap) in frameCrossfadeOverlaps(durations: durations, transitions: plain,
+                transitionDuration: transitionDuration) { joins.record(gap, overlap) }
+            return joins
+        }
+        let remaining = recipeRemainders(durations: durations, headTrim: plan.headTrim, tailTrim: plan.tailTrim)
+        var expanded: [Double] = []
+        var names: [String?] = []
+        var origins: [Int?] = []
+        var pieces: [RecipeAssemblyClock.Piece] = []
+        var bridges: [(gap: Int, index: Int)] = []
+        for index in durations.indices {
+            if index > 0 {
+                let gap = index - 1
+                if let name = plan.recipe[safe: gap] ?? nil {
+                    let (tail, head) = TransitionRecipes.pieces(for: name)
+                    bridges.append((gap, expanded.count))
+                    expanded.append(tail + head - TransitionRecipes.consumedOverlap(for: name))
+                    names += [nil, nil]; origins += [nil, nil]
+                } else {
+                    let name = transitions[safe: gap] ?? nil
+                    names.append(TransitionRecipes.isRecipe(name) ? nil : name)
+                    origins.append(gap)
+                }
+            }
+            pieces.append(.init(originalIndex: index, expandedIndex: expanded.count,
+                head: plan.headTrim[index], tail: plan.tailTrim[index]))
+            expanded.append(remaining[index])
+        }
+        let overlaps = frameCrossfadeOverlaps(durations: expanded, transitions: names, transitionDuration: transitionDuration)
+        let ranges = RecipeAssemblyClock.ranges(durations: expanded, overlaps: overlaps)
+        for (index, origin) in origins.enumerated() {
+            if let origin { joins.record(origin, overlaps[index] ?? 0) }
+        }
+        for piece in pieces {
+            let range = ranges[piece.expandedIndex]
+            joins.reconcile(piece.originalIndex, range: (range.lowerBound - piece.head)..<(range.upperBound + piece.tail))
+        }
+        for bridge in bridges {
+            let tail = plan.tailTrim[bridge.gap], head = plan.headTrim[bridge.gap + 1]
+            let range = ranges[bridge.index]
+            joins.record(bridge.gap, max(0, tail + head - (range.upperBound - range.lowerBound)))
+            joins.bridge(gap: bridge.gap, tail: tail, head: head, range: range)
+        }
+        return joins
+    }
+
+    nonisolated static func recipeRemainders(durations: [Double], headTrim: [Double], tailTrim: [Double]) -> [Double] {
+        durations.indices.map { durations[$0] - headTrim[$0] - tailTrim[$0] }
+    }
+
     private let workDirectory: URL
 
     init() {
@@ -323,6 +425,7 @@ actor RenderEngine {
     /// assembly maps through it (`RenderClock`).
     func concatenate(clips: [URL], transitions: [String?], output: URL,
                      clipDurations: [Double]? = nil,
+                     boundRecipes: Bool = false,
                      maximumOverlap: Double? = nil, transitionDuration: Double? = nil,
                      assemblyCache: AssemblyCache? = nil,
                      overlaps: JoinOverlaps? = nil, gapOffset: Int = 0,
@@ -358,9 +461,60 @@ actor RenderEngine {
         if padded.contains(where: { TransitionRecipes.isRecipe($0) }) {
             let scratch = try makeScratchDirectory()
             recipeScratch = scratch
-            let resolved = try await resolveRecipeGaps(clips: clips, transitions: padded, scratch: scratch)
+            let resolved = try await resolveRecipeGaps(clips: clips, transitions: padded, scratch: scratch,
+                boundedDurations: boundRecipes ? clipDurations : nil)
             (clips, padded, origins) = (resolved.clips, resolved.transitions, resolved.origins)
             for (gap, consumed) in resolved.consumed { overlaps?.record(gap + gapOffset, consumed) }
+            if !resolved.consumed.isEmpty {
+                // Recipe trims and bridges can carry encoder tails. Probe each
+                // final piece once, then use those same cumulative frame bounds
+                // for concatenation AND every consumer of the assembled clock.
+                let measured: [Double]
+                if let bounded = resolved.boundedDurations {
+                    measured = bounded
+                } else {
+                    measured = try await BoundedConcurrency.map(clips, limit: FFmpeg.jobLimit) { _, clip in
+                        await FFmpeg.duration(of: clip)
+                    }
+                }
+                for index in 1..<resolved.pieces.count {
+                    let previous = resolved.pieces[index - 1], next = resolved.pieces[index]
+                    if next.expandedIndex == previous.expandedIndex + 2 {
+                        overlaps?.record(previous.originalIndex + gapOffset,
+                            max(0, previous.tail + next.head - measured[next.expandedIndex - 1]))
+                    }
+                }
+                let expandedJoins = JoinOverlaps()
+                try await concatenateTimed(clips: clips, durations: measured, transitions: padded,
+                    output: output, maximumOverlap: maximumOverlap,
+                    transitionDuration: transitionDuration ?? RenderContext.transitions.xfadeDuration,
+                    overlaps: expandedJoins, gapOffset: 0)
+                let ranges = RecipeAssemblyClock.ranges(durations: measured, overlaps: expandedJoins.all)
+                for index in 1..<resolved.pieces.count {
+                    let previous = resolved.pieces[index - 1], next = resolved.pieces[index]
+                    if next.expandedIndex == previous.expandedIndex + 2 {
+                        overlaps?.bridge(gap: previous.originalIndex + gapOffset,
+                            tail: previous.tail, head: next.head, range: ranges[next.expandedIndex - 1])
+                    }
+                }
+                for piece in resolved.pieces {
+                    let range = ranges[piece.expandedIndex]
+                    overlaps?.reconcile(piece.originalIndex + gapOffset,
+                        range: (range.lowerBound - piece.head)..<(range.upperBound + piece.tail))
+                }
+                for (index, origin) in origins.enumerated() {
+                    if let origin { overlaps?.record(origin + gapOffset, expandedJoins.all[index] ?? 0) }
+                }
+                return
+            }
+        }
+        if boundRecipes, let clipDurations, clipDurations.count == clips.count {
+            // Every requested recipe fell back to a cut; retain the bounded policy.
+            try await concatenateTimed(clips: clips, durations: clipDurations, transitions: padded,
+                output: output, maximumOverlap: maximumOverlap,
+                transitionDuration: transitionDuration ?? RenderContext.transitions.xfadeDuration,
+                overlaps: overlaps, gapOffset: gapOffset)
+            return
         }
         // Record a crossfaded run's clamped overlaps against the original gaps.
         let recordRun: @Sendable ([Int?], [Double]) -> Void = { runOrigins, used in
@@ -487,10 +641,16 @@ actor RenderEngine {
     /// the outgoing clip minus its tail, a rendered bridge segment, and the
     /// incoming clip minus its head — all hard-cut. Gaps whose clips are too
     /// short, and bridges that fail to render, degrade to plain hard cuts.
-    private func resolveRecipeGaps(clips: [URL], transitions: [String?], scratch: URL)
-        async throws -> (clips: [URL], transitions: [String?], origins: [Int?], consumed: [Int: Double]) {
-        let durations = try await BoundedConcurrency.map(clips, limit: FFmpeg.jobLimit) { _, clip in
-            await FFmpeg.duration(of: clip)
+    private func resolveRecipeGaps(clips: [URL], transitions: [String?], scratch: URL,
+                                   boundedDurations: [Double]? = nil)
+        async throws -> (clips: [URL], transitions: [String?], origins: [Int?], consumed: [Int: Double], pieces: [RecipeAssemblyClock.Piece], boundedDurations: [Double]?) {
+        let durations: [Double]
+        if let boundedDurations, boundedDurations.count == clips.count {
+            durations = boundedDurations
+        } else {
+            durations = try await BoundedConcurrency.map(clips, limit: FFmpeg.jobLimit) { _, clip in
+                await FFmpeg.duration(of: clip)
+            }
         }
         let sfxEnabled = RenderContext.transitions.sfxEnabled
 
@@ -546,10 +706,11 @@ actor RenderEngine {
         // Trim the source clips that lost a head and/or tail to a bridge.
         let headTrims = headTrim
         let tailTrims = tailTrim
+        let remainders = Self.recipeRemainders(durations: durations, headTrim: headTrims, tailTrim: tailTrims)
         let trimmed = try await BoundedConcurrency.map(Array(clips.indices),
                                                        limit: FFmpeg.jobLimit) { _, index -> URL in
             guard headTrims[index] > 0 || tailTrims[index] > 0 else { return clips[index] }
-            let remainder = durations[index] - headTrims[index] - tailTrims[index]
+            let remainder = remainders[index]
             let url = scratch.appendingPathComponent("trimmed_\(index).mp4")
             try await Self.trim(clips[index], from: headTrims[index],
                                 duration: remainder, output: url)
@@ -557,26 +718,33 @@ actor RenderEngine {
         }
 
         var outClips: [URL] = [trimmed[0]]
+        var outDurations = [remainders[0]]
         var outTransitions: [String?] = []
         var outOrigins: [Int?] = []
         var consumed: [Int: Double] = [:]
+        var pieces = [RecipeAssemblyClock.Piece(originalIndex: 0, expandedIndex: 0,
+            head: headTrim[0], tail: tailTrim[0])]
         for gap in transitions.indices {
             if recipe[gap] != nil, let bridge = bridgeByGap[gap] ?? nil {
                 outTransitions.append(nil)
                 outClips.append(bridge)
+                outDurations.append(tailTrim[gap] + headTrim[gap + 1]
+                    - TransitionRecipes.consumedOverlap(for: recipe[gap]!))
                 outTransitions.append(nil)
                 outOrigins += [nil, nil]
                 // The bridge replaces the tail and head; whatever it is
                 // shorter by is the time this join took out of the clock.
-                let bridgeDuration = await FFmpeg.duration(of: bridge)
-                consumed[gap] = max(0, tailTrim[gap] + headTrim[gap + 1] - bridgeDuration)
+                consumed[gap] = TransitionRecipes.consumedOverlap(for: recipe[gap]!)
             } else {
                 outTransitions.append(TransitionRecipes.isRecipe(transitions[gap]) ? nil : transitions[gap])
                 outOrigins.append(gap)
             }
+            pieces.append(.init(originalIndex: gap + 1, expandedIndex: outClips.count,
+                head: headTrim[gap + 1], tail: tailTrim[gap + 1]))
             outClips.append(trimmed[gap + 1])
+            outDurations.append(remainders[gap + 1])
         }
-        return (outClips, outTransitions, outOrigins, consumed)
+        return (outClips, outTransitions, outOrigins, consumed, pieces, boundedDurations == nil ? nil : outDurations)
     }
 
     /// Frame-accurate re-encoded sub-clip of a normalized intermediate.
@@ -706,12 +874,12 @@ actor RenderEngine {
             return name == "cut" ? nil : name
         }
         // Use the same run-level fallback policy as ordinary assembly/preview.
-        let planned = MultitrackRenderer.crossfadeOverlaps(durations: durations, transitions: names,
-            transitionDuration: transitionDuration)
+        let planned = Self.frameCrossfadeOverlaps(durations: durations, transitions: names,
+            transitionDuration: transitionDuration, maximumOverlap: maximumOverlap)
         var video = "[v0]", audio = "[a0]"
         var totalFrames = frames[0]
         for index in 1..<clips.count {
-            let requested = min(planned[index - 1] ?? 0, maximumOverlap ?? .greatestFiniteMagnitude)
+            let requested = planned[index - 1] ?? 0
             let overlapFrames = max(0, Int((requested * 30).rounded()))
             let used = Double(overlapFrames) / 30
             overlaps?.record(index - 1 + gapOffset, used)

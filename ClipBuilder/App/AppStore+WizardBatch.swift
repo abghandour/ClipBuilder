@@ -297,6 +297,8 @@ extension AppStore {
             cameraFocus: cameraFocus, gatherTakes: gatherTakes, combine: combine, namespace: namespace)
         let framing = options.requestedFraming
         let canvasAspect = options.renderSettings.aspectRatio
+        let strikeRevision = strikeHighlightRevision
+        let drawingRevision = telestrationRevision
         return jobs.start(.roughCut, title: "\(renderCuts ? "Rough cut" : "Rough cut preview") — \(project?.name ?? "Project")", project: project,
                    profileGeneration: generation, subjectID: "wizard-rough-\(projectID)") { [weak self] log in
             guard let self else { return nil }
@@ -391,7 +393,8 @@ extension AppStore {
             let sourceType = videoIDs.lazy.compactMap { id in self.videos.first { $0.id == id }?.type }.first ?? .other
             return .roughCut(RoughCutReview(projectID: projectID, cuts: cuts, namespace: namespace, requestID: requestID,
                 framing: framing, sourceType: sourceType, videoIDs: videoIDs, canvasAspect: canvasAspect,
-                extras: extras, previewClips: previewClips))
+                extras: extras, previewClips: previewClips,
+                strikeRevision: strikeRevision, drawingRevision: drawingRevision))
         }
     }
 

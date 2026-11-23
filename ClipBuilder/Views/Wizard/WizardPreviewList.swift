@@ -81,7 +81,7 @@ struct WizardPreviewList: View {
                     .lineLimit(1).fixedSize(horizontal: false, vertical: true)
                     .help(summary)
             }
-            if !rows.isEmpty, config.onSelect != nil || config.onDelete != nil { selectedActions }
+            if !rows.isEmpty, config.onSelect != nil || config.onDelete != nil || selectedIsFight { selectedActions }
             if rows.isEmpty {
                 Text(emptyMessage).font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -91,7 +91,7 @@ struct WizardPreviewList: View {
         }
         // Transcript edits and re-transcriptions bump the counts version.
         // So does a re-score of a fight in the list.
-        .task(id: "\(videoIDs) \(store.transcriptCountsVersion) \(store.strikeHighlightRevision) \(scoredSignature)") { await loadLines() }
+        .task(id: "\(videoIDs) \(store.transcriptCountsVersion) \(store.strikeHighlightRevision) \(store.telestrationRevision) \(scoredSignature)") { await loadLines() }
         .onChange(of: clips, initial: true) { _, _ in rebuildRows() }
         .speakerColors(for: Set(rows.flatMap { $0.segments.compactMap(\.speaker) }))
         .onChange(of: linesVersion) { _, _ in rebuildRows() }
@@ -142,6 +142,11 @@ struct WizardPreviewList: View {
 
     /// What the selected clip can do, as buttons: where it came from, and
     /// out of the reel. The rows themselves carry no buttons.
+    private var selectedIsFight: Bool {
+        guard rows.indices.contains(selectedIndex) else { return false }
+        return store.videos.first { $0.id == rows[selectedIndex].videoID }?.type == .fight
+    }
+
     private var selectedActions: some View {
         let row = rows.indices.contains(selectedIndex) ? rows[selectedIndex] : nil
         return ViewThatFits(in: .horizontal) {
@@ -169,6 +174,14 @@ struct WizardPreviewList: View {
                 // A Fight-metrics stretch has no keep box: out of the reel is deleted.
                 .help(removeHelp(row))
                 .accessibilityLabel("Remove from Reel")
+            }
+            // A new drawing on the selected clip, fight footage only. Rows
+            // show the pencil only where a drawing already exists.
+            if let row, store.videos.first(where: { $0.id == row.videoID })?.type == .fight {
+                let companions = clips.first { $0.id == row.id }?.drawingCompanions ?? []
+                TelestrationRowMenu(videoID: row.videoID, videoURL: row.videoURL,
+                    range: row.start...max(row.start, row.end),
+                    areaName: companions.first?.mainAreaName, companions: companions, style: .toolbar)
             }
             Spacer(minLength: 0)
         }
@@ -209,7 +222,6 @@ struct WizardPreviewList: View {
                         .offset(y: isDragging ? dragTranslation : 0)
                         .opacity(isDragging ? 0.75 : 1)
                         .zIndex(isDragging ? 1 : 0)
-                        .highPriorityGesture(reorderGesture(row), including: canReorder ? .all : .subviews)
                         .help(canReorder ? "Double-click to expand or collapse; drag to reorder" : "Double-click to expand or collapse")
                         .contextMenu {
                             if !row.text.isEmpty {
@@ -265,8 +277,7 @@ struct WizardPreviewList: View {
         let grouped = (joinsAbove || joinsBelow) && config.barSlot?(row.id) != nil
         let bridge = Self.rowSpacing / 2
         let placeInItem = rows[..<index].reversed().prefix { barGroupKey($0) == key }.count
-        // No buttons on the card: a click selects, a double-click expands or
-        // collapses, and the context menu carries Expand, Select and Delete.
+        // Text owns selection, expansion and reordering; the pencil is a sibling control.
         return VStack(alignment: .leading, spacing: 2) {
             Button { selectedIndex = index; listFocused = true } label: {
                 // Only who is talking and what they said; the Video tab's
@@ -292,17 +303,24 @@ struct WizardPreviewList: View {
                                 .fixedSize(horizontal: false, vertical: true)
                         }
                     }
-                    StrikeClipStatusLine(status: config.strikeStatuses[row.id], fallback: config.strikeStatusFallback)
+                    StrikeClipStatusLine(status: config.strikeStatuses[row.id], fallback: config.strikeStatusFallback,
+                        symbol: config.strikeStatuses[row.id]?.symbol ?? "viewfinder")
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())
             }
             .buttonStyle(.plain)
+            .highPriorityGesture(reorderGesture(row), including: canReorder ? .all : .subviews)
             .simultaneousGesture(TapGesture(count: 2).onEnded { toggleExpanded(row) })
             .accessibilityLabel("Clip \(index + 1), \(row.title)")
             .accessibilityValue("\(row.text). Duration \(Self.clock(row.duration)). \(config.strikeStatuses[row.id]?.line ?? config.strikeStatusFallback ?? "")")
             .accessibilityAddTraits(selected ? .isSelected : [])
             .accessibilityAction(named: isExpanded ? "Collapse" : "Expand") { toggleExpanded(row) }
+            TelestrationRowMenu(videoID: row.videoID, videoURL: row.videoURL,
+                range: row.start...max(row.start, row.end),
+                areaName: clips.first { $0.id == row.id }?.drawingCompanions.first?.mainAreaName,
+                companions: clips.first { $0.id == row.id }?.drawingCompanions ?? [])
+                .frame(maxWidth: .infinity, alignment: .trailing)
         }
         .padding(Theme.spaceS)
         // Air between the item's bar and the words.

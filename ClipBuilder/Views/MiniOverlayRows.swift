@@ -122,10 +122,24 @@ struct MiniOverlayRows: View {
                 Toggle("Action overlays", isOn: $settings.resolvedActionOverlays)
                     .lineLimit(1).fixedSize()
             }
+            MiniRow("Highlight style") {
+                StrikeHighlightStylePicker(selection: Binding(
+                    get: { settings.strikeHighlightStyle ?? "outline" },
+                    set: { settings.strikeHighlightStyle = $0 == "outline" ? nil : $0 }),
+                    enabled: settings.resolvedActionOverlays)
+            }
             MiniRow("Pause on contact") {
                 StrikePauseControls(enabled: $settings.resolvedPauseOnContact,
-                                    seconds: $settings.resolvedPauseOnContactSeconds)
+                                    seconds: $settings.resolvedPauseOnContactSeconds,
+                                    slowEnabled: $settings.resolvedSlowIntoContact,
+                                    strength: $settings.resolvedSlowIntoContactStrength,
+                                    flashEnabled: $settings.resolvedFlashOnContact)
             }
+        }
+        MiniRow("Drawings") {
+            Toggle("Drawings", isOn: Binding(get: { settings.drawnPauses != false },
+                set: { settings.drawnPauses = $0 }))
+                .lineLimit(1).fixedSize().help(TelestratorRequest.drawingsHelp)
         }
     }
 
@@ -294,11 +308,54 @@ struct MiniOverlayRows: View {
 struct StrikePauseControls: View {
     @Binding var enabled: Bool
     @Binding var seconds: Double
+    @Binding var slowEnabled: Bool
+    @Binding var strength: String
+    @Binding var flashEnabled: Bool
 
     var body: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: Theme.spaceM) { pause; slow; flash }
+            VStack(alignment: .leading, spacing: Theme.spaceS) { pause; slow; flash }
+        }
+    }
+
+    private var slow: some View {
+        ViewThatFits(in: .horizontal) {
+            HStack(spacing: Theme.spaceS) { slowToggle; strengthPicker }
+            VStack(alignment: .leading, spacing: Theme.spaceXS) { slowToggle; strengthPicker }
+        }
+    }
+
+    private var slowToggle: some View {
         HStack(spacing: Theme.spaceS) {
+            Text("Slow motion into contact").lineLimit(1).fixedSize().accessibilityHidden(true)
+            Toggle("Slow motion into contact", isOn: $slowEnabled).labelsHidden().fixedSize()
+        }
+    }
+
+    @ViewBuilder private var strengthPicker: some View {
+        if slowEnabled {
+            Picker("Strength", selection: $strength) {
+                ForEach(StrikeImpactRules.Strength.allCases, id: \.rawValue) { value in
+                    Text(value.label).lineLimit(1).fixedSize().tag(value.rawValue)
+                }
+            }
+            .pickerStyle(.menu).fixedSize().accessibilityLabel("Slow motion strength")
+        }
+    }
+
+    private var flash: some View {
+        HStack(spacing: Theme.spaceS) {
+            Text("Flash on contact").lineLimit(1).fixedSize().accessibilityHidden(true)
+            Toggle("Flash on contact", isOn: $flashEnabled).labelsHidden().fixedSize()
+        }
+    }
+
+    private var pause: some View {
+        HStack(spacing: Theme.spaceS) {
+            Text("Pause on contact").lineLimit(1).fixedSize().accessibilityHidden(true)
             Toggle("Pause on contact", isOn: $enabled)
-                .lineLimit(1).fixedSize()
+                .labelsHidden().fixedSize()
             if enabled {
                 TextField("Seconds", value: $seconds,
                           format: .number.precision(.fractionLength(1...2)))

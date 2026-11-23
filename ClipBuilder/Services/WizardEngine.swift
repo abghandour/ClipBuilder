@@ -27,7 +27,8 @@ nonisolated struct WizardOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case dubLanguage, manualBRoll
         case voiceOverBedLevel
-        case strikeStats, strikeHighlights, strikeImpactFreeze, strikeUnits, strikeSpeedCallouts, strikeGrapplingCard, strikeRoundCard
+        case drawnPauses, strikeHighlightStyle
+        case strikeStats, strikeHighlights, strikeImpactFreeze, strikeSlowMotion, strikeFlash, strikeUnits, strikeSpeedCallouts, strikeGrapplingCard, strikeRoundCard
         case safeAreaOnly = "safe_area_only"
         case safeAreaPlatforms = "safe_area_platforms"
         case nameTags, nameTagContent, nameTagStyle, nameTagStyleID, nameTagPosition
@@ -47,8 +48,12 @@ nonisolated struct WizardOptions: Codable, Sendable {
         try c.encodeIfPresent(dubLanguage, forKey: .dubLanguage)
         try c.encodeIfPresent(manualBRoll, forKey: .manualBRoll)
         try c.encodeIfPresent(strikeStats, forKey: .strikeStats)
+        try c.encodeIfPresent(drawnPauses, forKey: .drawnPauses)
+        try c.encodeIfPresent(strikeHighlightStyle, forKey: .strikeHighlightStyle)
         try c.encodeIfPresent(strikeHighlights, forKey: .strikeHighlights)
         try c.encodeIfPresent(strikeImpactFreeze, forKey: .strikeImpactFreeze)
+        try c.encodeIfPresent(strikeSlowMotion, forKey: .strikeSlowMotion)
+        try c.encodeIfPresent(strikeFlash, forKey: .strikeFlash)
         try c.encodeIfPresent(voiceOverBedLevel, forKey: .voiceOverBedLevel)
         try c.encodeIfPresent(strikeUnits, forKey: .strikeUnits)
         try c.encodeIfPresent(strikeSpeedCallouts, forKey: .strikeSpeedCallouts)
@@ -153,8 +158,12 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var addCaptions = false
     var enableTextOverlays = false
     var strikeStats: Bool?
+    var drawnPauses: Bool?
+    var strikeHighlightStyle: String?
     var strikeHighlights: Bool?
     var strikeImpactFreeze: Double?
+    var strikeSlowMotion: String?
+    var strikeFlash: Bool?
     /// Express voice over: mix the reel's recordings in, with the reel's own
     /// sound at this level (0...1) under them. Nil: no voice over.
     var voiceOverBedLevel: Double?
@@ -2967,7 +2976,7 @@ actor WizardEngine {
             let videoIDs = Set(ids.compactMap { sceneMap[$0]?.videoID })
             let fightResearch = options.useFightResearch
                 ? try await database.fetchFightResearch().filter { videoIDs.contains($0.videoID) } : []
-            let originalTiming = WizardStrikePauses.requested(options) ? pauseEligibilityOptions : nil
+            let originalTiming = WizardStrikePauses.contactsRequested(options) ? pauseEligibilityOptions : nil
             var timingOptions = WizardStrikePauses.eligibilityOptions(options, original: originalTiming)
             if timingOptions.formatPreset == ReelRecipe.podcastHighlights.id { timingOptions.formatPreset = "podcast" }
             timingOptions = timingOptions.neutralized(for: ReelRecipe.recipe(id: timingOptions.formatPreset) ?? .custom)
@@ -3829,7 +3838,7 @@ actor WizardEngine {
             sound.name = musicName
             sound.volume = min(5, max(1, plan.musicVolume))
             sound.startTime = 0
-            sound.duration = pauseTimings.values.contains { !$0.pauses.isEmpty } ? cursor : (cursor * 10).rounded() / 10
+            sound.duration = pauseTimings.values.contains { !$0.pauses.isEmpty || $0.impactSplit } ? cursor : (cursor * 10).rounded() / 10
             document.soundTrack.append(sound)
         }
         if !document.cropBlocks.isEmpty { document.normalizeCropBlocks() }
@@ -3944,6 +3953,7 @@ actor WizardEngine {
             // The extracted movie contains the pauses already, but its final
             // assembly must still use planned durations rather than AAC tails.
             normalized.strikeImpactsFrozen = clip.strikeImpactsFrozen
+            normalized.timedAssembly = clip.timedAssembly
             prepared.videoTrack.append(normalized)
             sourceIndex += 1
         }
@@ -4167,7 +4177,7 @@ actor WizardEngine {
         }, uniquingKeysWith: { first, _ in first })
         for index in Array(preparedCuts.keys) {
             guard var cut = preparedCuts[index] else { continue }
-            WizardStrikeHighlights.apply(to: &cut, enabled: options.strikeHighlights, sourceTypes: highlightSourceTypes)
+            WizardStrikeHighlights.apply(to: &cut, enabled: options.strikeHighlights, style: options.strikeHighlightStyle, sourceTypes: highlightSourceTypes)
             preparedCuts[index] = cut
         }
         // Reject known-ineligible pause cuts before marking any source. Action
@@ -4179,6 +4189,9 @@ actor WizardEngine {
         let markedStrikes = try await markPlannedStrikes(cutDocuments: preparedCuts, database: database,
             projectID: options.projectID, additionalPaths: pausePaths, emit: emit)
         let strikeHighlightTracks = markedStrikes.tracks
+        let drawings: [String: [Telestration]] = if eligibilityOptions.drawnPauses == false { [:] } else {
+            try await WizardStrikePauses.drawings(plan: eligibilityPlan, sceneMap: sceneMap, database: database)
+        }
         // Resolve only real card joins: missing brand assets (or a failed
         // raster) must not produce a fictitious transition replacement log.
         let introPNG = if options.formatPreset == "compilation", let title = plan.introTitle {
@@ -4194,7 +4207,7 @@ actor WizardEngine {
         var joinOptions = options
         joinOptions.includeOutro = outroPNG != nil
         let paused = WizardStrikePauses.prepare(plan: eligibilityPlan, cuts: preparedCuts, sceneMap: sceneMap,
-            sourceTypes: sourceTypes, contacts: markedStrikes.contacts, options: eligibilityOptions,
+            sourceTypes: sourceTypes, contacts: markedStrikes.contacts, drawings: drawings, options: eligibilityOptions,
             xfadeDuration: RenderContext.transitions.xfadeDuration,
             presentation: .init(plan: joinPlan, options: joinOptions))
         plan.transitions = paused.joins.transitions
@@ -4329,7 +4342,7 @@ actor WizardEngine {
         } else if !options.useBRoll, (ReelRecipe.recipe(id: options.formatPreset) ?? .custom).capabilities.bRoll {
             emit("B-roll off")
         }
-        WizardStrikeHighlights.apply(to: &document, enabled: options.strikeHighlights, sourceTypes: highlightSourceTypes)
+        WizardStrikeHighlights.apply(to: &document, enabled: options.strikeHighlights, style: options.strikeHighlightStyle, sourceTypes: highlightSourceTypes)
         let cutaways = document.videoTrack.filter(\.isCutaway)
         // The Express "Overlay": one template block over the whole cut, placed
         // after bumpers so its start counts from the finished video's start.
@@ -4690,16 +4703,17 @@ actor WizardEngine {
             }
         } else {
             try await WizardTiming.measure("join clips", emit: emit) {
-                let timed = prepared.pauseTimings.values.contains { !$0.pauses.isEmpty }
+                let timed = prepared.pauseTimings.values.contains { !$0.pauses.isEmpty || $0.impactSplit }
                 let durations = timed ? Self.preparedDocument(from: document, clipURLs: clipURLs,
                     transitions: clipTransitions).videoTrack.filter { !$0.isCutaway }.map(\.duration) : nil
                 let joinOverlaps = JoinOverlaps()
                 try await render.concatenate(clips: clipURLs, transitions: clipTransitions.map { Optional($0) },
                                              output: assembled, clipDurations: durations, overlaps: joinOverlaps)
                 if voice != nil {
-                    reelClock = RenderClock(segmentStarts: Self.preparedDocument(from: document, clipURLs: clipURLs,
-                        transitions: clipTransitions).videoTrack.filter { !$0.isCutaway }.map(\.startTime).sorted(),
-                        overlaps: joinOverlaps.all)
+                    let clockClips = Self.preparedDocument(from: document, clipURLs: clipURLs,
+                        transitions: clipTransitions).videoTrack.filter { !$0.isCutaway }.sorted { $0.startTime < $1.startTime }
+                    reelClock = RenderClock(segmentStarts: clockClips.map(\.startTime),
+                        segmentEnds: clockClips.map { $0.startTime + $0.duration }, joins: joinOverlaps)
                 }
             }
         }
@@ -4871,7 +4885,7 @@ actor WizardEngine {
                 ?? WizardStrikePauses.timing(for: job.clip, contacts: [], seconds: nil)
             cuts.append((job.index, VoiceOverPlacement.Cut(videoID: job.scene.videoID, sourceStart: job.clip.start,
                 sourceEnd: job.clip.end, speed: job.clip.speed, reelStart: slot.startTime,
-                reelDuration: slot.duration > 0 ? slot.duration : timing.outputDuration, pauses: timing.pauses)))
+                reelDuration: slot.duration > 0 ? slot.duration : timing.outputDuration, pauses: timing.pauses, stretches: timing.stretches)))
         }
         if options.addCaptions, let target = options.effectiveCaptionLanguage, !target.isEmpty {
             takes = await VoiceOverTranscriber.translateMissing(takes, target: target, ai: ai, database: database, log: emit)
@@ -5090,7 +5104,7 @@ actor WizardEngine {
         }
 
         overlays += topOverlays
-        if !timing.pauses.isEmpty {
+        if !timing.pauses.isEmpty || !timing.stretches.isEmpty {
             for index in overlays.indices {
                 overlays[index].start = overlays[index].start.map { timing.outputTime($0) }
                 overlays[index].end = overlays[index].end.map { timing.outputTime($0) }

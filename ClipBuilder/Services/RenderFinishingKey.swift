@@ -24,6 +24,7 @@ nonisolated struct RenderFinishingKey: Encodable, Sendable {
     var maximumOverlap: Double? = nil
     var dub: DubSettings? = nil
     var dubLines: [DubLine]? = nil
+    var dubSegments: [DubPauseRules.CacheLine]? = nil
 
     /// Scratch inputs are immutable for this stage. Stream their complete
     /// contents off the main actor; first/last-block fingerprints would miss
@@ -33,10 +34,11 @@ nonisolated struct RenderFinishingKey: Encodable, Sendable {
                      overlays: [MultitrackRenderer.TimedOverlayPNG], settings: RenderSettings,
                      encoder: [String], maximumOverlap: Double? = nil,
                      version: String = "multitrack-finishing-v1",
-                     dub: DubSettings? = nil, dubLines: [DubLine]? = nil) async throws -> String {
+                     dub: DubSettings? = nil, dubLines: [DubLine]? = nil,
+                     dubSegments: [DubPauseRules.CacheLine]? = nil) async throws -> String {
         try await make(segmentDigests: digests(of: segments), transitions: transitions,
                        transitionDuration: transitionDuration, overlays: overlays, settings: settings,
-                       encoder: encoder, maximumOverlap: maximumOverlap, version: version, dub: dub, dubLines: dubLines)
+                       encoder: encoder, maximumOverlap: maximumOverlap, version: version, dub: dub, dubLines: dubLines, dubSegments: dubSegments)
     }
 
     /// Callers that also plan finishing ranges digest the segments once and
@@ -46,14 +48,15 @@ nonisolated struct RenderFinishingKey: Encodable, Sendable {
                      overlays: [MultitrackRenderer.TimedOverlayPNG], settings: RenderSettings,
                      encoder: [String], maximumOverlap: Double? = nil,
                      version: String = "multitrack-finishing-v1",
-                     dub: DubSettings? = nil, dubLines: [DubLine]? = nil) async throws -> String {
+                     dub: DubSettings? = nil, dubLines: [DubLine]? = nil,
+                     dubSegments: [DubPauseRules.CacheLine]? = nil) async throws -> String {
         let timing = PerfSignpost.begin("FinishingCacheKey")
         defer { PerfSignpost.end(timing) }
         let input = try Self(
             segments: segmentDigests, transitions: transitions,
             transitionDuration: transitionDuration,
             overlays: overlayIdentities(overlays), settings: settings, encoder: encoder,
-            maximumOverlap: maximumOverlap, dub: dub, dubLines: dubLines)
+            maximumOverlap: maximumOverlap, dub: dub, dubLines: dubLines, dubSegments: dubSegments)
         try Task.checkCancellation()
         return try RenderSegmentCache.key(input, version: version)
     }

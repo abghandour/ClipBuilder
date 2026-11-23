@@ -62,6 +62,15 @@ nonisolated enum FightActionDetail {
             ["takedown", "takedown_attempt", "submission_attempt"].contains($0.shown.action) && inScope($0.shown)
         }
         let strikes = strikeUnits.map(\.shown)
+        // Totals follow the rows: a stored row counts in the round its action
+        // is listed in, not the round its own stamp falls in.
+        var listedIn: [Int: FightEventRecord] = [:]
+        // attemptUnits wraps every row, strikes included, one to one; the
+        // strike units go last so a merged blow keeps its shared row.
+        for unit in StrikeStatsSummary.attemptUnits(all) + StrikeStatsSummary.strikeUnits(all) {
+            for member in unit.members { listedIn[member] = unit.shown }
+        }
+        let counted = all.indices.filter { inScope(listedIn[$0] ?? all[$0]) }.map { all[$0] }
         func name(_ key: String) -> String {
             key.isEmpty ? "Unattributed" : people.first { $0.key == key }?.displayName ?? key
         }
@@ -75,7 +84,7 @@ nonisolated enum FightActionDetail {
                        sentence: name(event.fighterKey) + " " + action + (suffix.isEmpty ? "" : " · " + suffix), impact: impact)
         }
         let total = rows.reduce(0) { $0 + $1.points }
-        let fighters = FightScoreDigest.fighters(events: events, outcomes: outcomes).map { fighter in
+        let fighters = FightScoreDigest.fighters(events: counted, outcomes: outcomes, validationEvents: all).map { fighter in
             let points = rows.filter { $0.event.fighterKey == fighter.key }.reduce(0) { $0 + $1.points }
             return Fighter(counts: fighter, name: name(fighter.key), points: points, share: total > 0 ? points / total : 0)
         }.sorted { lhs, rhs in

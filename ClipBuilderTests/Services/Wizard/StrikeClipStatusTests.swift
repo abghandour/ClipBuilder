@@ -125,11 +125,17 @@ struct StrikeClipStatusTests {
         default: cut.videoTrack[0].role = .cutaway
         }
         let plan = Fixtures.plan(clips: [clip])
-        let reason = try #require(WizardStrikePauses.skipReason(index: 0, plan: plan, cut: cut,
-            scene: scene, sourceType: .fight, options: options))
+        let skip = WizardStrikePauses.skipReason(index: 0, plan: plan, cut: cut,
+            scene: scene, sourceType: .fight, options: options)
         let result = StrikeClipStatusRules.status(index: 0, plan: plan, scene: scene, sourceType: .fight,
             saved: .init(tracks: [track(0.5)], contacts: [0.5]), options: options, xfadeDuration: 0.35, cut: cut)
-        #expect(result.pause == .none(reason: reason))
+        if kind == "composition" {
+            #expect(skip == nil)
+            #expect(result.pause == .pauses(count: 1, seconds: 0.8))
+        } else {
+            let reason = try #require(skip)
+            #expect(result.pause == .none(reason: reason))
+        }
     }
 
     @Test("Hold length, duplicate contacts and cap stay identical to engine timing")
@@ -145,12 +151,12 @@ struct StrikeClipStatusTests {
         #expect(timing.pauses.count == StrikeFreezeRules.maximumContacts)
     }
 
-    @Test("A composed framing choice is rejected through the prepared cut's shared skip rule")
+    @Test("A composed framing choice shares one pause across its pictures")
     func framing() {
         var options = options()
         options.framing = Framing(subject: .layout)
         #expect(status([0.5], options: options).pause
-            == .none(reason: "composed or B-roll cut needs a shared multi-source pause"))
+            == .pauses(count: 1, seconds: 0.8))
     }
 
     private func request() -> MiniStrikeStatusRequest {

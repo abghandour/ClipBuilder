@@ -24,6 +24,7 @@ nonisolated enum CaptionOverlayPlan {
         var text: String
         var activeIndex: Int?
         var emphasis: [Int] = []
+        var alternateEmphasis: [Int] = []
         var textColor: String?
         var highlightColor: String?
         var frame = CaptionAnimation.Frame()
@@ -70,7 +71,10 @@ nonisolated enum CaptionOverlayPlan {
                 page.end = (original.end - sourceStart) / speed
                 guard min(duration, page.end) > max(0, page.start) else { return nil }
                 page.words = original.words?.map {
-                    TranscriptWord(word: $0.word, start: ($0.start - sourceStart) / speed, end: ($0.end - sourceStart) / speed)
+                    var word = $0
+                    word.start = ($0.start - sourceStart) / speed
+                    word.end = ($0.end - sourceStart) / speed
+                    return word
                 }
                 return Page(caption: page, position: resolvedPosition, language: language, textColor: color, streamID: streamID,
                             windowStart: 0, windowEnd: duration, styleID: styleID)
@@ -95,11 +99,11 @@ nonisolated enum CaptionOverlayPlan {
         }
         func raster(for item: Page, activeIndex: Int? = nil) -> Raster {
             let style = item.styleID.flatMap { styles[$0] } ?? style
-            let emphasis = style.resolvedEmphasis == "none" ? []
-                : CaptionEmphasis.indices(for: item.caption, language: item.language)
+            let selection = style.resolvedEmphasis == "none" ? CaptionEmphasis.Selection()
+                : CaptionEmphasis.selection(for: item.caption, language: item.language)
             let emoji = style.resolvedEmoji ? CaptionEmphasis.emoji(for: item.caption, language: item.language) : nil
             return Raster(text: item.caption.text + (emoji.map { " " + $0 } ?? ""),
-                          activeIndex: activeIndex, emphasis: emphasis, textColor: item.textColor, highlightColor: item.highlightColor, styleID: item.styleID)
+                          activeIndex: activeIndex, emphasis: selection.indices, alternateEmphasis: selection.alternate, textColor: item.textColor, highlightColor: item.highlightColor, styleID: item.styleID)
         }
         func clipped(_ overlay: Overlay, to item: Page) -> Overlay? {
             var overlay = overlay
@@ -111,12 +115,20 @@ nonisolated enum CaptionOverlayPlan {
             pages.flatMap { item -> [Overlay] in
                 let style = item.styleID.flatMap { styles[$0] } ?? style
                 let reveal = reveal && style.resolvedReveal == "word"
+                let fixedReveal = reveal && style.resolvedFixedReveal
                 let revealMotion = revealMotion && style.resolvedRevealMotion
                 let baseRaster = raster(for: item)
                 let tokens = item.caption.text.split(whereSeparator: \.isWhitespace)
+                func emphasisDecor(_ index: Int) -> CaptionWordDecor? {
+                    baseRaster.alternateEmphasis.contains(index)
+                        ? style.alternateEmphasisStyle.emphasisDecor : style.emphasisDecor
+                }
                 let states = !reveal && style.resolvedHighlight == "none"
                     ? [CaptionWordStates.State(page: item.caption, start: item.caption.start, end: item.caption.end)]
-                    : CaptionWordStates.states(for: item.caption, words: item.caption.words)
+                    : CaptionWordStates.states(for: item.caption, words: item.caption.words,
+                                               holdHighlight: style.resolvedHighlightHold,
+                                               unheldIndices: Set(baseRaster.emphasis.filter { emphasisDecor($0)?.highlightHold == false }),
+                                               heldIndices: Set(baseRaster.emphasis.filter { emphasisDecor($0)?.highlightHold == true }))
                 var visible = 0
                 var isFirstOverlay = true
                 let scheduled = states.flatMap { state -> [Overlay] in
@@ -129,11 +141,29 @@ nonisolated enum CaptionOverlayPlan {
                         // The full raster already carries the optional emoji; only
                         // append that suffix once all transcript tokens are visible.
                         let suffix = visible == tokens.count ? String(baseRaster.text.dropFirst(item.caption.text.count)) : ""
-                        raster.text = prefix + suffix
-                        raster.emphasis = baseRaster.emphasis.filter { $0 < visible }
+                        if fixedReveal {
+                            raster.frame.visibleWords = visible == tokens.count
+                                ? baseRaster.text.split(whereSeparator: \.isWhitespace).count : visible
+                        }
+                        else { raster.text = prefix + suffix }
+                        if !fixedReveal || (style.emphasisDecor?.resolvedFitLineMinimumScale == nil && baseRaster.alternateEmphasis.isEmpty) {
+                            raster.emphasis = baseRaster.emphasis.filter { $0 < visible }
+                            raster.alternateEmphasis = baseRaster.alternateEmphasis.filter { $0 < visible }
+                        }
                     }
                     raster.activeIndex = style.resolvedHighlight == "none" ? nil : state.activeIndex
-                    let animate = isFirstOverlay || (reveal && revealMotion && visible > previousVisible)
+                    let minimum = style.resolvedAnimationMinimumWordDuration
+                    // Ending an emphasis highlight does not end the word's
+                    // visibility. Judge its entrance against the next onset.
+                    var animationWindow = state.end - state.start
+                    if fixedReveal, let index = state.activeIndex,
+                       emphasisDecor(index)?.highlightHold == false, baseRaster.emphasis.contains(index) {
+                        let next = item.caption.words.flatMap { index + 1 < $0.count ? $0[index + 1].start : nil }
+                            ?? item.caption.end
+                        animationWindow = next - state.start
+                    }
+                    let longEnough = minimum == 0 || animationWindow > minimum + 0.000_001
+                    let animate = (isFirstOverlay || (reveal && revealMotion && visible > previousVisible)) && longEnough
                     isFirstOverlay = false
                     guard animate, style.resolvedAnimation != "none" else {
                         return [Overlay(raster: raster, position: item.position, start: state.start, end: state.end)]
@@ -146,6 +176,8 @@ nonisolated enum CaptionOverlayPlan {
                         guard end > start else { return nil }
                         var animated = raster
                         animated.frame = frame
+                        animated.frame.visibleWords = raster.frame.visibleWords
+                        if fixedReveal { animated.frame.wordIndex = visible - 1 }
                         animated.frame.at = 0 // Time does not affect pixels or the cache identity.
                         return Overlay(raster: animated, position: item.position, start: start, end: end)
                     }
@@ -219,7 +251,12 @@ nonisolated enum CaptionOverlayPlan {
                 page.caption.text = chunk.map { $0.caption.text }.joined(separator: " ")
                 page.caption.start = chunk.map { $0.caption.start }.min() ?? page.caption.start
                 page.caption.end = chunk.map { $0.caption.end }.max() ?? page.caption.end
-                page.caption.words = nil
+                let words = chunk.flatMap { item in
+                    item.caption.words ?? item.caption.text.split(whereSeparator: \.isWhitespace).map {
+                        TranscriptWord(word: String($0), start: item.caption.start, end: item.caption.end)
+                    }
+                }
+                page.caption.words = words.contains { $0.emphasis != nil } ? words : nil
                 result.append(page)
                 remaining -= 1
             }

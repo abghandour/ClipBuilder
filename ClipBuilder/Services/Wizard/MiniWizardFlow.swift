@@ -223,6 +223,8 @@ nonisolated struct MiniWizardFlow: Sendable {
         if settings.dub { audio.append(DubLanguageChoices.summary(settings.dubLanguage ?? DubLanguageChoices.defaultLanguage)) }
         var overlays: [String] = []
         if showsStrikeActions, settings.actionOverlays == true { overlays.append("Action overlays") }
+        if showsStrikeActions, settings.slowIntoContact == true { overlays.append("Slow motion into contact (\(settings.resolvedSlowIntoContactStrength))") }
+        if showsStrikeActions, settings.flashOnContact == true { overlays.append("Flash on contact") }
         if showsStrikeActions, settings.pauseOnContact == true { overlays.append("Pause on contact (\(settings.resolvedPauseOnContactSeconds) s)") }
         if settings.safeAreaOnly {
             let selected = settings.safeAreaPlatforms?.compactMap(SocialPlatform.init(rawValue:)) ?? []
@@ -259,6 +261,8 @@ nonisolated struct MiniWizardFlow: Sendable {
         var parts = [settings.quality.label, settings.preset.label]
         if settings.captions { parts.append("captions") }
         if showsStrikeActions, settings.actionOverlays == true { parts.append("action overlays") }
+        if showsStrikeActions, settings.slowIntoContact == true { parts.append("slow motion into contact (\(settings.resolvedSlowIntoContactStrength))") }
+        if showsStrikeActions, settings.flashOnContact == true { parts.append("flash on contact") }
         if showsStrikeActions, settings.pauseOnContact == true { parts.append("pause on contact (\(settings.resolvedPauseOnContactSeconds) s)") }
         if settings.dub { parts.append(DubLanguageChoices.summary(settings.dubLanguage ?? DubLanguageChoices.defaultLanguage)) }
         if let name = settings.overlayName { parts.append("overlay \(name)") }

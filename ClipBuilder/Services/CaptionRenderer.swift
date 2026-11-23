@@ -55,6 +55,29 @@ nonisolated struct CaptionRenderer: Sendable {
         var animation: String
         var weight: String
         var hasTextDecor: Bool
+        var font: String
+        var color: String
+        var textSize: Double?
+        var highlightSize: Double?
+        var emphasisSize: Double?
+        // The second emphasis look, resolved from the style once.
+        var hasAlternate: Bool
+        var alternateEmphasis: String
+        var alternateColor: String
+        var alternateFont: String
+        var alternateSize: Double?
+        // An emphasis word that keeps its own colour while it is spoken.
+        var emphasisKeepsColor: Bool
+        var alternateKeepsColor: Bool
+        var legacyDecorations: Bool
+        var states: [CaptionStyle.WordState]
+        var lineBreaks: String
+        var lineSpacing: Double?
+        var srgb: Bool
+        var paddingX: Double?
+        var paddingY: Double?
+        var automaticRadius: Bool
+        var highlightHasBackgroundColor: Bool
 
         init(_ style: CaptionStyle) {
             for state in CaptionStyle.WordState.allCases {
@@ -73,6 +96,29 @@ nonisolated struct CaptionRenderer: Sendable {
             animation = style.resolvedAnimation
             weight = style.resolvedWeight
             hasTextDecor = style.hasTextDecor
+            font = style.fontOverride ?? style.font
+            color = style.color
+            textSize = style.text?.size
+            highlightSize = style.highlightDecor?.size
+            emphasisSize = style.emphasisDecor?.size
+            hasAlternate = style.hasAlternateEmphasis
+            let alternate = style.alternateEmphasisStyle
+            alternateEmphasis = alternate.resolvedEmphasis
+            alternateColor = alternate.resolvedEmphasisColor
+            alternateFont = alternate.resolvedEmphasisFont
+            alternateSize = alternate.emphasisDecor?.size
+            emphasisKeepsColor = style.emphasisDecor?.takesHighlightColor == false
+            alternateKeepsColor = alternate.emphasisDecor?.takesHighlightColor == false
+            legacyDecorations = !style.hasTextDecor && style.text == nil && style.highlightDecor == nil
+                && style.emphasisDecor == nil && !style.hasAlternateEmphasis
+            states = style.renderingStates
+            lineBreaks = style.resolvedLineBreaks
+            lineSpacing = style.resolvedLineSpacing.map { Double($0) }
+            srgb = style.colorSpace == "srgb"
+            paddingX = style.text?.decor?.bgPaddingX ?? style.decor?.bgPaddingX
+            paddingY = style.text?.decor?.bgPaddingY ?? style.decor?.bgPaddingY
+            automaticRadius = style.decor?.bgRadius == nil && style.bgRadius == nil
+            highlightHasBackgroundColor = style.highlightDecor?.decor?.bgColor != nil
         }
     }
 
@@ -101,7 +147,7 @@ nonisolated struct CaptionRenderer: Sendable {
     /// and the lit or emphasised word may ask for its own.
     private func resolveFont(size: CGFloat, family: String? = nil, italic: Bool = false,
                              weight: String? = nil) -> CTFont {
-        let family = family ?? style.fontOverride ?? style.font
+        let family = family ?? resolved.font
         let weight = weight ?? resolved.weight
         let familyNames: [String]
         switch family.lowercased() {
@@ -142,7 +188,7 @@ nonisolated struct CaptionRenderer: Sendable {
 
     // MARK: - Layout
 
-    private struct MeasuredFont {
+    struct MeasuredFont {
         var font: CTFont
         var padding: CGFloat
         var kern: CGFloat = 0
@@ -156,28 +202,30 @@ nonisolated struct CaptionRenderer: Sendable {
 
     /// Preserve historical sizing when an old profile has no explicit text size.
     private var baseSize: CGFloat {
-        style.text?.size == nil ? max(36, CGFloat(videoWidth) / 22)
+        resolved.textSize == nil ? max(36, CGFloat(videoWidth) / 22)
             : (resolved.size[.text] ?? 49) * CGFloat(videoWidth) / 1080
     }
 
     private var usesLegacyDecorations: Bool {
-        !resolved.hasTextDecor && style.text == nil && style.highlightDecor == nil && style.emphasisDecor == nil
+        resolved.legacyDecorations
     }
 
     private func stateFont(_ state: CaptionStyle.WordState, size: CGFloat) -> CTFont {
         let family: String
         switch state {
-        case .text: family = style.fontOverride ?? style.font
+        case .text: family = resolved.font
         case .highlight: family = resolved.highlightFont
         case .emphasis: family = resolved.emphasisFont
+        case .emphasis2: family = resolved.alternateFont
         }
         // Explicit state sizes are points at 1080, even when the regular font
         // retains the legacy 36-pixel minimum on smaller video canvases.
         let ownSize: Double?
         switch state {
-        case .text: ownSize = style.text?.size
-        case .highlight: ownSize = style.highlightDecor?.size ?? style.text?.size
-        case .emphasis: ownSize = style.emphasisDecor?.size ?? style.text?.size
+        case .text: ownSize = resolved.textSize
+        case .highlight: ownSize = resolved.highlightSize ?? resolved.textSize
+        case .emphasis: ownSize = resolved.emphasisSize ?? resolved.textSize
+        case .emphasis2: ownSize = resolved.alternateSize ?? resolved.textSize
         }
         let pixels = ownSize != nil
             ? (resolved.size[state] ?? 49) * CGFloat(videoWidth) / 1080 * size / baseSize
@@ -187,17 +235,18 @@ nonisolated struct CaptionRenderer: Sendable {
     }
 
     /// Include padding and italic ink overhang in each state's reserved slot.
-    private func measureFonts(size: CGFloat) -> [MeasuredFont] {
+    private func measureFonts(size: CGFloat, includeEmphasis: Bool = true, includeAlternate: Bool = false) -> [MeasuredFont] {
         var states: [CaptionStyle.WordState] = [.text]
         if resolved.highlight != "none" { states.append(.highlight) }
-        if resolved.emphasis != "none" { states.append(.emphasis) }
+        if includeEmphasis && resolved.emphasis != "none" { states.append(.emphasis) }
+        if includeAlternate && resolved.emphasis != "none" { states.append(.emphasis2) }
         if usesLegacyDecorations {
             // Keep old pages geometrically compatible, including their wider
             // all-font Scale envelope and the Box mode's historical padding.
             let scale: CGFloat = resolved.highlight == "scale" || ["scale", "both"].contains(resolved.emphasis) ? 1.12 : 1
             return states.map { state in
                 let family = state == .highlight ? resolved.highlightFont
-                    : state == .emphasis ? resolved.emphasisFont : style.fontOverride ?? style.font
+                    : state == .emphasis ? resolved.emphasisFont : resolved.font
                 return MeasuredFont(font: resolveFont(size: size * scale, family: family), padding: 0,
                                     kern: kern(for: .text), casing: textDecor(.text).casing)
             }
@@ -227,7 +276,10 @@ nonisolated struct CaptionRenderer: Sendable {
     }
 
     private func spaceWidth(_ fonts: [MeasuredFont]) -> CGFloat {
-        fonts.first.map { lineWidth(" ", font: $0.font, kern: $0.kern) } ?? 0
+        if let spacing = style.resolvedWordSpacing {
+            return spacing * CGFloat(videoWidth) / 1080
+        }
+        return fonts.first.map { lineWidth(" ", font: $0.font, kern: $0.kern) } ?? 0
     }
 
     /// A line's width with every word at its reserved width.
@@ -248,13 +300,16 @@ nonisolated struct CaptionRenderer: Sendable {
     }
 
     /// Greedy word-wrap to 86% of the video width (captions.py behavior).
-    private func wrap(_ text: String, fonts: [MeasuredFont]) -> [String] {
+    private func wrap(_ text: String, fonts: [MeasuredFont], lineBreaks: String? = nil) -> [String] {
         let available = maxTextWidth
+        let lineBreaks = lineBreaks ?? resolved.lineBreaks
         var lines: [String] = []
         var current = ""
         for word in text.split(whereSeparator: \.isWhitespace) {
             let candidate = current.isEmpty ? String(word) : current + " " + word
-            if reservedLineWidth(candidate, fonts: fonts) <= available || current.isEmpty {
+            let sentenceEnd = lineBreaks == "sentence"
+                && current.trimmingCharacters(in: CharacterSet(charactersIn: "\"'”’)]}")).last.map { ".!?…。！？".contains($0) } == true
+            if !sentenceEnd && (reservedLineWidth(candidate, fonts: fonts) <= available || current.isEmpty) {
                 current = candidate
             } else {
                 lines.append(current)
@@ -263,7 +318,7 @@ nonisolated struct CaptionRenderer: Sendable {
         }
         if !current.isEmpty { lines.append(current) }
         // Balance two rows using the same measured widths used for drawing.
-        if lines.count == 2 {
+        if lines.count == 2 && lineBreaks == "balanced" {
             let words = text.split(whereSeparator: \.isWhitespace).map(String.init)
             var best = CGFloat.greatestFiniteMagnitude
             for index in 1..<words.count {
@@ -287,8 +342,94 @@ nonisolated struct CaptionRenderer: Sendable {
         return min(CGFloat(videoWidth) * (textDecor(.text).maxWidthFrac ?? 0.86), contentWidth - padding)
     }
 
+    /// Wrap with a width per word, for a page whose marked words wear a
+    /// larger face than their neighbours. Same rules as `wrap`.
+    private func wrap(_ tokens: [String], widths: [CGFloat], space: CGFloat, lineBreaks: String) -> [String] {
+        let available = maxTextWidth
+        func width(_ range: Range<Int>) -> CGFloat {
+            widths[range].reduce(0, +) + space * CGFloat(max(0, range.count - 1))
+        }
+        func text(_ range: Range<Int>) -> String { tokens[range].joined(separator: " ") }
+        var rows: [Range<Int>] = []
+        var start = 0
+        for index in tokens.indices where index > start {
+            let sentenceEnd = lineBreaks == "sentence"
+                && tokens[index - 1].trimmingCharacters(in: CharacterSet(charactersIn: "\"'”’)]}")).last.map { ".!?…。！？".contains($0) } == true
+            if sentenceEnd || width(start..<index + 1) > available {
+                rows.append(start..<index)
+                start = index
+            }
+        }
+        if start < tokens.count { rows.append(start..<tokens.count) }
+        if rows.count == 2 && lineBreaks == "balanced" {
+            var best = CGFloat.greatestFiniteMagnitude
+            for index in 1..<tokens.count {
+                let pair = [width(0..<index), width(index..<tokens.count)]
+                if pair.allSatisfy({ $0 <= available }), abs(pair[0] - pair[1]) < best {
+                    best = abs(pair[0] - pair[1])
+                    rows = [0..<index, index..<tokens.count]
+                }
+            }
+        }
+        return rows.isEmpty ? [tokens.joined(separator: " ")] : rows.map(text)
+    }
+
+    struct EmphasisLineLayout {
+        var scale: CGFloat
+        var fonts: [[MeasuredFont]]
+        var widths: [CGFloat]
+        var space: CGFloat
+        var width: CGFloat { widths.reduce(0, +) + space * CGFloat(max(0, widths.count - 1)) }
+    }
+
+    /// Measure actual word states, rather than reserving an emphasis-sized slot
+    /// for every word. Scale typography, tracking and spaces together, keeping
+    /// the chosen emphasis/text ratio and a shared baseline. Never enlarge a page.
+    func emphasisLineLayout(for text: String, emphasis: [Int], alternateEmphasis: [Int] = [], fontSize: CGFloat? = nil) -> EmphasisLineLayout? {
+        guard resolved.emphasis != "none",
+              let minimum = (alternateEmphasis.isEmpty ? style : style.alternateEmphasisStyle).emphasisDecor?.resolvedFitLineMinimumScale else { return nil }
+        let alternateEmphasis = resolved.hasAlternate ? alternateEmphasis : []
+        let tokens = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        guard tokens.indices.contains(where: { emphasis.contains($0) }) else { return nil }
+        let size = fontSize ?? baseSize
+        let normal = measureFonts(size: size, includeEmphasis: false)
+        let all = measureFonts(size: size)
+        guard let emphatic = all.last else { return nil }
+        let alternate = measureFonts(size: size, includeAlternate: true).last ?? emphatic
+        let original = tokens.indices.map { index in
+            alternateEmphasis.contains(index) ? [alternate] : emphasis.contains(index) ? [emphatic] : normal
+        }
+        let requestedWidth = (textDecor(.emphasis).maxWidthFrac ?? 0.86) * CGFloat(videoWidth)
+        let outerWidth = CGFloat(videoWidth) * (safeArea?.rect.width ?? 1)
+        let overshoot = CaptionAnimation.maximumScale(for: resolved.animation)
+        let envelope = overshoot > 1 ? (outerWidth - 2) / overshoot : outerWidth
+        let available = min(requestedWidth, envelope - CGFloat(max(18, videoWidth / 60) * 2))
+        func layout(_ scale: CGFloat) -> EmphasisLineLayout {
+            let fonts = original.map { values in values.map { value in
+                MeasuredFont(font: CTFontCreateCopyWithAttributes(value.font, CTFontGetSize(value.font) * scale, nil, nil),
+                             padding: value.padding * scale, kern: value.kern * scale, casing: value.casing)
+            } }
+            return EmphasisLineLayout(scale: scale, fonts: fonts,
+                widths: tokens.indices.map { reservedWidth(tokens[$0], fonts: fonts[$0]) },
+                space: spaceWidth(normal) * scale)
+        }
+        let full = layout(1)
+        if full.width <= available { return full }
+        guard layout(minimum).width <= available else { return nil }
+        var low = CGFloat(minimum), high: CGFloat = 1
+        for _ in 0..<24 {
+            let middle = (low + high) / 2
+            if layout(middle).width <= available { low = middle } else { high = middle }
+        }
+        return layout(low)
+    }
+
+    private var fitsEmphasisLine: Bool { style.emphasisDecor?.resolvedFitLineMinimumScale != nil }
+
     func rowCount(for text: String) -> Int {
-        wrap(text, fonts: measureFonts(size: baseSize)).count
+        // Pagination stays independent of automatic keyword selection, so
+        // enabling emphasis cannot change the surrounding non-emphasis pages.
+        wrap(text, fonts: measureFonts(size: baseSize, includeEmphasis: !fitsEmphasisLine)).count
     }
 
     func pages(for segment: TranscriptSegment) -> [CaptionPage] {
@@ -309,8 +450,10 @@ nonisolated struct CaptionRenderer: Sendable {
         }
         let size = baseSize
         let fonts = measureFonts(size: size)
-        let contentHeight = Int(ceil(Self.maxAscent(fonts) + Self.maxDescent(fonts))) * 2
-            + max(4, Int(size) / 6) + max(10, Int(size) / 4) * 2
+        let height = Int(ceil(Self.maxAscent(fonts) + Self.maxDescent(fonts)))
+        let advance = style.resolvedLineSpacing.map { Int(($0 * CGFloat(videoWidth) / 1080).rounded()) }
+            ?? (height + max(4, Int(size) / 6))
+        let contentHeight = height + advance + max(10, Int(size) / 4) * 2
         let contentWidth = Int(maxTextWidth) + max(18, videoWidth / 60) * 2
         let overshoot = (CaptionAnimation.maximumScale(for: resolved.animation) - 1) / 2
         let motionX = Int(ceil(Double(contentWidth) * overshoot))
@@ -322,37 +465,95 @@ nonisolated struct CaptionRenderer: Sendable {
         return CGRect(x: origin.x, y: origin.y, width: box.width, height: box.height)
     }
 
+    /// The second emphasis look keeps its typography during a colour highlight,
+    /// just as fitted primary emphasis does. Other highlight modes still win.
+    func wordState(at index: Int, activeIndex: Int?, emphasis: [Int], alternateEmphasis: [Int] = [],
+                   fitted: Bool = false) -> CaptionStyle.WordState {
+        let alternate = resolved.hasAlternate && alternateEmphasis.contains(index)
+        let marked = emphasis.contains(index) && resolved.emphasis != "none"
+            && (alternate ? resolved.alternateEmphasis : resolved.emphasis) != "none"
+        let keepsColor = alternate ? resolved.alternateKeepsColor : resolved.emphasisKeepsColor
+        if marked && (fitted || keepsColor || (alternate && resolved.highlight == "color")) {
+            return alternate ? .emphasis2 : .emphasis
+        }
+        if index == activeIndex && resolved.highlight != "none" { return .highlight }
+        return marked ? (alternate ? .emphasis2 : .emphasis) : .text
+    }
+
     // MARK: - Rendering
 
     /// Render one caption to a PNG in `directory`. Font size defaults to
     /// max(36, videoW / 22); explicit `fontSize` overrides (text overlays).
-    func render(text: String, activeIndex: Int? = nil, emphasis: [Int] = [],
+    func render(text: String, activeIndex: Int? = nil, emphasis: [Int] = [], alternateEmphasis: [Int] = [],
                 textColor: String? = nil, highlightColor: String? = nil, frame: CaptionAnimation.Frame = .init(), to directory: URL,
                 fontSize explicitSize: CGFloat? = nil) throws -> RenderedCaption {
+        let alternateEmphasis = resolved.hasAlternate ? alternateEmphasis : []
         let pageHighlightColor = highlightColor ?? resolved.highlightColor
         var fontSize = explicitSize ?? baseSize
-        let initialFonts = measureFonts(size: fontSize)
-        let longest = text.split(whereSeparator: \.isWhitespace)
-            .map { reservedWidth(String($0), fonts: initialFonts) }.max() ?? 0
-        if longest > maxTextWidth { fontSize *= maxTextWidth / longest }
-        var fonts = measureFonts(size: fontSize)
-        var lines = wrap(text, fonts: fonts)
+        let fitted = emphasisLineLayout(for: text, emphasis: emphasis, alternateEmphasis: alternateEmphasis, fontSize: fontSize)
+        let includeEmphasis = !fitsEmphasisLine || !emphasis.isEmpty
+        // A marked word on a page that is not fitted to one line takes its
+        // own width; the other words keep theirs, so the page wraps as it
+        // would unmarked. Styles with neither a line fit nor a second look
+        // keep the one shared slot width they always had.
+        let ownSlots = fitted == nil && !emphasis.isEmpty && resolved.emphasis != "none"
+            && (!alternateEmphasis.isEmpty || fitsEmphasisLine)
+        let tokens = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        var alternateFonts: [MeasuredFont] = []
+        var emphasisFonts: [MeasuredFont] = []
+        func slotWidths(_ fonts: [MeasuredFont]) -> [CGFloat] {
+            tokens.indices.map {
+                reservedWidth(tokens[$0], fonts: alternateEmphasis.contains($0) ? alternateFonts
+                              : emphasis.contains($0) ? emphasisFonts : fonts)
+            }
+        }
+        func rows(_ fonts: [MeasuredFont], lineBreaks: String? = nil) -> [String] {
+            guard ownSlots else { return wrap(text, fonts: fonts, lineBreaks: lineBreaks) }
+            return wrap(tokens, widths: slotWidths(fonts), space: spaceWidth(fonts), lineBreaks: lineBreaks ?? resolved.lineBreaks)
+        }
+        func measure() -> [MeasuredFont] {
+            if ownSlots {
+                emphasisFonts = measureFonts(size: fontSize).suffix(1)
+                alternateFonts = alternateEmphasis.isEmpty ? []
+                    : measureFonts(size: fontSize, includeEmphasis: false, includeAlternate: true).suffix(1)
+            }
+            return measureFonts(size: fontSize, includeEmphasis: ownSlots ? false : includeEmphasis)
+        }
+        let initialFonts = measure()
+        let longest = (ownSlots ? slotWidths(initialFonts) : tokens.map { reservedWidth($0, fonts: initialFonts) }).max() ?? 0
+        if fitted == nil && longest > maxTextWidth { fontSize *= maxTextWidth / longest }
+        var fonts = fitted?.fonts.flatMap { $0 } ?? measure()
+        var lines = fitted == nil ? rows(fonts) : [tokens.joined(separator: " ")]
+        // Input-limit fallback can merge several sentences onto one page.
+        // Mandatory sentence rows cannot be reduced by shrinking the font.
+        let fallbackBreaks = lines.count > 2 && resolved.lineBreaks == "sentence" ? "greedy" : nil
+        if let fallbackBreaks { lines = rows(fonts, lineBreaks: fallbackBreaks) }
         // Static fallback may regroup many one-word pages. Keep that page in
         // two rows too, without dropping words or exceeding the video width.
         while lines.count > 2 && fontSize > 1 {
             fontSize *= 0.9
-            fonts = measureFonts(size: fontSize)
-            lines = wrap(text, fonts: fonts)
+            fonts = measure()
+            lines = rows(fonts, lineBreaks: fallbackBreaks)
+        }
+        let ownWidths = ownSlots ? slotWidths(fonts) : []
+        func rowWidth(_ row: Int) -> CGFloat {
+            guard ownSlots else { return reservedLineWidth(lines[row], fonts: fonts) }
+            let first = lines[..<row].reduce(0) { $0 + $1.split(separator: " ").count }
+            let count = lines[row].split(separator: " ").count
+            return ownWidths[first..<first + count].reduce(0, +) + spaceWidth(fonts) * CGFloat(max(0, count - 1))
         }
 
-        let padX = (style.text?.decor?.bgPaddingX ?? style.decor?.bgPaddingX).map { Int(ceil(fontSize * $0)) } ?? max(18, videoWidth / 60)
-        let padY = (style.text?.decor?.bgPaddingY ?? style.decor?.bgPaddingY).map { Int(ceil(fontSize * $0)) } ?? max(10, Int(fontSize) / 4)
-        let lineGap = max(4, Int(fontSize) / 6) + Int(fontSize * ((textDecor(.text).lineHeight ?? 1) - 1))
+        let padX = resolved.paddingX.map { Int(ceil(fontSize * $0)) } ?? max(18, videoWidth / 60)
+        let padY = resolved.paddingY.map { Int(ceil(fontSize * $0)) } ?? max(10, Int(fontSize) / 4)
+        var lineGap = max(4, Int(fontSize) / 6) + Int(fontSize * ((textDecor(.text).lineHeight ?? 1) - 1))
         let ascent = Self.maxAscent(fonts)
         let descent = Self.maxDescent(fonts)
         let lineHeight = Int((ascent + descent).rounded(.up))
+        if let spacing = resolved.lineSpacing {
+            lineGap = Int((spacing * CGFloat(videoWidth) / 1080 * fontSize / baseSize).rounded()) - lineHeight
+        }
 
-        let maxLineWidth = lines.map { reservedLineWidth($0, fonts: fonts) }.max() ?? 0
+        let maxLineWidth = fitted?.width ?? lines.indices.map { rowWidth($0) }.max() ?? 0
         let textHeight = lineHeight * lines.count + lineGap * (lines.count - 1)
         let contentWidth = min(videoWidth, Int(maxLineWidth.rounded(.up)) + padX * 2)
         let contentHeight = textHeight + padY * 2
@@ -361,20 +562,24 @@ nonisolated struct CaptionRenderer: Sendable {
         let motionX = Int(ceil(Double(contentWidth) * overshoot))
         let motionY = overshoot > 0 ? Int(ceil(Double(contentHeight) * overshoot))
             : (resolved.animation == "slide-up" ? Int(ceil(24 * Double(videoWidth) / 1080)) : 0)
-        let effects = CaptionStyle.WordState.allCases.map { textDecor($0) } + [resolved.page]
-        let effectFontSize = fonts.map { CTFontGetSize($0.font) }.max() ?? fontSize
-        let effectInset = resolved.hasTextDecor ? Int(ceil(effects.map { d in
+        let effects = resolved.states.map { textDecor($0) } + [resolved.page]
+        let effectFontSize = (fonts + alternateFonts + emphasisFonts).map { CTFontGetSize($0.font) }.max() ?? fontSize
+        let effectInset = (resolved.hasTextDecor ? Int(ceil(effects.map { d in
             let border = d.borderOn == true ? (d.borderWidth ?? 2) * CGFloat(videoWidth) / 1080 : 0
             // Hard and extrude ignore blur; a glow spreads about three blur radii.
             let blur = d.shadowStyle == "soft" ? (d.shadowBlur ?? 0) * 2 : d.shadowStyle == "glow" ? (d.shadowBlur ?? 0.3) * 3 : 0
             let offset = d.shadowStyle == "glow" ? 0 : max(abs(d.shadowX ?? 0), abs(d.shadowY ?? 0))
             let shadow = d.shadowOn == true ? effectFontSize * (offset + blur) : 0
             return border + shadow + (d.strokeOn == true ? (d.strokeWidth ?? 1) * CGFloat(videoWidth) / 1080 : 0)
-        }.max() ?? 0)) : 0
+        }.max() ?? 0)) : 0)
+        // The larger word keeps the rows' rhythm and rises out of its row.
+            + Int(ceil(max(0, Self.maxAscent(alternateFonts + emphasisFonts) - ascent, Self.maxDescent(alternateFonts + emphasisFonts) - descent)))
         let boxWidth = contentWidth + (motionX + effectInset) * 2
         let boxHeight = contentHeight + (motionY + effectInset) * 2
 
-        let colorSpace = CGColorSpaceCreateDeviceRGB()
+        let colorSpace = resolved.srgb
+            ? CGColorSpace(name: CGColorSpace.sRGB) ?? CGColorSpaceCreateDeviceRGB()
+            : CGColorSpaceCreateDeviceRGB()
         guard let context = CGContext(data: nil, width: boxWidth, height: boxHeight,
                                       bitsPerComponent: 8, bytesPerRow: 0,
                                       space: colorSpace,
@@ -382,27 +587,28 @@ nonisolated struct CaptionRenderer: Sendable {
             throw CocoaError(.fileWriteUnknown)
         }
 
-        context.translateBy(x: CGFloat(boxWidth) / 2, y: CGFloat(boxHeight) / 2 - frame.offsetY * CGFloat(videoWidth) / 1080)
-        context.scaleBy(x: frame.scale, y: frame.scale)
+        let pageFrame = frame.wordIndex == nil ? frame : CaptionAnimation.Frame()
+        context.translateBy(x: CGFloat(boxWidth) / 2, y: CGFloat(boxHeight) / 2 - pageFrame.offsetY * CGFloat(videoWidth) / 1080)
+        context.scaleBy(x: pageFrame.scale, y: pageFrame.scale)
         context.translateBy(x: -CGFloat(contentWidth) / 2, y: -CGFloat(contentHeight) / 2)
-        context.setAlpha(frame.alpha)
-        if frame.alpha < 1 { context.beginTransparencyLayer(auxiliaryInfo: nil) }
+        context.setAlpha(pageFrame.alpha)
+        if pageFrame.alpha < 1 { context.beginTransparencyLayer(auxiliaryInfo: nil) }
 
         func color(_ hex: String, alpha: CGFloat = 1) -> CGColor {
             let (r, g, b) = Self.parseHexColor(hex, fallback: (1, 1, 1))
             return CGColor(red: r, green: g, blue: b, alpha: alpha)
         }
-        let painter = TextDecorPainter(scale: CGFloat(videoWidth) / 1080)
+        let painter = TextDecorPainter(scale: CGFloat(videoWidth) / 1080, usesSRGB: resolved.srgb)
         let pageDecor = resolved.page
         if pageDecor.bgPerLine != true {
             painter.background(in: context, rect: CGRect(x: 0, y: 0, width: contentWidth, height: contentHeight),
-                decor: pageDecor, radius: style.decor?.bgRadius == nil && style.bgRadius == nil
+                decor: pageDecor, radius: resolved.automaticRadius
                     ? CGFloat(max(6, Int(fontSize) / 6)) : nil)
         }
 
         var tokenIndex = 0
         for (lineIndex, lineText) in lines.enumerated() {
-            let width = reservedLineWidth(lineText, fonts: fonts)
+            let width = fitted?.width ?? rowWidth(lineIndex)
             let x = Self.lineOrigin(width: width, boxWidth: CGFloat(contentWidth),
                                     padding: CGFloat(padX), alignment: textDecor(.text).alignment)
             let baselineY = CGFloat(contentHeight - padY - (lineIndex + 1) * lineHeight - lineIndex * lineGap) + descent
@@ -412,35 +618,50 @@ nonisolated struct CaptionRenderer: Sendable {
                         .insetBy(dx: -fontSize * (pageDecor.bgPaddingX ?? 0.125), dy: -fontSize * (pageDecor.bgPaddingY ?? 0.125)),
                     decor: pageDecor)
             }
-            let space = spaceWidth(fonts)
+            let space = fitted?.space ?? spaceWidth(fonts)
             var cursor = x
             for token in lineText.split(separator: " ").map(String.init) {
                 let active = tokenIndex == activeIndex
-                let emphasised = emphasis.contains(tokenIndex)
-                let state: CaptionStyle.WordState = active && resolved.highlight != "none" ? .highlight
-                    : emphasised && resolved.emphasis != "none" ? .emphasis : .text
+                let alternate = alternateEmphasis.contains(tokenIndex)
+                let lookEmphasis = alternate ? resolved.alternateEmphasis : resolved.emphasis
+                let emphasised = emphasis.contains(tokenIndex) && resolved.emphasis != "none" && lookEmphasis != "none"
+                let emphasisState: CaptionStyle.WordState = alternateEmphasis.contains(tokenIndex) ? .emphasis2 : .emphasis
+                let state = wordState(at: tokenIndex, activeIndex: activeIndex, emphasis: emphasis,
+                                      alternateEmphasis: alternateEmphasis, fitted: fitted != nil)
                 let decor = wordDecor(state)
-                var drawFont = stateFont(state, size: fontSize)
+                var drawFont = stateFont(state, size: fontSize * (fitted?.scale ?? 1))
                 if usesLegacyDecorations && state == .highlight && resolved.highlight != "scale"
                     && emphasised && ["scale", "both"].contains(resolved.emphasis) {
                     drawFont = resolveFont(size: fontSize * 1.12, family: resolved.highlightFont)
                 }
-                let wordKern = usesLegacyDecorations ? kern(for: .text) : kern(for: state)
-                let reserved = reservedWidth(token, fonts: fonts)
+                let wordKern = (usesLegacyDecorations ? kern(for: .text) : kern(for: state)) * (fitted?.scale ?? 1)
+                let reserved = fitted?.widths[tokenIndex] ?? (ownSlots ? ownWidths[tokenIndex] : reservedWidth(token, fonts: fonts))
+                if let visible = frame.visibleWords, tokenIndex >= visible {
+                    cursor += reserved + space
+                    tokenIndex += 1
+                    continue
+                }
                 let token = TextCasing.apply(token, casing: textDecor(state).casing, firstWord: tokenIndex == 0)
                 let bounds = wordBounds(token, font: drawFont, kern: wordKern)
                 let drawWidth = lineWidth(token, font: drawFont, kern: wordKern)
                 let tokenX = cursor + (reserved - bounds.width) / 2 - bounds.minX
-                var fill = textColor ?? style.color
-                if emphasised && ["color", "both"].contains(resolved.emphasis) { fill = resolved.emphasisColor }
-                if active && resolved.highlight == "color" { fill = pageHighlightColor }
+                var fill = textColor ?? resolved.color
+                if emphasised && ["color", "both"].contains(lookEmphasis) {
+                    fill = alternate ? resolved.alternateColor : resolved.emphasisColor
+                }
+                let keepsColor = emphasised && (alternate ? resolved.alternateKeepsColor : resolved.emphasisKeepsColor)
+                if active && resolved.highlight == "color" && !keepsColor { fill = pageHighlightColor }
                 let box = state == .highlight && resolved.highlight == "box"
                 if box { fill = pageHighlightColor }
                 var paint = textDecor(state)
+                if let fitted { paint.letterSpacing = (paint.letterSpacing ?? 0) * fitted.scale }
                 if !resolved.hasTextDecor { paint.color = fill }
                 else if let textColor, state == .text { paint.color = textColor }
                 if state == .highlight && resolved.highlight == "color",
                    highlightColor != nil || resolved.cyclesHighlight {
+                    paint.color = pageHighlightColor
+                }
+                if (fitted != nil || emphasisState == .emphasis2) && emphasised && active && resolved.highlight == "color" && !keepsColor {
                     paint.color = pageHighlightColor
                 }
                 var backgroundRect: CGRect?
@@ -449,7 +670,7 @@ nonisolated struct CaptionRenderer: Sendable {
                     paint.shadowY = -2 / CTFontGetSize(drawFont)
                     paint.shadowBlur = 4 / CTFontGetSize(drawFont)
                 }
-                if box && decor.bgColor == nil && (state == .highlight ? style.highlightDecor?.decor?.bgColor : nil) == nil {
+                if box && decor.bgColor == nil && !(state == .highlight && resolved.highlightHasBackgroundColor) {
                     paint.bgColor = pageHighlightColor
                     paint.bgOpacity = 1
                     let (r, g, b) = Self.parseHexColor(pageHighlightColor, fallback: (1, 0.84, 0))
@@ -463,14 +684,25 @@ nonisolated struct CaptionRenderer: Sendable {
                         dx: -CTFontGetSize(drawFont) * (paint.bgPaddingX ?? 0.125),
                         dy: -CTFontGetSize(drawFont) * (paint.bgPaddingY ?? 0.125))
                 }
+                let entering = tokenIndex == frame.wordIndex
+                if entering {
+                    context.saveGState()
+                    let center = CGPoint(x: tokenX + drawWidth / 2, y: baselineY + (ascent - descent) / 2)
+                    context.translateBy(x: center.x, y: center.y - frame.offsetY * CGFloat(videoWidth) / 1080)
+                    context.scaleBy(x: frame.scale, y: frame.scale)
+                    context.translateBy(x: -center.x, y: -center.y)
+                    context.setAlpha(frame.alpha)
+                    context.beginTransparencyLayer(auxiliaryInfo: nil)
+                }
                 painter.draw(token, font: drawFont, at: CGPoint(x: tokenX, y: baselineY), decor: paint,
                              in: context, backgroundRect: backgroundRect, radius: radius)
+                if entering { context.endTransparencyLayer(); context.restoreGState() }
                 cursor += reserved + space
                 tokenIndex += 1
             }
         }
 
-        if frame.alpha < 1 { context.endTransparencyLayer() }
+        if pageFrame.alpha < 1 { context.endTransparencyLayer() }
         guard let image = context.makeImage() else { throw CocoaError(.fileWriteUnknown) }
         let pngURL = directory.appendingPathComponent("caption_\(UUID().uuidString).png")
         guard let destination = CGImageDestinationCreateWithURL(

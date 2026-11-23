@@ -66,6 +66,13 @@ struct DubInspector: View {
         } else {
             Text("\(lines.count) lines · \(lines.filter(\.tight).count) tight")
                 .font(.caption).foregroundStyle(.secondary)
+            let freezes = DubFreezes.intervals(in: store.builder.document)
+            let pausedCount = lines.filter { DubPauseRules.layout($0, freezes: freezes).stopsForFreeze }.count
+            if pausedCount > 0 {
+                Text(pausedCount == 1 ? "1 line stops for a freeze" : "\(pausedCount) lines stop for a freeze")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).fixedSize()
+            }
             ViewThatFits(in: .horizontal) {
                 HStack { lineControls }
                 VStack(alignment: .leading) { lineControls }

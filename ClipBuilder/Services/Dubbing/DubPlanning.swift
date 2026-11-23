@@ -6,6 +6,7 @@ import Foundation
 nonisolated enum DubPlanning {
     static func lines(document: TimelineDocument, rows: [UUID: [TranscriptRow]],
                       turns: [UUID: [SpeakerTurn]], settings: DubSettings) -> [DubLine] {
+        let freezes = DubFreezes.intervals(in: document)
         var result: [DubLine] = []
         for clip in document.videoTrack {
             guard clip.hold != true, !clip.muted, !clip.bumper, !clip.isCutaway, clip.duration > 0,
@@ -49,20 +50,30 @@ nonisolated enum DubPlanning {
         result = result.enumerated().sorted {
             $0.element.start == $1.element.start ? $0.offset < $1.offset : $0.element.start < $1.element.start
         }.map(\.element)
+        let motionStarts = result.map { DubFreezes.motionTime($0.start, freezes: freezes) }
         var furthest: Int?
         for index in result.indices {
             if let previous = furthest {
-                let end = result[previous].start + result[previous].duration
-                if result[index].start < end {
+                let end = motionStarts[previous] + result[previous].duration
+                if motionStarts[index] < end {
                     result[index].tight = true
                     result[previous].tight = true
                 }
-                if result[index].start + result[index].duration > end { furthest = index }
+                if motionStarts[index] + result[index].duration > end { furthest = index }
             } else {
                 furthest = index
             }
         }
-        return result
+        guard !freezes.isEmpty else { return result }
+        return result.map { line in
+            var line = line
+            // Preserve the exact original start outside a freeze: a motion
+            // round-trip can otherwise perturb old JSON by a floating ulp.
+            if let freeze = freezes.first(where: { $0.contains(line.start) }) {
+                line.start = freeze.upperBound
+            }
+            return line
+        }
     }
 
     static func trimmedText(_ row: TranscriptRow, start: Double, end: Double) -> String {
@@ -128,10 +139,13 @@ nonisolated enum DubPlanning {
         return key
     }
 
-    static func slot(for line: DubLine, next: DubLine?) -> Double {
+    static func slot(for line: DubLine, next: DubLine?, freezes: [Range<Double>] = []) -> Double {
         let span = max(0, line.duration)
         guard let next else { return span } // No known trailing silence.
-        return span + min(0.6, max(0, next.start - line.start - span))
+        let silence = freezes.reduce(0.0) { total, freeze in
+            total + max(0, min(next.start, freeze.upperBound) - max(line.start, freeze.lowerBound))
+        }
+        return span + min(0.6, max(0, next.start - line.start - span - silence))
     }
 
     static func fit(duration: Double, slot: Double) -> (rate: Double, stretch: Double, tight: Bool) {
@@ -145,12 +159,16 @@ nonisolated enum DubPlanning {
     /// Attack before the line and release after it. Max combines envelopes
     /// without double-ducking overlapping speakers or briefly raising gaps
     /// where two ramps cross. Commas are escaped for FFmpeg's filter parser.
-    static func duckExpression(lines: [DubLine], level: Double, ramp: Double) -> String {
-        let envelopes = lines.filter { $0.duration > 0 }.map { line in
-            let start = number(line.start), end = number(line.start + line.duration)
+    static func duckExpression(lines: [DubLine], level: Double, ramp: Double, freezes: [Range<Double>] = []) -> String {
+        duckExpression(envelopes: DubSourceEnvelope.ranges(lines: lines, ramp: ramp, freezes: freezes),
+            level: level, ramp: ramp)
+    }
+
+    static func duckExpression(envelopes ranges: [DubSourceEnvelope.Envelope], level: Double, ramp: Double) -> String {
+        let envelopes = ranges.map { range in
+            let start = number(range.start), end = number(range.end)
             guard ramp > 0 else { return "between(t\\,\(start)\\,\(end))" }
-            let attack = number(line.start - ramp), release = number(line.start + line.duration + ramp)
-            return "max(0\\,min(1\\,min((t-\(attack))/\(number(ramp))\\,(\(release)-t)/\(number(ramp)))))"
+            return "max(0\\,min(1\\,min((t-\(number(range.attack)))/\(number(range.rise))\\,(\(number(range.release))-t)/\(number(range.fall)))))"
         }
         guard !envelopes.isEmpty else { return "1.0" }
         return "1-\(number(1 - min(1, max(0, level))))*(\(balancedMax(envelopes[...])))"

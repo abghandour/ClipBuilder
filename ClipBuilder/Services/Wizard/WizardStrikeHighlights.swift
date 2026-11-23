@@ -28,13 +28,14 @@ nonisolated enum WizardStrikeHighlights {
         return "Strike highlights: strikes are not marked yet for \(filename); use Sources → Mark strikes"
     }
 
-    static func apply(to document: inout TimelineDocument, enabled: Bool?, sourceTypes: [String: VideoType]) {
+    static func apply(to document: inout TimelineDocument, enabled: Bool?, style: String? = nil, sourceTypes: [String: VideoType]) {
         for index in document.videoTrack.indices {
             let clip = document.videoTrack[index]
             let fight = clip.videoFile.flatMap { sourceTypes[$0] } == .fight
             document.videoTrack[index].strikeHighlights = enabled == true && fight
                 && !clip.bumper && !clip.isCutaway
                 && !WizardEngine.isWizardCard(clip.videoFile ?? "") ? true : nil
+            document.videoTrack[index].strikeHighlightStyle = document.videoTrack[index].strikeHighlights == true ? style : nil
         }
     }
 

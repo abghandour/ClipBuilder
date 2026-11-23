@@ -40,6 +40,6 @@ struct TelestratorFigureList: View {
             .padding(10)
         }
         .background(.background.secondary, in: RoundedRectangle(cornerRadius: Theme.cardRadius))
-        .disabled(editor.isDragging || editor.playStarted != nil)
+        .disabled(editor.isDragging || editor.isPlaying)
     }
 }

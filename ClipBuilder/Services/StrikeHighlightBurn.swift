@@ -29,6 +29,9 @@ nonisolated enum StrikeHighlightBurn {
         var frames: Int
         /// printf pattern of the pictures.
         var pattern: String
+        /// Source seconds per picture for a screen-timed drawing on motion.
+        /// Nil preserves the existing strike and held-drawing graph strings.
+        var frameDuration: Double? = nil
     }
 
     /// The tracks that show at all inside [start, start + duration].
@@ -66,7 +69,7 @@ nonisolated enum StrikeHighlightBurn {
 
     /// Writes the pictures of every track into `folder`.
     static func sequences(tracks: [StrikeHighlightRules.Track], start: Double, duration: Double,
-                          size: CGSize, folder: URL) throws -> [Sequence] {
+                          size: CGSize, folder: URL, style: String = "outline") throws -> [Sequence] {
         let scale = min(1, maxOverlayWidth / max(1, size.width))
         let width = max(2, Int((size.width * scale).rounded())), height = max(2, Int((size.height * scale).rounded()))
         var result: [Sequence] = []
@@ -82,7 +85,7 @@ nonisolated enum StrikeHighlightBurn {
                 }
                 if let sample = StrikeHighlightRules.sample(track, at: time) {
                     StrikeHighlightPainter.draw(sample.highlight, opacity: sample.opacity, in: context,
-                                                rect: CGRect(x: 0, y: 0, width: width, height: height), topLeftOrigin: false)
+                                                rect: CGRect(x: 0, y: 0, width: width, height: height), topLeftOrigin: false, style: style)
                 }
                 let url = folder.appendingPathComponent(String(format: "h%02d_%04d.png", trackIndex, frame))
                 guard let image = context.makeImage(),
@@ -120,12 +123,29 @@ nonisolated enum StrikeHighlightBurn {
     /// command's input numbering is untouched and the stretch is decoded and
     /// encoded once, by the encode that was going to happen anyway.
     static func inGraph(_ sequences: [Sequence], size: CGSize, input: String, tag: String) throws -> [String] {
+        try overlaySteps(sequences, size: size, input: input, tag: tag, pictureClock: "")
+    }
+
+    /// A hold already has its own zero-based padded clock. PNG animation
+    /// needs exact 30 fps timestamps rather than image2's default 1/25 ticks.
+    /// Keep existing strike graphs byte-for-byte unchanged.
+    static func inHoldGraph(_ sequences: [Sequence], size: CGSize, input: String, tag: String) throws -> [String] {
+        try overlaySteps(sequences, size: size, input: input, tag: tag, pictureClock: "settb=1/30,")
+    }
+
+    private static func overlaySteps(_ sequences: [Sequence], size: CGSize, input: String, tag: String,
+                                     pictureClock: String) throws -> [String] {
         var steps = ["\(input)setpts=PTS-STARTPTS[\(tag)_b0]"]
         for (index, sequence) in sequences.enumerated() {
             guard !sequence.pattern.contains("'") else { throw Failure(message: "Unusable scratch path for strike highlights.") }
             let file = sequence.pattern.replacingOccurrences(of: "\\", with: "\\\\").replacingOccurrences(of: ":", with: "\\:")
-            steps.append(String(format: "movie=filename='%@':f=image2,format=rgba,scale=%d:%d,setpts=N/(%.0f*TB)+%.6f/TB[%@_m%d]",
-                                file, Int(size.width), Int(size.height), frameRate, sequence.offset, tag, index))
+            if let frameDuration = sequence.frameDuration {
+                steps.append(String(format: "movie=filename='%@':f=image2,settb=1/90000,format=rgba,scale=%d:%d,setpts=N*%.9f/TB+%.6f/TB[%@_m%d]",
+                    file, Int(size.width), Int(size.height), frameDuration, sequence.offset, tag, index))
+            } else {
+                steps.append(String(format: "movie=filename='%@':f=image2,%@format=rgba,scale=%d:%d,setpts=N/(%.0f*TB)+%.6f/TB[%@_m%d]",
+                                    file, pictureClock, Int(size.width), Int(size.height), frameRate, sequence.offset, tag, index))
+            }
             let out = index == sequences.count - 1 ? tag : "\(tag)_b\(index + 1)"
             steps.append("[\(tag)_b\(index)][\(tag)_m\(index)]overlay=eof_action=pass:repeatlast=0[\(out)]")
         }
@@ -137,7 +157,7 @@ nonisolated enum StrikeHighlightBurn {
     /// Empty when no track shows there.
     @concurrent
     static func prepare(source: URL, start: Double, duration: Double, tracks: [StrikeHighlightRules.Track],
-                        scratch: URL) async throws -> (sequences: [Sequence], size: CGSize, folder: URL)? {
+                        scratch: URL, style: String = "outline") async throws -> (sequences: [Sequence], size: CGSize, folder: URL)? {
         let showing = Self.tracks(tracks, start: start, duration: duration)
         guard !showing.isEmpty, duration >= 0 else { return nil }
         let dimensions = await FFmpeg.dimensions(of: source)
@@ -145,7 +165,7 @@ nonisolated enum StrikeHighlightBurn {
         let size = CGSize(width: dimensions.width, height: dimensions.height)
         let folder = scratch.appendingPathComponent("strikes-" + UUID().uuidString)
         try FileManager.default.createDirectory(at: folder, withIntermediateDirectories: true)
-        let sequences = try sequences(tracks: showing, start: start, duration: duration, size: size, folder: folder)
+        let sequences = try sequences(tracks: showing, start: start, duration: duration, size: size, folder: folder, style: style)
         guard !sequences.isEmpty else {
             try? FileManager.default.removeItem(at: folder)
             return nil
@@ -158,9 +178,9 @@ nonisolated enum StrikeHighlightBurn {
     /// Only for a consumer that needs a file (camera reframing reads it with
     /// AVFoundation, hence QuickTime); the segment encode uses `inGraph`.
     static func burn(source: URL, start: Double, duration: Double, tracks: [StrikeHighlightRules.Track],
-                     scratch: URL) async throws -> URL? {
+                     scratch: URL, style: String = "outline") async throws -> URL? {
         guard let (sequences, size, folder) = try await prepare(source: source, start: start, duration: duration,
-                                                                tracks: tracks, scratch: scratch) else { return nil }
+                                                                tracks: tracks, scratch: scratch, style: style) else { return nil }
         let graph = graph(sequences, size: size)
         // The sound is decoded and kept as PCM: lossless, and cut at exactly
         // the same point as the picture. Copied packets start at an earlier

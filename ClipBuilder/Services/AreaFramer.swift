@@ -25,9 +25,12 @@ nonisolated enum AreaFramer {
 
     /// A 1080×1920 clip (audio kept) with `[start, start+duration]` of
     /// `source` framed into `area`'s bounding box, black elsewhere.
+    /// `tracking` supplies the pre-drawing picture for analysis only.
     static func frame(source: URL, start: Double, duration: Double,
+                      tracking: (source: URL, start: Double)? = nil,
                       area: ScreenCropArea,
                       framingPlan: FramingPlan? = nil,
+                      pictureWindow: FreeCropRect? = nil,
                       focusPortraits: [Data] = [],
                       avoidPortraits: [Data] = [],
                       fallbackCenter: (x: Double, y: Double)? = nil,
@@ -53,9 +56,10 @@ nonisolated enum AreaFramer {
         var fitted: URL?
         do {
             fitted = try await centerStage.reframeClip(source: source, start: start, duration: duration,
+                                                       tracking: tracking,
                                                        focusPortraits: focusPortraits,
                                                        avoidPortraits: avoidPortraits,
-                                                       tuning: tuning, frame: box.size, log: log)
+                                                       tuning: tuning, frame: box.size, pictureWindow: pictureWindow, log: log)
             log(String(format: "Area \"%@\": tracking camera at %.0f×%.0f", area.name, box.width, box.height))
         } catch {
             try Task.checkCancellation()
@@ -74,7 +78,8 @@ nonisolated enum AreaFramer {
             var detectedFace: CGRect?
             if detectFallbackFace {
                 for offset in [0.0, 1.0] where offset < duration {
-                    detectedFace = try? await CenterStageService.faceCenter(source: source, at: start + offset)
+                    detectedFace = try? await CenterStageService.faceCenter(source: tracking?.source ?? source,
+                        at: (tracking?.start ?? start) + offset)
                     try Task.checkCancellation()
                     if detectedFace != nil { break }
                 }
@@ -93,6 +98,7 @@ nonisolated enum AreaFramer {
                 window = FreeCropRect(xFrac: guarded.minX / bounds.width, yFrac: guarded.minY / bounds.height,
                                       wFrac: guarded.width / bounds.width, hFrac: guarded.height / bounds.height)
             }
+            if let pictureWindow { window = FocusFrame.fitting(window, inside: pictureWindow) }
             arguments += ["-ss", String(format: "%.3f", max(0, start)),
                           "-t", String(format: "%.3f", duration), "-i", source.path]
             if let plan = framingPlan {
@@ -133,6 +139,7 @@ nonisolated enum AreaFramer {
     /// from `start`) instead of tracking.
     static func frame(source: URL, start: Double, duration: Double,
                       area: ScreenCropArea, path: [CameraPathKeyframe],
+                      pictureWindow: FreeCropRect? = nil,
                       centerStage: CenterStageService,
                       scratch: URL,
                       log: @escaping @Sendable (String) -> Void) async throws -> URL {
@@ -143,7 +150,7 @@ nonisolated enum AreaFramer {
         let w = RenderEngine.outputWidth
         let h = RenderEngine.outputHeight
         let fitted = try await centerStage.reframeClip(source: source, start: start, duration: duration,
-                                                       path: path, frame: box.size, log: log)
+                                                       path: path, frame: box.size, pictureWindow: pictureWindow, log: log)
         defer { try? FileManager.default.removeItem(at: fitted) }
         log(String(format: "Area \"%@\": camera path with %d keyframes at %.0f×%.0f", area.name, path.count,
                    box.width, box.height))
@@ -220,11 +227,17 @@ nonisolated enum AreaFramer {
     /// crop evaluates w/h only at configuration, so sendcmd evaluates the same
     /// piecewise-linear expressions on EVERY frame (T is sendcmd's clock).
     /// x/y are evaluated by crop itself on each frame. No intermediate video.
-    static func pathFilter(keyframes: [CameraPathKeyframe], source _: CGSize,
-                           area: ScreenCropArea, namespace: String = "area", framingPlan: FramingPlan? = nil) -> String {
-        let path = keyframes.sorted { $0.t < $1.t }
-        guard let first = path.first else { return "null" }
+    static func pathFilter(keyframes: [CameraPathKeyframe], source: CGSize,
+                           area: ScreenCropArea, namespace: String = "area", framingPlan: FramingPlan? = nil,
+                           transformInterpolation: Bool = false,
+                           continuityGrid: ContinuityCameraGrid? = nil,
+                           preserveSourceTiming: Bool = false) -> String {
+        var path = TrackedPictureBounds.clamped(keyframes).sorted { $0.t < $1.t }
         let box = pixelBounds(of: area)
+        let grid = transformInterpolation
+            ? continuityGrid ?? ContinuityCameraGrid.choose(path: path, source: source, box: box.size) : nil
+        if grid == .crop { path = ContinuityCameraGrid.resampled(path) }
+        guard let first = path.first else { return "null" }
         func expression(_ value: (CameraPathKeyframe) -> Double, clock: String) -> String {
             func number(_ x: Double) -> String { String(format: "%.9f", locale: Locale(identifier: "en_US_POSIX"), x) }
             // A sum of clamped ramps avoids nesting hundreds of if() calls
@@ -233,7 +246,7 @@ nonisolated enum AreaFramer {
             for index in path.indices.dropLast() {
                 let a = path[index], b = path[index + 1]
                 guard value(b) != value(a) else { continue }
-                if b.t == a.t || CameraKeyframes.isCut(path, at: index + 1) {
+                if b.t == a.t || grid != .crop && CameraKeyframes.isCut(path, at: index + 1) {
                     terms.append("(\(number(value(b) - value(a))))*gte(\(clock),\(number(b.t)))")
                     continue
                 }
@@ -248,6 +261,29 @@ nonisolated enum AreaFramer {
             }
             return sum(terms.indices)
         }
+        if transformInterpolation && grid != .crop {
+            // Scale and translation are affine ramps, as in the native export:
+            // w = 1/S, x = U/S, y = V/S, with S=lerp(1/w), U=lerp(x/w), V=lerp(y/w).
+            // Scale BEFORE cropping so rounding a small source crop cannot
+            // change the zoom. Crop on a half-output-pixel grid, then downsample;
+            // full chroma prevents 4:2:0 from rounding the translated origin.
+            let scale = expression({ 1 / $0.w }, clock: "t")
+            let x = expression({ $0.x / $0.w }, clock: "t")
+            let y = expression({ $0.y / $0.w }, clock: "t")
+            let multiplier = grid == .single ? 1 : 2
+            let width = multiplier * Int(box.width), height = multiplier * Int(box.height)
+            let aspect = source.height / source.width
+            var filter = "format=yuv444p,scale=w='max(\(width),round(\(width)*(\(scale))))':"
+                + "h='max(\(height),round(\(width)*\(aspect)*(\(scale))))':eval=frame,"
+                + "crop=\(width):\(height):x='\(width)*(\(x))':y='\(width)*\(aspect)*(\(y))':exact=1,"
+                + "scale=\(Int(box.width)):\(Int(box.height))"
+            if box != CGRect(x: 0, y: 0, width: RenderEngine.outputWidth, height: RenderEngine.outputHeight) {
+                filter += ",pad=\(RenderEngine.outputWidth):\(RenderEngine.outputHeight):\(Int(box.minX)):\(Int(box.minY)):color=black"
+            }
+            // The segment applies speed then fps exactly once, as for an
+            // untracked split clip. Framing never resamples the source clock.
+            return filter + ",setsar=1,format=yuv420p"
+        }
         let w = expression({ $0.w }, clock: "T"), h = expression({ $0.h }, clock: "T")
         let x = expression({ $0.x }, clock: "t"), y = expression({ $0.y }, clock: "t")
         let target = "crop@\(namespace)"
@@ -255,8 +291,9 @@ nonisolated enum AreaFramer {
         var filter = ""
         if zooms {
             // Two escaping layers: the filter parser, then sendcmd's parser.
-            let width = "2*floor((\(w))*W/2)".replacingOccurrences(of: ",", with: "\\\\,")
-            let height = "2*floor((\(h))*H/2)".replacingOccurrences(of: ",", with: "\\\\,")
+            let cropWidth = "2*floor((\(w))*W/2)", cropHeight = "2*floor((\(h))*H/2)"
+            let width = (grid == .crop ? "max(2,\(cropWidth))" : cropWidth).replacingOccurrences(of: ",", with: "\\\\,")
+            let height = (grid == .crop ? "max(2,\(cropHeight))" : cropHeight).replacingOccurrences(of: ",", with: "\\\\,")
             filter += "sendcmd=c='0 [expr] \(target) w \(width), [expr] \(target) h \(height);',"
         }
         filter += "\(target)='max(2,2*floor(iw*\(first.w)/2))':'max(2,2*floor(ih*\(first.h)/2))':x='iw*(\(x))':y='ih*(\(y))',"
@@ -285,7 +322,9 @@ nonisolated enum AreaFramer {
         if box != CGRect(x: 0, y: 0, width: RenderEngine.outputWidth, height: RenderEngine.outputHeight) {
             filter += ",pad=\(RenderEngine.outputWidth):\(RenderEngine.outputHeight):\(Int(box.minX)):\(Int(box.minY)):color=black"
         }
-        return filter + ",setsar=1,fps=30,format=yuv420p"
+        // Paused saved paths keep rectangle interpolation, but sampling belongs
+        // to the segment after speed, just as it does for tracked run paths.
+        return filter + (transformInterpolation || preserveSourceTiming ? ",setsar=1,format=yuv420p" : ",setsar=1,fps=30,format=yuv420p")
     }
 
     /// The largest window of the area's aspect that fits a source of

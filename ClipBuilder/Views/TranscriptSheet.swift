@@ -170,6 +170,8 @@ struct TranscriptSheet: View {
     /// from these; typing over the draft in Edit Text retires them.
     @State private var wordFixes: [Int64: [Int: String]] = [:]
     /// Words marked right, not applied yet: line, position, the word.
+    @State private var emphasisDrafts: [Int64: TranscriptEmphasisRules.Edit] = [:]
+    @State private var emphasisRow: Int64?
     @State private var confirmedWords: [Int64: [Int: String]] = [:]
     @State private var fixingWord: TranscriptWordRules.WordID?
     @State private var showCorrections = false
@@ -198,7 +200,7 @@ struct TranscriptSheet: View {
 
     private var markedRightCount: Int { confirmedWords.values.reduce(0) { $0 + $1.count } }
 
-    private var hasChanges: Bool { !changedIDs.isEmpty || !changedSpeakerIDs.isEmpty || markedRightCount > 0 }
+    private var hasChanges: Bool { !changedIDs.isEmpty || !changedSpeakerIDs.isEmpty || markedRightCount > 0 || !emphasisDrafts.isEmpty }
 
     private var changeSummary: String {
         var parts: [String] = []
@@ -208,6 +210,7 @@ struct TranscriptSheet: View {
         if translations > 0 { parts.append("\(translations) translation\(translations == 1 ? "" : "s") changed") }
         if !changedSpeakerIDs.isEmpty { parts.append("\(changedSpeakerIDs.count) speaker change\(changedSpeakerIDs.count == 1 ? "" : "s")") }
         if markedRightCount > 0 { parts.append("\(markedRightCount) word\(markedRightCount == 1 ? "" : "s") marked right") }
+        if !emphasisDrafts.isEmpty { parts.append("\(emphasisDrafts.count) line emphasis change(s)") }
         return parts.joined(separator: " · ")
     }
 
@@ -324,8 +327,56 @@ struct TranscriptSheet: View {
                 result += part
             }
         }
+        markEmphasis(in: &result, row: row)
         markMatches(in: &result, rowID: row.id)
         return result
+    }
+
+    private func emphasisWords(_ row: TranscriptRow) -> [TranscriptWord]? {
+        TranscriptEmphasisRules.applying(emphasisDrafts[row.id] ?? .init(text: row.text, marks: [:]),
+            text: row.text, words: row.words, start: row.startTime, end: row.endTime)
+    }
+
+    @ViewBuilder private func emphasisControl(_ row: TranscriptRow) -> some View {
+        if !editMode, !compareMode, let words = emphasisWords(row) {
+            HStack(spacing: 6) {
+                Button(emphasisRow == row.id ? "Hide emphasis" : "Emphasis…") {
+                    emphasisRow = emphasisRow == row.id ? nil : row.id
+                }.controlSize(.mini).fixedSize()
+                if emphasisDrafts[row.id] != nil {
+                    Text("Changed, not applied").foregroundStyle(.orange).fixedSize()
+                    Button("Undo emphasis") { emphasisDrafts[row.id] = nil }.controlSize(.mini).fixedSize()
+                }
+            }.font(.caption).lineLimit(1)
+                .disabled(wordEditsBlocked || (drafts[row.id] ?? row.text) != row.text)
+            if emphasisRow == row.id {
+                TranscriptEmphasisStrip(words: words) { selected, mark in
+                    var edit = emphasisDrafts[row.id] ?? .init(text: row.text, marks: [:])
+                    for index in selected { edit.marks[index] = mark }
+                    emphasisDrafts[row.id] = edit
+                }.disabled(wordEditsBlocked || (drafts[row.id] ?? row.text) != row.text)
+            }
+        }
+    }
+
+    private func markEmphasis(in text: inout AttributedString, row: TranscriptRow) {
+        guard (drafts[row.id] ?? row.text) == row.text, let words = emphasisWords(row) else { return }
+        var cursor = text.startIndex
+        for word in words {
+            guard let range = text[cursor...].range(of: word.word) else { continue }
+            cursor = range.upperBound
+            switch word.emphasis {
+            case "primary":
+                text[range].font = .body.bold()
+                text[range].underlineStyle = Text.LineStyle(pattern: .solid, color: .accentColor)
+            case "alternate":
+                text[range].font = .body.italic()
+                text[range].underlineStyle = Text.LineStyle(pattern: .dash, color: .accentColor)
+            case "none":
+                text[range].underlineStyle = Text.LineStyle(pattern: .dot, color: .secondary)
+            default: break
+            }
+        }
     }
 
     private func markMatches(in text: inout AttributedString, rowID: Int64) {
@@ -342,6 +393,7 @@ struct TranscriptSheet: View {
 
     private func matchedText(_ row: TranscriptRow) -> AttributedString {
         var text = AttributedString(drafts[row.id] ?? row.text)
+        markEmphasis(in: &text, row: row)
         markMatches(in: &text, rowID: row.id)
         return text
     }
@@ -527,6 +579,8 @@ struct TranscriptSheet: View {
     private func dropPendingWordWork() {
         wordFixes = [:]
         confirmedWords = [:]
+        emphasisDrafts = [:]
+        emphasisRow = nil
         fixingWord = nil
         replaceNote = nil
     }
@@ -1300,7 +1354,7 @@ struct TranscriptSheet: View {
     }
 
     private var applyTitle: String {
-        let count = changedIDs.count + changedSpeakerIDs.count + markedRightCount
+        let count = changedIDs.count + changedSpeakerIDs.count + markedRightCount + emphasisDrafts.count
         return count == 0 ? "Apply" : "Apply \(count) Change\(count == 1 ? "" : "s")"
     }
 
@@ -1561,6 +1615,7 @@ struct TranscriptSheet: View {
             VStack(alignment: .leading, spacing: 6) {
                 if shows(row) {
                     textLine(code: languageCode(row)) { originalText(row) }
+                    emphasisControl(row)
                 }
                 if !editMode, let doubt = fixingDoubt, doubt.id.rowID == row.id {
                     let open = openDoubts
@@ -1579,6 +1634,7 @@ struct TranscriptSheet: View {
                 }
                 ForEach(translations) { translation in
                     textLine(code: languageCode(translation)) { translationText(translation, of: row) }
+                    emphasisControl(translation)
                 }
             }
             .frame(maxWidth: .infinity, alignment: .leading)
@@ -2320,6 +2376,7 @@ struct TranscriptSheet: View {
         // Pending word work on lines that changed underneath no longer points at the same words.
         wordFixes = wordFixes.filter { id, _ in rowsByID[id] != nil }
         confirmedWords = confirmedWords.filter { id, _ in rowsByID[id] != nil }
+        emphasisDrafts = emphasisDrafts.filter { id, edit in rowsByID[id]?.text == edit.text }
         if let fixingWord, doubtsByRow[fixingWord.rowID]?.contains(where: { $0.id == fixingWord }) != true {
             self.fixingWord = nil
         }
@@ -2377,6 +2434,7 @@ struct TranscriptSheet: View {
         for row in rows {
             if let draft = speakerDrafts[row.id], draft != row.speaker { speakerChanges[draft, default: []].append(row.id) }
         }
+        let emphasis = emphasisDrafts
         let confirming = confirmedWords
         // Lines whose change is still a list of word fixes: the save can
         // then tell a repeated word's occurrences apart.
@@ -2384,18 +2442,19 @@ struct TranscriptSheet: View {
         for change in changes {
             if let row = rowsByID[change.id], let standing = standingFixes(row), !standing.isEmpty { fixes[change.id] = standing }
         }
-        guard !changes.isEmpty || !speakerChanges.isEmpty || !confirming.isEmpty else { if thenDismiss { dismiss() }; return }
+        guard !changes.isEmpty || !speakerChanges.isEmpty || !confirming.isEmpty || !emphasis.isEmpty else { if thenDismiss { dismiss() }; return }
         isSaving = true
         Task {
             do {
-                if !changes.isEmpty || !confirming.isEmpty {
+                if !changes.isEmpty || !confirming.isEmpty || !emphasis.isEmpty {
                     // Marked-right words are written first, in the same transaction.
-                    try await database.updateTranscriptTexts(changes, confirming: confirming, fixes: fixes)
+                    try await database.updateTranscriptTexts(changes, confirming: confirming, fixes: fixes, emphasis: emphasis)
                 }
                 if !changes.isEmpty {
                     await store.transcriptTextsChanged(videoID: video.id, transcriptionKey: editedSetKey,
                                                        rowIDs: changes.map(\.id))
                 }
+                if !emphasis.isEmpty { store.transcriptEdited(videoID: video.id) }
                 for (speaker, ids) in speakerChanges {
                     await store.setTranscriptSpeaker(rowIDs: ids, videoID: video.id, speaker: speaker)
                 }

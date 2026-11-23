@@ -75,7 +75,11 @@ struct RoughCutReviewSheet: View {
             screen: NSScreen.main?.visibleFrame.size ?? CGSize(width: 1440, height: 900))
         return CGSize(width: players.width + controlsWidth, height: players.height)
     }
-    private var framingChanged: Bool { framing != review.framing || extras != review.extras }
+    private var framingChanged: Bool {
+        framing != review.framing || extras != review.extras
+            || review.strikeRevision.map { $0 != store.strikeHighlightRevision } == true
+            || review.drawingRevision.map { $0 != store.telestrationRevision } == true
+    }
     /// The picture does not show the settings: not rendered yet, or rendered with other settings.
     private var stale: Bool { framingChanged || !review.isRendered }
     /// Express's cut carries its Overlays tab; the full wizard's stays plain.
@@ -234,6 +238,7 @@ struct RoughCutReviewSheet: View {
             isVisible = false
             stopPlayers()
         }
+        .onChange(of: stale) { _, stale in if stale { stopPlayers() } }
         .onChange(of: store.profileGeneration) { _, _ in finish() }
     }
 

@@ -113,7 +113,7 @@ nonisolated enum WizardPodcastTimeline {
                 document.videoTrack[track].captions = options.addCaptions && document.videoTrack[track].track == 0
                     ? (options.captionPositionOverride ?? captionStyle.position) : "none"
             }
-            WizardStrikeHighlights.apply(to: &document, enabled: options.strikeHighlights, sourceTypes: highlightSourceTypes)
+            WizardStrikeHighlights.apply(to: &document, enabled: options.strikeHighlights, style: options.strikeHighlightStyle, sourceTypes: highlightSourceTypes)
             result[index] = document
         }
         return result
@@ -137,7 +137,10 @@ extension WizardEngine {
         }
         let videos = try await database.fetchVideos(projectID: options.projectID)
         let videoTypes = Dictionary(uniqueKeysWithValues: videos.compactMap { video in video.type.map { (video.id, $0) } })
-        if WizardStrikePauses.requested(options) {
+        let drawings: [String: [Telestration]] = if options.drawnPauses == false { [:] } else {
+            try await WizardStrikePauses.drawings(plan: pauseEligibilityPlan ?? plan, sceneMap: sceneMap, database: database)
+        }
+        if WizardStrikePauses.contactsRequested(options) || drawings.values.contains(where: { !$0.isEmpty }) {
             for (index, clip) in plan.clips.enumerated() where cuts[index] == nil {
                 var single = plan
                 single.clips = [clip]
@@ -155,7 +158,7 @@ extension WizardEngine {
         var presentationOptions = options
         presentationOptions.includeOutro = false
         let paused = WizardStrikePauses.prepare(plan: pauseEligibilityPlan ?? plan, cuts: cuts, sceneMap: sceneMap,
-            sourceTypes: videoTypes, contacts: strikeContacts, options: options,
+            sourceTypes: videoTypes, contacts: strikeContacts, drawings: drawings, options: options,
             xfadeDuration: RenderContext.transitions.xfadeDuration,
             presentation: .init(plan: presentationPlan, options: presentationOptions))
         for message in paused.messages {
@@ -196,7 +199,7 @@ extension WizardEngine {
         let highlightSourceTypes = Dictionary(videos.compactMap { video in
             video.type.map { (video.url.path, $0) }
         }, uniquingKeysWith: { first, _ in first })
-        WizardStrikeHighlights.apply(to: &document, enabled: options.strikeHighlights, sourceTypes: highlightSourceTypes)
+        WizardStrikeHighlights.apply(to: &document, enabled: options.strikeHighlights, style: options.strikeHighlightStyle, sourceTypes: highlightSourceTypes)
         return document
     }
 }

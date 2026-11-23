@@ -5,6 +5,17 @@ nonisolated enum StrikeFreezeRules {
     static let minimumPiece = 0.25
     static let maximumContacts = 8
     static let holdRange = 0.05...5.0
+    static let drawingHoldRange = 0.05...40.0
+    static let maximumDrawings = 8
+
+    nonisolated struct Pause: Sendable, Equatable {
+        /// Absolute source seconds for pieces; cut-local screen seconds for sharedPieces.
+        var time: Double
+        var duration: Double
+        var drawing: Telestration? = nil
+        /// Drawing owner video path; nil means the main source.
+        var source: String? = nil
+    }
 
     /// An unrelated inspector edit does not invalidate an in-flight contact read.
     static func sameContactSource(_ current: TimelineClip?, _ requested: TimelineClip) -> Bool {
@@ -60,10 +71,30 @@ nonisolated enum StrikeFreezeRules {
     static func pieces(_ clip: TimelineClip, contacts: [Double], hold: Double) -> [TimelineClip] {
         guard hold.isFinite, holdRange.contains(hold) else { return [] }
         let selected = self.contacts(clip, contacts: contacts)
-        guard !selected.isEmpty, let start = clip.sourceStart else { return [] }
+        return pieces(clip, pauses: selected.map { Pause(time: $0, duration: hold) })
+    }
+
+    /// Selection has already resolved priorities and the independent caps.
+    /// Validate every boundary without selecting again, then split only once.
+    static func pieces(_ clip: TimelineClip, pauses: [Pause]) -> [TimelineClip] {
+        guard !pauses.isEmpty, !clip.bumper, !clip.isCutaway, clip.hold != true,
+              clip.strikeImpactsFrozen != true, let start = clip.sourceStart,
+              start.isFinite, start >= 0, clip.sourceSpan.isFinite, clip.sourceSpan > 0,
+              clip.effectiveSpeed.isFinite, clip.effectiveSpeed > 0 else { return [] }
+        let end = start + clip.sourceSpan
+        guard end.isFinite else { return [] }
+        var previous = start
+        for pause in pauses {
+            let range = pause.drawing == nil ? holdRange : drawingHoldRange
+            guard pause.time.isFinite, pause.duration.isFinite, range.contains(pause.duration),
+                  boundaryReason(start: start, end: end, speed: clip.effectiveSpeed, contact: pause.time) == nil,
+                  pause.time - previous >= minimumPiece * clip.effectiveSpeed - 1e-9 else { return [] }
+            previous = pause.time
+        }
         var remaining = clip
         var result: [TimelineClip] = []
-        for contact in selected {
+        for pause in pauses {
+            let contact = pause.time, hold = pause.duration
             let at = clip.startTime + (contact - start) / clip.effectiveSpeed
             guard let split = TimelineSplit.pieces(remaining, at: at, minimum: minimumPiece) else { return [] }
             result.append(split.head)
@@ -73,6 +104,7 @@ nonisolated enum StrikeFreezeRules {
             frozen.duration = hold
             frozen.speed = nil
             frozen.hold = true
+            frozen.telestration = pause.drawing.map(TelestrationMotionRules.paused)
             frozen.transIn = nil
             frozen.transOut = nil
             frozen.fadeIn = 0
@@ -89,6 +121,8 @@ nonisolated enum StrikeFreezeRules {
             result[index].uid = UUID()
             // The cap can leave more contacts inside the final tail. Remember
             // the edit so even that piece stays idempotent after save/reload.
+            // Drawing-only splits carry it too: captions and the assembly
+            // clock recognise a reel's pauses by this flag.
             result[index].strikeImpactsFrozen = true
             result[index].startTime = cursor
             cursor += result[index].duration

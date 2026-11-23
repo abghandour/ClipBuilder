@@ -5,6 +5,7 @@ import SwiftUI
 struct DubReviewLineRow: View {
     @Binding var line: DubLine
     let original: DubLine
+    let freezes: [Range<Double>]
     /// Speaker keys the picker offers, with their display names.
     let speakers: [(key: String, name: String)]
     let isPlaying: Bool
@@ -66,6 +67,11 @@ struct DubReviewLineRow: View {
             TextField("Dubbed text", text: $line.text, axis: .vertical)
                 .textFieldStyle(.roundedBorder).lineLimit(1...4)
                 .onSubmit(update)
+            if DubPauseRules.layout(line, freezes: freezes).stopsForFreeze {
+                Text("Stops for a freeze")
+                    .font(.caption).foregroundStyle(.secondary)
+                    .lineLimit(1).fixedSize()
+            }
             if isEmpty {
                 Text("Add text, or reassign this line's speaker.")
                     .font(.caption).foregroundStyle(.orange)

@@ -8,9 +8,9 @@ struct CaptionPresetsTests {
         let originals = ["Clean", "Boxed", "Karaoke", "Hormozi", "Three-Word", "Lower Third", "Interview Serif", "Retro 3D"]
         let additions = ["Cove", "Energy", "M81", "Arion Pink", "Quintessence", "Bellatrix", "Prism", "Freshly",
                          "Thuban", "Mars", "Runway", "Grace", "Copernicus", "Aldebaran", "Nova", "Alcyone Blue",
-                         "Travel", "Andromeda", "Cassiopeia", "Citadelle", "Beast", "Iman", "Ali"]
+                         "Travel", "Andromeda", "Cassiopeia", "Citadelle", "Beast", "Iman", "Ali", "PG Preferred"]
         let presets = CaptionPresets.styles
-        #expect(presets.count == 31)
+        #expect(presets.count == 32)
         #expect(Set(presets.map(\.name)) == Set(originals + additions))
         #expect(Set(presets.map(\.name)).count == presets.count)
         #expect(Set(presets.map(\.style)).count == presets.count)

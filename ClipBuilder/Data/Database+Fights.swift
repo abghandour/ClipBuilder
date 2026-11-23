@@ -513,7 +513,8 @@ extension Database {
             return StrikeClipStatusRules.Saved(tracks: saved.compactMap(\.track),
                 // The same times the marker hands the engine, unmarked strikes included.
                 contacts: saved.map(\.pauseTime).sorted(),
-                complete: WizardStrikeHighlights.missingStrikes(events: events, saved: saved).isEmpty)
+                complete: WizardStrikeHighlights.missingStrikes(events: events, saved: saved).isEmpty,
+                drawings: try fetchTelestrations(videoID: videoID).map(\.drawing))
         }
     }
 

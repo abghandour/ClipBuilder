@@ -4,14 +4,16 @@ import SwiftUI
 extension WizardView {
     private var strikePauseEnabled: Binding<Bool> {
         Binding(get: { strikeImpactFreeze.isFinite && strikeImpactFreeze > 0 },
-                set: { strikeImpactFreeze = $0 ? StrikeHighlightRules.impactHold : 0 })
+                set: { enabled in
+                    let value = StrikePausePreference.toggled(enabled, active: strikeImpactFreeze,
+                        remembered: strikeImpactFreezeSeconds)
+                    StrikePausePreference.setActive(value.active)
+                })
     }
 
     private var strikePauseSeconds: Binding<Double> {
         Binding(get: { strikeImpactFreeze }, set: { value in
-            strikeImpactFreeze = value.isFinite
-                ? min(StrikeFreezeRules.holdRange.upperBound, max(StrikeFreezeRules.holdRange.lowerBound, value))
-                : StrikeHighlightRules.impactHold
+            StrikePausePreference.setActive(value)
         })
     }
 
@@ -169,12 +171,23 @@ extension WizardView {
                         .lineLimit(1).fixedSize()
                 }
                 .lineLimit(1).fixedSize(horizontal: false, vertical: true)
-                .help("Mark the attacking limb in green and the impact in red on clips from fight footage")
+                .help("Mark the attacking limb and the impact on clips from fight footage")
+                WizardControlRow("Highlight style") {
+                    StrikeHighlightStylePicker(selection: $strikeHighlightStyle, enabled: strikeHighlights)
+                }
                 WizardControlRow("Pause on contact") {
-                    StrikePauseControls(enabled: strikePauseEnabled, seconds: strikePauseSeconds)
+                    StrikePauseControls(enabled: strikePauseEnabled, seconds: strikePauseSeconds,
+                        slowEnabled: Binding(get: { !strikeSlowMotion.isEmpty },
+                            set: { strikeSlowMotion = $0 ? StrikeImpactRules.Strength.medium.rawValue : "" }),
+                        strength: Binding(get: { StrikeImpactRules.strength(saved: strikeSlowMotion) ?? "medium" },
+                            set: { strikeSlowMotion = $0 }), flashEnabled: $strikeFlash)
                 }
                 .lineLimit(1).fixedSize(horizontal: false, vertical: true)
             }
+        }
+        WizardControlRow("Drawings") {
+            Toggle("Drawings", isOn: $drawnPauses).lineLimit(1).fixedSize()
+                .help(TelestratorRequest.drawingsHelp)
         }
         if lookCapabilities.branding {
             FormGroupHeader("Branding")

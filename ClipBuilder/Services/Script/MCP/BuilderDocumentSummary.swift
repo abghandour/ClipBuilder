@@ -26,6 +26,17 @@ nonisolated struct BuilderDocumentSummary: Codable, Sendable {
         var bold: Bool? = nil
         var italic: Bool? = nil
         var design: String? = nil
+        var speaker: String? = nil
+        var readOnly: Bool? = nil
+        var slowGroup: UUID? = nil
+        var slowStrength: StrikeImpactRules.Strength? = nil
+
+        enum CodingKeys: String, CodingKey {
+            case id, lane, track, start, duration, scene, name, bumperMode, volume, position, cropFraction, muted
+            case text, x, y, width, opacity, fontsize, fontcolor, bold, italic, design, speaker, readOnly
+            case slowGroup = "slow_group"
+            case slowStrength = "slow_strength"
+        }
     }
     struct Selection: Codable, Sendable, Equatable {
         var kind: String
@@ -51,6 +62,7 @@ nonisolated struct BuilderDocumentSummary: Codable, Sendable {
         switch selection {
         case .clip(let id): selected = Selection(kind: "clip", id: id.uuidString)
         case .sound(let id): selected = Selection(kind: "sound", id: id.uuidString)
+        case .dubLine(let id): selected = Selection(kind: "dubLine", id: id.uuidString)
         case .text(let id): selected = Selection(kind: "text", id: id.uuidString)
         case .image(let id): selected = Selection(kind: "image", id: id.uuidString)
         case .overlay(let id): selected = Selection(kind: "overlay", id: id.uuidString)
@@ -78,11 +90,19 @@ nonisolated struct BuilderDocumentSummary: Codable, Sendable {
         var rows = document.videoTrack.map {
             Row(id: $0.uid.uuidString, lane: "video", track: $0.track, start: $0.startTime, duration: $0.duration,
                 scene: $0.sceneID, bumperMode: $0.bumper ? $0.bumperMode : nil, volume: $0.volume,
-                position: $0.position, cropFraction: $0.cropXFrac, muted: $0.muted)
+                position: $0.position, cropFraction: $0.cropXFrac, muted: $0.muted,
+                slowGroup: $0.slowGroup,
+                slowStrength: $0.slowGroup.flatMap { TimelineSlowRules.strength(group: $0, in: document) })
         }
         rows += document.soundTrack.map {
             Row(id: $0.uid.uuidString, lane: "sound", start: $0.startTime, duration: $0.duration,
                 name: $0.name, volume: $0.volume)
+        }
+        let freezes = DubFreezes.intervals(in: document)
+        rows += (document.dubLines ?? []).map { line in
+            Row(id: line.id.uuidString, lane: "dubLine", start: line.start,
+                duration: DubPauseRules.layout(line, freezes: freezes).end - line.start,
+                text: line.text, speaker: line.speakerKey, readOnly: true)
         }
         rows += document.cropBlocks.map {
             Row(id: $0.uid.uuidString, lane: "crop", start: $0.startTime, duration: $0.duration)
