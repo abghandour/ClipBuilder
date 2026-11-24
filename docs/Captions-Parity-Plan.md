@@ -1,6 +1,6 @@
 # Captions parity: template library, filler cuts, gaze, and the rest
 
-Date: November 4, 2026. Status: approved November 4, 2026, all phases kept; phase 1 implemented by Codex and verified by Claude on November 4, 2026 (build, caption suites, library and Express picker driven live), uncommitted; phases 2 to 5 not started.
+Date: November 4, 2026. Status: approved November 4, 2026, all phases kept; phase 1 implemented by Codex and verified by Claude on November 4, 2026 (build, caption suites, library and Express picker driven live), committed since (checked 2026-11-24); phase 2 respecified 2026-11-24 (the cut needs a real removal step in the engine) 2a implemented by Codex with review fixes by Claude the same day (Debug build, 222 tests in 17 suites pass; driven live in Express, uncommitted), 2b not started; phases 3 to 5 not started.
 
 ## Why
 
@@ -81,36 +81,159 @@ Effort: two days. Files: `Services/CaptionPresets.swift`,
 
 ## Phase 2: filler-word removal as a one-click option
 
-We already have it, hidden: `TranscriptCleanupProposer` finds fillers,
-stutters, false starts and retakes over the timed words,
-`CleanupCutPolicy` (review / accept dead air / accept all) lives in the
-podcast editing policy in Settings, proposals are reviewed in Transcript
-Tools, and `WizardEngine` takes `cleanupCuts` into the plan (except the
-podcast preset). The gap is that nothing on the wizard pages turns it on.
+Revised 2026-11-24 after reading the code. The first version of this
+section said the engine could "feed the proposals as `cleanupCuts`". That
+does nothing: `cleanupCuts` is only a block of text in the AI planning
+prompt (`WizardEngine.swift`, "ACCEPTED PODCAST CLEANUP CUTS"), skipped for
+the podcast preset, and Express has no planner to read it. The only code
+that removes a span from inside a clip is the Builder's
+`TimelineDocument.applyingCuts`. So this phase adds a real removal step.
+Status: 2a implemented and driven live in Express 2026-11-24 (a 26 s clip:
+3 cuts, −4.7 s, hard cuts, captions without the fillers; not yet heard by
+ear, full wizard not driven); 2b implemented 2026-11-24 (marks and count
+on the results card and the rough cut; the count is not on the pre-Generate
+summary chip, where the cuts are not yet known). Codex review of 2a: four of
+five findings fixed; translated captions still keep the filler.
 
-- New stored option `removeFillerWords: Bool?` on `MiniWizardSettings` and
-  `WizardOptions` (Optional so existing JSON decodes). Default nil = off.
-- Express Audio tab and Full wizard Settings: a toggle "Remove filler
-  words" with the detail "Cuts um, uh and repeated starts from the kept
-  footage. Review the cuts in the rough cut before generating."
-- When on, the engine runs the proposer over each take's words with the
-  profile's policy thresholds, accepts the filler and stutter proposals,
-  and feeds them as `cleanupCuts`; dead-air trims stay governed by the
-  existing Trim Silence. The podcast preset exception goes away for this
-  path.
-- Filler lists per language: the proposer's set is English only. Add
-  Portuguese (né, tipo, então, hã, é), Spanish (este, o sea, eh, pues),
-  French (euh, bah, genre), German (äh, ähm, halt), Arabic (يعني, اه),
-  keyed by the transcript language.
-- Rough cut and preview: cut spans show as markers on the scrubber so the
-  user sees what will go; the run summary gains a "Filler words cut" chip.
-- Tests: the proposer per language, the option round trip, a plan rule
-  test that cuts never land inside a kept word.
+As built, beyond the text below: the cut is skipped on a dubbed reel (the
+toggle is hidden there); the applied spans are saved on the plan and the
+timeline document (`appliedFillerSpans`) so a re-render and the Editor keep
+the captions filtered; translated captions are not filtered (no word
+timings). On the Peace Grappler transcripts (429 minutes) the rules find
+about 1.5 cuts a minute, nine in ten of them repeated words.
 
-Effort: one day. Files: `Data/WizardOptions.swift`,
-`Services/Wizard/MiniWizardSettings.swift`,
+What exists and is reused: `TranscriptCleanupProposer` (filler, repeated
+word, false start, retake over timed words, English filler set) with its
+tests; `Database.fetchTranscripts(videoID:)` for the active set's rows with
+`language` and word timings.
+
+### 2a: the option, the cut, the captions
+
+**Where the cut happens.** Express and the AI Wizard both render through
+`makeReel` → `renderSelection` (`WizardEngine.swift`). The plan is final
+there after `applyPacing`, `renderTransitions` and `snapCutsToBeats`. Right
+after the `snapCutsToBeats` block (for the podcast preset too) and before
+`WizardStrikePauses.Eligibility(plan:)`, when
+`options.removeFillerWords == true`, each plan clip is replaced by its
+pieces around the filler spans. Pieces are ordinary `WizardPlanClip`s, so
+extraction, pauses, drawings, voice-over and captions keep working per clip
+and by source second. The rough cut and Open in Editor go through the same
+function and get the cuts too. Not split at document level in
+`prepareAssembly`: extraction is one contiguous file per plan clip and the
+podcast merge assumes contiguous source per `originKey`.
+
+**Pure rules** in a new `Services/Wizard/FillerCutRules.swift`
+(`nonisolated enum`, no database), tests next to it:
+
+- `spans(rows:)`: runs the proposer over the original-language rows (not
+  translations) with the filler sets for the rows' language and returns the
+  `.filler` and `.repeatWord` proposals as source-time ranges. False starts
+  and retakes are not cut here (they stay a Transcript Tools review).
+- `split(_ plan:, spans: [Int64: [ClosedRange<Double>]], sceneVideo:)`
+  returns the new plan, the number of cuts applied and the seconds removed.
+  Rules:
+  - A clip is split only when `speed == 1`, `replay == false`,
+    `areaClips.isEmpty` and `layout == nil`. Others pass through.
+  - A span is clamped to the clip. A span at a clip edge trims that edge.
+  - A cut that would leave a piece shorter than 0.5 s is skipped (the
+    filler stays) rather than dropping real words.
+  - `textOverlay`, `overlayKicker` and `speakerIntroductions` stay on the
+    first piece only (introductions that start after the first piece ends
+    are dropped). `brollCuts` are partitioned with
+    `MiniBRollRules.retained(_:in:)`. `miniPickID`, crop and speaker names
+    are copied to every piece.
+  - Later pieces carry a new `continuesPrevious: Bool?` on
+    `WizardPlanClip` (Optional, nil elsewhere). `WizardNameTags` shows no
+    name tag on a clip that continues the previous one.
+  - `plan.transitions` gets a `"cut"` at every new join; the transitions at
+    the original clip boundaries keep their places. The same expansion is
+    applied to `roughTransitions` in `renderSelection`.
+  - Idempotent: splitting an already split plan changes nothing (Highlight
+    history re-renders the recorded plan through the same function).
+- The engine logs one line: `Filler words: cut N (−S.S s)`, or
+  `Filler words: none found`.
+
+**Captions.** A removed word must not be shown. `CaptionOverlayPlan.pages`
+pages whole segments and keeps any page overlapping the clip window, so
+without a change the filler stays in the page text. When the option is on,
+words whose middle lies in an applied filler span are removed from the
+`TranscriptSegment`s (and the segment text rebuilt from the remaining
+words) before paging, for every clip of that video. A page that straddles a
+join shows without the filler and keeps its word timing on both sides.
+
+**Filler sets per language**, chosen by the two-letter prefix of
+`TranscriptRow.language`, English when unknown. "Always" tokens are cut
+wherever they occur; "between pauses" tokens only with a pause of
+`conditionalPause` on both sides, as `like` is today, because they are real
+words mid-sentence. Conditional matching is extended to bigrams.
+
+| Language | Always | Between pauses |
+| --- | --- | --- |
+| en | um, umm, uh, uhh, uhm, erm, hmm, you know, i mean | like |
+| pt | hã, hãm, ahn, hum | né, tipo, assim |
+| es | eh, ehm, em, mmm | este, pues, bueno, o sea |
+| fr | euh, heu, hum | bah, ben, genre |
+| de | äh, ähm, hm | halt, also |
+| ar | اه, امم | يعني |
+
+`normalize` must keep accented and Arabic letters. Repeated-word detection
+is language independent; a run of three or more of the same word is
+deliberate ("whoa, whoa, whoa") and is left alone. `então` and `é` were
+dropped from the Portuguese list and triple repeats spared on 2026-11-24,
+at the user's request, after a count on real transcripts.
+
+**Option.** `removeFillerWords: Bool?` on `WizardOptions` and
+`MiniWizardSettings`, nil = off. Plumbed the way `drawnPauses` is: the
+`WizardOptions` stored property, init and neutralizing in
+`WizardEngine.swift`; `WizardOptionsSteps.swift` (step 2 field, CodingKeys,
+split and merge); `WizardOptionsDecoding.swift`; the key lists in
+`AIRunSettings.swift` and `AISettingsPreferences.swift` (`wizardKeys`);
+`WizardPresetStore.nullableFields`; and for Express the hand-written
+Codable, `step2Options`, `remembered` / `remember` with a
+`MiniWizardMemory.Field`, `WizardPresetBridge`, and the rough-cut carriers
+(`RoughCutOverlays`, `WizardRoughCut`).
+
+**Controls.** Express: Audio tab in `MiniSettingsCard.audioRows`, outside
+the `flow.showsAudioOptions` gate, shown only for flows that work from a
+transcript (hidden otherwise, per the settings rule). Full wizard:
+`audioFields` in `WizardView+Look.swift` with an `@AppStorage` key. Label
+"Remove filler words" ("Cut fillers" in Express, where the label column is
+96 pt), detail "Cuts um, uh and repeated words from the kept
+footage. Check the result in the rough cut." Run summary: a "Filler words
+cut" chip in the Audio section (`MiniWizardFlow.runSummaryCard` and the full
+wizard's summary) when the option is on.
+
+**Not covered in 2a.** The critic-loop proxy (`renderProxy`) does not go
+through `renderSelection` and plays the fillers. Reel panel and Footage
+list rows keep showing the saved clips, not the pieces. Camera focus is
+planned per piece, so a podcast cut may reframe at a join.
+
+**Tests.** Proposer: one case per language, conditional bigram, accents and
+Arabic survive `normalize`. `FillerCutRules`: pieces never overlap a
+removed span and never cut into a kept word; edge spans trim; a cut leaving
+a piece under 0.5 s is skipped; ineligible clips pass through; overlay and
+introductions on the first piece only; B-roll partitioned; transitions are
+`"cut"` at new joins and unchanged elsewhere; idempotent. Options: round
+trip through `WizardOptions`, step split/merge, `MiniWizardSettings` and a
+preset, and old JSON without the key decodes. Engine: through the
+`renderPlan` hook of `renderSelection`, a plan with the option on comes out
+split and with the option off comes out unchanged. Captions: a page
+straddling a join has no filler word.
+
+Files: `Services/Wizard/FillerCutRules.swift` (new),
 `Services/TranscriptCleanupProposer.swift`, `Services/WizardEngine.swift`,
-`Views/MiniSettingsCard.swift`, `Views/WizardView+Steps.swift`.
+`Services/Wizard/WizardPlanRules.swift` or `WizardNameTags.swift`,
+`Data/WizardOptionsSteps.swift`, `Data/WizardOptionsDecoding.swift`,
+`Data/AIRunSettings.swift`, `Services/Wizard/MiniWizardSettings.swift`,
+`Services/Wizard/MiniWizardFlow.swift`, `Views/MiniSettingsCard.swift`,
+`Views/WizardView+Look.swift`, tests next to them. Effort: two to three
+days, not the one first estimated.
+
+### 2b: showing the cuts
+
+Cut spans as markers on the rough-cut and preview scrubber, through the
+`scrubLane` slot of `ScrubbingPlayerView` that `VoiceOverLane` already
+uses, and the count of cuts on the run summary chip. After 2a is verified.
 
 ## Phase 3: eye contact
 
@@ -159,7 +282,7 @@ camera motion meter's pattern), `Services/Framing/*`, `Services/ReelCritic.swift
 ## Order and estimate
 
 1. Phase 1 templates (two days). Visible, no risk.
-2. Phase 2 filler option (one day). Mostly wiring.
+2. Phase 2 filler option (two to three days; see the revised section).
 3. Emphasis zoom and sound effects (one and a half days).
 4. Generated B-roll (one day).
 5. Phase 3 gaze-aware framing (two and a half days). Needs the meter first.

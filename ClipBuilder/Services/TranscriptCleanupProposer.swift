@@ -16,10 +16,10 @@ import Foundation
 nonisolated enum TranscriptCleanupProposer {
     struct Options: Sendable {
         /// Normalized tokens or bigrams that are always filler.
-        var fillers: Set<String> = ["um", "umm", "uh", "uhh", "uhm", "erm", "hmm", "you know", "i mean"]
+        var fillers: Set<String>?
         /// Filler only between two pauses of at least `conditionalPause`
         /// ("like" is a real word mid-sentence).
-        var conditionalFillers: Set<String> = ["like"]
+        var conditionalFillers: Set<String>?
         var conditionalPause: Double = 0.2
         /// A false start is at most this many words ending in this long a pause.
         var falseStartMaxWords: Int = 3
@@ -37,6 +37,18 @@ nonisolated enum TranscriptCleanupProposer {
         var minRetakeWords: Int = 3
 
         init() {}
+    }
+
+    /// Overrides are optional; otherwise each row uses its own language.
+    static func fillerSets(language: String) -> (always: Set<String>, conditional: Set<String>) {
+        switch language.lowercased().prefix(2) {
+        case "pt": (["hã", "hãm", "ahn", "hum"], ["né", "tipo", "assim"])
+        case "es": (["eh", "ehm", "em", "mmm"], ["este", "pues", "bueno", "o sea"])
+        case "fr": (["euh", "heu", "hum"], ["bah", "ben", "genre"])
+        case "de": (["äh", "ähm", "hm"], ["halt", "also"])
+        case "ar": (["اه", "امم"], ["يعني"])
+        default: (["um", "umm", "uh", "uhh", "uhm", "erm", "hmm", "you know", "i mean"], ["like"])
+        }
     }
 
     enum Kind: String, Sendable, Hashable, CaseIterable {
@@ -66,7 +78,7 @@ nonisolated enum TranscriptCleanupProposer {
     }
 
     /// Lowercased with surrounding punctuation and symbols removed; inner
-    /// apostrophes stay ("don't").
+    /// apostrophes stay ("don't"). Unicode trimming preserves accents and Arabic letters.
     static func normalize(_ word: String) -> String {
         word.lowercased().trimmingCharacters(in: .punctuationCharacters.union(.symbols).union(.whitespacesAndNewlines))
     }
@@ -166,6 +178,16 @@ nonisolated enum TranscriptCleanupProposer {
 
         for row in words.indices where !spoken[row].isEmpty {
             let indices = spoken[row]
+            let language = fillerSets(language: ordered[row].language)
+            let fillers = options.fillers ?? language.always
+            let conditional = options.conditionalFillers ?? language.conditional
+            func betweenPauses(_ first: Int, _ last: Int) -> Bool {
+                let before = previousEnd(Position(row: row, word: first))
+                    .map { words[row][first].start - $0 } ?? .infinity
+                let after = nextStart(Position(row: row, word: last))
+                    .map { $0 - words[row][last].end } ?? .infinity
+                return before >= options.conditionalPause && after >= options.conditionalPause
+            }
             // False starts: fragments split on long pauses.
             var fragments: [[Int]] = [[indices[0]]]
             for k in indices.indices.dropFirst() {
@@ -181,32 +203,31 @@ nonisolated enum TranscriptCleanupProposer {
                 let range = first..<(last + 1)
                 if isFree(row, range) { mark(row, range, .falseStart) }
             }
-            // Stutters: the same word twice in a row; the first goes.
+            // Stutters: the same word twice in a row; the first goes. Three or
+            // more in a row is said on purpose ("whoa, whoa, whoa") and stays.
             for k in indices.indices.dropLast() {
                 let a = indices[k], b = indices[k + 1]
                 let token = norms[row][a]
-                guard token == norms[row][b], !options.fillers.contains(token),
+                if k > 0, norms[row][indices[k - 1]] == token { continue }
+                if k + 2 < indices.count, norms[row][indices[k + 2]] == token { continue }
+                guard token == norms[row][b], !fillers.contains(token),
                       marks[row][a] == nil, marks[row][b] == nil else { continue }
                 mark(row, a..<(a + 1), .repeatWord)
             }
             // Bigram fillers, then single-word fillers.
             for k in indices.indices.dropLast() {
                 let a = indices[k], b = indices[k + 1]
-                guard options.fillers.contains(norms[row][a] + " " + norms[row][b]),
+                let token = norms[row][a] + " " + norms[row][b]
+                guard fillers.contains(token) || (conditional.contains(token) && betweenPauses(a, b)),
                       marks[row][a] == nil, marks[row][b] == nil else { continue }
                 mark(row, a..<(b + 1), .filler)
             }
             for a in indices where marks[row][a] == nil {
                 let token = norms[row][a]
-                if options.fillers.contains(token) {
+                if fillers.contains(token) {
                     mark(row, a..<(a + 1), .filler)
-                } else if options.conditionalFillers.contains(token) {
-                    let position = Position(row: row, word: a)
-                    let before = previousEnd(position).map { words[row][a].start - $0 } ?? .infinity
-                    let after = nextStart(position).map { $0 - words[row][a].end } ?? .infinity
-                    if before >= options.conditionalPause, after >= options.conditionalPause {
-                        mark(row, a..<(a + 1), .filler)
-                    }
+                } else if conditional.contains(token), betweenPauses(a, a) {
+                    mark(row, a..<(a + 1), .filler)
                 }
             }
         }

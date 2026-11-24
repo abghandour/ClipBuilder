@@ -1,6 +1,6 @@
 # AI Routing Recommendation Plan
 
-Date: October 9, 2026. Status: implemented October 9, 2026 (Codex), uncommitted. Verified: Debug build clean; AISettings, AIService, AppStore, SettingsCodable, SyncMapping, TeamSyncCoordinator, SyncEngine suites 168/168. Settings › AI controls not yet exercised by hand.
+Date: October 9, 2026. Status: implemented October 9, 2026 (Codex), committed since (checked 2026-11-24). Verified: Debug build clean; AISettings, AIService, AppStore, SettingsCodable, SyncMapping, TeamSyncCoordinator, SyncEngine suites 168/168. Settings › AI controls not yet exercised by hand.
 Implementation: Codex; build, tests and review: Claude (per the September 23 working rule).
 Follows docs/Profile-Editing-Defaults-Sync-Plan.md (implemented the same day).
 

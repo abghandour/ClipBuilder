@@ -1,6 +1,6 @@
 # Profile Editing Defaults Sync Plan
 
-Date: October 9, 2026. Status: implemented October 9, 2026 (Codex), uncommitted. Verified: Debug build clean; SettingsCodableTests, SyncMappingTests, TeamSyncCoordinatorTests, SyncEngineTests 100/100 including the nine new tests. Not yet exercised by hand in the app.
+Date: October 9, 2026. Status: implemented October 9, 2026 (Codex), committed since (checked 2026-11-24). Verified: Debug build clean; SettingsCodableTests, SyncMappingTests, TeamSyncCoordinatorTests, SyncEngineTests 100/100 including the nine new tests. Not yet exercised by hand in the app.
 Implementation: Codex; build, tests and review: Claude (per the September 23 working rule).
 
 ## Problem

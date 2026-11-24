@@ -121,6 +121,17 @@ struct MiniSettingsCard: View {
     /// Dubbing for every source; mute and music keep their fight/training rules.
     @ViewBuilder
     private var audioRows: some View {
+        // Hidden under a dub: the dubbed lines replace the speech and nothing is cut.
+        if flow.hasTranscript, !settings.dub {
+            // Short label: "Remove filler words" overflows the 96 pt label column and
+            // pushes this switch out of line with the others (seen live 2026-11-24).
+            MiniRow("Cut fillers") {
+                Toggle("Remove filler words", isOn: Binding(get: { settings.removeFillerWords == true },
+                    set: { settings.removeFillerWords = $0 }))
+                    .lineLimit(1).fixedSize()
+            }
+            FormCaption("Cuts um, uh and repeated words from the kept footage. Check the result in the rough cut.")
+        }
         if flow.showsAudioOptions {
             MiniRow("Mute source audio") {
                 Toggle("Mute source audio", isOn: $settings.muteSourceAudio)

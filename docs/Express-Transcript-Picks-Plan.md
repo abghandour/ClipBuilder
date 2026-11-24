@@ -1,6 +1,6 @@
 # AI Wizard Express: Transcript picks
 
-Date: October 16, 2026. Status: implemented in this change set (uncommitted).
+Date: October 16, 2026. Status: implemented in this change set (committed since, checked 2026-11-24).
 
 ## Goal
 

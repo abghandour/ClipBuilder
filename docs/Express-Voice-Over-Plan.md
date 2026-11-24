@@ -2,7 +2,7 @@
 
 Date: 2026-11-20 (revised the same day: recording moved from the Source
 Video player to the Rough cut sheet, per the user)
-Status: implemented 2026-11-20 (uncommitted), with the recommended choices
+Status: implemented 2026-11-20 (committed since, checked 2026-11-24), with the recommended choices
 for the four decisions. Verified by tests and a compile; not yet driven in
 the running app. See "As built" at the end for what differs from the plan.
 UI mockup: https://claude.ai/artifact/PiQZLXNnK36iHn9TwbFyC8

@@ -21,6 +21,7 @@ import Foundation
         "captionLanguage": "wizard.captionLanguage",
         "dubLanguage": "wizard.dubLanguage",
         "drawnPauses": "wizard.drawnPauses",
+        "removeFillerWords": "wizard.removeFillerWords",
         "strikeHighlightStyle": "wizard.strikeHighlightStyle",
         "strikeHighlights": "wizard.strikeHighlights",
         "strikeImpactFreeze": "wizard.strikeImpactFreeze",

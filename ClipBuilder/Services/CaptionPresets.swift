@@ -429,7 +429,7 @@ nonisolated enum CaptionPresets {
         style.animation = "soft-fade"
         style.revealMotion = true
         style.animationMinimumWordDuration = 0.2
-        style.lineBreaks = "sentence"
+        style.lineBreaks = "clause"
         style.lineSpacing = 136
         style.wordSpacing = 19.15
         style.position = "custom:0.50325,0.5531"

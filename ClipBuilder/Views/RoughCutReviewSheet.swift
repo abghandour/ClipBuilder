@@ -155,11 +155,15 @@ struct RoughCutReviewSheet: View {
                                                         pictureChrome: safeAreaShading(in: size),
                                                         scrubLane: hasVoiceOver && tab == .voiceOver
                                                             ? AnyView(VoiceOverLane(clips: review.previewClips, duration: cut.duration))
-                                                            : nil)
+                                                            : cut.fillerCuts.isEmpty ? nil
+                                                            : AnyView(FillerCutLane(markers: cut.fillerCuts, duration: cut.duration)))
                                         .frame(width: size.width)
                                     HStack(spacing: 6) {
                                         Text(cut.name).lineLimit(1).truncationMode(.middle)
                                         Text(cut.duration.timecode).monospacedDigit().foregroundStyle(.secondary)
+                                        if let fillers = FillerCutRules.summary(cut.fillerCuts) {
+                                            Text(fillers).foregroundStyle(.secondary).lineLimit(1).fixedSize()
+                                        }
                                     }
                                     .font(.caption)
                                 }

@@ -216,6 +216,7 @@ nonisolated struct MiniWizardFlow: Sendable {
         picture.append(settings.transition == WizardPlanRules.randomTransitionChoice ? "Random transitions"
             : (TransitionCatalog.all.first { $0.name == settings.transition }?.title ?? settings.transition) + " transitions")
         var audio: [String] = []
+        if settings.removeFillerWords == true, !settings.dub { audio.append("Filler words cut") }
         if showsAudioOptions {
             audio.append(settings.muteSourceAudio ? "Source muted" : "Source audio")
             if settings.music { audio.append(settings.musicTrackName.map { "Music: \($0)" } ?? "Random music") }

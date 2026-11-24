@@ -39,6 +39,7 @@ nonisolated extension WizardOptions {
         addCaptions = try values.decodeIfPresent(Bool.self, forKey: .addCaptions) ?? addCaptions
         strikeStats = try values.decodeIfPresent(Bool.self, forKey: .strikeStats)
         drawnPauses = try values.decodeIfPresent(Bool.self, forKey: .drawnPauses)
+        removeFillerWords = try values.decodeIfPresent(Bool.self, forKey: .removeFillerWords)
         strikeHighlightStyle = try values.decodeIfPresent(String.self, forKey: .strikeHighlightStyle)
         strikeHighlights = try values.decodeIfPresent(Bool.self, forKey: .strikeHighlights)
         strikeImpactFreeze = try values.decodeIfPresent(Double.self, forKey: .strikeImpactFreeze)

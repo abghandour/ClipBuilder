@@ -1,6 +1,6 @@
 # Builder framing parity with Express
 
-Date: October 31, 2026. Status: implemented the same day, uncommitted.
+Date: October 31, 2026. Status: implemented the same day, committed since (checked 2026-11-24).
 
 ## What the user asked for
 

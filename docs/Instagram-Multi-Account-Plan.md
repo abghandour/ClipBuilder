@@ -1,9 +1,9 @@
 # Instagram Multi-Account Plan
 
-Date: October 1, 2026. Status: approved October 1, 2026; not implemented. Implementation: Codex; build,
+Date: October 1, 2026. Status: approved October 1, 2026; implemented (commit b90cee3, 2026-10-02, first released in 1.91); the live-token check behind the PLAN-VERIFY markers in the code is still open (checked 2026-11-24). Implementation: Codex; build,
 tests and review: Claude (per the September 23 working rule). Builds on
-`docs/Instagram-Login-Plan.md` (phases 2–3 implemented, uncommitted) and lands
-after that work is committed.
+`docs/Instagram-Login-Plan.md` (phases 2–3 implemented, commit 1145937) and landed
+after that work was committed.
 
 ## Problem
 

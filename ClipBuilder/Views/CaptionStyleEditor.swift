@@ -88,6 +88,7 @@ struct CaptionStyleEditor: View {
                     Text("Balanced").tag("balanced")
                     Text("Fill each row").tag("greedy")
                     Text("Sentence rows").tag("sentence")
+                    Text("Sentence and comma rows").tag("clause")
                 }
             }
             TextLookRow("Line spacing") {

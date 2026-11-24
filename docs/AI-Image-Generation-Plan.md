@@ -1,6 +1,6 @@
 # AI Image Generation and Ask-AI Plan
 
-Date: October 30, 2026. Status: Phases 1, 2 and 3 implemented on October 30, 2026, uncommitted. All three verified live on scratch data the same night: Phase 1 (sticker, edit, Stop), Phase 2 (Ask AI → Generate Image with Follow the face, 13 keys persisted, preview follows the keys, Stop Following and Follow Face from the inspector, export covered by `TrackedImageOverlayRenderTests`), Phase 3 (Ask AI on Reports → AI Report job → Keep → AI Reports page with Copy and Delete; Save… opens the panel, the write itself was not exercised).
+Date: October 30, 2026. Status: Phases 1, 2 and 3 implemented on October 30, 2026, committed since (checked 2026-11-24). All three verified live on scratch data the same night: Phase 1 (sticker, edit, Stop), Phase 2 (Ask AI → Generate Image with Follow the face, 13 keys persisted, preview follows the keys, Stop Following and Follow Face from the inspector, export covered by `TrackedImageOverlayRenderTests`), Phase 3 (Ask AI on Reports → AI Report job → Keep → AI Reports page with Copy and Delete; Save… opens the panel, the write itself was not exercised).
 
 ## Problem
 

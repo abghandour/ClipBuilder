@@ -1,7 +1,7 @@
 # Word Alignment Plan
 
 Date: 2026-11-09
-Status: implemented on main, uncommitted. The model archive is hosted as an extra asset on the v1.157 release. Updated 2026-11-10: the model downloads by itself for a Portuguese project, and Transcribe asks which timing to use.
+Status: implemented on main, committed since (checked 2026-11-24). The model archive is hosted as an extra asset on the v1.157 release. Updated 2026-11-10: the model downloads by itself for a Portuguese project, and Transcribe asks which timing to use.
 
 ## Problem
 

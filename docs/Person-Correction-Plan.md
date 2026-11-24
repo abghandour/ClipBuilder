@@ -1,6 +1,6 @@
 # Person Correction Plan
 
-Date: October 9, 2026. Status: implemented October 9, 2026 (Codex), uncommitted. Verified: Debug build clean; DatabasePeopleTests 6/6, AppStoreTests 40/40, SyncEngineTests 36/36. Popover menu and name sheet not yet exercised by hand.
+Date: October 9, 2026. Status: implemented October 9, 2026 (Codex), committed since (checked 2026-11-24). Verified: Debug build clean; DatabasePeopleTests 6/6, AppStoreTests 40/40, SyncEngineTests 36/36. Popover menu and name sheet not yet exercised by hand.
 Implementation: Codex; build, tests and review: Claude (per the September 23 working rule).
 
 ## Problem

@@ -299,6 +299,20 @@ nonisolated struct CaptionRenderer: Sendable {
         return CGFloat(CTLineGetTypographicBounds(line, nil, nil, nil))
     }
 
+    /// "sentence" ends a row after a sentence; "clause" also after a comma,
+    /// semicolon or colon. The word may carry closing quotes or brackets.
+    static func endsRow(_ word: String, lineBreaks: String) -> Bool {
+        guard lineBreaks == "sentence" || lineBreaks == "clause",
+              let last = word.trimmingCharacters(in: CharacterSet(charactersIn: "\"'”’)]}")).last else { return false }
+        return (lineBreaks == "clause" ? ".!?…。！？,;:，、；：" : ".!?…。！？").contains(last)
+    }
+
+    /// Two rows are evened out unless punctuation already chose the break.
+    static func balances(_ words: [String], lineBreaks: String) -> Bool {
+        lineBreaks == "balanced"
+            || (lineBreaks == "clause" && !words.dropLast().contains { endsRow($0, lineBreaks: lineBreaks) })
+    }
+
     /// Greedy word-wrap to 86% of the video width (captions.py behavior).
     private func wrap(_ text: String, fonts: [MeasuredFont], lineBreaks: String? = nil) -> [String] {
         let available = maxTextWidth
@@ -307,8 +321,7 @@ nonisolated struct CaptionRenderer: Sendable {
         var current = ""
         for word in text.split(whereSeparator: \.isWhitespace) {
             let candidate = current.isEmpty ? String(word) : current + " " + word
-            let sentenceEnd = lineBreaks == "sentence"
-                && current.trimmingCharacters(in: CharacterSet(charactersIn: "\"'”’)]}")).last.map { ".!?…。！？".contains($0) } == true
+            let sentenceEnd = Self.endsRow(current, lineBreaks: lineBreaks)
             if !sentenceEnd && (reservedLineWidth(candidate, fonts: fonts) <= available || current.isEmpty) {
                 current = candidate
             } else {
@@ -318,8 +331,8 @@ nonisolated struct CaptionRenderer: Sendable {
         }
         if !current.isEmpty { lines.append(current) }
         // Balance two rows using the same measured widths used for drawing.
-        if lines.count == 2 && lineBreaks == "balanced" {
-            let words = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        let words = text.split(whereSeparator: \.isWhitespace).map(String.init)
+        if lines.count == 2 && Self.balances(words, lineBreaks: lineBreaks) {
             var best = CGFloat.greatestFiniteMagnitude
             for index in 1..<words.count {
                 let pair = [words[..<index].joined(separator: " "), words[index...].joined(separator: " ")]
@@ -353,15 +366,14 @@ nonisolated struct CaptionRenderer: Sendable {
         var rows: [Range<Int>] = []
         var start = 0
         for index in tokens.indices where index > start {
-            let sentenceEnd = lineBreaks == "sentence"
-                && tokens[index - 1].trimmingCharacters(in: CharacterSet(charactersIn: "\"'”’)]}")).last.map { ".!?…。！？".contains($0) } == true
+            let sentenceEnd = Self.endsRow(tokens[index - 1], lineBreaks: lineBreaks)
             if sentenceEnd || width(start..<index + 1) > available {
                 rows.append(start..<index)
                 start = index
             }
         }
         if start < tokens.count { rows.append(start..<tokens.count) }
-        if rows.count == 2 && lineBreaks == "balanced" {
+        if rows.count == 2 && Self.balances(tokens, lineBreaks: lineBreaks) {
             var best = CGFloat.greatestFiniteMagnitude
             for index in 1..<tokens.count {
                 let pair = [width(0..<index), width(index..<tokens.count)]
@@ -526,7 +538,7 @@ nonisolated struct CaptionRenderer: Sendable {
         var lines = fitted == nil ? rows(fonts) : [tokens.joined(separator: " ")]
         // Input-limit fallback can merge several sentences onto one page.
         // Mandatory sentence rows cannot be reduced by shrinking the font.
-        let fallbackBreaks = lines.count > 2 && resolved.lineBreaks == "sentence" ? "greedy" : nil
+        let fallbackBreaks = lines.count > 2 && ["sentence", "clause"].contains(resolved.lineBreaks) ? "greedy" : nil
         if let fallbackBreaks { lines = rows(fonts, lineBreaks: fallbackBreaks) }
         // Static fallback may regroup many one-word pages. Keep that page in
         // two rows too, without dropping words or exceeding the video width.

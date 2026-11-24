@@ -40,6 +40,7 @@ struct WizardView: View {
     @AppStorage("wizard.critiqueMaxVersions") var critiqueMaxVersions = 3
     @AppStorage("wizard.strikeStats") var strikeStats = false
     @AppStorage("wizard.drawnPauses") var drawnPauses = true
+    @AppStorage("wizard.removeFillerWords") var removeFillerWords = false
     @AppStorage("wizard.strikeHighlightStyle") var strikeHighlightStyle = "outline"
     @AppStorage("wizard.strikeHighlights") var strikeHighlights = false
     @AppStorage("wizard.strikeImpactFreeze") var strikeImpactFreeze = 0.0
@@ -781,6 +782,7 @@ struct WizardView: View {
         options.safeAreaPlatforms = platforms.isEmpty ? nil : platforms
         options.strikeStats = strikeStats
         options.drawnPauses = drawnPauses
+        options.removeFillerWords = available && removeFillerWords
         options.strikeHighlightStyle = strikeHighlightStyle == "outline" ? nil : strikeHighlightStyle
         options.strikeHighlights = strikeHighlights
         options.strikeImpactFreeze = strikeImpactFreeze > 0 ? strikeImpactFreeze : nil
@@ -1387,6 +1389,7 @@ struct WizardView: View {
         p.format = effectiveRenderSettings.preset.label
         p.strikeStats = strikeStats
         p.drawnPauses = drawnPauses
+        p.removeFillerWords = removeFillerWords
         p.strikeHighlightStyle = strikeHighlightStyle == "outline" ? nil : strikeHighlightStyle
         p.strikeHighlights = strikeHighlights
         p.strikeImpactFreeze = strikeImpactFreeze > 0 ? strikeImpactFreeze : nil
@@ -1627,6 +1630,7 @@ struct WizardView: View {
         options.safeAreaPlatforms = platforms.isEmpty ? nil : platforms
         options.strikeStats = strikeStats
         options.drawnPauses = drawnPauses
+        options.removeFillerWords = transcriptsAvailable && removeFillerWords
         options.strikeHighlightStyle = strikeHighlightStyle == "outline" ? nil : strikeHighlightStyle
         options.strikeHighlights = strikeHighlights
         options.strikeImpactFreeze = strikeImpactFreeze > 0 ? strikeImpactFreeze : nil

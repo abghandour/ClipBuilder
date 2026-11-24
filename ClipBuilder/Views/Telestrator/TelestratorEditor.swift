@@ -213,7 +213,7 @@ final class TelestratorEditor {
         stopPlayback()
         guard ready, !isDragging else { return }
         let plan = mode == .voice
-            ? TelestrationPlayback.clip(drawing, range: clipRange ?? drawing.time...max(drawing.time, footageEnd))
+            ? TelestrationPlayback.recording(drawing, range: clipRange ?? drawing.time...max(drawing.time, footageEnd))
             : TelestrationPlayback.preview(drawing, end: footageEnd)
         playMode = mode
         playPlan = plan
@@ -243,12 +243,27 @@ final class TelestratorEditor {
                 let wait = boundary - Date.now.timeIntervalSince(started)
                 if wait > 0 { try? await Task.sleep(for: .seconds(wait)) }
                 guard !Task.isCancelled else { return }
-                if boundary < plan.total { Self.apply(plan.moment(at: boundary), to: moving) }
+                if boundary < plan.total || plan.waits { Self.apply(plan.moment(at: boundary), to: moving) }
             }
+            // A recording waits on the drawing until it is stopped.
+            if plan.waits { return }
             self.playTask = nil
             self.stopPlayback()
             ended?()
         }
+    }
+
+    /// Stops a voice recording's playback and makes the drawing stay for as
+    /// long as the recording ran past it, so the reel pauses for the voice.
+    func stopRecordingPlayback() {
+        let longer: Double? = {
+            guard playMode == .voice, let playPlan, let playStarted else { return nil }
+            return TelestrationPlayback.stay(of: drawing, covering: Date.now.timeIntervalSince(playStarted), in: playPlan)
+        }()
+        stopPlayback()
+        guard let longer else { return }
+        remember()
+        drawing.stay = longer
     }
 
     private static func apply(_ moment: TelestrationPlayback.Moment, to player: AVPlayer?) {

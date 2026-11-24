@@ -1,6 +1,6 @@
 # Page Assistant: Ask AI on every screen, with context-aware suggestions
 
-Date: November 1, 2026. Status: implemented November 1, 2026 (all phases), uncommitted; Codex-reviewed three times, all findings applied.
+Date: November 1, 2026. Status: implemented November 1, 2026 (all phases), committed since (checked 2026-11-24); Codex-reviewed three times, all findings applied.
 files are named, so Codex implements phase by phase; Claude builds, tests,
 drives it live on scratch data and reviews.
 

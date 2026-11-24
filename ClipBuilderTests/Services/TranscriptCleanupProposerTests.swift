@@ -4,6 +4,37 @@ import Testing
 
 @Suite("Transcript cleanup proposer")
 struct TranscriptCleanupProposerTests {
+    @Test("Filler vocabulary follows the row's language prefix", arguments: [
+        ("en-US", "Umm,"), ("pt-BR", "Hã,"), ("es", "ehm"),
+        ("fr-CA", "euh"), ("de-DE", "Ähm!"), ("ar", "امم"), ("unknown", "uh")
+    ])
+    func languageFillers(language: String, filler: String) {
+        var source = row(1, words("before \(filler) after"))
+        source.language = language
+        let cuts = TranscriptCleanupProposer.propose(rows: [source])
+        #expect(cuts.map(\.kind) == [.filler])
+        #expect(cuts.first?.wordRange == 1..<2)
+    }
+
+    @Test("Conditional bigrams need a pause on both sides", arguments: [false, true])
+    func conditionalBigram(paused: Bool) {
+        let tokens = [word("antes", 0, paused ? 0.6 : 0.95), word("o", 1, 1.1),
+                      word("sea", 1.12, 1.3), word("después", paused ? 1.7 : 1.35, 2)]
+        var source = row(1, tokens)
+        source.language = "es-MX"
+        let cuts = TranscriptCleanupProposer.propose(rows: [source])
+        #expect(cuts.count == (paused ? 1 : 0))
+        if paused { #expect(cuts.first?.wordRange == 1..<3) }
+    }
+
+    @Test("Normalization retains accents and Arabic letters")
+    func unicodeNormalization() {
+        #expect(TranscriptCleanupProposer.normalize("«HÃM!»") == "hãm")
+        #expect(TranscriptCleanupProposer.normalize("Äh,") == "äh")
+        #expect(TranscriptCleanupProposer.normalize("،يعني؟") == "يعني")
+        #expect(TranscriptCleanupProposer.normalize("don't") == "don't")
+    }
+
     /// Evenly spaced words: each lasts 80% of `step`, then a short gap.
     private func words(_ text: String, start: Double = 0, step: Double = 0.3) -> [TranscriptWord] {
         text.split(separator: " ").enumerated().map { index, word in
@@ -57,6 +88,21 @@ struct TranscriptCleanupProposerTests {
         let proposals = TranscriptCleanupProposer.propose(rows: [row(1, words("the the cat sat"))])
         #expect(proposals.map(\.kind) == [.repeatWord])
         #expect(proposals.first?.wordRange == 0..<1)
+    }
+
+    @Test("three or more of the same word in a row are deliberate and stay")
+    func tripleRepeat() {
+        #expect(TranscriptCleanupProposer.propose(rows: [row(1, words("whoa whoa whoa he is down"))]).isEmpty)
+        #expect(TranscriptCleanupProposer.propose(rows: [row(1, words("and go go go go now"))]).isEmpty)
+    }
+
+    @Test("então and é are speech in Portuguese, even between pauses")
+    func portugueseSpeechWords() {
+        for token in ["Então", "É,"] {
+            var source = row(1, [word("certo.", 0, 0.5), word(token, 1, 1.3), word("isso", 1.8, 2.1), word("mesmo", 2.15, 2.5)])
+            source.language = "pt-BR"
+            #expect(TranscriptCleanupProposer.propose(rows: [source]).allSatisfy { $0.kind != .filler })
+        }
     }
 
     @Test("a short fragment restarted after a pause is a false start")

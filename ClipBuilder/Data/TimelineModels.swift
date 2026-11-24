@@ -37,6 +37,8 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
     /// The caption language; "" means the original language explicitly,
     /// nil falls back to the profile's first caption language.
     var captionLanguage: String?
+    /// Applied Wizard filler cuts on each source video, before caption paging.
+    var appliedFillerSpans: [Int64: [ClosedRange<Double>]]?
     /// The run's caption placement: "auto" or a position override. Set by
     /// the Wizard, it switches the Builder to the Wizard's caption placement.
     var captionPosition: String?
@@ -114,6 +116,7 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         case trackSequential = "track_sequential"
         case captionStyleID = "caption_style_id"
         case captionLanguage = "caption_language"
+        case appliedFillerSpans = "applied_filler_spans"
         case captionPosition = "caption_position"
         case captionSafeAreaOnly = "caption_safe_area_only"
         case captionSafeAreaPlatforms = "caption_safe_area_platforms"
@@ -157,6 +160,7 @@ nonisolated struct TimelineDocument: Codable, Sendable, Equatable {
         trackSequential = Array(sequential.prefix(Self.maxTracks))
         captionStyleID = try container.decodeIfPresent(String.self, forKey: .captionStyleID)
         captionLanguage = try container.decodeIfPresent(String.self, forKey: .captionLanguage)
+        appliedFillerSpans = try container.decodeIfPresent([Int64: [ClosedRange<Double>]].self, forKey: .appliedFillerSpans)
         captionPosition = try container.decodeIfPresent(String.self, forKey: .captionPosition)
         captionSafeAreaOnly = try container.decodeIfPresent(Bool.self, forKey: .captionSafeAreaOnly)
         captionSafeAreaPlatforms = try container.decodeIfPresent([SocialPlatform].self, forKey: .captionSafeAreaPlatforms)

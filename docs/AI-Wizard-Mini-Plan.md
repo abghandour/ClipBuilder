@@ -1,6 +1,6 @@
 # AI Wizard Mini Plan
 
-Date: October 3, 2026. Status: draft for the user's review; implementation by Codex, build/test/review by Claude.
+Date: October 3, 2026. Status: implemented (commit 3945b8b, 2026-10-04, first released in 1.92); implementation by Codex, build/test/review by Claude.
 
 Source request: `docs/New-Ai-Wizard-Wizard.md`.
 

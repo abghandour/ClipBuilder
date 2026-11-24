@@ -1,6 +1,6 @@
 # Sources analysis flow: type and language changes, step visibility
 
-Date: November 2, 2026. Status: implemented (uncommitted); Codex read-only review in progress.
+Date: November 2, 2026. Status: implemented (committed since, checked 2026-11-24); Codex read-only review in progress.
 
 ## Why
 

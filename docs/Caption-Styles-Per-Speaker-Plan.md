@@ -1,6 +1,6 @@
 # Caption style per speaker
 
-Date: October 23, 2026. Status: implemented by Codex; Claude to verify
+Date: October 23, 2026. Status: implemented by Codex and released; the live check in Express › Overlays was never recorded (noted 2026-11-24)
 
 ## Goal
 

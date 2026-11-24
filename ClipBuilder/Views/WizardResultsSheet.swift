@@ -12,6 +12,8 @@ struct WizardResultsSheet: View {
     @State private var players: [Int64: AVPlayer] = [:]
     /// Width / height of each rendered video, for players that keep its shape.
     @State private var aspects: [Int64: CGFloat] = [:]
+    /// Where filler words were cut in each reel that has such cuts.
+    @State private var fillerCuts: [Int64: [FillerCutRules.Marker]] = [:]
     @State private var verdicts: [Int64: Int] = [:]
     @State private var reviewTarget: GeneratedVideoRecord?
     @State private var builderTarget: GeneratedVideoRecord?
@@ -133,6 +135,10 @@ struct WizardResultsSheet: View {
                 players[video.id] = AVPlayer(playerItem: AVPlayerItem(asset: asset))
                 if let aspect = try? await Self.aspect(of: asset) { aspects[video.id] = aspect }
             }
+            for video in results.videos {
+                let markers = await store.fillerCutMarkers(for: video)
+                if !markers.isEmpty { fillerCuts[video.id] = markers }
+            }
         }
         .onDisappear {
             for player in players.values { player.pause() }
@@ -197,7 +203,7 @@ struct WizardResultsSheet: View {
                                 pictureOverlay: { _ in
                 PlatformChromeLayer(size: playerSize,
                                     safeAreaSettings: store.activeProfile.defaultRenderSettings.platformSafeArea)
-            })
+            }, scrubLane: fillerCuts[video.id].map { AnyView(FillerCutLane(markers: $0, duration: video.duration)) })
             .frame(width: playerSize.width)
             .frame(maxWidth: .infinity)
 
@@ -213,6 +219,12 @@ struct WizardResultsSheet: View {
                     .foregroundStyle(.secondary)
                     .lineLimit(1).truncationMode(.middle)
                     .help(video.filename)
+                if let fillers = FillerCutRules.summary(fillerCuts[video.id] ?? []) {
+                    Text(fillers)
+                        .font(.caption).foregroundStyle(.secondary)
+                        .lineLimit(1).fixedSize()
+                        .help("Filler words and repeated words cut from this reel; the marks under the scrubber show where")
+                }
             }
 
             if take != nil || video.critique != nil {

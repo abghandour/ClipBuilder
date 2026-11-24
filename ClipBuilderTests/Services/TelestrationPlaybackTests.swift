@@ -56,6 +56,24 @@ struct TelestrationPlaybackTests {
         #expect(TelestrationPlayback.clip(drawing(), range: 8...14).total == 8.5)
     }
 
+    @Test func recordingWaitsOnTheDrawingAndStretchesItsStay() {
+        // Lead 2 s, figures and stay 2 s (the 0.5 s fade is left out), then it waits.
+        let plan = TelestrationPlayback.recording(drawing(motion: 0.5), range: 8...14)
+        #expect(plan.waits && plan.tail == 0 && plan.drawn == 2)
+        #expect(plan.moment(at: 3) == .init(source: 10.5, rate: 0.5, drawing: 1))
+        let waiting = plan.moment(at: 60)
+        #expect(waiting == .init(source: 11, rate: 0, drawing: 2))
+        #expect(TelestrationPlayback.state(of: drawing(), at: waiting).opacity == 1)
+        #expect(plan.boundaries == [2])
+        // Stopped before the drawing ends: nothing changes.
+        #expect(TelestrationPlayback.stay(of: drawing(), covering: 3.5, in: plan) == nil)
+        // 3.33 s past the drawing: the stay grows by that, rounded up to a tenth.
+        #expect(TelestrationPlayback.stay(of: drawing(), covering: 7.33, in: plan) == 4.4)
+        #expect(TelestrationPlayback.stay(of: drawing(), covering: 900, in: plan) == Telestration.maximumStay)
+        // Play is not a recording.
+        #expect(TelestrationPlayback.stay(of: drawing(), covering: 900, in: TelestrationPlayback.clip(drawing(), range: 8...14)) == nil)
+    }
+
     @Test func tooLittleFootageFallsBackToAPause() {
         // 2.5 s at normal speed needs 2.5 s of footage; 2 s minus the last piece is left.
         #expect(TelestrationPlayback.rate(of: drawing(motion: 1), end: 12) == 0)

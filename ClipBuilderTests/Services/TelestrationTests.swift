@@ -133,10 +133,10 @@ nonisolated struct TelestrationTests {
 
     @Test func decodingClampsRangesAndLimits() throws {
         let figure = #"{"kind":"line","points":[[-1,2],[0.8,0.9]],"width":5,"color":"red"}"#
-        let json = "{\"time\":-3,\"stay\":99,\"drawSpeed\":0,\"fade\":-5,\"figures\":["
+        let json = "{\"time\":-3,\"stay\":999,\"drawSpeed\":0,\"fade\":-5,\"figures\":["
             + Array(repeating: figure, count: 14).joined(separator: ",") + "]}"
         let drawing = try JSONDecoder().decode(Telestration.self, from: Data(json.utf8))
-        #expect(drawing.time == 0 && drawing.stay == 10 && drawing.drawSpeed == 0.15 && drawing.fade == 0)
+        #expect(drawing.time == 0 && drawing.stay == Telestration.maximumStay && drawing.drawSpeed == 0.15 && drawing.fade == 0)
         #expect(drawing.figures.count == 12)
         #expect(drawing.figures[0].width == 0.016 && drawing.figures[0].color == .red)
         #expect(drawing.figures[0].points[0] == CGPoint(x: 0, y: 1))

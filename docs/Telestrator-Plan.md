@@ -1,6 +1,6 @@
 # Telestrator Plan: pause and draw on the picture
 
-Date: 2026-11-21. Status: accepted by the user 2026-11-21 with the three recommendations (see Decisions); extended the same day from a reference reel (see Reference reel and the revised phase order); phases 1 and 2 with Codex, nothing compiled or reviewed yet.
+Date: 2026-11-21. Status: accepted by the user 2026-11-21 with the three recommendations (see Decisions); extended the same day from a reference reel (see Reference reel and the revised phase order); built through phase 8b and committed in 5400c7b (2026-11-23), not released; voice over waiting on the drawing is built but uncommitted. Open as of 2026-11-24: live check of phase 8, read-only review of the 8b diff, a wide test run, moving drawings in the Builder and on several-picture clips (they pause).
 
 ## What the user asked for
 
@@ -711,6 +711,10 @@ Until 8b a drawing with `motion` renders as a pause (the pipeline ignores the ke
 ### 8b: build and tests (2026-11-23, Claude)
 
 Debug `build-for-testing` succeeds with the 8b code. Sixteen suites through `scripts/test.sh`: 113 pass, 0 fail (`TelestrationPlaybackTests`, `TelestrationMotionRulesTests`, `TelestrationMotionRenderTests`, `TelestrationPauseTests`, `TelestrationBurnTests`, `TelestrationLingerResolutionTests`, `TelestrationLingerTests`, `TelestrationLingerRenderTests`, `WizardStrikePausesTests`, `TelestrationHoldRenderTests`, `StrikeImpactRulesTests`, `StrikeClipStatusTests`, `TelestrationTests`, `TelestrationStorageTests`, `WizardStrikeImpactTests`, `SharedTelestrationRenderTests`). Two new tests first failed on their own setup (`prepassKey` fingerprints the source file and the fixture path does not exist): they now point the clips at a temporary file. No wide run, no read-only review of the 8b diff, nothing driven live.
+
+### 8c: the recording waits on the drawing (2026-11-23, Claude)
+
+User: "do not stop recording a voice over when the scene animation ends. instead just pause for as long as the voice over last". Record Voice Over plays the clip up to the drawing, draws the figures, then holds the picture with the figures shown until Stop (`TelestrationPlayback.recording`, `Plan.waits`). On Stop the drawing's `stay` grows by the time recorded past the drawing, rounded up to 0.1 s, up to `Telestration.maximumStay` (120 s; the slider's range grows with it), so the reel holds for the voice. The clip's tail is not played during a recording. Tests: `TelestrationPlaybackTests.recordingWaitsOnTheDrawingAndStretchesItsStay`. Not driven live.
 
 ## Decisions (user, 2026-11-21: "go with your recommendations")
 

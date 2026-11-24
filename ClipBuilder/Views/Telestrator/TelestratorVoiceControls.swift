@@ -8,8 +8,8 @@ struct TelestratorVoice: Equatable {
     var videoID: Int64
 }
 
-/// Record Voice Over in the drawing editor: the clip plays in real time with
-/// the drawing in it while the microphone records. The recording joins the
+/// Record Voice Over in the drawing editor: the clip plays in real time up to
+/// the finished drawing and waits there while the microphone records. The recording joins the
 /// reel's Voice Over list, anchored to the clip's first frame.
 struct TelestratorVoiceControls: View {
     @Environment(AppStore.self) private var store
@@ -52,8 +52,8 @@ struct TelestratorVoiceControls: View {
                                          || library.owner != voice.owner || store.database == nil))
                 .help("Plays this clip in real time with the drawing in it and records your voice over it")
                 LevelMeter(level: library.recorder.isRecording ? library.recorder.level : 0)
-                Text(blocked ?? (recording ? "Talk over the clip. It stops at the end of the clip, or press Stop."
-                                 : "The clip plays in real time with the drawing while you talk. A recording is saved as it is made, also if you cancel the drawing."))
+                Text(blocked ?? (recording ? "Talk over the clip. The picture waits on the drawing until you press Stop, and the drawing stays that long in the reel."
+                                 : "The clip plays in real time and waits on the drawing while you talk. A recording is saved as it is made, also if you cancel the drawing."))
                     .font(.callout).foregroundStyle(.secondary)
                     .lineLimit(2).fixedSize(horizontal: false, vertical: true)
                 if library.recorder.access == .denied {
@@ -118,7 +118,7 @@ struct TelestratorVoiceControls: View {
     }
 
     private func stop() {
-        editor.stopPlayback()
+        editor.stopRecordingPlayback()
         finish()
     }
 

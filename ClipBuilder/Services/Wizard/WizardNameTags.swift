@@ -18,6 +18,10 @@ nonisolated extension WizardOptions {
 }
 
 nonisolated enum WizardNameTags {
+    static func shows(on clip: WizardPlanClip, options: WizardOptions) -> Bool {
+        options.usesNameTags && clip.continuesPrevious != true
+    }
+
     static func settings(options: WizardOptions, captionStyle: CaptionStyle) -> NameTagPlanner.Settings {
         let render = options.renderSettings
         let safe = options.resolvedSafeArea
@@ -51,9 +55,10 @@ nonisolated enum WizardNameTags {
         return tags.map { NameTagPlanner.overlay($0, canvas: canvas, style: style) }
     }
 
-    static func ordinary(scene: SceneRecord, duration: Double, people: [PersonRecord], tagText: [String: String],
+    static func ordinary(clip: WizardPlanClip? = nil, scene: SceneRecord, duration: Double, people: [PersonRecord], tagText: [String: String],
                          options: WizardOptions, captionStyle: CaptionStyle, profile: BrandProfile,
                          imageAspects: [UUID: CGFloat] = [:]) -> [TextOverlayItem] {
+        if let clip, !shows(on: clip, options: options) { return [] }
         let identified = people.filter { $0.tagName != nil && !$0.hidden && scene.tags.contains($0.tag) }
         guard identified.count == 1 else { return [] }
         let area = NameTagPlanner.Area(

@@ -1,7 +1,7 @@
 # Transcript editor: search, doubtful words, speaker pills, speaker filter
 
 Date: 2026-11-14
-Status: implemented 2026-11-14 (uncommitted), reviewed by Codex, its eight findings fixed. Not released; the AI Proofread call has not run live yet.
+Status: implemented 2026-11-14 (commit de38ec1, released in 1.165), reviewed by Codex, its eight findings fixed; the AI Proofread call has not run live yet.
 
 Mockups: `docs/mockups/transcript-editor-fixing/` (1 search and pills, 2 speaker
 filter, 3 doubtful word fix, 4 replace and apply, 5 automatic proofread).

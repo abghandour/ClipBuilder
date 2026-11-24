@@ -41,6 +41,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var enableTextOverlays: Bool?
     var strikeStats: Bool?
     var drawnPauses: Bool?
+    var removeFillerWords: Bool?
     var strikeHighlightStyle: String?
     var strikeHighlights: Bool?
     var strikeImpactFreeze: Double?
@@ -109,7 +110,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         case addCaptions
         case enableTextOverlays
         case strikeStats
-        case drawnPauses, strikeHighlightStyle
+        case removeFillerWords, drawnPauses, strikeHighlightStyle
         case strikeHighlights
         case strikeImpactFreeze
         case strikeSlowMotion, strikeFlash
@@ -180,6 +181,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         try c.encodeIfPresent(enableTextOverlays, forKey: .enableTextOverlays)
         try c.encodeIfPresent(strikeStats, forKey: .strikeStats)
         try c.encodeIfPresent(drawnPauses, forKey: .drawnPauses)
+        try c.encodeIfPresent(removeFillerWords, forKey: .removeFillerWords)
         try c.encodeIfPresent(strikeHighlightStyle, forKey: .strikeHighlightStyle)
         try c.encodeIfPresent(strikeHighlights, forKey: .strikeHighlights)
         try c.encodeIfPresent(strikeImpactFreeze, forKey: .strikeImpactFreeze)
@@ -279,6 +281,7 @@ nonisolated extension WizardOptions {
         result.enableTextOverlays = enableTextOverlays
         result.strikeStats = strikeStats
         result.drawnPauses = drawnPauses
+        result.removeFillerWords = removeFillerWords
         result.strikeHighlightStyle = strikeHighlightStyle
         result.strikeHighlights = strikeHighlights
         result.strikeImpactFreeze = strikeImpactFreeze
@@ -380,6 +383,7 @@ nonisolated extension WizardOptions {
         result.enableTextOverlays = step2.enableTextOverlays ?? base.enableTextOverlays
         result.strikeStats = step2.strikeStats
         result.drawnPauses = step2.drawnPauses
+        result.removeFillerWords = step2.removeFillerWords
         result.strikeHighlightStyle = step2.strikeHighlightStyle
         result.strikeHighlights = step2.strikeHighlights
         result.strikeImpactFreeze = step2.strikeImpactFreeze

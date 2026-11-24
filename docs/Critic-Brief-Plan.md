@@ -1,6 +1,6 @@
 # Critic Brief Plan
 
-Date: September 27, 2026. Status: draft for review. Implementation: Codex; build,
+Date: September 27, 2026. Status: implemented (commit d661c66, 2026-10-01, first released in 1.91). Implementation: Codex; build,
 tests and review: Claude (per the September 23 working rule).
 
 ## Problem

@@ -2811,7 +2811,11 @@ actor MultitrackRenderer {
                 ? await captionEvidence.evidence(videoID: cut.videoID)
                 : CaptionSpeakerEvidence()
             try Task.checkCancellation()
-            let pages = CaptionOverlayPlan.pages(segments: rows, renderers: captionRenderers,
+            let captionRows = dubbed.isEmpty
+                ? FillerCutRules.captions(rows, removing: FillerCutRules.skipped(
+                    document.appliedFillerSpans?[cut.videoID] ?? [],
+                    playing: cut.sourceStart...(cut.sourceStart + max(0, captionDuration * cut.speed)))) : rows
+            let pages = CaptionOverlayPlan.pages(segments: captionRows, renderers: captionRenderers,
                 sourceStart: cut.sourceStart, speed: cut.speed, duration: captionDuration,
                 position: position, language: captionLanguage ?? "",
                 speakerTurns: evidence.turns, speakerRows: evidence.rows, streamID: cut.originKey,

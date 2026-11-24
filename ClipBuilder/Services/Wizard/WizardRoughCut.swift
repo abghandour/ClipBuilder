@@ -102,6 +102,7 @@ nonisolated enum WizardRoughCut {
         var final = options
         if let overlays = extras.overlays {
             final.drawnPauses = overlays.settings.drawnPauses
+            final.removeFillerWords = overlays.settings.removeFillerWords
             final.strikeHighlightStyle = overlays.settings.strikeHighlightStyle
             final.strikeImpactFreeze = overlays.showsStrikeActions && overlays.settings.resolvedPauseOnContact
                 ? overlays.settings.resolvedPauseOnContactSeconds : nil
@@ -202,6 +203,8 @@ nonisolated struct RoughCut: Equatable, Sendable, Identifiable {
     var duration: Double
     /// The take it was cut from: its `previewClips` carry this id.
     var takeID: Int64? = nil
+    /// Where filler cuts land in this cut, for the marks under its scrubber.
+    var fillerCuts: [FillerCutRules.Marker] = []
     var id: String { url?.path ?? "unrendered-\(takeID.map(String.init) ?? name)" }
     var isRendered: Bool { url != nil }
 

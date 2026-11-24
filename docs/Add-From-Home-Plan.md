@@ -1,6 +1,6 @@
 # Add from Home: finding the profile's videos from any project
 
-Date: November 2, 2026. Status: planned, Codex implements Phases 1–3, Claude
+Date: November 2, 2026. Status: implemented (commit 71e51ed, 2026-11-02, first released in 1.143). Codex implements Phases 1–3, Claude
 verifies. Requested by the user on November 2, 2026 after opening an empty
 project's Sources page and finding no way to reach the videos already in the
 profile.

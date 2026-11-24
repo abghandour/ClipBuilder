@@ -17,6 +17,9 @@ nonisolated struct Telestration: Codable, Equatable, Sendable {
     var motion: Double?
 
     static let motionRates: [Double] = [0.25, 0.5, 1]
+    /// The slider's longest stay, and the longest a voice over may stretch it to.
+    static let sliderStay = 10.0
+    static let maximumStay = 120.0
 
     var duration: Double { Double(figures.count) * drawSpeed + stay + fade }
     /// Source seconds the picture advances under the drawing; 0 when paused.
@@ -28,7 +31,7 @@ nonisolated struct Telestration: Codable, Equatable, Sendable {
         self.motion = motion.flatMap { $0.isFinite && $0 > 0 ? min(1, max(0.25, $0)) : nil }
         self.time = time.isFinite ? max(0, time) : 0
         self.figures = Array(figures.prefix(Self.maximumFigures)).map { $0.normalized }
-        self.stay = stay.isFinite ? min(10, max(0.5, stay)) : 2
+        self.stay = stay.isFinite ? min(Self.maximumStay, max(0.5, stay)) : 2
         self.drawSpeed = drawSpeed.isFinite ? min(2, max(0.15, drawSpeed)) : 0.5
         self.fade = fade.isFinite ? max(0, fade) : 0.3
     }

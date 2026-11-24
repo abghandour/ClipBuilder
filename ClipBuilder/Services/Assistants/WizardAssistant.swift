@@ -163,6 +163,7 @@ nonisolated struct WizardAssistant: PageAssistant {
         var format: String?
         var strikeStats = false
         var drawnPauses: Bool?
+        var removeFillerWords: Bool?
         var strikeHighlightStyle: String?
         var strikeHighlights = false
         var strikeImpactFreeze: Double?

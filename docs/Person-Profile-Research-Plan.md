@@ -1,6 +1,6 @@
 # Person Profile Research Plan
 
-Date: October 10, 2026. Status: implemented October 10, 2026 (Codex), uncommitted. Verified: Debug build clean; PersonResearch, DatabaseTagFields, TagTextWriter, AISettings, SchemaVersionGate, AppStore, Database suites 119/119. Live web research and the People-screen rows not yet exercised by hand.
+Date: October 10, 2026. Status: implemented October 10, 2026 (Codex), committed since (checked 2026-11-24). Verified: Debug build clean; PersonResearch, DatabaseTagFields, TagTextWriter, AISettings, SchemaVersionGate, AppStore, Database suites 119/119. Live web research and the People-screen rows not yet exercised by hand.
 Implementation: Codex; build, tests and review: Claude (per the September 23 working rule).
 
 ## Problem

@@ -26,6 +26,13 @@ extension WizardView {
 
     /// Sound & music.
     @ViewBuilder var audioFields: some View {
+        // Hidden under a dub: the dubbed lines replace the speech and nothing is cut.
+        if lookTranscriptsAvailable, dubLanguage.isEmpty {
+            WizardControlRow("Remove filler words") {
+                Toggle("Remove filler words", isOn: $removeFillerWords).lineLimit(1).fixedSize()
+            }
+            FormCaption("Cuts um, uh and repeated words from the kept footage. Check the result in the rough cut.")
+        }
         WizardControlRow(dubLanguage.isEmpty ? "Dub" : "Dub to \(DubLanguageChoices.name(dubLanguage))") {
             Toggle("Dub to \(DubLanguageChoices.name(dubLanguage.isEmpty ? DubLanguageChoices.defaultLanguage : dubLanguage))",
                    isOn: Binding(get: { !dubLanguage.isEmpty }, set: {
@@ -342,6 +349,7 @@ extension WizardView {
             picture.append(framingBinding.wrappedValue.subject.label(type: framingVideo?.type ?? .other))
         }
         var audio: [String] = []
+        if lookTranscriptsAvailable, removeFillerWords, dubLanguage.isEmpty { audio.append("Filler words cut") }
         if lookCapabilities.audioMusic {
             audio.append(audioMode.title)
             if audioMode.useMusic {

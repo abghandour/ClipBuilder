@@ -27,6 +27,9 @@ nonisolated enum TelestrationPlayback {
         var rate: Double
         /// Seconds the picture plays on after the drawing.
         var tail: Double
+        /// A voice recording: the picture waits on the finished drawing
+        /// until the recording is stopped, however long that takes.
+        var waits = false
 
         var lead: Double { max(0, time - start) }
         /// Source seconds where the picture is when the drawing ends.
@@ -42,6 +45,7 @@ nonisolated enum TelestrationPlayback {
             if elapsed < lead { return Moment(source: start + elapsed, rate: 1) }
             let local = elapsed - lead
             if local < drawn { return Moment(source: time + local * rate, rate: rate, drawing: local) }
+            if waits { return Moment(source: resume, rate: 0, drawing: drawn) }
             return Moment(source: resume + (local - drawn), rate: tail > 0 ? 1 : 0, linger: local - drawn)
         }
     }
@@ -74,6 +78,26 @@ nonisolated enum TelestrationPlayback {
         let rate = rate(of: drawing, end: range.upperBound)
         return Plan(start: range.lowerBound, time: time, drawn: drawing.duration, rate: rate,
                     tail: max(0, range.upperBound - (time + drawing.duration * rate)))
+    }
+
+    /// Record voice over: the clip in real time up to the drawing, the
+    /// drawing until its figures are all shown, then the picture waits there
+    /// for as long as the talking lasts.
+    static func recording(_ drawing: Telestration, range: ClosedRange<Double>) -> Plan {
+        var plan = clip(drawing, range: range)
+        plan.drawn = max(0, drawing.duration - drawing.fade)
+        plan.tail = 0
+        plan.waits = true
+        return plan
+    }
+
+    /// The stay that makes the drawing last as long as a recording that ran
+    /// for `elapsed` seconds of `plan`; nil when the drawing is long enough.
+    static func stay(of drawing: Telestration, covering elapsed: Double, in plan: Plan) -> Double? {
+        let extra = elapsed - plan.lead - plan.drawn
+        guard plan.waits, extra.isFinite, extra > 0.05 else { return nil }
+        let stay = min(Telestration.maximumStay, ((drawing.stay + extra) * 10).rounded(.up) / 10)
+        return stay > drawing.stay ? stay : nil
     }
 
     static func state(of drawing: Telestration, at moment: Moment) -> TelestrationRules.State {

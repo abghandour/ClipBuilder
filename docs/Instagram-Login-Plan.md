@@ -1,6 +1,6 @@
 # Instagram Login Support Plan
 
-Date: September 30, 2026. Status: draft for review. Implementation: Codex; build,
+Date: September 30, 2026. Status: implemented (commit 1145937, 2026-10-01, first released in 1.91); the live-token check behind the PLAN-VERIFY markers is still open (checked 2026-11-24). Implementation: Codex; build,
 tests and review: Claude (per the September 23 working rule).
 
 ## Problem

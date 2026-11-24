@@ -68,6 +68,8 @@ nonisolated enum WizardPodcastTimeline {
             video.type.map { (video.url.path, $0) }
         }, uniquingKeysWith: { first, _ in first })
         var result: [Int: TimelineDocument] = [:]
+        /// Name tag texts already shown in the pieces of the clip being continued.
+        var introduced: Set<String> = []
         for (index, clip) in plan.clips.enumerated() {
             guard let scene = sceneMap[clip.sceneID], clip.end > clip.start else { continue }
             guard let video = videos.first(where: { $0.id == scene.videoID }) else {
@@ -101,6 +103,15 @@ nonisolated enum WizardPodcastTimeline {
                 sourceScene: scene, turns: turns[video.id] ?? [], roster: rosters[video.id] ?? [],
                 sentenceEnds: sentenceEnds[video.id] ?? [], layouts: layouts, settings: options.renderSettings, options: options, sources: videos, brollCuts: cuts, scenes: allScenes, people: people, tagText: tagText,
                 captionStyle: captionStyle, profile: profile, imageAspects: imageAspects, log: log)
+            if !options.usesNameTags {
+                document.textOverlays.removeAll { $0.design == "nameTag" }
+            } else {
+                // A piece after a filler cut does not introduce the same person
+                // again; someone who first speaks in it still gets their tag.
+                if clip.continuesPrevious != true { introduced = [] }
+                document.textOverlays.removeAll { $0.design == "nameTag" && introduced.contains($0.text) }
+                introduced.formUnion(document.textOverlays.filter { $0.design == "nameTag" }.map(\.text))
+            }
             // The transient Builder may append a Full Screen tail to its
             // cropping row. A cut owns only its chosen layout and exact span.
             document.cropBlocks = document.cropBlocks.prefix(1).map { block in
@@ -182,7 +193,7 @@ extension WizardEngine {
             let timing = paused.timings[index] ?? WizardStrikePauses.timing(for: clip, contacts: [], seconds: nil)
             let duration = timing.outputDuration
             if sourceCuts[index] == nil {
-                for var item in WizardNameTags.ordinary(scene: scene, duration: timing.plannedDuration, people: people, tagText: tagText,
+                for var item in WizardNameTags.ordinary(clip: clip, scene: scene, duration: timing.plannedDuration, people: people, tagText: tagText,
                                                        options: options, captionStyle: profile.renderCaptionStyle(id: options.captionStyleID),
                                                        profile: profile, imageAspects: imageAspects) {
                     item.startTime = cursor + timing.outputTime(item.startTime)

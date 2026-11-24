@@ -1,6 +1,6 @@
 # Speaker Naming Plan
 
-Date: October 31, 2026. Status: draft, assigned to Codex.
+Date: October 31, 2026. Status: implemented (commit 8c26fdf, 2026-10-31, first released in 1.138); speaker focus reworked later in 601ab58.
 
 ## Problem
 

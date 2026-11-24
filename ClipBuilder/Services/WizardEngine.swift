@@ -27,7 +27,7 @@ nonisolated struct WizardOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
         case dubLanguage, manualBRoll
         case voiceOverBedLevel
-        case drawnPauses, strikeHighlightStyle
+        case removeFillerWords, drawnPauses, strikeHighlightStyle
         case strikeStats, strikeHighlights, strikeImpactFreeze, strikeSlowMotion, strikeFlash, strikeUnits, strikeSpeedCallouts, strikeGrapplingCard, strikeRoundCard
         case safeAreaOnly = "safe_area_only"
         case safeAreaPlatforms = "safe_area_platforms"
@@ -49,6 +49,7 @@ nonisolated struct WizardOptions: Codable, Sendable {
         try c.encodeIfPresent(manualBRoll, forKey: .manualBRoll)
         try c.encodeIfPresent(strikeStats, forKey: .strikeStats)
         try c.encodeIfPresent(drawnPauses, forKey: .drawnPauses)
+        try c.encodeIfPresent(removeFillerWords, forKey: .removeFillerWords)
         try c.encodeIfPresent(strikeHighlightStyle, forKey: .strikeHighlightStyle)
         try c.encodeIfPresent(strikeHighlights, forKey: .strikeHighlights)
         try c.encodeIfPresent(strikeImpactFreeze, forKey: .strikeImpactFreeze)
@@ -159,6 +160,8 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var enableTextOverlays = false
     var strikeStats: Bool?
     var drawnPauses: Bool?
+    /// Remove proposed fillers and repeated words from kept footage; nil is off.
+    var removeFillerWords: Bool?
     var strikeHighlightStyle: String?
     var strikeHighlights: Bool?
     var strikeImpactFreeze: Double?
@@ -412,6 +415,8 @@ nonisolated struct WizardPlanClip: Codable, Sendable {
     /// Manual Express cutaways on the source recording clock.
     var brollCuts: [BRollCut]? = nil
     var miniPickID: Int64? = nil
+    /// Later piece of a filler cut: suppress another name tag at the join.
+    var continuesPrevious: Bool? = nil
 }
 
 /// One extra scene inside a layout block, in the named area.
@@ -526,6 +531,8 @@ nonisolated func wizardPlanOverlay(for clip: WizardPlanClip, text: String)
 nonisolated struct WizardPlan: Codable, Sendable {
     /// Stable source identity for saved takes; old plans acquire it when their scenes still exist.
     var footage: [WizardFootageReference]?
+    /// Applied source-time cuts, retained for captions when history renders this plan again.
+    var appliedFillerSpans: [Int64: [ClosedRange<Double>]]?
     var targetDuration: Double
     var rationale: String
     var musicName: String?
@@ -2923,6 +2930,7 @@ actor WizardEngine {
     /// visible, including partial translations, without repeating it for every cut.
     func captionSegments(videoID: Int64, filename: String, start: Double, end: Double,
                          language: String?, database: Database, fallbacks: WizardCaptionFallbackLog,
+                         fillerSpans: [ClosedRange<Double>] = [],
                          emit: @escaping @Sendable (String) -> Void) async throws -> [TranscriptSegment] {
         try Task.checkCancellation()
         if let language, !language.isEmpty,
@@ -2933,9 +2941,10 @@ actor WizardEngine {
                 let name = Locale(identifier: "en").localizedString(forIdentifier: language) ?? language
                 emit("Captions: no \(name) translation for \(filename) in this cut — using the original language")
             }
-            return originals
+            return FillerCutRules.captions(originals, removing: fillerSpans)
         }
-        return try await database.transcriptSegments(videoID: videoID, start: start, end: end, language: language)
+        let segments = try await database.transcriptSegments(videoID: videoID, start: start, end: end, language: language)
+        return FillerCutRules.captions(segments, removing: fillerSpans)
     }
 
     private func renderSelection(_ selection: WizardPlan, takeID: Int64? = nil, options: WizardOptions,
@@ -2984,7 +2993,7 @@ actor WizardEngine {
             var plan = options.formatPreset == "podcast" ? selection
                 : WizardPlanRules.applyPacing(plan: selection, pacing: options.pacing)
             plan.transitions = WizardStrikePauses.renderTransitions(plan: plan, options: timingOptions)
-            let roughTransitions = originalTiming != nil
+            var roughTransitions = originalTiming != nil
                 ? WizardStrikePauses.renderTransitions(plan: plan, options: options) : nil
             plan.musicName = nil
             plan.musicVolume = min(5, max(1, profile.defaultMusicVolume ?? 3))
@@ -3021,6 +3030,31 @@ actor WizardEngine {
             }
             if options.formatPreset != "podcast" {
                 plan = await snapCutsToBeats(plan, music: music, sceneMap: sceneMap, emit: emit)
+            }
+            // Under a dub the original speech is ducked and the lines are timed
+            // to the clips, so cutting fillers would only shorten dubbed lines.
+            let dubbed = options.dubLanguage.map { !$0.isEmpty } ?? false
+            if options.removeFillerWords == true, dubbed {
+                emit("Filler words: not cut on a dubbed reel")
+            }
+            if options.removeFillerWords == true, !dubbed {
+                // WizardEngine is an actor: transcript decoding and the pure rules
+                // stay off MainActor, including podcast/Express selections.
+                var spans: [Int64: [ClosedRange<Double>]] = [:]
+                for videoID in Set(plan.clips.compactMap { sceneMap[$0.sceneID]?.videoID }).sorted() {
+                    try Task.checkCancellation()
+                    spans[videoID] = FillerCutRules.spans(rows: try await database.fetchTranscripts(videoID: videoID))
+                }
+                let split = FillerCutRules.split(plan, spans: spans, sceneVideo: sceneMap.mapValues(\.videoID))
+                plan = split.plan
+                roughTransitions = roughTransitions.map { split.expandingTransitions($0) }
+                emit(split.cutsApplied == 0 ? "Filler words: none found"
+                    : String(format: "Filler words: cut %d (−%.1f s)", split.cutsApplied, split.secondsRemoved))
+            } else if plan.clips.contains(where: { $0.continuesPrevious == true }) {
+                // A recorded plan that was already cut, rendered again with the
+                // option off: its joins stay hard cuts.
+                plan.transitions = FillerCutRules.cutJoins(plan.transitions, clips: plan.clips)
+                roughTransitions = roughTransitions.map { FillerCutRules.cutJoins($0, clips: plan.clips) }
             }
             let pauseEligibility = WizardStrikePauses.Eligibility(plan: plan, options: timingOptions)
             if let roughTransitions {
@@ -4140,7 +4174,7 @@ actor WizardEngine {
                 }
                 if preparedPodcastCuts[index] == nil, options.usesNameTags, let scene = sceneMap[clip.sceneID] {
                     let aspects = await TextOverlayRenderer.tagImageAspects(profile.tagStyle(id: options.nameTagStyleID))
-                    original.textOverlays += WizardNameTags.ordinary(scene: scene, duration: clip.end - clip.start,
+                    original.textOverlays += WizardNameTags.ordinary(clip: clip, scene: scene, duration: clip.end - clip.start,
                         people: people, tagText: tagText, options: options, captionStyle: captionStyle,
                         profile: profile, imageAspects: aspects)
                 }
@@ -4246,6 +4280,7 @@ actor WizardEngine {
         let contentBoxes = try await WizardTiming.measure("content boxes", emit: emit, minimumSeconds: 0.05) {
             try await Self.detectContentBoxes(jobs: jobs, render: render)
         }
+        document.appliedFillerSpans = plan.appliedFillerSpans
         Self.applyContentWindows(contentBoxes, plan: editPlan, sceneMap: sceneMap, pauseTimings: paused.timings, to: &document)
         // Neither the profile nor the run chose: spoken recipes and
         // podcast/interview sources get Speech Polish, fight reels never do.
@@ -4270,7 +4305,7 @@ actor WizardEngine {
             let timing = paused.timings[index] ?? WizardStrikePauses.timing(for: clip, contacts: [], seconds: nil)
             let duration = timing.outputDuration
             if podcastCuts[index] == nil {
-                for var item in WizardNameTags.ordinary(scene: scene, duration: timing.plannedDuration, people: people, tagText: tagText,
+                for var item in WizardNameTags.ordinary(clip: clip, scene: scene, duration: timing.plannedDuration, people: people, tagText: tagText,
                                                        options: options, captionStyle: captionStyle, profile: profile,
                                                        imageAspects: tagImageAspects) {
                     item.startTime = tagCursor + timing.outputTime(item.startTime)
@@ -4643,6 +4678,8 @@ actor WizardEngine {
                                                       contentBox: contentBoxes[job.index],
                                                       dubLines: dubLinesByJob[job.index] ?? [],
                                                       voiceCaptions: voice?.captions[job.index] ?? [],
+                                                      fillerSpans: FillerCutRules.skipped(plan.appliedFillerSpans?[job.scene.videoID] ?? [],
+                                                          playing: job.clip.start...max(job.clip.start, job.clip.end)),
                                                       captionStyle: captionStyle, captionFallbacks: captionFallbacks, captionOrdinals: captionOrdinals,
                                                       brandOverlays: brandOverlayFiles, topOverlays: clipWatermark,
                                                       plannedNameTags: podcastCuts[job.index]?.textOverlays.filter { $0.design == "nameTag" }, nameTagPeople: people, tagText: tagText, profile: profile,
@@ -4918,6 +4955,7 @@ actor WizardEngine {
                                     options: WizardOptions, cutDocument: TimelineDocument, timing: WizardStrikePauses.Timing,
                                     contentBox: RenderEngine.ContentBox?, dubLines: [DubLine] = [],
                                     voiceCaptions: [TranscriptSegment] = [],
+                                    fillerSpans: [ClosedRange<Double>] = [],
                                     captionStyle: CaptionStyle, captionFallbacks: WizardCaptionFallbackLog,
                                     captionOrdinals: [String: Int] = [:],
                                     brandOverlays: [URL] = [], topOverlays: [RenderEngine.ClipOverlay] = [],
@@ -4947,12 +4985,12 @@ actor WizardEngine {
         var overlays: [RenderEngine.ClipOverlay] = brandOverlays.map {
             RenderEngine.ClipOverlay(png: $0, x: 0, y: 0, start: 0, end: duration)
         }
-        if options.usesNameTags {
+        if WizardNameTags.shows(on: clip, options: options) {
             let renderer = TextOverlayRenderer(videoWidth: RenderEngine.outputWidth,
                                                videoHeight: RenderEngine.outputHeight, textStyles: profile.textStyles ?? [])
             let imageAspects = await TextOverlayRenderer.tagImageAspects(profile.tagStyle(id: options.nameTagStyleID))
             let tags = plannedNameTags
-                ?? WizardNameTags.ordinary(scene: scene, duration: duration, people: nameTagPeople, tagText: tagText,
+                ?? WizardNameTags.ordinary(clip: clip, scene: scene, duration: duration, people: nameTagPeople, tagText: tagText,
                                           options: options, captionStyle: captionStyle, profile: profile,
                                           imageAspects: imageAspects)
             for item in tags {
@@ -4987,7 +5025,7 @@ actor WizardEngine {
             } else { do {
                 sourceSegments = try await captionSegments(videoID: scene.videoID, filename: scene.videoFilename,
                     start: clip.start, end: clip.end, language: options.effectiveCaptionLanguage,
-                    database: database, fallbacks: captionFallbacks, emit: emit)
+                    database: database, fallbacks: captionFallbacks, fillerSpans: fillerSpans, emit: emit)
             } catch {
                 if error is CancellationError { throw error }
                 try Task.checkCancellation()

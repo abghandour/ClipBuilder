@@ -28,7 +28,9 @@ struct TelestratorCanvas: View {
                         // The exact frozen frame: while editing, while the
                         // picture is paused under the drawing, and until a
                         // preview's picture is in place.
-                        if moment.map({ $0.rate == 0 }) ?? true {
+                        // A recording that waits after a moving drawing
+                        // keeps the player's own last frame.
+                        if moment.map({ $0.rate == 0 && abs($0.source - editor.drawing.time) < 0.001 }) ?? true {
                             context.draw(Image(decorative: image, scale: 1), in: rect)
                         }
                         context.withCGContext { cg in

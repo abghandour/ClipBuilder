@@ -315,6 +315,23 @@ nonisolated enum WizardPreviewClips {
         return overlaps
     }
 
+    /// Where the document's applied filler cuts land in the finished reel.
+    static func fillerMarkers(of document: TimelineDocument, scenes: [SceneRecord], xfadeDuration: Double,
+                              exists: (String) -> Bool = { FileManager.default.fileExists(atPath: $0) }) -> [FillerCutRules.Marker] {
+        guard let spans = document.appliedFillerSpans, !spans.isEmpty else { return [] }
+        let assembly = Self.assembly(of: document, scenes: scenes, xfadeDuration: xfadeDuration, exists: exists)
+        let videoByPath = Dictionary(scenes.map { ($0.videoPath, $0.videoID) }, uniquingKeysWith: { first, _ in first })
+        var pieces: [FillerCutRules.ShownPiece] = []
+        for (index, segment) in assembly.segments.enumerated() {
+            guard let clip = Assembly.shownClip(in: segment), !clip.bumper, !clip.hold,
+                  let videoID = clip.videoID ?? videoByPath[clip.sourcePath] else { continue }
+            let start = clip.sourceStart + max(0, segment.start - clip.startTime) * clip.speed
+            pieces.append(.init(videoID: videoID, sourceStart: start, sourceEnd: start + segment.duration * clip.speed,
+                                output: assembly.outputs[index]))
+        }
+        return FillerCutRules.markers(pieces: pieces, spans: spans)
+    }
+
     /// The stripped document the renderer used, rather than the take's plan
     /// before pacing. Each take starts its own output clock at zero.
     static func rendered(_ document: TimelineDocument, take: WizardSelectionTake, name: String,

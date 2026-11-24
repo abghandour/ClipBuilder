@@ -1,6 +1,6 @@
 # Strike Highlight Plan
 
-Date: 2026-11-18, spec for phases 4 to 6 added 2026-11-19, phase 7 added 2026-11-20. Status: phases 1 to 5 and the highlight half of 6 implemented (uncommitted); phase 7 (Express action overlays and pause on contact, which includes Wizard freezes) specified at the end, in progress.
+Date: 2026-11-18, spec for phases 4 to 6 added 2026-11-19, phase 7 added 2026-11-20. Status: phases 1 to 5 and the highlight half of 6 implemented (committed since, checked 2026-11-24); phase 7 (Express action overlays and pause on contact, which includes Wizard freezes) specified at the end, in progress.
 
 ## What it is
 

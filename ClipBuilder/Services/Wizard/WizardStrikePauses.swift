@@ -248,6 +248,7 @@ nonisolated enum WizardStrikePauses {
     static func eligibilityOptions(_ options: WizardOptions, original: WizardOptions?) -> WizardOptions {
         var result = original ?? options
         result.drawnPauses = options.drawnPauses
+        result.removeFillerWords = options.removeFillerWords
         result.strikeImpactFreeze = options.strikeImpactFreeze
         result.strikeSlowMotion = options.strikeSlowMotion
         result.strikeFlash = options.strikeFlash

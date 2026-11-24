@@ -477,7 +477,7 @@ nonisolated struct CaptionStyle: Codable, Sendable, Hashable {
         guard let value = animationMinimumWordDuration, value.isFinite else { return 0 }
         return min(1, max(0, value))
     }
-    var resolvedLineBreaks: String { ["greedy", "sentence"].contains(lineBreaks ?? "") ? lineBreaks! : "balanced" }
+    var resolvedLineBreaks: String { ["greedy", "sentence", "clause"].contains(lineBreaks ?? "") ? lineBreaks! : "balanced" }
     var resolvedLineSpacing: Double? {
         guard let value = lineSpacing, value.isFinite else { return nil }
         return min(300, max(24, value))

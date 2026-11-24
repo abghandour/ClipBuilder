@@ -1,6 +1,6 @@
 # Fight Action detail: watch, correct, retry, learn
 
-Date: 2026-11-21. Status: approved by the user as a direction (mockup accepted), not implemented.
+Date: 2026-11-21. Status: approved by the user as a direction (mockup accepted); implemented with corrections, retry and scoring lessons (commit c9eed10, 2026-11-21), not released as of 2026-11-24.
 Mockup: design canvas "Fight Action Popup" (scoreboard, momentum chart, breakdown, action list).
 This plan adds what the mockup lacks: a preview player in the popup, editing of wrong
 metrics, and a retry that learns from the edits.

@@ -349,9 +349,11 @@ extension AppStore {
                     try checkContext()
                     let takeClips = WizardPreviewClips.rendered(document, take: take, name: name, scenes: scenes,
                                                                 xfadeDuration: editing.transitions.xfadeDuration)
+                    let fillerCuts = WizardPreviewClips.fillerMarkers(of: document, scenes: scenes,
+                                                                      xfadeDuration: editing.transitions.xfadeDuration)
                     guard renderCuts else {
                         cuts.append(RoughCut(url: nil, name: name, duration: RoughCut.plannedDuration(of: takeClips),
-                                             takeID: take.id))
+                                             takeID: take.id, fillerCuts: fillerCuts))
                         previewClips += takeClips
                         continue
                     }
@@ -362,7 +364,8 @@ extension AppStore {
                     try checkContext()
                     let destination = directory.appendingPathComponent("rough-\(index + 1).mp4")
                     try FileManager.default.copyItemReplacing(at: result.url, to: destination)
-                    cuts.append(RoughCut(url: destination, name: name, duration: result.duration, takeID: take.id))
+                    cuts.append(RoughCut(url: destination, name: name, duration: result.duration, takeID: take.id,
+                                         fillerCuts: fillerCuts))
                     previewClips += takeClips
                 } catch {
                     if error is CancellationError || Task.isCancelled { throw CancellationError() }
@@ -513,5 +516,27 @@ extension AppStore {
                 : "Saved \(created.count) timelines; opened \"\(first.name)\" in the Builder.") + failureNote)
             return nil
         }
+    }
+}
+
+extension AppStore {
+    /// Where a generated reel's filler cuts land, read from its recorded timeline.
+    func fillerCutMarkers(for video: GeneratedVideoRecord) async -> [FillerCutRules.Marker] {
+        // Most reels have none: skip the decode and the scene fetch for them.
+        guard video.timelineJSON.contains("applied_filler_spans"), let database else { return [] }
+        let json = video.timelineJSON, xfade = editingDefaults.transitions.xfadeDuration
+        return await Self.fillerCutMarkers(json: json, database: database, xfadeDuration: xfade)
+    }
+
+    @concurrent private nonisolated static func fillerCutMarkers(json: String, database: Database,
+                                                     xfadeDuration: Double) async -> [FillerCutRules.Marker] {
+        guard let document = try? JSONDecoder().decode(TimelineDocument.self, from: Data(json.utf8)),
+              let spans = document.appliedFillerSpans, !spans.isEmpty,
+              var scenes = try? await database.fetchScenes(ids: Set(document.videoTrack.compactMap(\.sceneID))) else { return [] }
+        // Trimmed clips carry a file and a range, no scene: any scene of the cut recordings names their file.
+        for videoID in spans.keys where !scenes.contains(where: { $0.videoID == videoID }) {
+            scenes += (try? await database.fetchScenes(videoID: videoID)) ?? []
+        }
+        return WizardPreviewClips.fillerMarkers(of: document, scenes: scenes, xfadeDuration: xfadeDuration)
     }
 }

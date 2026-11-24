@@ -169,6 +169,21 @@ struct PGPreferredTests {
         }
     }
 
+    @Test func rowsBreakAfterCommasAndSentencesAndBalanceOtherwise() throws {
+        #expect(CaptionRenderer.endsRow("athletes,", lineBreaks: "clause"))
+        #expect(!CaptionRenderer.endsRow("athletes,", lineBreaks: "sentence"))
+        #expect(CaptionRenderer.endsRow("right?”", lineBreaks: "sentence"))
+        #expect(!CaptionRenderer.endsRow("athletes,", lineBreaks: "balanced"))
+        #expect(CaptionRenderer.balances(["Kayla", "Harrison", "and", "Amanda", "Nunes"], lineBreaks: "clause"))
+        #expect(!CaptionRenderer.balances(["As", "athletes,", "we", "need"], lineBreaks: "clause"))
+        // A closing comma chooses nothing: the page is still balanced.
+        #expect(CaptionRenderer.balances(["You", "have", "to", "be", "an", "actress,"], lineBreaks: "clause"))
+        #expect(!CaptionRenderer.balances(["a", "b"], lineBreaks: "sentence"))
+        var style = CaptionStyle()
+        style.lineBreaks = "clause"
+        #expect(style.resolvedLineBreaks == "clause")
+    }
+
     @Test func referencePageBreaks() throws {
         let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: try style(), safeArea: nil)
         let pages = renderer.pages(for: reference)

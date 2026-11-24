@@ -22,7 +22,7 @@ struct TelestratorTimingControls: View {
             }
             HStack {
                 Text("Stays for").lineLimit(1).fixedSize()
-                Slider(value: $editor.drawing.stay, in: 0.5...10, step: 0.1,
+                Slider(value: $editor.drawing.stay, in: 0.5...max(Telestration.sliderStay, editor.drawing.stay), step: 0.1,
                        onEditingChanged: editor.controlEditing)
                     .frame(width: 140).accessibilityLabel("Stays for, seconds")
                 Text("\(editor.drawing.stay, format: .number.precision(.fractionLength(1))) s")

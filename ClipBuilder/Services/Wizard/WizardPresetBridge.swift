@@ -18,6 +18,7 @@ nonisolated enum WizardPresetBridge {
         fields["dub"] = .bool(settings.dub)
         fields["miniDubLanguage"] = settings.dubLanguage.map(JSONSetting.string) ?? .null
         fields["drawnPauses"] = settings.drawnPauses.map(JSONSetting.bool) ?? .null
+        fields["removeFillerWords"] = settings.removeFillerWords.map(JSONSetting.bool) ?? .null
         fields["strikeHighlightStyle"] = settings.strikeHighlightStyle.map(JSONSetting.string) ?? .null
         fields["strikeHighlights"] = settings.actionOverlays.map(JSONSetting.bool) ?? .null
         fields["strikeImpactFreeze"] = settings.pauseOnContact == true ? .number(settings.resolvedPauseOnContactSeconds) : .null
@@ -102,6 +103,7 @@ nonisolated enum WizardPresetBridge {
         if let value = fields["miniDubLanguage"] { settings.dubLanguage = value.string }
         if let value = fields["dub"]?.bool { settings.dub = value }
         if let value = fields["drawnPauses"] { settings.drawnPauses = value.bool }
+        if let value = fields["removeFillerWords"] { settings.removeFillerWords = value.bool }
         if let value = fields["strikeHighlightStyle"] { settings.strikeHighlightStyle = value.string }
         if let value = fields["strikeHighlights"] { settings.actionOverlays = value.bool }
         if let value = fields["strikeImpactFreeze"] {

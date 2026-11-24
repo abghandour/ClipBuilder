@@ -41,7 +41,7 @@ Codex wrote phases 1 to 3 and ran out of usage before building; Claude finished 
 - Renderer: on a page that is not fitted to one line, a marked word takes its own width and rises out of its row; other words keep their places. Applies only to styles with a line fit or a second look, so every other style renders as before. The renderer's per-word style reads moved into `ResolvedStates` (the Debug stack overflowed otherwise).
 - "PG Preferred": Emphasis 2 is Bodoni 72 italic, white, 2.0 x, tracking -3 (closest stock face to the reference's "belt?").
 
-Deviations and gaps: Part B of the brief (reference line breaks after a comma) was not built: Codex found the reference's breaks contradict a single width or balance rule. The reference sets that page's rows further apart than ours.
+Deviations and gaps: Line breaks were built later the same day as `lineBreaks = "clause"` (row ends after a sentence or comma, otherwise balanced), at the user's request; the reference also sizes the rows of one page separately, which is not built. The reference sets that page's rows further apart than ours.
 
 Added after the first pass: `CaptionWordDecor.takesHighlightColor` (false keeps an emphasis word in its own colour while spoken; "While spoken" toggle in the editor), set for PG Preferred's Emphasis 2. The transcript editor was driven live on scratch data (mark, Apply, marks in the DB).
 

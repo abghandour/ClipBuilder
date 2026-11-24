@@ -1,6 +1,6 @@
 # HD strike highlight: follow the limb's contour
 
-Date: 2026-11-21. Status: asked for by the user, not implemented.
+Date: 2026-11-21. Status: asked for by the user; implemented (commit c9eed10, 2026-11-21), not released as of 2026-11-24.
 
 ## What the user asked for
 
