@@ -520,4 +520,32 @@ struct WizardStrikePausesTests {
         }
     }
 
+
+    @Test("Random spares a drawn clip from recipe transitions; a chosen recipe stays")
+    func randomSparesDrawings() {
+        let scene = Fixtures.scene(id: 1, start: 0, end: 60)
+        let plan = Fixtures.plan(clips: [Fixtures.planClip(sceneID: 1, start: 0, end: 5),
+            Fixtures.planClip(sceneID: 1, start: 10, end: 15), Fixtures.planClip(sceneID: 1, start: 20, end: 25),
+            Fixtures.planClip(sceneID: 1, start: 30, end: 35)])
+        let drawn = WizardStrikePauses.drawnClips(plan: plan, sceneMap: [1: scene],
+            drawings: [scene.videoPath: [Telestration(time: 12), Telestration(time: 15), Telestration(time: 40)]])
+        #expect(drawn == [1])
+        var options = WizardOptions()
+        options.transitionChoice = WizardPlanRules.randomTransitionChoice
+        options.allowedTransitions = ["knife_slash", "fade", "zoom_punch", "wipeleft"]
+        let rolled = ["knife_slash", "zoom_punch", "knife_slash"]
+        let spared = WizardStrikePauses.sparingDrawings(rolled, drawn: drawn, options: options)
+        #expect(!TransitionRecipes.isRecipe(spared[0]) && !TransitionRecipes.isRecipe(spared[1]))
+        #expect(spared[0] != spared[1] && spared[2] == "knife_slash")
+        #expect(WizardStrikePauses.sparingDrawings(rolled, drawn: drawn, options: options) == spared)
+        #expect(WizardStrikePauses.sparingDrawings(["fade", "wipeleft", "fade"], drawn: drawn, options: options)
+            == ["fade", "wipeleft", "fade"])
+        options.allowedTransitions = ["knife_slash", "zoom_punch"]
+        #expect(WizardStrikePauses.sparingDrawings(rolled, drawn: drawn, options: options) == ["cut", "cut", "knife_slash"])
+        options.drawnPauses = false
+        #expect(WizardStrikePauses.sparingDrawings(rolled, drawn: drawn, options: options) == rolled)
+        options.drawnPauses = nil
+        options.transitionChoice = "knife_slash"
+        #expect(WizardStrikePauses.sparingDrawings(rolled, drawn: drawn, options: options) == rolled)
+    }
 }

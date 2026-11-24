@@ -233,7 +233,14 @@ nonisolated enum StrikeClipStatusRules {
         if pauses {
             let certain = statuses.count { $0.hasPause && !$0.conditionalTransition }
             let possible = statuses.count { $0.hasPause }
-            parts.append(certain == possible ? "pauses on \(certain)" : "pauses on up to \(possible) (Random)")
+            // After the marks count "pauses on 0" says the joins rule them out; on its own
+            // (a reel with only drawings) it reads as noise, so it is left out.
+            if !parts.isEmpty {
+                parts.append(certain == possible ? "pauses on \(certain)" : "pauses on up to \(possible) (Random)")
+            } else if possible > 0 {
+                let clips = { (count: Int) in "\(count) \(count == 1 ? "clip" : "clips")" }
+                parts.append(certain == possible ? "Pauses on \(clips(certain))" : "Pauses on up to \(clips(possible)) (Random)")
+            }
         }
         if statuses.contains(where: \.markingIncomplete) { parts.append("saved so far") }
         let added = statuses.reduce(0) { $0 + $1.slowAddedDuration }

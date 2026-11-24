@@ -340,6 +340,38 @@ nonisolated enum WizardStrikePauses {
 
     /// Pause previews and Generate must choose the same random joins for a
     /// saved selection. Only pause-enabled renders use this stable shuffle.
+    /// The clips whose own footage (or a companion's) carries a saved drawing.
+    static func drawnClips(plan: WizardPlan, sceneMap: [Int64: SceneRecord], drawings: [String: [Telestration]]) -> Set<Int> {
+        Set(plan.clips.indices.filter { index in
+            WizardSharedPauses.sources(plan.clips[index], sceneMap: sceneMap).contains { source in
+                (drawings[source.scene.videoPath] ?? []).contains { $0.time >= source.start && $0.time < source.end }
+            }
+        })
+    }
+
+    /// Random never costs a clip its drawing: a recipe transition (which needs the
+    /// unsplit cut, so the drawing would be skipped) at either join of a drawn clip is
+    /// replaced by a plain one from the allowed pool, or a hard cut when there is none.
+    /// A transition the user chose by name is left as chosen.
+    static func sparingDrawings(_ transitions: [String], drawn: Set<Int>, options: WizardOptions) -> [String] {
+        guard options.transitionChoice == WizardPlanRules.randomTransitionChoice, options.drawnPauses != false,
+              !drawn.isEmpty else { return transitions }
+        let valid = Set(RenderEngine.allTransitions)
+        var seen = Set<String>()
+        let pool = (options.allowedTransitions ?? RenderEngine.allTransitions).filter {
+            $0 != "cut" && valid.contains($0) && !TransitionRecipes.isRecipe($0) && seen.insert($0).inserted
+        }
+        var result = transitions
+        for join in result.indices where TransitionRecipes.isRecipe(result[join])
+            && (drawn.contains(join) || drawn.contains(join + 1)) {
+            // Stable for a plan, and not the neighbour's effect when the pool allows.
+            let before = join > 0 ? result[join - 1] : nil
+            let candidates = pool.count > 1 ? pool.filter { $0 != before } : pool
+            result[join] = candidates.isEmpty ? "cut" : candidates[join % candidates.count]
+        }
+        return result
+    }
+
     static func renderTransitions(plan: WizardPlan, options: WizardOptions) -> [String] {
         guard contactsRequested(options) else {
             return WizardPlanRules.transitions(choice: options.transitionChoice,

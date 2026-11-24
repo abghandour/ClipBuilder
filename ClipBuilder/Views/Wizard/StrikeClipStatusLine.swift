@@ -11,7 +11,9 @@ struct StrikeClipStatusLine: View {
             Label(text, systemImage: symbol)
                 .font(.caption)
                 .foregroundStyle(.secondary)
-                .lineLimit(1)
+                // A list row is narrow: "drawing over the moving picture" needs its second line.
+                .lineLimit(2)
+                .multilineTextAlignment(.leading)
                 .fixedSize(horizontal: false, vertical: true)
                 .help(status?.help ?? text)
                 // The owning row includes the full, untruncated status value.

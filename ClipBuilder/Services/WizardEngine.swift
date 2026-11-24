@@ -2995,6 +2995,15 @@ actor WizardEngine {
             plan.transitions = WizardStrikePauses.renderTransitions(plan: plan, options: timingOptions)
             var roughTransitions = originalTiming != nil
                 ? WizardStrikePauses.renderTransitions(plan: plan, options: options) : nil
+            if timingOptions.transitionChoice == WizardPlanRules.randomTransitionChoice, timingOptions.drawnPauses != false {
+                // Random must not pick an effect that drops a clip's drawing.
+                let drawn = WizardStrikePauses.drawnClips(plan: plan, sceneMap: sceneMap,
+                    drawings: try await WizardStrikePauses.drawings(plan: plan, sceneMap: sceneMap, database: database))
+                plan.transitions = WizardStrikePauses.sparingDrawings(plan.transitions, drawn: drawn, options: timingOptions)
+                roughTransitions = roughTransitions.map {
+                    WizardStrikePauses.sparingDrawings($0, drawn: drawn, options: timingOptions)
+                }
+            }
             plan.musicName = nil
             plan.musicVolume = min(5, max(1, profile.defaultMusicVolume ?? 3))
             if timingOptions.useMusic {

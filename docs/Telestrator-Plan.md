@@ -716,6 +716,14 @@ Debug `build-for-testing` succeeds with the 8b code. Sixteen suites through `scr
 
 User: "do not stop recording a voice over when the scene animation ends. instead just pause for as long as the voice over last". Record Voice Over plays the clip up to the drawing, draws the figures, then holds the picture with the figures shown until Stop (`TelestrationPlayback.recording`, `Plan.waits`). On Stop the drawing's `stay` grows by the time recorded past the drawing, rounded up to 0.1 s, up to `Telestration.maximumStay` (120 s; the slider's range grows with it), so the reel holds for the voice. The clip's tail is not played during a recording. Tests: `TelestrationPlaybackTests.recordingWaitsOnTheDrawingAndStretchesItsStay`. Not driven live.
 
+### Phase 8 live check (2026-11-24, Claude)
+
+Scratch data, Debug build, "Blachowicz vs Ulberg" fight video, Express Fight metrics. Works: pencil on a row only with a drawing; Draw button in the Footage list bar and in the Reel panel; editor speeds with their explanation; Play over the moving picture; Save; reels at 50% (8.17 s, frames match the source at half speed), 25% (drawn clip 8.85 s) and Normal speed (no time added).
+
+Found and fixed the same day: with Random transitions a recipe transition was rolled and every drawing was skipped ("recipe transition joins need the unsplit cut", log only) while the list said the drawing was in. User: "make random avoid recipe transitions". Random now replaces a recipe at either join of a clip that carries a drawing with a plain effect from the allowed pool (`WizardStrikePauses.sparingDrawings`); a transition chosen by name is left alone and still skips the drawing. The status line was cut off in the narrow row and now takes two lines; a lone "pauses on 0" no longer shows over a reel with only drawings.
+
+Not driven: a staying figure, a several-picture fallback, Record Voice Over, the sound through a slowed stretch. Open question for the user: a Fight metrics run also rendered the kept Transcript selections of the same video.
+
 ## Decisions (user, 2026-11-21: "go with your recommendations")
 
 1. **Where first.** Wizard and Express reels before the Builder: phase 4 is done before phase 3.

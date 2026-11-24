@@ -291,4 +291,13 @@ struct StrikeClipStatusTests {
         let stale = try await temp.database.strikeClipStatusSnapshot(videoID: videoID)
         #expect(stale.tracks.isEmpty && stale.contacts.isEmpty && !stale.complete)
     }
+
+    @Test("Without marks the summary names pauses only when there are some")
+    func summaryWithoutMarks() {
+        let none = StrikeClipStatus(marks: 0, pause: .none(reason: "no contact"), marksEnabled: false)
+        let held = StrikeClipStatus(marks: 0, pause: .pauses(count: 1, seconds: 0.8), marksEnabled: false)
+        #expect(StrikeClipStatusRules.summary([none], marks: false, pauses: true) == "")
+        #expect(StrikeClipStatusRules.summary([none, held], marks: false, pauses: true) == "Pauses on 1 clip")
+        #expect(StrikeClipStatusRules.summary([none, held], marks: true, pauses: true) == "Marks on 0 of 2 clips · pauses on 1")
+    }
 }
