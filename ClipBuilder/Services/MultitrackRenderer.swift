@@ -2532,6 +2532,9 @@ actor MultitrackRenderer {
             boundaries.insert(((clip.startTime + clip.duration) * 1000).rounded() / 1000)
         }
         let sorted = boundaries.sorted()
+        // Compare plain numbers: testing every clip value against every
+        // boundary copied each large clip and took 13 ms for 200 clips in Debug.
+        let spans = clips.map { (start: $0.startTime, end: $0.startTime + $0.duration) }
         var segments: [Segment] = []
         for index in 0..<(sorted.count - 1) {
             let start = sorted[index]
@@ -2539,9 +2542,9 @@ actor MultitrackRenderer {
             // Rounded millisecond boundaries can subtract to 0.0499999999999998.
             // Keep the accepted 50 ms hold on both document and extraction clocks.
             guard end - start >= 0.05 - 1e-9 else { continue }
-            let active = clips.filter {
-                $0.startTime <= start + 0.001 && $0.startTime + $0.duration >= end - 0.001
-            }
+            let active = spans.indices.filter {
+                spans[$0].start <= start + 0.001 && spans[$0].end >= end - 0.001
+            }.map { clips[$0] }
             if !active.isEmpty {
                 // A bumper owns the canvas regardless of track, layout, or
                 // other clips. Later-starting bumpers win deterministically.

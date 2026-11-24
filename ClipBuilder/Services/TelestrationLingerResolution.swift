@@ -120,14 +120,19 @@ extension MultitrackRenderer {
             resolveClips(document: input, scenes: scenes, centerStageCamera: input.framingCamera ?? centerStageCamera,
                 lingering: existing, lingerHolds: existingHolds)
         }
-        let planned = plannedSegments(resolved)
-        let synchronized = TelestrationTransition.synchronize(planned.segments, transitions: planned.transitions,
-            timed: usesTimedAssembly(input, transitions: planned.transitions), duration: RenderContext.transitions.xfadeDuration,
-            context: existingTransitions)
         var stayTransitions = existingTransitions
-        for clip in synchronized.flatMap(\.clips) {
-            if let id = TelestrationTransition.contextID(clip), let start = clip.stayTransitionStart {
-                stayTransitions[id] = start
+        // A stay transition belongs to a pause that carries a drawing. Without
+        // a pause there is none to find, and planning every segment of a long
+        // timeline for each preview slice stalled the main actor.
+        if input.videoTrack.contains(where: { $0.hold == true }) || !existingHolds.isEmpty || !existingTransitions.isEmpty {
+            let planned = plannedSegments(resolved)
+            let synchronized = TelestrationTransition.synchronize(planned.segments, transitions: planned.transitions,
+                timed: usesTimedAssembly(input, transitions: planned.transitions), duration: RenderContext.transitions.xfadeDuration,
+                context: existingTransitions)
+            for clip in synchronized.flatMap(\.clips) {
+                if let id = TelestrationTransition.contextID(clip), let start = clip.stayTransitionStart {
+                    stayTransitions[id] = start
+                }
             }
         }
         let runs = RenderContext.$settings.withValue(input.renderSettings) {
