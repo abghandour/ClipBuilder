@@ -199,7 +199,7 @@ struct TextLookInspectorSections: View {
                     choices("Style", \.shadowStyle, "shadowStyle", [("soft", "Soft"), ("hard", "Hard"), ("extrude", "3D extrude"), ("glow", "Glow")])
                     if resolved.shadowStyle == "glow" {
                         number("Blur", \.shadowBlur, "shadowBlur", 0...3)
-                        number("Strength", \.shadowStrength, "shadowStrength", 1...3)
+                        number("Strength", \.shadowStrength, "shadowStrength", 1...5)
                     } else {
                     HStack(alignment: .center, spacing: Theme.spaceS) {
                         OverrideLabel(

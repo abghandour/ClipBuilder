@@ -71,6 +71,20 @@ struct TextLooksView: View {
     private var captionIndex: Int? { store.activeProfile.captionStyles?.firstIndex { $0.id.uuidString == selection } }
     private var tagIndex: Int? { store.activeProfile.tagStyles?.firstIndex { $0.id.uuidString == selection } }
     private var namedIndex: Int? { store.activeProfile.textStyles?.firstIndex { $0.id.uuidString == selection } }
+    /// A library look is selected: it is shown as it is and cannot be edited
+    /// until "Add" makes a copy. Without this the stage and the inspector
+    /// fell back to the profile default while the library card was selected.
+    private var libraryCaption: CaptionStyle? {
+        guard tab == .captions, selection != "default", captionIndex == nil else { return nil }
+        return CaptionPresets.styles.first { $0.name == selection }?.style
+    }
+    private var libraryTag: TagStyle? {
+        guard tab == .tags, selection != "default", tagIndex == nil else { return nil }
+        return TextLookPresets.tags.first { $0.name == selection }?.style
+    }
+    private var libraryName: String? {
+        (libraryCaption != nil || libraryTag != nil) ? selection : nil
+    }
     private var canDelete: Bool {
         switch tab {
         case .captions: captionIndex != nil
@@ -103,8 +117,9 @@ struct TextLooksView: View {
     }
     private var caption: Binding<CaptionStyle> {
         Binding(
-            get: { store.activeProfile.captionStyle(id: selection) },
+            get: { libraryCaption ?? store.activeProfile.captionStyle(id: selection) },
             set: {
+                guard libraryCaption == nil else { return }
                 let before = snapshot
                 if let i = captionIndex { store.activeProfile.captionStyles?[i].style = $0 } else { store.activeProfile.captions = $0 }
                 noteEdit(from: before)
@@ -113,8 +128,9 @@ struct TextLooksView: View {
     }
     private var tag: Binding<TagStyle> {
         Binding(
-            get: { store.activeProfile.tagStyle(id: selection) },
+            get: { libraryTag ?? store.activeProfile.tagStyle(id: selection) },
             set: {
+                guard libraryTag == nil else { return }
                 let before = snapshot
                 if let i = tagIndex { store.activeProfile.tagStyles?[i].style = $0 } else { store.activeProfile.tagStyle = $0 }
                 noteEdit(from: before)
@@ -228,7 +244,7 @@ struct TextLooksView: View {
                     stage.id(selection).frame(minWidth: 260, maxWidth: .infinity, maxHeight: .infinity)
                     VStack(spacing: 0) {
                         inspector.frame(maxHeight: .infinity)
-                        historyBar
+                        if libraryName == nil { historyBar }
                     }
                     .frame(minWidth: 280, idealWidth: 336, maxWidth: 440).frame(maxHeight: .infinity)
                 }
@@ -340,6 +356,24 @@ struct TextLooksView: View {
     }
 
     @ViewBuilder private var inspector: some View {
+        if let libraryName {
+            ContentUnavailableView {
+                Label(libraryName, systemImage: "books.vertical")
+            } description: {
+                Text("A library look. Add a copy to this profile to edit it or use it in a reel.")
+            } actions: {
+                Button("Add to Profile", systemImage: "plus") { addPreset(libraryName) }
+                    .lineLimit(1).fixedSize()
+                Button("Make Profile Default", systemImage: "checkmark.seal") { makeDefault(libraryName) }
+                    .lineLimit(1).fixedSize()
+                    .help("Use \(libraryName) wherever this profile's default look is used. The current default is kept as \"Previous default\".")
+            }
+        } else {
+            editableInspector
+        }
+    }
+
+    @ViewBuilder private var editableInspector: some View {
         switch tab {
         case .captions: CaptionStyleEditor(name: name, style: caption, isDefault: captionIndex == nil, selectedState: $captionState)
         case .tags:
@@ -426,6 +460,26 @@ struct TextLooksView: View {
         default: []
         }
     }
+    /// Replaces the profile default with a library look. The look it replaces
+    /// stays in the profile as "Previous default", so nothing is lost.
+    private func makeDefault(_ id: String) {
+        if tab == .captions, let preset = CaptionPresets.styles.first(where: { $0.name == id }) {
+            let old = store.activeProfile.captions
+            store.activeProfile.captionStyles = (store.activeProfile.captionStyles ?? []).filter { $0.name != "Previous default" }
+                + [NamedCaptionStyle(name: "Previous default", style: old)]
+            store.activeProfile.captions = preset.style
+        } else if tab == .tags, let preset = TextLookPresets.tags.first(where: { $0.name == id }) {
+            let old = store.activeProfile.tagStyle(id: nil)
+            store.activeProfile.tagStyles = (store.activeProfile.tagStyles ?? []).filter { $0.name != "Previous default" }
+                + [NamedTagStyle(name: "Previous default", style: old)]
+            store.activeProfile.tagStyle = preset.style
+        } else {
+            return
+        }
+        store.scheduleActiveProfileSave()
+        selection = "default"
+    }
+
     private func addPreset(_ id: String) {
         if tab == .captions, let preset = CaptionPresets.styles.first(where: { $0.name == id }) {
             let copy = NamedCaptionStyle(name: preset.name, style: preset.style, family: preset.family)

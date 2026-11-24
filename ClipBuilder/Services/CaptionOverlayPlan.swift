@@ -182,7 +182,17 @@ nonisolated enum CaptionOverlayPlan {
                         return Overlay(raster: animated, position: item.position, start: start, end: end)
                     }
                 }
-                return scheduled.compactMap { clipped($0, to: item) }
+                // A glow that grows in: off while the word is the spoken
+                // one, then stepped up from the end of that state.
+                var grown = scheduled
+                for index in baseRaster.emphasis {
+                    let seconds = emphasisDecor(index)?.resolvedGlowIn ?? 0
+                    guard seconds > 0 else { continue }
+                    let release = states.first { $0.activeIndex == index }?.end
+                        ?? item.caption.words.flatMap { index < $0.count ? $0[index].start : nil } ?? item.caption.start
+                    grown = CaptionAnimation.growingGlow(grown, word: index, release: release, duration: seconds)
+                }
+                return grown.compactMap { clipped($0, to: item) }
             }
         }
         let pageStyles = pages.map { $0.styleID.flatMap { styles[$0] } ?? style }

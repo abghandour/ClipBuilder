@@ -24,6 +24,13 @@ nonisolated struct CaptionWordDecor: Codable, Sendable, Hashable {
     /// False keeps an emphasis word in its own colour while it is spoken;
     /// nil takes the spoken colour, as before.
     var takesHighlightColor: Bool?
+    /// Seconds a Glow shadow takes to grow in once the word is no longer
+    /// the spoken one; until then the word has no glow. Nil or 0 shows the
+    /// glow at once, as before.
+    var glowIn: Double?
+
+    var resolvedGlowIn: Double { glowIn.map { $0.isFinite ? min(2, max(0, $0)) : 0 } ?? 0 }
+    static let defaultGlowIn = 0.27
 
     var resolvedFitLineMinimumScale: Double? {
         guard let value = fitLineMinimumScale, value.isFinite else { return nil }
@@ -55,5 +62,6 @@ nonisolated struct CaptionWordDecor: Codable, Sendable, Hashable {
         case fitLineMinimumScale = "fit_line_minimum_scale"
         case highlightHold = "highlight_hold"
         case takesHighlightColor = "takes_highlight_color"
+        case glowIn = "glow_in"
     }
 }

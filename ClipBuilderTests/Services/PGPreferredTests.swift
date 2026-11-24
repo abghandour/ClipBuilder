@@ -69,7 +69,8 @@ struct PGPreferredTests {
             let a = try pixels(active.pngURL), b = try pixels(settled.pngURL)
             // Colour changes must not alter the baseline, glyphs or reserved slots.
             #expect(stride(from: 3, to: a.count, by: 4).allSatisfy { a[$0] == b[$0] })
-            #expect(active.height < 350)
+            // One row at the emphasis size plus the room its glow needs.
+            #expect(active.height < 480)
         }
     }
 
@@ -78,7 +79,13 @@ struct PGPreferredTests {
         var previous = current
         previous.emphasis = "none"
         previous.emphasisFont = nil
-        previous.emphasisDecor = nil
+        // Keep only the emphasis shadow: every page reserves room for the
+        // widest effect of any word state, so the glow sets the image size.
+        previous.emphasisDecor = CaptionWordDecor(decor: current.emphasisDecor?.decor.map {
+            TextDecor(shadowOn: $0.shadowOn, shadowColor: $0.shadowColor, shadowOpacity: $0.shadowOpacity,
+                      shadowX: $0.shadowX, shadowY: $0.shadowY, shadowBlur: $0.shadowBlur,
+                      shadowStyle: $0.shadowStyle, shadowStrength: $0.shadowStrength)
+        })
         let before = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: previous, safeArea: nil)
         let after = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: current, safeArea: nil)
         let scratch = try directory()
@@ -133,6 +140,71 @@ struct PGPreferredTests {
         let early = try renderer.render(text: page.text, activeIndex: 0, emphasis: [3], frame: .init(visibleWords: 1), to: scratch)
         let full = try renderer.render(text: page.text, emphasis: [3], to: scratch)
         #expect(early.width == full.width && early.height == full.height)
+    }
+
+    /// A larger word on the second row used to print over the first row.
+    @Test func aLargerWordOnTheSecondRowPushesItsRowDown() throws {
+        let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: try style(), safeArea: nil)
+        let text = "Every strong moment earns"
+        try #require(renderer.rowCount(for: text) == 2)
+        let scratch = try directory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let second = try renderer.render(text: text, emphasis: [2], to: scratch)
+        // White ink must form two bands with clear rows between them.
+        let bytes = try pixels(second.pngURL)
+        let inked = (0..<second.height).map { y in
+            (0..<second.width).contains { x in
+                let i = (y * second.width + x) * 4
+                return bytes[i] > 245 && bytes[i + 1] > 245 && bytes[i + 2] > 245 && bytes[i + 3] == 255
+            }
+        }
+        let bands = zip(inked, [false] + inked).filter { $0 && !$1 }.count
+        #expect(bands == 2)
+        if let keep = ProcessInfo.processInfo.environment["PG_ROWS_OUT"] {
+            try? FileManager.default.copyItem(at: second.pngURL, to: URL(fileURLWithPath: keep))
+        }
+    }
+
+    /// The reference: no glow while the enlarged word is spoken, then the
+    /// glow grows in steps and stays.
+    @Test func emphasisGlowGrowsInAfterTheWordAndStays() throws {
+        let s = try style()
+        let tokens = ["but", "sponsorship"]
+        var words = [TranscriptWord(word: "but", start: 0, end: 0.3), TranscriptWord(word: "sponsorship", start: 0.3, end: 0.5)]
+        words[1].emphasis = "primary"
+        let page = CaptionPage(text: tokens.joined(separator: " "), start: 0, end: 2, words: words)
+        let plan = try CaptionOverlayPlan.plan(pages: [.init(caption: page, position: "middle")], style: s)
+        let shown = plan.overlays.filter { $0.raster.emphasis.contains(1) && ($0.raster.frame.visibleWords ?? 2) > 1 }
+        try #require(!shown.isEmpty)
+        // Spoken: no glow at all.
+        #expect(shown.filter { $0.end <= 0.5 + 0.000_001 }.allSatisfy { $0.raster.frame.glow[1] == 0 })
+        // Then eight rising steps, one per frame, and the full glow after.
+        let growing = shown.filter { $0.start >= 0.5 - 0.000_001 && $0.raster.frame.glow[1] != nil }
+        let values = growing.compactMap { $0.raster.frame.glow[1] }
+        #expect(values.count == 8 && values == values.sorted() && (values.first ?? 0) > 0 && (values.last ?? 1) < 1)
+        let last = try #require(shown.last)
+        #expect(last.raster.frame.glow[1] == nil && abs(last.start - 0.77) < 0.001 && last.end == 2)
+        // Pixels: the halo zone is empty while spoken and lit when settled.
+        let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: s, safeArea: nil)
+        let scratch = try directory()
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        func alpha(_ glow: [Int: Double]) throws -> Int {
+            var frame = CaptionAnimation.Frame()
+            frame.glow = glow
+            let image = try renderer.render(text: page.text, emphasis: [1], frame: frame, to: scratch)
+            let bytes = try pixels(image.pngURL)
+            return stride(from: 3, to: bytes.count, by: 4).reduce(0) { $0 + Int(bytes[$1]) }
+        }
+        let none = try alpha([1: 0]), half = try alpha([1: 0.5]), full = try alpha([:])
+        #expect(none < half && half < full)
+        if let keep = ProcessInfo.processInfo.environment["PG_GLOW_OUT"] {
+            for (name, glow) in [("0", [1: 0.0]), ("1", [1: 0.33]), ("2", [1: 0.66]), ("3", [:])] as [(String, [Int: Double])] {
+                var frame = CaptionAnimation.Frame()
+                frame.glow = glow
+                let image = try renderer.render(text: page.text, emphasis: [1], frame: frame, to: scratch)
+                try? FileManager.default.copyItem(at: image.pngURL, to: URL(fileURLWithPath: keep).appendingPathComponent("g\(name).png"))
+            }
+        }
     }
 
     @Test func emphasisFitFallsBackInsteadOfExceedingTheMinimumScale() throws {

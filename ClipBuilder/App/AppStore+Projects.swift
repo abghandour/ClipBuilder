@@ -602,7 +602,8 @@ extension AppStore {
     func createProfile(named name: String) {
         let trimmed = name.trimmingCharacters(in: .whitespaces)
         guard !trimmed.isEmpty, ProfileStore.load(name: trimmed) == nil else { return }
-        let profile = BrandProfile(name: trimmed)
+        var profile = BrandProfile(name: trimmed)
+        profile.captions = CaptionPresets.profileDefault
         do {
             try ProfileStore.save(profile)
             profiles = ProfileStore.listProfiles()

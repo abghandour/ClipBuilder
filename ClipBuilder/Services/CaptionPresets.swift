@@ -22,6 +22,9 @@ nonisolated enum CaptionPresets {
         originals.map { NamedCaptionStyle(name: $0.name, style: $0.style, family: $0.family) }
     }
 
+    /// The look a new profile starts with.
+    static var profileDefault: CaptionStyle { pgPreferred }
+
     private struct Definition {
         var name: String
         var family: Family
@@ -411,9 +414,13 @@ nonisolated enum CaptionPresets {
         // Joint word-edge fit across the reference pages. Tracking and space
         // advance are independent: tightening spaces does not tighten glyphs.
         // Keep the complete emphasis line inside the measured 940px band.
+        // The reference's enlarged word turns white with no glow when its
+        // word ends, then a white glow grows over about eight frames and stays.
         style.emphasisDecor = CaptionWordDecor(
-            decor: TextDecor(size: 1.92375, maxWidthFrac: 0.87),
-            size: 120, letterSpacing: -6.48, fitLineMinimumScale: 0.6, highlightHold: false)
+            decor: TextDecor(size: 1.92375, shadowOn: true, shadowColor: "#ffffff", shadowOpacity: 0.5, shadowX: 0, shadowY: 0,
+                             shadowBlur: 0.14, shadowStyle: "glow", shadowStrength: 1, maxWidthFrac: 0.87),
+            size: 120, letterSpacing: -6.48, fitLineMinimumScale: 0.6, highlightHold: false,
+            glowIn: CaptionWordDecor.defaultGlowIn)
         // Emphasis 2: the reference's italic serif word ("belt?"), white, on
         // an ordinary two-line page. Bodoni 72 is the closest stock macOS face.
         style.emphasis2 = "color"

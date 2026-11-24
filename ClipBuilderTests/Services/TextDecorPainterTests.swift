@@ -174,4 +174,28 @@ extension TextDecorPainterTests {
             #expect(image.width == 540 && image.height == 960)
         }.value
     }
+
+    @Test func glowLaysEveryRadiusTwiceAndStrengthAddsTighterOnes() {
+        #expect(TextDecorPainter.glowRadii(blur: 10, passes: 1) == [10, 10])
+        #expect(TextDecorPainter.glowRadii(blur: 10, passes: 2) == [10, 10, 7, 7])
+        #expect(TextDecorPainter.glowRadii(blur: 10, passes: 5).count == 10)
+        #expect(TextDecorPainter.glowRadii(blur: 10, passes: 9).count == 10)
+        #expect(TextDecorPainter.glowRadii(blur: 10, passes: 0).count == 2)
+    }
+
+    /// Writes glow samples for a look by eye: `TEST_RUNNER_GLOW_OUT=<folder>`.
+    @Test(.enabled(if: ProcessInfo.processInfo.environment["GLOW_OUT"] != nil))
+    func glowSamples() throws {
+        let out = URL(fileURLWithPath: ProcessInfo.processInfo.environment["GLOW_OUT"] ?? "")
+        for strength in [2.0, 3.0, 5.0] {
+            var style = CaptionStyle()
+            style.decor = TextDecor(shadowOn: true, shadowColor: "#ffffff", shadowOpacity: 0.72, shadowX: 0, shadowY: 0,
+                                    shadowBlur: 0.3, shadowStyle: "glow", shadowStrength: strength)
+            let renderer = CaptionRenderer(videoWidth: 1080, videoHeight: 1920, style: style, safeArea: nil)
+            let image = try renderer.render(text: "victory", to: out)
+            let target = out.appendingPathComponent("glow\(Int(strength)).png")
+            try? FileManager.default.removeItem(at: target)
+            try FileManager.default.moveItem(at: image.pngURL, to: target)
+        }
+    }
 }

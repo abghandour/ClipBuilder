@@ -128,8 +128,8 @@ nonisolated struct TextDecorPainter {
                 context.saveGState()
                 context.setAlpha(shadowColor.alpha)
                 context.beginTransparencyLayer(auxiliaryInfo: nil)
-                for pass in 0..<max(1, min(3, Int(d.shadowStrength ?? 2))) {
-                    context.setShadow(offset: .zero, blur: (d.shadowBlur ?? 0.3) * size * (1 - CGFloat(pass) * 0.3), color: shadowColor.copy(alpha: 1))
+                for radius in Self.glowRadii(blur: (d.shadowBlur ?? 0.3) * size, passes: Int(d.shadowStrength ?? 2)) {
+                    context.setShadow(offset: .zero, blur: radius, color: shadowColor.copy(alpha: 1))
                     CTLineDraw(line, context)
                 }
                 context.endTransparencyLayer()
@@ -184,7 +184,12 @@ nonisolated struct TextDecorPainter {
     /// A centred halo: the silhouette filled in the glow colour and blurred,
     /// stacked `passes` times (each pass tighter than the last) so the glow
     /// stays bright next to the letters and fades out wide. One CoreGraphics
-    /// shadow pass alone reads as a faint smudge at this size.
+    /// shadow pass alone reads as a faint smudge at this size, so every
+    /// radius is laid down twice (2026-11-24: the single lay was too subtle).
+    static func glowRadii(blur: CGFloat, passes: Int) -> [CGFloat] {
+        [1, 0.7, 0.4, 0.2, 0.1].prefix(max(1, min(5, passes))).flatMap { [blur * $0, blur * $0] }
+    }
+
     private func glow(_ path: CGPath, blur: CGFloat, color: CGColor, passes: Int, stroke: CGFloat, in context: CGContext) {
         guard blur > 0, passes > 0 else { return }
         context.saveGState()
@@ -194,8 +199,7 @@ nonisolated struct TextDecorPainter {
         context.setStrokeColor(color.copy(alpha: 1)!)
         context.setLineWidth(max(stroke, blur * 0.15))
         context.setLineJoin(.round)
-        for pass in 0..<max(1, min(3, passes)) {
-            let radius = blur * (1 - CGFloat(pass) * 0.3)
+        for radius in Self.glowRadii(blur: blur, passes: passes) {
             context.setShadow(offset: .zero, blur: radius, color: color.copy(alpha: 1))
             context.addPath(path)
             context.drawPath(using: .fillStroke)

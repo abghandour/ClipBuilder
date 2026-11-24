@@ -3,6 +3,8 @@ import SwiftUI
 /// A still from the real caption renderer, including word states and decoration.
 struct CaptionPresetThumbnail: View {
     let style: CaptionStyle
+    var height: CGFloat = 64
+    var padding: CGFloat = 8
     @State private var image: NSImage?
     @State private var failed = false
 
@@ -11,7 +13,7 @@ struct CaptionPresetThumbnail: View {
             Color.black
             if let image {
                 Image(nsImage: image)
-                    .resizable().scaledToFit().padding(8)
+                    .resizable().scaledToFit().padding(padding)
             } else if failed {
                 Text("Preview unavailable").font(.caption).foregroundStyle(.white)
                     .lineLimit(1).fixedSize(horizontal: false, vertical: true)
@@ -19,7 +21,7 @@ struct CaptionPresetThumbnail: View {
                 ProgressView().controlSize(.small)
             }
         }
-        .frame(height: 64)
+        .frame(height: height)
         .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
         .accessibilityHidden(true)
         .task(id: style) {

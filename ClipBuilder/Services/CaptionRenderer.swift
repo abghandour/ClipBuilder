@@ -565,8 +565,31 @@ nonisolated struct CaptionRenderer: Sendable {
             lineGap = Int((spacing * CGFloat(videoWidth) / 1080 * fontSize / baseSize).rounded()) - lineHeight
         }
 
+        // A larger word rises out of its row. Between two rows that would
+        // put it on top of the neighbour, so the gap above a row grows by its
+        // tallest word's extra ascent and by the extra descent of the row
+        // before it. Rows without a larger word keep their rhythm.
+        var rowDrop = [CGFloat](repeating: 0, count: lines.count)
+        if ownSlots && lines.count > 1 {
+            var rise = rowDrop, sink = rowDrop, index = 0
+            for (row, line) in lines.enumerated() {
+                for _ in line.split(separator: " ") {
+                    defer { index += 1 }
+                    guard emphasis.contains(index) else { continue }
+                    let alternate = alternateEmphasis.contains(index)
+                    guard (alternate ? resolved.alternateEmphasis : resolved.emphasis) != "none" else { continue }
+                    let own = alternate ? alternateFonts : emphasisFonts
+                    rise[row] = max(rise[row], Self.maxAscent(own) - ascent)
+                    sink[row] = max(sink[row], Self.maxDescent(own) - descent)
+                }
+            }
+            for row in lines.indices.dropFirst() {
+                rowDrop[row] = rowDrop[row - 1] + (rise[row] + sink[row - 1]).rounded(.up)
+            }
+        }
+
         let maxLineWidth = fitted?.width ?? lines.indices.map { rowWidth($0) }.max() ?? 0
-        let textHeight = lineHeight * lines.count + lineGap * (lines.count - 1)
+        let textHeight = lineHeight * lines.count + lineGap * (lines.count - 1) + Int(rowDrop.last ?? 0)
         let contentWidth = min(videoWidth, Int(maxLineWidth.rounded(.up)) + padX * 2)
         let contentHeight = textHeight + padY * 2
         // A fixed envelope for every frame, including the steady image.
@@ -624,6 +647,7 @@ nonisolated struct CaptionRenderer: Sendable {
             let x = Self.lineOrigin(width: width, boxWidth: CGFloat(contentWidth),
                                     padding: CGFloat(padX), alignment: textDecor(.text).alignment)
             let baselineY = CGFloat(contentHeight - padY - (lineIndex + 1) * lineHeight - lineIndex * lineGap) + descent
+                - rowDrop[lineIndex]
             if pageDecor.bgPerLine == true {
                 painter.background(in: context,
                     rect: CGRect(x: x, y: baselineY - descent, width: width, height: CGFloat(lineHeight))
@@ -667,6 +691,14 @@ nonisolated struct CaptionRenderer: Sendable {
                 if box { fill = pageHighlightColor }
                 var paint = textDecor(state)
                 if let fitted { paint.letterSpacing = (paint.letterSpacing ?? 0) * fitted.scale }
+                if let grown = frame.glow[tokenIndex], paint.shadowOn == true, paint.shadowStyle == "glow" {
+                    // The halo widens and brightens together as it grows in.
+                    if grown <= 0 { paint.shadowOn = false }
+                    else {
+                        paint.shadowOpacity = (paint.shadowOpacity ?? 1) * grown
+                        paint.shadowBlur = (paint.shadowBlur ?? 0.3) * (0.35 + 0.65 * grown)
+                    }
+                }
                 if !resolved.hasTextDecor { paint.color = fill }
                 else if let textColor, state == .text { paint.color = textColor }
                 if state == .highlight && resolved.highlight == "color",

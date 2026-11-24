@@ -96,6 +96,12 @@ struct CaptionWordDecorControls: View {
                 Toggle("Take the spoken colour", isOn: setting(\.takesHighlightColor, default: true))
                     .lineLimit(1).fixedSize()
             }.help("Off keeps this emphasis word in its own colour while it is being spoken.")
+            TextLookRow("Glow") {
+                Toggle("Grow in after the word", isOn: Binding(
+                    get: { stored.resolvedGlowIn > 0 },
+                    set: { setting(\.glowIn, default: 0).wrappedValue = $0 ? CaptionWordDecor.defaultGlowIn : 0 }))
+                    .lineLimit(1).fixedSize()
+            }.help("With a Glow shadow: the word has no glow while it is spoken, then the glow grows in and stays.")
         }
     }
 

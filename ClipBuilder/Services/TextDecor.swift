@@ -140,7 +140,7 @@ nonisolated struct TextDecor: Codable, Hashable, Sendable {
         if let number = value.bgRadius { value.bgRadius = number.isFinite ? min(80, max(0, number)) : Self.defaults.bgRadius }
         if let number = value.bgPaddingX { value.bgPaddingX = number.isFinite ? min(3, max(0, number)) : Self.defaults.bgPaddingX }
         if let number = value.bgPaddingY { value.bgPaddingY = number.isFinite ? min(3, max(0, number)) : Self.defaults.bgPaddingY }
-        if let number = value.shadowStrength { value.shadowStrength = number.isFinite ? min(3, max(1, number.rounded())) : Self.defaults.shadowStrength }
+        if let number = value.shadowStrength { value.shadowStrength = number.isFinite ? min(5, max(1, number.rounded())) : Self.defaults.shadowStrength }
         if let number = value.shadowBlur { value.shadowBlur = number.isFinite ? min(3, max(0, number)) : Self.defaults.shadowBlur }
         if let number = value.shadowX { value.shadowX = number.isFinite ? min(3, max(-3, number)) : Self.defaults.shadowX }
         if let number = value.shadowY { value.shadowY = number.isFinite ? min(3, max(-3, number)) : Self.defaults.shadowY }

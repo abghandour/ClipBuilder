@@ -45,15 +45,8 @@ struct CaptionSpeakerStylesEditor: View {
                         .pickerStyle(.menu).labelsHidden().lineLimit(1).fixedSize()
                         .disabled(effectiveOrdinals[person.key] == nil)
                         .accessibilityLabel("Caption position for \(person.displayName)")
-                    Picker("Caption style", selection: selection(for: person.key)) {
-                        Text("Run style").lineLimit(1).fixedSize().tag(nil as String?)
-                        ForEach(profile.captionStyles ?? []) { named in
-                            Text(named.name).lineLimit(1).fixedSize().tag(Optional(named.id.uuidString))
-                        }
-                    }
-                    .pickerStyle(.menu)
-                    .labelsHidden()
-                    .lineLimit(1).fixedSize()
+                    CaptionStylePicker(selection: selection(for: person.key), profile: profile,
+                                       fallbackName: "Run style", fallbackStyleID: runStyleID)
                     .accessibilityLabel("Caption style for \(person.displayName)")
                     .help("Run style follows \(runStyleName), selected above")
                     let changed = positionSelection(for: person.key).wrappedValue != nil
