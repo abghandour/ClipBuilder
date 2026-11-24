@@ -262,6 +262,198 @@ Effort: two days for the meter and planner rule, half a day for the critic
 note. Files: new `Services/GazeMeter.swift` with a synthetic-frame test (the
 camera motion meter's pattern), `Services/Framing/*`, `Services/ReelCritic.swift`.
 
+### Phase 3 respecified (2026-11-24, Claude)
+
+Status: probe done, 3a specified and handed to Codex 2026-11-24; storage
+changed the same day to a synced table (3a2, not started); 3b and 3c
+specified, waiting on the user's read of the numbers on their own footage.
+
+**What the sketch above got wrong** (checked against the code and two real
+recordings):
+
+- "Stored like camera motion": camera motion is not stored. `CameraMotionMeter`
+  output lives in a `Mutex` inside `CenterStageService.trackPeople` and is
+  thrown away. There is no table, analysis pass or per-frame face data to
+  extend, and nothing in the app reads head pose.
+- "Looking away" cannot mean "not looking at the lens". In the Johnny Walker
+  interview (side by side, 832x464) both people sit in near profile for the
+  whole recording: median head yaw 66 and -37 degrees. A glance is a
+  departure from that person's own usual pose in that stretch.
+- No pass to ride on: `VisualSpeechActivity` refreshes faces every 2 s and
+  only runs for two or more tiles; `InterviewFaceSampling` takes six frames.
+- One person on one camera has no other shot to cut to. A punch-in does not
+  hide a glance, it enlarges it. Only B-roll can cover it there.
+- The critic knows nothing about who is on screen; deterministic notes are
+  appended after `parse` today only as `learnedLines`.
+- Effort: about a week and a half, not two and a half days.
+
+**Probe** (scratch tool, not in the repo; `VNDetectFaceRectanglesRequest`
+revision 3 then `VNDetectFaceLandmarksRequest` on its faces, frames at most
+960 px): head yaw / pitch / roll come back in whole degrees, continuous
+(the landmarks request alone quantizes yaw to 45 degree steps, do not use its
+pose). Pupil position inside the eye contour box (0 centred, +-1 at a corner)
+moves smoothly between -0.3 and +0.3 horizontally on a 400 px face. Six
+frames of the Dana White clip checked by eye: vertical pupil offset -0.57 and
+-0.74 = eyes cast down; yaw -23 and -28 = head turned to a reporter;
+horizontal offset -0.25 and +0.29 = side glances with the head still. On the
+66 px faces of the side-by-side interview the pupil reading is noise; pose
+still holds. Cost: 517 frames in 7.7 s through `AVAssetImageGenerator`.
+
+**Decisions** (Claude's recommendations, the user can overrule):
+
+1. No database table and no sync. Gaze is derived from the footage and cheap,
+   so it is measured for the clip ranges a reel uses and cached as a small
+   JSON record in `RenderSegmentCache`, the way `FeedPathCache` caches camera
+   paths (key: source fingerprint, range, region, meter version). Nothing to
+   migrate, nothing to push to Supabase.
+2. Order: 3a measures and reports (no change to any reel), so the user can
+   judge the numbers on real footage before 3b lets them move a cut.
+3. Single camera, one person: "Hide glances" only raises B-roll priority
+   over a glance, and says so in the option's caption. No punch-in.
+
+#### 3a: the meter, its cache, and the report line (Codex)
+
+New `Services/GazeMeter.swift`, `nonisolated enum GazeMeter`, with the pure
+rules separate from the Vision sampler so they are tested without footage:
+
+- `struct Sample: Codable, Sendable, Equatable { time: Double; yaw: Double;
+  pitch: Double; pupilX: Double?; pupilY: Double?; faceWidth: Double }`
+  (degrees; `time` in source seconds; `faceWidth` in pixels of the analysed
+  frame; pupils nil when the landmarks are missing or the eye box is empty).
+- `struct Span: Codable, Sendable, Equatable { start, end: Double; kind: Kind }`
+  with `enum Kind: String, Codable { case down, aside, turned }`.
+- `static func spans(_ samples: [Sample], tuning: Tuning = .init()) -> [Span]`,
+  pure:
+  - Baseline per call = the median of yaw, of pitch, and of each pupil
+    offset over the samples (the person's usual pose in this stretch).
+    Fewer than `tuning.minimumSamples` (8) samples: no spans.
+  - A sample is away as `turned` when `abs(yaw - medianYaw) >= 18` degrees
+    or `abs(pitch - medianPitch) >= 14`; else as `down` when pupils are
+    usable and `pupilY - medianPupilY <= -0.35`; else as `aside` when
+    usable and `abs(pupilX - medianPupilX) >= 0.22`. Pupils are usable
+    only when `faceWidth >= 120`. All thresholds live in `Tuning`.
+  - Consecutive away samples form a span from the first sample's time to
+    the last one's plus one sample interval; a gap of one sample inside a
+    span is bridged; the span takes the kind most of its samples have.
+    Spans shorter than `tuning.minimumSpan` (0.6 s) are dropped: a blink or
+    a saccade is not a glance.
+- `static func share(_ spans: [Span], of range: ClosedRange<Double>) -> Double`
+  (0...1, spans clipped to the range).
+- `static func pupilOffset(eye: [CGPoint], pupil: [CGPoint]) -> CGPoint?`,
+  pure: the pupil centroid inside the eye points' bounding box, 0 centred,
+  +-1 at the edges; nil for empty input or a degenerate box.
+- Sampler: `static func measure(url: URL, range: ClosedRange<Double>,
+  region: FreeCropRect? = nil, fps: Double = 5) async throws -> [Sample]`.
+  `AVAssetImageGenerator` with zero tolerance, `maximumSize` 960, preferred
+  transform applied; crop to `region` (a tile, in source fractions) before
+  Vision; `DetectFaceRectanglesRequest(.revision3)` (the Swift API
+  `PodcastAnalysisService` already uses at line 1181 for landmarks) then
+  landmarks for the largest face only; a frame without a face yields no
+  sample. Checks `Task.checkCancellation()` per frame. Never on the main
+  actor.
+
+New `Services/GazeCache.swift`, `actor GazeCache`, modelled line for line on
+`FeedPathCache`: `Identity { fingerprint, region, start, duration, fps,
+version }`, `Record { identity, samples }`, `samples(for:) / store(_:for:)`
+through `RenderSegmentCache.key`. `GazeMeter.version = "1"`.
+
+Report line, no option, no change to the reel: in `WizardEngine` after a
+reel's clips are final (beside the existing "Filler words:" emit), for each
+plan clip of an `interview` or `podcast` recording whose source is a single
+camera or whose framing shows one full tile, measure the clip range (cache
+first), and when `share >= 1/3` emit one line per reel:
+`Gaze: looks away 38% of clip 2 (down 2.1 s, turned 1.4 s)`. Under a third,
+or no face, emit nothing. Wrap in `WizardTiming.measure("gaze", ...)`. A
+failure is logged once (`Gaze: not measured (<reason>)`) and never fails the
+render. Separate-feed recordings with several tiles are left to 3b (they
+need the tile regions).
+
+Tests (`ClipBuilderTests/Services/GazeMeterTests.swift`, Swift Testing, no
+footage): baseline relativity (a constant yaw of 60 gives no spans; a
+departure of 20 from it does); each kind and each threshold just under and
+just over; pupils ignored below 120 px; minimum span; one-sample gap
+bridged, two not; majority kind; `share` with clipping; `pupilOffset`
+centre, edges, empty and degenerate; fewer than eight samples. One
+synthetic-frame sampler test only if a face can be drawn that Vision
+detects reliably; otherwise leave the sampler to the live check and say so.
+`GazeCacheTests`: store then read, a different range or version misses.
+
+Out of scope for 3a: any option, any view, any planner change, the
+database, Team Sync, the critic.
+
+#### 3a2: measured once, stored, synced (user, 2026-11-24: "i want to avoid re-measured on another mac")
+
+Replaces decision 1 above and 3a's `GazeCache` and per-clip measuring. The
+meter and its pure rules from 3a stay.
+
+- Measured once per recording, not per reel: analysis pass `gaze`
+  (`AnalysisPassRecord.Pass`, version 1), run as an `AppJobs` job like the
+  other missing passes (`AppStore+AnalysisMissingPasses.swift`), for
+  `interview` and `podcast` recordings; one region per tile for separate
+  feeds (`PodcastTile`), the whole frame otherwise. 5 fps. A 40 minute
+  recording is about 12,000 frames per tile, a few minutes in the
+  background (the probe ran about 67 frames a second).
+- Baseline becomes a rolling one, since a whole recording has no single
+  usual pose: the median over the samples within 30 s either side
+  (`Tuning.baselineWindow`). `GazeMeter.spans` takes it as a parameter; the
+  whole-stretch median stays for tests of short input.
+- Stored as spans, not samples (small, and what every consumer wants):
+  table `gaze_spans (id, video_id REFERENCES videos ON DELETE CASCADE, tile
+  INTEGER NOT NULL DEFAULT 0, person_key TEXT, start_time REAL, end_time
+  REAL, kind TEXT, meter_version INTEGER)`, index on `(video_id,
+  start_time)`; queries in a new `Data/Database+Gaze.swift`
+  (`replaceGazeSpans(videoID:tile:...)`, `fetchGazeSpans(videoID:)`).
+  A measured tile with no glance stores one row of kind `none` with
+  `start_time = end_time = 0`, so "measured, nothing found" travels too and
+  the other Mac does not measure again.
+- Team Sync: a `SyncTable(name: "gaze_spans", ... naturalKey: ["video_id",
+  "tile", "start_time", "kind"], references: ["video_id": "videos"])`, a
+  Supabase migration creating the table with the same columns and RLS as
+  `speaker_turns`, and `SyncEngine.understoodSchemaVersion` 15 -> 16. The
+  gate is exact: the migration is applied to the server only together with
+  the release that ships this client, never before.
+- A Mac that receives spans by sync and has no completed local `gaze` pass
+  for that video treats the recording as measured when any `gaze_spans` row
+  of the current `meter_version` exists (check whether `analysis_passes`
+  itself syncs before adding anything else).
+- The report line and everything in 3b and 3c read `fetchGazeSpans`, clipped
+  to the clip's range; nothing measures during a render. A recording not
+  yet measured reports nothing and "Hide glances" says "Measure gaze first"
+  with the button that starts the job.
+- A visible control (project rule): "Measure gaze" among the recording's
+  analysis actions on the Sources card, with the pass's state.
+- Tests: rolling baseline (a slow drift of 40 degrees over two minutes
+  gives no span, a 20 degree turn for 1 s inside it does); database round
+  trip and replace; the `none` row; sync column list equals the table's
+  columns (the existing SyncTable schema test pattern).
+
+#### 3b: "Hide glances" (after the user has seen 3a's lines)
+
+- Option `hideGlances: Bool?` on `WizardOptions` / `MiniWizardSettings`
+  (default off), Picture tab row "Hide glances" with a caption that says
+  what it can do for this footage (several tiles: "Cuts to the listener
+  while the speaker looks away."; one camera: "Covers glances with B-roll
+  when B-roll is on."). Hidden where it can do nothing (one camera and
+  B-roll off). Plumbing: the same sixteen places `removeFillerWords` went
+  through (list in the 2a section), plus `FramingContext`.
+- Several tiles: gaze per tile (region = the tile) for each clip range,
+  handed to `CropRecipePlanner.plan` through `FramingContext`.
+  `TalkerShotPlanning.events` treats a talker's glance span of at least
+  `minShot` as a reason to show the listener for that span, inside the
+  existing `maxShot` / `minShot` / `recent` rules; `VIPFocusPlanning`'s
+  `cutawayTarget` does the same for VIP focus. Needs `PodcastTile.personKey`
+  to place the span; a tile without one is skipped.
+- B-roll: `PodcastHighlightBRollPlanner.plan` gives a window that overlaps
+  a glance priority 0 (with pauses) instead of 2.
+- Preview and render must agree: `WizardPreviewFraming` passes the same
+  cached samples.
+
+#### 3c: the critic note
+
+After `ReelCritic.parse`, append to `critique.notes` the 3a line when a
+clip's share is a third or more, with reel times from the plan's clip
+offsets ("0:04-0:07"). Deterministic, no prompt change.
+
 ## Phase 4: the rest of their app, feature by feature
 
 | Captions feature | Where we stand | Plan |
