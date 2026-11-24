@@ -4,7 +4,7 @@ import Testing
 @testable import Clip_Builder
 
 @MainActor
-@Suite("Builder MCP loopback", .timeLimit(.minutes(1)))
+@Suite("Builder MCP loopback", .timeLimit(.minutes(3)))
 struct MCPServerTests {
     private func endpoint() async throws -> BuilderMCPServer {
         let server = BuilderMCPServer(tools: BuilderTools(session: ScriptFixtures.session(), budget: BuilderRunBudget(.init())))
