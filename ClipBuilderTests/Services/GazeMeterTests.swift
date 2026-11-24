@@ -173,4 +173,29 @@ struct GazeMeterTests {
         #expect(GazeMeter.pupilOffset(eye: [.zero, CGPoint(x: 0, y: 1)], pupil: [.zero]) == nil)
         #expect(GazeMeter.pupilOffset(eye: [.zero, CGPoint(x: 1, y: 0)], pupil: [.zero]) == nil)
     }
+
+    @Test func rollingBaselineFollowsSlowDriftButKeepsATurn() throws {
+        var values = samples(count: 601)
+        for index in values.indices { values[index].yaw = values[index].time / 3 }
+        #expect(GazeMeter.spans(values).isEmpty)
+        for index in 300..<305 { values[index].yaw += 20 }
+        let found = GazeMeter.spans(values)
+        #expect(found.count == 1)
+        let span = try #require(found.first)
+        #expect(span.kind == .turned)
+        #expect(abs(span.start - 60) < 1e-9)
+        #expect(abs(span.end - 61) < 1e-9)
+    }
+
+    @Test func baselineWindowIsTunableAndShortInputsStayWhole() {
+        let short = samples()
+        var tuning = GazeMeter.Tuning()
+        tuning.baselineWindow = 300
+        #expect(GazeMeter.spans(short) == GazeMeter.spans(short, tuning: tuning))
+        var drift = samples(count: 601)
+        for index in drift.indices { drift[index].yaw = drift[index].time / 3 }
+        #expect(!GazeMeter.spans(drift, tuning: tuning).isEmpty)
+        #expect(GazeMeter.spans(drift).isEmpty)
+    }
+
 }

@@ -3065,6 +3065,28 @@ actor WizardEngine {
                 plan.transitions = FillerCutRules.cutJoins(plan.transitions, clips: plan.clips)
                 roughTransitions = roughTransitions.map { FillerCutRules.cutJoins($0, clips: plan.clips) }
             }
+            // Measurement is a recording pass. Rendering only reads its synced
+            // spans, and a database failure must not prevent a reel rendering.
+            do {
+                var gaze: [Int64: [GazeSpanRecord]] = [:]
+                var separateFeeds: [Int64: Bool] = [:]
+                for videoID in Set(plan.clips.compactMap { sceneMap[$0.sceneID]?.videoID }).sorted() {
+                    guard try await database.gazeMeasured(videoID: videoID, meterVersion: GazeMeter.meterVersion),
+                          let video = try await database.gazeRecording(videoID: videoID),
+                          GazeAnalysis.supports(video) else { continue }
+                    gaze[videoID] = try await database.fetchGazeSpans(videoID: videoID)
+                    separateFeeds[videoID] = GazeAnalysis.usesSeparateFeeds(video)
+                }
+                for (index, clip) in plan.clips.enumerated() {
+                    guard clip.end > clip.start, let videoID = sceneMap[clip.sceneID]?.videoID,
+                          let spans = gaze[videoID] else { continue }
+                    let summary = GazeReport.summary(spans, range: clip.start...clip.end,
+                                                     separateFeeds: separateFeeds[videoID] ?? false)
+                    if let line = summary.line(clipNumber: index + 1) { emit(line) }
+                }
+            } catch {
+                emit("Gaze: stored measurement unavailable (\(error.localizedDescription))")
+            }
             let pauseEligibility = WizardStrikePauses.Eligibility(plan: plan, options: timingOptions)
             if let roughTransitions {
                 plan.transitions = roughTransitions

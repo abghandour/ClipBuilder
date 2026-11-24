@@ -3,9 +3,10 @@ import CoreGraphics
 import Foundation
 import Vision
 
-/// Departures from the person's usual pose in a clip, not from the lens.
+/// Departures from the person's usual pose in a recording, not from the lens.
 nonisolated enum GazeMeter {
-    static let version = "1"
+    static let meterVersion = 1
+    static let version = String(meterVersion)
 
     struct Sample: Codable, Sendable, Equatable {
         var time: Double
@@ -27,6 +28,7 @@ nonisolated enum GazeMeter {
 
     struct Tuning: Sendable {
         var minimumSamples = 8
+        var baselineWindow = 30.0
         var yawThreshold = 18.0
         var pitchThreshold = 14.0
         var downThreshold = 0.35
@@ -52,13 +54,21 @@ nonisolated enum GazeMeter {
             .sorted { $0.time < $1.time }
         guard samples.count >= max(2, tuning.minimumSamples) else { return [] }
         let intervals = zip(samples, samples.dropFirst()).map { $1.time - $0.time }.filter { $0 > 0 }
-        guard let interval = median(intervals), interval > 0,
-              let yaw = median(samples.map(\.yaw)), let pitch = median(samples.map(\.pitch)) else { return [] }
-        // A small face's noisy pupils must not shift the usable faces' baseline.
-        let pupils = samples.filter { $0.faceWidth >= tuning.minimumFaceWidth }
-        let pupilX = median(pupils.compactMap(\.pupilX))
-        let pupilY = median(pupils.compactMap(\.pupilY))
+        guard let interval = median(intervals), interval > 0 else { return [] }
+        // Two moving bounds keep the work proportional to the local window,
+        // not the recording length. Short inputs retain the whole-input median.
+        let window = max(0, tuning.baselineWindow)
+        var lower = 0, upper = 0
         let kinds: [Span.Kind?] = samples.map { sample in
+            while lower < samples.count && samples[lower].time < sample.time - window { lower += 1 }
+            while upper < samples.count && samples[upper].time <= sample.time + window { upper += 1 }
+            let baseline = samples[lower..<upper]
+            guard let yaw = median(baseline.map(\.yaw)),
+                  let pitch = median(baseline.map(\.pitch)) else { return nil }
+            // A small face's noisy pupils must not shift the usable faces' baseline.
+            let pupils = baseline.filter { $0.faceWidth >= tuning.minimumFaceWidth }
+            let pupilX = median(pupils.compactMap(\.pupilX))
+            let pupilY = median(pupils.compactMap(\.pupilY))
             if abs(sample.yaw - yaw) >= tuning.yawThreshold || abs(sample.pitch - pitch) >= tuning.pitchThreshold {
                 return .turned
             }

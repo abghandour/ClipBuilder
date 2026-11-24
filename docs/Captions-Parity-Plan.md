@@ -264,8 +264,9 @@ camera motion meter's pattern), `Services/Framing/*`, `Services/ReelCritic.swift
 
 ### Phase 3 respecified (2026-11-24, Claude)
 
-Status: probe done, 3a specified and handed to Codex 2026-11-24; storage
-changed the same day to a synced table (3a2, not started); 3b and 3c
+Status: 3a (meter) built and committed 2026-11-24; 3a2 (stored, synced,
+"Measure gaze", report line) built and driven live on one single-camera
+clip the same day, server migration written and not applied; 3b and 3c
 specified, waiting on the user's read of the numbers on their own footage.
 
 **What the sketch above got wrong** (checked against the code and two real

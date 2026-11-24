@@ -535,6 +535,19 @@ actor Database {
     CREATE INDEX IF NOT EXISTS idx_speaker_turns_video_time
         ON speaker_turns(video_id, start_time, end_time);
 
+    CREATE TABLE IF NOT EXISTS gaze_spans (
+        id INTEGER PRIMARY KEY,
+        video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
+        tile INTEGER NOT NULL DEFAULT 0,
+        person_key TEXT,
+        start_time REAL NOT NULL,
+        end_time REAL NOT NULL,
+        kind TEXT NOT NULL,
+        meter_version INTEGER NOT NULL
+    );
+    CREATE INDEX IF NOT EXISTS idx_gaze_spans_video_time
+        ON gaze_spans(video_id, start_time);
+
     CREATE TABLE IF NOT EXISTS transcript_features (
         id INTEGER PRIMARY KEY,
         video_id INTEGER NOT NULL REFERENCES videos(id) ON DELETE CASCADE,
@@ -1113,7 +1126,7 @@ actor Database {
 
     /// Bump whenever `migrate` gains a step, so existing databases run it
     /// once more; the `CREATE … IF NOT EXISTS` schema script always runs.
-    static let schemaVersion: Int64 = 52
+    static let schemaVersion: Int64 = 53
 
     /// The library was last opened by a build with a newer schema.
     nonisolated struct NewerLibrary: LocalizedError, Equatable {

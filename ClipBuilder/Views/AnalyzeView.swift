@@ -1902,6 +1902,10 @@ private struct VideoPreviewPane: View {
                         }
                     }
 
+                    if GazeAnalysis.supports(video) {
+                        GazeAnalysisControl(video: video)
+                    }
+
                     // The video's people roster: build it here, ahead of any run —
                     // the analyze window then only asks which of them to require.
                     VStack(alignment: .leading, spacing: 4) {
