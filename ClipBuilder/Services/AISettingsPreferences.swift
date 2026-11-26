@@ -20,6 +20,7 @@ import Foundation
         "tastePreset": "wizard.tastePreset",
         "captionLanguage": "wizard.captionLanguage",
         "dubLanguage": "wizard.dubLanguage",
+        "lipSync": "wizard.lipSync",
         "drawnPauses": "wizard.drawnPauses",
         "removeFillerWords": "wizard.removeFillerWords",
         "strikeHighlightStyle": "wizard.strikeHighlightStyle",
@@ -171,7 +172,8 @@ import Foundation
         _ result: [String: JSONSetting], kind: AISettingsEnvelope.Kind,
         scopes: Set<AISettingsScope> = Set(AISettingsScope.allCases),
         sourceName: String = "another run", profileName: String? = nil, defaults: UserDefaults,
-        recordSnapshot: Bool = true
+        recordSnapshot: Bool = true,
+        lipSyncKey: () -> Bool? = { LipSyncService.keyState }
     ) {
         var result = kind == .wizard ? WizardOptions.normalizeSettings(result) : result
         if kind == .wizard, scopes.contains(.options) {
@@ -214,6 +216,15 @@ import Foundation
             case .string(let v): defaults.set(v, forKey: key)
             default: break
             }
+        }
+        // Paid: a preset that does not ask for lip sync turns it off, never leaves it as it was.
+        if kind == .wizard, allowed.contains("lipSync"), result["lipSync"] == nil {
+            defaults.removeObject(forKey: "wizard.lipSync")
+        }
+        // A preset asking for it while no key is saved is stored off too: the
+        // toggle shows off then, and a key added later must not switch it on.
+        if kind == .wizard, allowed.contains("lipSync"), case .bool(true)? = result["lipSync"], lipSyncKey() == false {
+            defaults.set(false, forKey: "wizard.lipSync")
         }
         func list(_ key: String) -> String {
             guard case .array(let values) = result[key] else { return "" }

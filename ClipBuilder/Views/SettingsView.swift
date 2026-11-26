@@ -43,7 +43,7 @@ struct SettingsView: View {
         }
         .sheet(item: $languageProject) { project in ProjectLanguagesSheet(project: project) }
         .sheet(item: Bindable(store).settingsAntigravitySignIn) { model in AntigravitySignInSheet(model: model) }
-        .frame(minWidth: 560, idealWidth: 640, minHeight: 520, idealHeight: 640)
+        .frame(minWidth: 700, idealWidth: 760, minHeight: 520, idealHeight: 640)
         .safeAreaInset(edge: .bottom, spacing: 0) {
             Label((selectedTab == "googleDrive" || selectedTab == "team") ? "Your connection is saved securely on this Mac" : "Changes save automatically", systemImage: "checkmark")
                 .font(.caption)
@@ -629,12 +629,7 @@ private struct GeneralSettingsTab: View {
             }
 
             Section("Transcription") {
-                LabeledContent("Engine") {
-                    HStack(spacing: 6) {
-                        AIInfoButton(provenance: .appleSpeech(), role: "Transcribed by")
-                        Text("Apple SpeechAnalyzer (on-device)")
-                    }
-                }
+                TranscriptionEngineSettingsRow()
                 Toggle("Review podcast cuts before rendering",
                        isOn: $store.settings.podcast.reviewCutsByDefault)
                 WordTimingSettingsRows()
@@ -880,133 +875,217 @@ private struct AISettingsTab: View {
         )
     }
 
-    var body: some View {
-        @Bindable var store = store
-        Form {
-            Section("Critic Brief") { CriticBriefControls(showsUsePicker: true) }
-            OnDeviceSettingsSection()
-            Section("ElevenLabs") {
-                // A bare field, as the Instagram token: inside MiniRow the
-                // grouped form draws a SecureField with no visible box.
-                SecureField("API key", text: $elevenLabsKey, prompt: Text("ElevenLabs API key"))
-                    .onSubmit { elevenLabsAction = .save(UUID()) }
-                    .disabled(elevenLabsBusy)
-                LabeledContent("Connection") {
-                    HStack(spacing: 8) {
-                        Button(elevenLabsBusy ? "Checking…" : "Check") { elevenLabsAction = .check(UUID()) }
-                            .lineLimit(1).fixedSize()
-                        Button("Remove key") { elevenLabsAction = .remove(UUID()) }
-                            .lineLimit(1).fixedSize()
-                    }
-                    .disabled(elevenLabsBusy)
-                }
-                FormCaption(elevenLabsResult ?? "Press Return to save your key securely on this Mac.")
-                LabeledContent("Model") {
-                    Picker("ElevenLabs model", selection: Binding(
-                        get: { (store.settings.ai.elevenLabs ?? ElevenLabsSettings()).model },
-                        set: {
-                            var settings = store.settings.ai.elevenLabs ?? ElevenLabsSettings()
-                            settings.model = $0
-                            store.settings.ai.elevenLabs = settings
-                        }
-                    )) {
-                        Text("Multilingual v2").lineLimit(1).fixedSize().tag("eleven_multilingual_v2")
-                        Text("Flash v2.5").lineLimit(1).fixedSize().tag("eleven_flash_v2_5")
-                        Text("Turbo v2.5").lineLimit(1).fixedSize().tag("eleven_turbo_v2_5")
-                    }
-                    .labelsHidden()
+    // MARK: Panes
+
+    /// The key is on this Mac; nil until the keychain answered.
+    @State private var hasElevenLabsKey: Bool?
+    @State private var hasLipSyncKey: Bool?
+    @AppStorage(AISettingsPane.storageKey) private var paneID = AISettingsPane.routing.rawValue
+
+    private var selectedProvider: AICatalog.Provider? {
+        AISettingsPane.providerKey(paneID).flatMap { key in AICatalog.providers.first { $0.key == key } }
+    }
+
+    /// The pane shown: a stored id that names nothing falls back to routing.
+    private var pane: AISettingsPane {
+        selectedProvider == nil ? (AISettingsPane(rawValue: paneID) ?? .routing) : .routing
+    }
+
+    private var sidebar: some View {
+        List(selection: Binding<String?>(get: { selectedProvider == nil ? pane.rawValue : paneID },
+                                         set: { if let id = $0 { paneID = id } })) {
+            Section("Setup") {
+                ForEach(AISettingsPane.setup) { pane in
+                    AISettingsSidebarRow(title: pane.title, symbol: pane.symbol).tag(pane.rawValue)
                 }
             }
-            Section {
-                ForEach(AICatalog.tasks, id: \.self) { task in
-                    HStack {
-                        ModelPicker(title: AICatalog.taskLabels[task] ?? task,
-                                    task: task, selection: routingBinding(for: task),
-                                    availableProviders: availableProviders)
-                        routingFlag(for: task)
-                    }
+            Section("Voice and Video") {
+                AISettingsSidebarRow(title: AISettingsPane.elevenLabs.title, symbol: AISettingsPane.elevenLabs.symbol,
+                                     brand: .brand(for: "elevenlabs"),
+                                     issue: hasElevenLabsKey == false ? "No key" : nil)
+                    .tag(AISettingsPane.elevenLabs.rawValue)
+                AISettingsSidebarRow(title: AISettingsPane.lipSync.title, symbol: AISettingsPane.lipSync.symbol,
+                                     issue: hasLipSyncKey == false ? "No key" : nil)
+                    .tag(AISettingsPane.lipSync.rawValue)
+            }
+            Section("Assistants") {
+                ForEach(AICatalog.providers, id: \.key) { provider in
+                    AISettingsSidebarRow(title: provider.label, symbol: AISettingsSidebarRow.assistantSymbol,
+                                         brand: .brand(for: provider.key),
+                                         issue: availableProviders.contains(provider.key) ? nil : "Not installed")
+                        .tag(AISettingsPane.providerID(provider.key))
                 }
-                Button("Reset to Recommended Models") {
-                    store.resetDispatcher()
+            }
+        }
+        .listStyle(.sidebar)
+        .frame(width: 184)
+    }
+
+    @ViewBuilder private var routingPane: some View {
+        @Bindable var store = store
+        Section {
+            ForEach(AICatalog.tasks, id: \.self) { task in
+                HStack {
+                    ModelPicker(title: AICatalog.taskLabels[task] ?? task,
+                                task: task, selection: routingBinding(for: task),
+                                availableProviders: availableProviders)
+                    routingFlag(for: task)
                 }
-                Text("Restores the recommended model for every task and re-enables the model-plan prompts shown before Analyze and Generate.")
+            }
+        } header: {
+            Text("Which assistant does each job")
+        } footer: {
+            VStack(alignment: .leading, spacing: 6) {
+                Button("Recommend this routing to the team") {
+                    store.recommendAIRoutingToTeam()
+                }
+                .lineLimit(1)
+                .fixedSize()
+                Text("Saves the current routing on the profile. Shared with the team when the profile has one. Each Mac can still override a task.")
                     .font(.caption)
                     .foregroundStyle(.secondary)
-                Picker("After a provider fails", selection: $store.settings.ai.providerCooldownMinutes) {
-                    Text("Retry it every time").tag(0)
-                    Text("Skip it for 5 minutes").tag(5)
-                    Text("Skip it for 15 minutes").tag(15)
-                    Text("Skip it for 1 hour").tag(60)
-                }
-                .help("When a provider fails to sign in, is out of quota or returns a CLI error, automatic fallback skips it for this long instead of paying the failed call on every video. Picking a provider explicitly still uses it, and changing these settings clears the wait.")
-            } header: {
-                Text("Task Routing")
-            } footer: {
-                VStack(alignment: .leading, spacing: 6) {
-                    Button("Recommend this routing to the team") {
-                        store.recommendAIRoutingToTeam()
-                    }
+            }
+        }
+        Section("When something goes wrong") {
+            Picker("After a provider fails", selection: $store.settings.ai.providerCooldownMinutes) {
+                Text("Retry it every time").tag(0)
+                Text("Skip it for 5 minutes").tag(5)
+                Text("Skip it for 15 minutes").tag(15)
+                Text("Skip it for 1 hour").tag(60)
+            }
+            .help("When a provider fails to sign in, is out of quota or returns a CLI error, automatic fallback skips it for this long instead of paying the failed call on every video. Picking a provider explicitly still uses it, and changing these settings clears the wait.")
+            Button("Reset to Recommended Models") {
+                store.resetDispatcher()
+            }
+            Text("Restores the recommended model for every task and re-enables the model-plan prompts shown before Analyze and Generate.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+        }
+        Section("Model lists") {
+            Text("Codex CLI is asked which models it offers (its own models cache); Claude Code gets family aliases that always mean the latest model. Refresh Models asks Antigravity CLI for its current list. Gemini, Qwen and Kimi publish no list, so their entries are the built-in ones.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            HStack {
+                Text(modelsSummary)
+                    .font(.caption)
+                    .foregroundStyle(.secondary)
+                Spacer()
+                Button(store.refreshingModels ? "Refreshing…" : "Refresh Models") { store.refreshDiscoveredModels() }
                     .lineLimit(1)
                     .fixedSize()
-                    Text("Saves the current routing on the profile. Shared with the team when the profile has one. Each Mac can still override a task.")
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                }
+                    .disabled(store.refreshingModels)
+                    .help("Ask the installed CLIs again — after updating a CLI, or when a new model appeared")
             }
-
-            Section("Learning") {
-                let count = LearnedLessonsSummary.activeCount(lessons: store.lessons, profile: store.activeProfile)
-                Text("Every Wizard plan reads \(count) active rule\(count == 1 ? "" : "s"), plus your style, taste, vocabulary and benchmarks. Review, edit and share all of it in AI Lessons.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                Button("Manage in AI Lessons") { showingLearned = true }
-                    .sheet(isPresented: $showingLearned) {
-                        LearnedPreferencesView().frame(minWidth: 760, minHeight: 560)
-                    }
-            }
-
-            ForEach(AICatalog.providers, id: \.key) { provider in
-                Section(provider.label) {
-                    AvailabilityRow(providerKey: provider.key)
-                    TextField("Binary path", text: Binding(
-                        get: { store.settings.ai.providers[provider.key]?.bin ?? "" },
-                        set: { store.settings.ai.providers[provider.key, default: AIProviderSettings()].bin =
-                            $0.isEmpty ? nil : $0 }
-                    ), prompt: Text(provider.bin))
-                    Picker("Default model", selection: Binding(
-                        get: { store.settings.ai.providers[provider.key]?.model ?? provider.defaultModel },
-                        set: { store.settings.ai.providers[provider.key, default: AIProviderSettings()].model = $0 }
-                    )) {
-                        ForEach(AICatalog.models(for: provider.key), id: \.self) { model in
-                            Text(AICatalog.modelDisplayName(model)).tag(model)
-                        }
-                    }
-                    if let entry = AICatalog.discovered[provider.key] {
-                        modelsRow(provider: provider, entry: entry)
-                    }
-                }
-            }
-
-            Section("Models") {
-                Text("Codex CLI is asked which models it offers (its own models cache); Claude Code gets family aliases that always mean the latest model. Refresh Models asks Antigravity CLI for its current list. Gemini, Qwen and Kimi publish no list, so their entries are the built-in ones.")
-                    .font(.caption)
-                    .foregroundStyle(.secondary)
-                HStack {
-                    Text(modelsSummary)
-                        .font(.caption)
-                        .foregroundStyle(.secondary)
-                    Spacer()
-                    Button(store.refreshingModels ? "Refreshing…" : "Refresh Models") { store.refreshDiscoveredModels() }
-                        .lineLimit(1)
-                        .fixedSize()
-                        .disabled(store.refreshingModels)
-                        .help("Ask the installed CLIs again — after updating a CLI, or when a new model appeared")
-                }
-            }
-            .id(store.modelCatalogVersion)
-
         }
-        .formStyle(.grouped)
+        .id(store.modelCatalogVersion)
+    }
+
+    @ViewBuilder private var learningPane: some View {
+        Section("Critic Brief") { CriticBriefControls(showsUsePicker: true) }
+        Section("Learning") {
+            let count = LearnedLessonsSummary.activeCount(lessons: store.lessons, profile: store.activeProfile)
+            Text("Every Wizard plan reads \(count) active rule\(count == 1 ? "" : "s"), plus your style, taste, vocabulary and benchmarks. Review, edit and share all of it in AI Lessons.")
+                .font(.caption)
+                .foregroundStyle(.secondary)
+            Button("Manage in AI Lessons") { showingLearned = true }
+                .sheet(isPresented: $showingLearned) {
+                    LearnedPreferencesView().frame(minWidth: 760, minHeight: 560)
+                }
+        }
+    }
+
+    @ViewBuilder private var elevenLabsPane: some View {
+        Section {
+            AISettingsServiceHeader(title: "ElevenLabs", symbol: AISettingsPane.elevenLabs.symbol,
+                brand: .brand(for: "elevenlabs"),
+                detail: "Dub voices, voice clones and Scribe transcripts. Billed by ElevenLabs.")
+        }
+        Section("Account") {
+            // A bare field, as the Instagram token: inside MiniRow the
+            // grouped form draws a SecureField with no visible box.
+            SecureField("API key", text: $elevenLabsKey, prompt: Text("ElevenLabs API key"))
+                .onSubmit { elevenLabsAction = .save(UUID()) }
+                .disabled(elevenLabsBusy)
+            LabeledContent("Connection") {
+                HStack(spacing: 8) {
+                    Button(elevenLabsBusy ? "Checking…" : "Check") { elevenLabsAction = .check(UUID()) }
+                        .lineLimit(1).fixedSize()
+                    Button("Remove key") { elevenLabsAction = .remove(UUID()) }
+                        .lineLimit(1).fixedSize()
+                }
+                .disabled(elevenLabsBusy)
+            }
+            FormCaption(elevenLabsResult ?? "Press Return to save your key securely on this Mac.")
+        }
+        Section("Dub voice") {
+            LabeledContent("Model") {
+                Picker("ElevenLabs model", selection: Binding(
+                    get: { (store.settings.ai.elevenLabs ?? ElevenLabsSettings()).model },
+                    set: {
+                        var settings = store.settings.ai.elevenLabs ?? ElevenLabsSettings()
+                        settings.model = $0
+                        store.settings.ai.elevenLabs = settings
+                    }
+                )) {
+                    Text("Multilingual v2").lineLimit(1).fixedSize().tag("eleven_multilingual_v2")
+                    Text("Flash v2.5").lineLimit(1).fixedSize().tag("eleven_flash_v2_5")
+                    Text("Turbo v2.5").lineLimit(1).fixedSize().tag("eleven_turbo_v2_5")
+                }
+                .labelsHidden()
+            }
+            FormCaption("The transcription model is chosen in General › Transcription.")
+        }
+    }
+
+    @ViewBuilder private func providerPane(_ provider: AICatalog.Provider) -> some View {
+        Section {
+            AISettingsServiceHeader(title: provider.label, symbol: AISettingsSidebarRow.assistantSymbol,
+                brand: .brand(for: provider.key),
+                detail: "A command-line assistant on this Mac. Task Routing decides which jobs it does.")
+        }
+        Section("This Mac") {
+            AvailabilityRow(providerKey: provider.key)
+            TextField("Binary path", text: Binding(
+                get: { store.settings.ai.providers[provider.key]?.bin ?? "" },
+                set: { store.settings.ai.providers[provider.key, default: AIProviderSettings()].bin =
+                    $0.isEmpty ? nil : $0 }
+            ), prompt: Text(provider.bin))
+        }
+        Section("Model") {
+            Picker("Default model", selection: Binding(
+                get: { store.settings.ai.providers[provider.key]?.model ?? provider.defaultModel },
+                set: { store.settings.ai.providers[provider.key, default: AIProviderSettings()].model = $0 }
+            )) {
+                ForEach(AICatalog.models(for: provider.key), id: \.self) { model in
+                    Text(AICatalog.modelDisplayName(model)).tag(model)
+                }
+            }
+            if let entry = AICatalog.discovered[provider.key] {
+                modelsRow(provider: provider, entry: entry)
+            }
+        }
+        .id(store.modelCatalogVersion)
+    }
+
+    var body: some View {
+        HStack(spacing: 0) {
+            sidebar
+            Divider()
+            Form {
+                if let provider = selectedProvider {
+                    providerPane(provider)
+                } else {
+                    switch pane {
+                    case .routing: routingPane
+                    case .onDevice: OnDeviceSettingsSection()
+                    case .learning: learningPane
+                    case .elevenLabs: elevenLabsPane
+                    case .lipSync: LipSyncSettingsPane()
+                    }
+                }
+            }
+            .formStyle(.grouped)
+        }
         .task(id: elevenLabsAction) { await updateElevenLabs() }
         .task {
             do {
@@ -1014,7 +1093,12 @@ private struct AISettingsTab: View {
             } catch {
                 elevenLabsResult = error.logged()
             }
+            hasElevenLabsKey = !elevenLabsKey.isEmpty
+            hasLipSyncKey = await Task.detached { LipSyncService.hasKey }.value
             availableProviders = await ModelPicker.probeAvailability(ai: store.ai)
+        }
+        .onReceive(NotificationCenter.default.publisher(for: LipSyncService.keyChanged)) { _ in
+            Task { hasLipSyncKey = await Task.detached { LipSyncService.hasKey }.value }
         }
         // A just-installed CLI should show up in the routing pickers too.
         .onChange(of: store.installingProviderCLIs) { _, installing in
@@ -1028,6 +1112,7 @@ private struct AISettingsTab: View {
         elevenLabsBusy = true
         defer {
             elevenLabsBusy = false
+            hasElevenLabsKey = !elevenLabsKey.isEmpty
             if elevenLabsAction == action { elevenLabsAction = nil }
             NotificationCenter.default.post(name: ElevenLabsVoices.settingsChanged, object: nil)
         }

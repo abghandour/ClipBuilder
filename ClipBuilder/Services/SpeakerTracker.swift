@@ -220,9 +220,23 @@ nonisolated enum SpeakerTracker {
                                        slots: slots, geometry: geometry)
         var clusterSlots = anchors
         var taken = Set(anchors.values)
-        let pairs = (0..<clusterCount).flatMap { c in (0..<slots).map { s in (c, s, affinity[c][s]) } }
-            .sorted { $0.2 > $1.2 }
-        for (c, s, _) in pairs where clusterSlots[c] == nil {
+        // Pairs are ranked by lift, how much more a voice and a tile go
+        // together than their own totals predict, not by the raw sum: the
+        // raw sum grows with how long a voice talks and how lively a tile
+        // is, so the guest's long answers took the host's restless tile
+        // before the host's own voice could (Alice Pereira interview,
+        // 2026-11-25: 4216 against 905 for the same tile, though the host's
+        // voice sat on it 78% of its time and the guest's 63%).
+        let voiceTotals = affinity.map { $0.reduce(0, +) }
+        let slotTotals = (0..<slots).map { s in affinity.reduce(0) { $0 + $1[s] } }
+        let grandTotal = voiceTotals.reduce(0, +)
+        func lift(_ c: Int, _ s: Int) -> Double {
+            let expected = voiceTotals[c] * slotTotals[s]
+            return expected > 1e-9 ? affinity[c][s] * grandTotal / expected : 0
+        }
+        let pairs = (0..<clusterCount).flatMap { c in (0..<slots).map { s in (c, s, lift(c, s), affinity[c][s]) } }
+            .sorted { $0.2 != $1.2 ? $0.2 > $1.2 : $0.3 > $1.3 }
+        for (c, s, _, _) in pairs where clusterSlots[c] == nil {
             if taken.contains(s), taken.count < slots { continue }
             clusterSlots[c] = s; taken.insert(s)
         }

@@ -30,6 +30,16 @@ actor TranscriptionService {
     private let strictEnrichment: Bool
     private let spokenLocales: [String]
     private let wordTiming: WordTiming
+    /// What recognizes the speech; `wordTiming` is its Apple timing.
+    private let engine: TranscriptionEngine
+    private let elevenLabsKey: @Sendable () throws -> String?
+    private let elevenLabsTransport: ElevenLabsClient.Transport?
+    /// The provenance and cache name of what this service produces.
+    private var engineProvider: String { engine.provider }
+    private var engineModel: String {
+        if case .elevenLabs(let model) = engine { return model.rawValue }
+        return Self.modelName
+    }
     private let corrections: [TranscriptCorrectionRules.Rule]
     /// Called once a video's very first transcript is stored (video id, set
     /// key): the store proofreads it. Later versions never call it.
@@ -37,12 +47,19 @@ actor TranscriptionService {
 
     init(cacheDirectory: URL = SettingsStore.cacheDirectory.appendingPathComponent("transcripts", isDirectory: true),
          podcastSettings: PodcastSettings? = nil, strictEnrichment: Bool = false, spokenLocales: [String] = [],
-         wordTiming: WordTiming = .recognizer, corrections: [TranscriptCorrectionRules.Rule] = [],
+         wordTiming: WordTiming = .recognizer, engine: TranscriptionEngine? = nil,
+         corrections: [TranscriptCorrectionRules.Rule] = [],
+         elevenLabsKey: @escaping @Sendable () throws -> String? = { try ElevenLabsKeychain().read() },
+         elevenLabsTransport: ElevenLabsClient.Transport? = nil,
          onFirstTranscript: (@Sendable (Int64, String) -> Void)? = nil) {
+        let engine = engine ?? .apple(wordTiming)
+        self.engine = engine
+        self.elevenLabsKey = elevenLabsKey
+        self.elevenLabsTransport = elevenLabsTransport
         self.corrections = corrections
         self.onFirstTranscript = onFirstTranscript
         self.spokenLocales = spokenLocales
-        self.wordTiming = wordTiming
+        self.wordTiming = engine.wordTiming
         capturedPodcastSettings = podcastSettings
         self.strictEnrichment = strictEnrichment
         self.cacheDirectory = cacheDirectory
@@ -73,18 +90,21 @@ actor TranscriptionService {
         video.languageSource == VideoLanguage.Source.user.rawValue ? languageCode : ""
     }
 
-    func cachedPodcast(video: VideoRecord, force: Bool) throws -> CachedTranscript? {
+    /// `language` (two letters) is a language the user chose for the video:
+    /// an answer kept in another language is not used for it.
+    func cachedPodcast(video: VideoRecord, force: Bool, language: String? = nil) throws -> CachedTranscript? {
         guard !force else { return nil }
         let hash = String(try SourceIdentityCache.shared.fingerprint(of: video.url).prefix(32))
-        let prefix = "\(hash).\(Self.providerName).\(Self.modelName)."
+        let prefix = "\(hash).\(engineProvider).\(engineModel)."
         let files = (try? FileManager.default.contentsOfDirectory(
             at: cacheDirectory, includingPropertiesForKeys: nil)) ?? []
         for url in files.sorted(by: { $0.lastPathComponent < $1.lastPathComponent })
             where url.lastPathComponent.hasPrefix(prefix) && url.pathExtension == "json" {
             guard let data = try? Data(contentsOf: url),
                   let cached = try? JSONDecoder().decode(CachedTranscript.self, from: data),
-                  cached.provider == Self.providerName, cached.model == Self.modelName,
+                  cached.provider == engineProvider, cached.model == engineModel,
                   !cached.translate, !cached.segments.isEmpty else { continue }
+            if let language, ElevenLabsScribe.languageHint(cached.language) != language { continue }
             return cached
         }
         return nil
@@ -110,6 +130,8 @@ actor TranscriptionService {
         let segments = rows.map { TranscriptSegment(start: $0.startTime, end: $0.endTime, text: $0.text, words: $0.words) }
         do { try await enrich(segments, transcriptionKey: key, video: video, database: database) }
         catch {
+            // Stop is not a failed analysis: the caller must not report a finished run.
+            try Task.checkCancellation()
             if strictEnrichment { throw error }
             log("Transcript feature analysis failed: \(error)")
         }
@@ -140,7 +162,8 @@ actor TranscriptionService {
             try Task.checkCancellation()
             let first = try await !database.videoIDsWithOriginalTranscripts().contains(video.id)
             transcriptionKey = try await Self.storeOriginal(videoID: video.id, language: cached.detectedLanguage,
-                segments: refined.segments, database: database, model: refined.model, corrections: corrections)
+                segments: refined.segments, database: database, provider: engineProvider, model: refined.model,
+                corrections: corrections)
             if first { onFirstTranscript?(video.id, transcriptionKey) }
             segments = try await correctedSegments(videoID: video.id, key: transcriptionKey, database: database)
         } else {
@@ -150,6 +173,8 @@ actor TranscriptionService {
         }
         do { try await enrich(segments, transcriptionKey: transcriptionKey, video: video, database: database) }
         catch {
+            // Stop is not a failed analysis: the caller must not report a finished run.
+            try Task.checkCancellation()
             if strictEnrichment { throw error }
             log("Transcript feature analysis failed: \(error)")
         }
@@ -183,7 +208,8 @@ actor TranscriptionService {
         }
         if !force, let stored = try await storedTranscript(video: video, database: database,
                                                             languageCode: Self.requiredLanguage(languageCode, video: video), log: log) { return stored }
-        if !languageCode.isEmpty {
+        // Scribe detects the language itself: nothing to sample first.
+        if !languageCode.isEmpty || engine.isCloud {
             return try await transcribe(video: video, database: database,
                                         languageCode: languageCode, force: force, log: log)
         }
@@ -292,6 +318,10 @@ actor TranscriptionService {
         try video.requirePresent()
         if !force, let stored = try await storedTranscript(video: video, database: database,
                                                             languageCode: Self.requiredLanguage(languageCode, video: video), log: log) { return stored }
+        if case .elevenLabs(let model) = engine {
+            return try await transcribeWithScribe(model, video: video, database: database,
+                                                  languageCode: languageCode, force: force, log: log)
+        }
         let locale = languageCode.isEmpty ? Locale.current : Locale(identifier: languageCode)
         guard let supportedLocale = await SpeechTranscriber.supportedLocale(equivalentTo: locale) else {
             throw TranscriptionError.unsupportedLocale(locale.identifier)
@@ -383,6 +413,78 @@ actor TranscriptionService {
         segments = try await correctedSegments(videoID: video.id, key: transcriptionKey, database: database)
         do { try await enrich(segments, transcriptionKey: transcriptionKey, video: video, database: database) }
         catch {
+            // Stop is not a failed analysis: the caller must not report a finished run.
+            try Task.checkCancellation()
+            if strictEnrichment { throw error }
+            log("Transcript feature analysis failed: \(error)")
+        }
+        return (segments, transcriptionKey)
+    }
+
+    /// One recording through ElevenLabs Scribe: the normalized audio is
+    /// packed small, uploaded, and the answer's words cut into lines. The
+    /// language is Scribe's to detect unless the user chose one for the video.
+    private func transcribeWithScribe(_ model: ElevenLabsScribe.Model, video: VideoRecord, database: Database,
+                                      languageCode: String, force: Bool,
+                                      log: @Sendable (String) -> Void) async throws -> (segments: [TranscriptSegment], transcriptionKey: String) {
+        let hint = ElevenLabsScribe.languageHint(Self.requiredLanguage(languageCode, video: video))
+        // A paid answer is kept: the same file and model never bill twice unless asked to.
+        if let cached = try cachedPodcast(video: video, force: force, language: hint) {
+            return try await restore(cached, video: video, database: database, log: log)
+        }
+        guard let key = try elevenLabsKey()?.trimmingCharacters(in: .whitespacesAndNewlines), !key.isEmpty else {
+            throw ElevenLabsError.invalidKey
+        }
+        guard await FFmpeg.hasAudioStream(video.url) else {
+            throw TranscriptionError.noAudioTrack(video.filename)
+        }
+        log("Preparing audio from \(video.filename)...")
+        let started = ContinuousClock.now
+        let audioURL = try await NormalizedAudioCache.shared.audio(source: video.url)
+        let scratch = FileManager.default.temporaryDirectory
+            .appendingPathComponent("cb_scribe_\(UUID().uuidString)", isDirectory: true)
+        try FileManager.default.createDirectory(at: scratch, withIntermediateDirectories: true)
+        defer { try? FileManager.default.removeItem(at: scratch) }
+        let upload = scratch.appendingPathComponent("audio.m4a")
+        try await FFmpeg.run(ElevenLabsScribe.uploadArguments(source: audioURL.path, output: upload.path),
+                             timeout: 600, mediaResource: .decoding)
+        try Task.checkCancellation()
+
+        let people = ((try? await database.fetchVideoPeople(videoID: video.id)) ?? []).map(\.name)
+        let keyterms = ElevenLabsScribe.keyterms(people + corrections.map(\.to))
+        let megabytes = Double((try? FileManager.default.attributesOfItem(atPath: upload.path)[.size] as? Int) ?? 0) / 1_048_576
+        log("Transcribing \(video.filename) with ElevenLabs \(model.label): uploading \(String(format: "%.1f", megabytes)) MB"
+            + (hint.map { ", language \($0)" } ?? ", language detected")
+            + (keyterms.isEmpty ? "" : ", \(keyterms.count) spelling hints") + "...")
+        var client = ElevenLabsClient(apiKey: key)
+        if let elevenLabsTransport { client.transport = elevenLabsTransport }
+        let response = try await client.transcribe(audio: upload, model: model.rawValue, language: hint, keyterms: keyterms)
+        try Task.checkCancellation()
+
+        var segments = ElevenLabsScribe.segments(response)
+        let detected = ElevenLabsScribe.language(response.languageCode)
+        let languageTag = detected.isEmpty ? (hint ?? Locale.current.language.languageCode?.identifier ?? "en") : detected
+        let seconds = (ContinuousClock.now - started).seconds
+        log("Transcribed \(segments.count) segments (\(languageTag)) in \(AIProvenance.durationLabel(seconds))")
+        guard !segments.isEmpty else {
+            throw TranscriptionError.noSpeech(video.filename, locale: languageTag)
+        }
+        let hash = String(try SourceIdentityCache.shared.fingerprint(of: video.url).prefix(32))
+        let cached = CachedTranscript(provider: engineProvider, model: engineModel, language: languageTag,
+                                      detectedLanguage: languageTag, translate: false, segments: segments)
+        if let data = try? JSONEncoder().encode(cached) {
+            try? data.write(to: cacheDirectory.appendingPathComponent("\(hash).\(engineProvider).\(engineModel).\(languageTag).json"))
+        }
+        let first = try await !database.videoIDsWithOriginalTranscripts().contains(video.id)
+        let transcriptionKey = try await Self.storeOriginal(videoID: video.id, language: languageTag,
+            segments: segments, database: database, seconds: seconds, provider: engineProvider, model: engineModel,
+            corrections: corrections)
+        if first { onFirstTranscript?(video.id, transcriptionKey) }
+        segments = try await correctedSegments(videoID: video.id, key: transcriptionKey, database: database)
+        do { try await enrich(segments, transcriptionKey: transcriptionKey, video: video, database: database) }
+        catch {
+            // Stop is not a failed analysis: the caller must not report a finished run.
+            try Task.checkCancellation()
             if strictEnrichment { throw error }
             log("Transcript feature analysis failed: \(error)")
         }
@@ -428,12 +530,12 @@ actor TranscriptionService {
     /// reuse stored rows bypass this write and retain their existing key.
     static func storeOriginal(videoID: Int64, language: String, segments: [TranscriptSegment],
                               database: Database, seconds: TimeInterval? = nil,
-                              model: String = modelName, corrections: [TranscriptCorrectionRules.Rule] = []) async throws -> String {
+                              provider: String = providerName, model: String = modelName, corrections: [TranscriptCorrectionRules.Rule] = []) async throws -> String {
         let key = UUID().uuidString.lowercased()
         let stored = try await database.replaceTranscripts(videoID: videoID, transcriptionKey: key,
             language: language, isTranslation: false,
             segments: TranscriptCorrectionRules.applying(corrections, to: segments),
-            provider: providerName, model: model, seconds: seconds)
+            provider: provider, model: model, seconds: seconds)
         return stored
     }
 
@@ -449,7 +551,7 @@ actor TranscriptionService {
     /// its timing.
     private func refineTiming(_ segments: [TranscriptSegment], language: String, video: VideoRecord,
                               log: @Sendable (String) -> Void) async throws -> (segments: [TranscriptSegment], model: String) {
-        guard WordAlignerModel.applies(timing: wordTiming, language: language) else { return (segments, Self.modelName) }
+        guard WordAlignerModel.applies(timing: wordTiming, language: language) else { return (segments, engineModel) }
         guard WordAlignerModel.isInstalled else {
             log("Precise word timing is on but its model is not installed; keeping the recognizer's times. Install it in Settings → Transcription.")
             return (segments, Self.modelName)

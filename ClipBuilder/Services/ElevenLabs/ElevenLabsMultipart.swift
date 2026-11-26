@@ -33,4 +33,29 @@ nonisolated struct ElevenLabsMultipart: Sendable {
         append("--\(boundary)--\r\n")
         return Self(body: body, contentType: "multipart/form-data; boundary=\(boundary)")
     }
+
+    /// One audio file for Scribe. Word timestamps and speaker turns are
+    /// always asked for; sound tags never.
+    static func speechToText(file: URL, model: String, language: String?, keyterms: [String]) throws -> Self {
+        let boundary = "ClipBuilder-\(UUID().uuidString)"
+        var body = Data()
+        func append(_ text: String) { body.append(Data(text.utf8)) }
+        func field(_ name: String, _ value: String) {
+            append("--\(boundary)\r\nContent-Disposition: form-data; name=\"\(name)\"\r\n\r\n\(value)\r\n")
+        }
+        field("model_id", model)
+        if let language, !language.isEmpty { field("language_code", language) }
+        field("diarize", "true")
+        field("timestamps_granularity", "word")
+        field("tag_audio_events", "false")
+        // A hint is one line of text, never multipart syntax.
+        for term in keyterms { field("keyterms", term.replacingOccurrences(of: "\r", with: " ").replacingOccurrences(of: "\n", with: " ")) }
+        let type = ["m4a": "audio/mp4", "mp3": "audio/mpeg", "wav": "audio/wav"][file.pathExtension.lowercased()] ?? "application/octet-stream"
+        append("--\(boundary)\r\nContent-Disposition: form-data; name=\"file\"; filename=\"audio.\(file.pathExtension.lowercased())\"\r\n")
+        append("Content-Type: \(type)\r\n\r\n")
+        try Task.checkCancellation()
+        body.append(try Data(contentsOf: file, options: .mappedIfSafe))
+        append("\r\n--\(boundary)--\r\n")
+        return Self(body: body, contentType: "multipart/form-data; boundary=\(boundary)")
+    }
 }

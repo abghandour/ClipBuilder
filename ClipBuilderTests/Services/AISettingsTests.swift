@@ -387,7 +387,7 @@ struct AISettingsTests {
         #expect(AISettingsPasteboard.read(from: board)?.sourceName == "Saved settings")
     }
 
-    @Test("Vendor logos only appear inside the AI popup")
+    @Test("Vendor logos only appear in the AI popup, beside a transcript's name and in Settings › AI")
     func logoCallSites() throws {
         let root = URL(fileURLWithPath: #filePath).deletingLastPathComponent()
             .deletingLastPathComponent().deletingLastPathComponent()
@@ -403,10 +403,16 @@ struct AISettingsTests {
         }
         let files = try #require(
             FileManager.default.enumerator(at: views, includingPropertiesForKeys: nil))
+        // Asked for by the user on November 25, 2026: the mark of the model that made a
+        // transcript, wherever the transcript in use is named.
+        // Asked for on November 26, 2026: each service's mark in the Settings › AI sidebar.
+        let transcriptNames: Set<String> = ["MiniTranscriptSetRow.swift", "AnalyzeView.swift", "AISettingsPanes.swift"]
         for case let file as URL in files
         where file.pathExtension == "swift" && file.lastPathComponent != "AIInfoSheet.swift" {
             let source = try String(contentsOf: file, encoding: .utf8)
-            #expect(!source.contains("ProviderLogo("))
+            if !transcriptNames.contains(file.lastPathComponent) {
+                #expect(!source.contains("ProviderLogo("), "\(file.lastPathComponent)")
+            }
             #expect(!source.contains("ProvenanceBadge("))
             #expect(!source.contains("ProvenanceRow("))
         }
@@ -455,5 +461,35 @@ extension AISettingsTests {
         AISettingsPreferences.write(["captionPosition": .null, "captionStyleID": .null],
             kind: .wizard, scopes: [.options], profileName: "First", defaults: defaults)
         #expect(WizardCaptionChoices.load(profileName: "First", defaults: defaults) == WizardCaptionChoices())
+    }
+}
+
+extension AISettingsTests {
+    /// Lip sync is paid: only a preset that asks for it leaves it on.
+    @Test func aPresetWithoutLipSyncTurnsTheWizardToggleOff() throws {
+        let suite = "LipSyncPreset.\(UUID())"
+        let defaults = try #require(UserDefaults(suiteName: suite))
+        defer { defaults.removePersistentDomain(forName: suite) }
+        for preset: [String: JSONSetting] in [["dubLanguage": .string("pt-BR")],
+                                              ["dubLanguage": .string("pt-BR"), "lipSync": .null],
+                                              ["dubLanguage": .string("pt-BR"), "lipSync": .bool(false)]] {
+            defaults.set(true, forKey: "wizard.lipSync")
+            AISettingsPreferences.write(preset, kind: .wizard, scopes: [.options], defaults: defaults)
+            #expect(!defaults.bool(forKey: "wizard.lipSync"), "\(preset)")
+        }
+        // Asked for with no key saved: stored off, so a key added later does not start it.
+        AISettingsPreferences.write(["lipSync": .bool(true)], kind: .wizard, scopes: [.options], defaults: defaults,
+                                    lipSyncKey: { false })
+        #expect(!defaults.bool(forKey: "wizard.lipSync"))
+        // A keychain that could not be read is not "no key".
+        AISettingsPreferences.write(["lipSync": .bool(true)], kind: .wizard, scopes: [.options], defaults: defaults,
+                                    lipSyncKey: { nil })
+        #expect(defaults.bool(forKey: "wizard.lipSync"))
+        AISettingsPreferences.write(["lipSync": .bool(true)], kind: .wizard, scopes: [.options], defaults: defaults,
+                                    lipSyncKey: { true })
+        #expect(defaults.bool(forKey: "wizard.lipSync"))
+        // Another scope's paste is not a statement about the options.
+        AISettingsPreferences.write(["modelOverride": .string("chosen")], kind: .wizard, scopes: [.models], defaults: defaults)
+        #expect(defaults.bool(forKey: "wizard.lipSync"))
     }
 }

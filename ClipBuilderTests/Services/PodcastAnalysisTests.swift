@@ -657,6 +657,49 @@ struct PodcastAnalysisTests {
         #expect(try await service.cachedPodcast(video: video, force: false) == nil)
     }
 
+    @Test("a cached transcript in another language is not used for a language the user chose")
+    func aChosenLanguageSkipsACacheInAnother() async throws {
+        let temp = try await TempDatabase()
+        _ = try await temp.seedVideo(sceneCount: 0)
+        let video = try #require(try await temp.database.fetchVideos().first)
+        try Data("cache language fixture".utf8).write(to: video.url)
+        let directory = try TempDirectory()
+        let service = TranscriptionService(cacheDirectory: directory.url)
+        let hash = String(try ContentHash.fingerprint(of: video.url).prefix(32))
+        let english = TranscriptionService.CachedTranscript(
+            provider: "apple", model: "SpeechTranscriber", language: "en", detectedLanguage: "en-US",
+            translate: false, segments: [TranscriptSegment(start: 0, end: 4, text: "A talk", words: nil)])
+        try JSONEncoder().encode(english).write(to: directory.url.appendingPathComponent("\(hash).apple.SpeechTranscriber.en.json"))
+        #expect(try await service.cachedPodcast(video: video, force: false, language: "pt") == nil)
+        #expect(try await service.cachedPodcast(video: video, force: false, language: "en")?.language == "en")
+        #expect(try await service.cachedPodcast(video: video, force: false)?.language == "en")
+    }
+
+    @Test("Scribe does not restore a kept answer in another language for a video whose language the user chose")
+    func scribeHoldsItsCacheToTheChosenLanguage() async throws {
+        let temp = try await TempDatabase()
+        _ = try await temp.seedVideo(sceneCount: 0)
+        var video = try #require(try await temp.database.fetchVideos().first)
+        try Data("scribe cache fixture".utf8).write(to: video.url)
+        let directory = try TempDirectory()
+        // No key: a run that gets past the cache stops there, before any upload.
+        let service = TranscriptionService(cacheDirectory: directory.url, engine: .elevenLabs(.v3), elevenLabsKey: { nil })
+        let hash = String(try ContentHash.fingerprint(of: video.url).prefix(32))
+        let english = TranscriptionService.CachedTranscript(
+            provider: ElevenLabsScribe.provider, model: "scribe_v3", language: "en", detectedLanguage: "en",
+            translate: false, segments: [TranscriptSegment(start: 0, end: 4, text: "A talk", words: nil)])
+        try JSONEncoder().encode(english).write(to: directory.url.appendingPathComponent("\(hash).elevenlabs.scribe_v3.en.json"))
+        video.language = "pt-BR"
+        video.languageSource = VideoLanguage.Source.user.rawValue
+        await #expect(throws: ElevenLabsError.self) {
+            _ = try await service.transcribeForVideo(video: video, database: temp.database, languageCode: "pt-BR", log: { _ in })
+        }
+        // The same language as a guess, not a choice, leaves the kept answer usable.
+        video.languageSource = VideoLanguage.Source.detected.rawValue
+        let restored = try await service.transcribeForVideo(video: video, database: temp.database, languageCode: "pt-BR", log: { _ in })
+        #expect(restored.segments.map(\.text) == ["A talk"])
+    }
+
     @Test("an empty cached transcript is not a cache hit on either route")
     func emptyCachedTranscriptIsIgnored() async throws {
         let temp = try await TempDatabase()

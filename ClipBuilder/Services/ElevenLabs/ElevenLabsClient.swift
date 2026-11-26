@@ -140,6 +140,17 @@ nonisolated struct ElevenLabsClient: Sendable {
         return response.voice_id
     }
 
+    /// One recording through Scribe: word times, speakers told apart, no
+    /// sound tags. The answer only comes once the whole file is processed,
+    /// so the request may sit silent for minutes.
+    @concurrent
+    func transcribe(audio: URL, model: String, language: String?, keyterms: [String] = []) async throws -> ElevenLabsScribe.Response {
+        let multipart = try ElevenLabsMultipart.speechToText(file: audio, model: model, language: language, keyterms: keyterms)
+        let data = try await send(path: "/v1/speech-to-text", body: multipart.body,
+                                  contentType: multipart.contentType, timeout: 1800)
+        return try JSONDecoder().decode(ElevenLabsScribe.Response.self, from: data)
+    }
+
     func deleteVoice(id: String) async throws {
         guard !id.isEmpty, let escaped = id.addingPercentEncoding(withAllowedCharacters: .alphanumerics) else {
             throw ElevenLabsError.badRequest("Choose a voice")
@@ -149,7 +160,8 @@ nonisolated struct ElevenLabsClient: Sendable {
 
     private func send(path: String, query: [URLQueryItem] = [], body: Data? = nil,
                       contentType: String = "application/json", accept: String = "application/json",
-                      method: String? = nil, returnsCommittedResponse: Bool = false) async throws -> Data {
+                      method: String? = nil, returnsCommittedResponse: Bool = false,
+                      timeout: TimeInterval = 60) async throws -> Data {
         try Task.checkCancellation()
         guard !apiKey.trimmingCharacters(in: .whitespacesAndNewlines).isEmpty else { throw ElevenLabsError.invalidKey }
         var components = URLComponents()
@@ -158,7 +170,7 @@ nonisolated struct ElevenLabsClient: Sendable {
         components.percentEncodedPath = path
         components.queryItems = query.isEmpty ? nil : query
         guard let url = components.url else { throw URLError(.badURL) }
-        var request = URLRequest(url: url, timeoutInterval: 60)
+        var request = URLRequest(url: url, timeoutInterval: timeout)
         request.httpMethod = method ?? (body == nil ? "GET" : "POST")
         request.setValue(apiKey, forHTTPHeaderField: "xi-api-key")
         request.setValue(accept, forHTTPHeaderField: "Accept")

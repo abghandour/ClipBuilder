@@ -80,6 +80,8 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     var musicTrack: String?
     var dub = false
     var dubLanguage: String?
+    /// With a dub: re-time the mouths to it after the render (Sync Labs, paid).
+    var lipSync = false
     var outputMode: MiniWizardFlow.OutputMode = .separateVideos
 
     mutating func didEditBRoll() { includeBRoll = true }
@@ -143,7 +145,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         case removeFillerWords, drawnPauses, strikeHighlightStyle
         case actionOverlays, pauseOnContact, pauseOnContactSeconds, slowIntoContact, slowIntoContactStrength, flashOnContact
         case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, overlayPosition, overlayEdits, outputMode, transition, look
-        case muteSourceAudio, music, musicTrack, dub, dubLanguage
+        case muteSourceAudio, music, musicTrack, dub, dubLanguage, lipSync
     }
     /// Legacy controls remain readable; new snapshots carry only Framing.
     func encode(to encoder: Encoder) throws {
@@ -195,6 +197,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         try c.encodeIfPresent(musicTrack, forKey: .musicTrack)
         try c.encodeIfPresent(dub, forKey: .dub)
         try c.encodeIfPresent(dubLanguage, forKey: .dubLanguage)
+        if lipSync { try c.encode(lipSync, forKey: .lipSync) }
     }
 
 
@@ -254,6 +257,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         musicTrack = try c.decodeIfPresent(String.self, forKey: .musicTrack)
         dub = try c.decodeIfPresent(Bool.self, forKey: .dub) ?? false
         dubLanguage = try c.decodeIfPresent(String.self, forKey: .dubLanguage)
+        lipSync = try c.decodeIfPresent(Bool.self, forKey: .lipSync) ?? false
         framing = try c.decodeIfPresent(Framing.self, forKey: .framing) ?? Framing()
         let oldKeys: [WizardOptions.CodingKeys] = [.podcastFraming, .highlightFraming, .interviewZoom,
             .interviewZoomMoves, .interviewCuts, .interviewPunchIn, .framingCamera]
@@ -295,6 +299,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
         result.renderSettings = render
         result.framing = framing
         result.dubLanguage = dub ? (dubLanguage ?? DubLanguageChoices.defaultLanguage) : nil
+        result.lipSync = dub && lipSync ? true : nil
         result.includeIntroBumper = introVideo
         result.includeOutroBumper = outroVideo
         // Library paths resolve to this Mac's files in AppStore.generateMiniVideos.
@@ -608,7 +613,7 @@ nonisolated struct MiniWizardSettings: Equatable, Hashable, Sendable, Codable {
     private static var booleanFields: [(MiniWizardMemory.Field, WritableKeyPath<Self, Bool>)] {
         [(.captions, \.captions), (.englishCaptions, \.englishCaptions), (.introVideo, \.introVideo),
          (.outroVideo, \.outroVideo), (.nameTags, \.nameTags), (.watermark, \.watermark), (.overlay, \.overlay),
-         (.safeAreaOnly, \.safeAreaOnly), (.muteSourceAudio, \.muteSourceAudio), (.music, \.music), (.dub, \.dub),
+         (.safeAreaOnly, \.safeAreaOnly), (.muteSourceAudio, \.muteSourceAudio), (.music, \.music), (.dub, \.dub), (.lipSync, \.lipSync),
          (.interviewZoomMoves, \.interviewZoomMoves), (.interviewCuts, \.resolvedInterviewCuts)]
     }
 }

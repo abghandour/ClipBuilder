@@ -59,7 +59,8 @@ struct TranscriptSheet: View {
     @State private var isSaving = false
     @State private var confirmDiscard = false
     @State private var showTools = false
-    @State private var confirmRetranscribe = false
+    /// The New Transcript chooser in the title bar.
+    @State private var showNewTranscript = false
     @State private var editMode = false
     @State private var compareMode = false
     /// The version being renamed from the version menu, and the name typed.
@@ -68,9 +69,6 @@ struct TranscriptSheet: View {
     @State private var confirmRevertAll = false
     @State private var confirmDeleteSet = false
     @State private var confirmDeleteAllSets = false
-    @State private var retranscribeEditCount = 0
-    /// The word timings offered by the re-transcribe dialog, read when it opens.
-    @State private var retranscribeOptions: [WordTiming] = [.recognizer]
     @State private var confirmUndoRecut = false
     @State private var undoRecutEditCount = 0
     @State private var showsQA = false
@@ -864,7 +862,7 @@ struct TranscriptSheet: View {
             parts.append(DubLanguageChoices.name(language) + (set.hasTranslations ? " + translation" : ""))
         }
         if set.editedCount > 0 { parts.append("\(set.editedCount) edited") }
-        if let model = set.model { parts.append(model) }
+        if set.model != nil { parts.append(TranscriptSetSwitch.modelName(set)) }
         return parts.joined(separator: " · ")
     }
 
@@ -877,7 +875,8 @@ struct TranscriptSheet: View {
                 Section("Transcript Versions") {
                     Picker("Version", selection: $selectedTranscriptionKey) {
                         ForEach(transcriptionSets) { set in
-                            Text("\(versionTitle(set)) — \(versionState(set)) · \(versionDetail(set))").tag(set.id)
+                            ProviderMenuLabel(title: "\(versionTitle(set)) — \(versionState(set)) · \(versionDetail(set))",
+                                              brand: TranscriptSetSwitch.brand(set)).tag(set.id)
                         }
                     }
                     .pickerStyle(.inline).labelsHidden()
@@ -892,14 +891,8 @@ struct TranscriptSheet: View {
                     renamingSet = selectedSet
                 }
                 .disabled(selectedSet == nil)
-                Button("Transcribe Again…") {
-                    Task {
-                        retranscribeEditCount = await store.transcriptEditCount(videoID: video.id)
-                        retranscribeOptions = store.transcriptionTimingOptions(for: [video], force: true)
-                        confirmRetranscribe = true
-                    }
-                }
-                .disabled(!video.isPresent)
+                Button("New Transcript…") { showNewTranscript = true }
+                    .disabled(!video.isPresent || store.transcribingVideoIDs.contains(video.id))
                 Divider()
                 Button("Delete This Version…", role: .destructive) { confirmDeleteSet = true }
                     .disabled(selectedTranscriptionKey.isEmpty || store.transcribingVideoIDs.contains(video.id))
@@ -907,7 +900,9 @@ struct TranscriptSheet: View {
                     .disabled(store.transcribingVideoIDs.contains(video.id))
             } label: {
                 if let set = selectedSet {
-                    Text("Version  \(versionTitle(set))  ·  \(versionState(set))").lineLimit(1).truncationMode(.middle)
+                    ProviderMenuLabel(title: "Version  \(versionTitle(set))  ·  \(versionState(set))",
+                                      brand: TranscriptSetSwitch.brand(set))
+                        .lineLimit(1).truncationMode(.middle)
                 } else {
                     Text("Version").lineLimit(1)
                 }
@@ -919,8 +914,22 @@ struct TranscriptSheet: View {
             .disabled(hasChanges || isSaving || editMode)
             .help(hasChanges || editMode ? "Apply or discard your changes to switch versions"
                   : missingTranscriptionPin ? "The pinned version is not on this Mac yet"
-                  : "Switch transcript version, choose which one the app uses, rename, transcribe again or delete")
+                  : "Switch transcript version, choose which one the app uses, rename or delete")
         }
+    }
+
+    /// Transcribe again with a chosen model, beside the version menu.
+    private var newTranscriptControl: some View {
+        NewTranscriptControl(video: currentVideo, editedCount: editedCount, blocked: hasChanges || isSaving || editMode,
+                             isPresented: $showNewTranscript)
+    }
+
+    /// A transcription of this video ended: the new version is the one in
+    /// use, so it is the one shown. Unsaved work on the old one stays put.
+    private func transcriptionEnded() {
+        guard !hasChanges, !editMode else { return }
+        selectedTranscriptionKey = ""
+        Task { await load() }
     }
 
     /// Deletes the set shown (or, with nil, every transcript of the video).
@@ -963,7 +972,10 @@ struct TranscriptSheet: View {
                     Spacer()
                     Button("Done") { dismiss() }.lineLimit(1).fixedSize()
                 }
-                versionMenu
+                HStack(spacing: 12) {
+                    versionMenu
+                    newTranscriptControl
+                }
                 Label(video.isPresent ? "Saved transcription · Read-only" : "Not on this Mac · Read-only transcript", systemImage: "text.quote")
                     .foregroundStyle(.secondary)
                 if !video.isPresent { MissingFootageDownloadButton(video: video) }
@@ -980,19 +992,8 @@ struct TranscriptSheet: View {
         .task(id: selectedTranscriptionKey) { await load() }
         .speakerColors(for: Set(speakerLabels.values))
         // The version menu's dialogs: here, because the read-only body shows the menu too.
-        .confirmationDialog("Re-transcribe this video?", isPresented: $confirmRetranscribe) {
-            // Always destructive here: confirming drops unsaved changes and closes the sheet.
-            RetranscribeButtons(options: retranscribeOptions, destructive: true) { timing in
-                store.transcribe(video: video, force: true, wordTiming: timing)
-                dismiss()
-            }
-            Button("Cancel", role: .cancel) {}
-        } message: {
-            Text((retranscribeEditCount > 0
-                 ? ConfirmTranscriptLoss.message(count: retranscribeEditCount)
-                    + (hasChanges ? " Unsaved changes will be discarded." : "")
-                 : "This makes a new transcript set, discards any unsaved changes, and closes this sheet. The previous set stays in the sets list.")
-                 + (retranscribeOptions.count > 1 ? " " + TranscriptionModelChoiceDialog.message : ""))
+        .onChange(of: store.transcribingVideoIDs.contains(video.id)) { _, transcribing in
+            if !transcribing { transcriptionEnded() }
         }
         .confirmationDialog("Delete this transcript?", isPresented: $confirmDeleteSet) {
             Button("Delete Transcript", role: .destructive) { deleteSets(selectedTranscriptionKey) }
@@ -1199,6 +1200,7 @@ struct TranscriptSheet: View {
             .layoutPriority(-1)
             AIInfoButton(video: video)
             versionMenu
+            newTranscriptControl
             Text(editMode || hasChanges ? "Apply or discard your changes to switch versions."
                  : titleSummary)
                 .font(.caption).foregroundStyle(.secondary)

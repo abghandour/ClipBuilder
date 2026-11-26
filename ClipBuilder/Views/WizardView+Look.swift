@@ -43,6 +43,7 @@ extension WizardView {
         if !dubLanguage.isEmpty {
             DubLanguagePicker(language: Binding(get: { dubLanguage }, set: { dubLanguage = $0 ?? "" }))
                 .formDependent()
+            LipSyncToggleRows(isOn: $lipSync).formDependent()
         }
         if lookCapabilities.audioMusic {
             FormGroupHeader("Sound & music")
@@ -350,6 +351,7 @@ extension WizardView {
         }
         var audio: [String] = []
         if lookTranscriptsAvailable, removeFillerWords, dubLanguage.isEmpty { audio.append("Filler words cut") }
+        if !dubLanguage.isEmpty, lipSync { audio.append("Lip sync") }
         if lookCapabilities.audioMusic {
             audio.append(audioMode.title)
             if audioMode.useMusic {

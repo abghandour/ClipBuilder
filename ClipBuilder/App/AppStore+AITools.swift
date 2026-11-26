@@ -757,10 +757,12 @@ extension AppStore {
         let podcastEditingSettings = podcastEditingSettings
         let ai = AIService(config: effectiveAIConfig)
         let analyzer = Analyzer(ai: ai)
+        // Scribe runs in the cloud: no recognizer has to be on this Mac.
+        let engine = defaultTranscriptionEngine
         let transcription = TranscriptionService(
             cacheDirectory: SettingsStore.cacheDirectory.appendingPathComponent("transcripts", isDirectory: true),
             podcastSettings: podcastEditingSettings, strictEnrichment: true, spokenLocales: projectLanguages.spoken,
-            wordTiming: settings.wordTimingChoice, corrections: activeProfile.transcriptCorrections ?? [],
+            engine: engine, corrections: activeProfile.transcriptCorrections ?? [],
             onFirstTranscript: firstTranscriptHandler())
         let language = transcriptionLanguage()
         let languages = projectLanguages
@@ -773,15 +775,17 @@ extension AppStore {
                     && self.activeProjectID == project
             }, perform: { kind, video in
                 try Task.checkCancellation()
-                if kind == .transcript || (kind == .analysis && video.type?.usesPodcastPass == true),
+                if !engine.isCloud, kind == .transcript || (kind == .analysis && video.type?.usesPodcastPass == true),
                    !((try? await database.fetchTranscripts(videoID: video.id)) ?? []).contains(where: { !$0.isTranslation }) {
                     let assets = await LanguageReadiness.assets(for: ProjectLanguages(spoken: languages.spoken), dubEngine: nil, probe: probe)
                     try LanguageReadiness.requireRecognizers(assets)
                 }
                 switch kind {
                 case .transcript:
+                    // A language the user chose for this video outranks the project's.
                     _ = try await transcription.transcribeForVideo(video: video, database: database,
-                        languageCode: language, force: false, log: { _ in })
+                        languageCode: ProjectLanguageResolver.transcriptionLanguage(for: video, languages: languages),
+                        force: false, log: { _ in })
                 case .people:
                     _ = try await analyzer.detectPeopleOnly(video: video, profile: profile,
                         database: database, log: { _ in })
@@ -796,7 +800,7 @@ extension AppStore {
                     let name = "Builder prerequisite: " + video.filename
                     if video.type?.usesPodcastPass == true {
                         _ = try await podcast.analyze(video: video, profile: profile, database: database,
-                            runName: name, provider: nil, model: nil, languageCode: language,
+                            runName: name, provider: nil, model: nil, languageCode: ProjectLanguageResolver.transcriptionLanguage(for: video, languages: languages),
                             analyzer: analyzer, transcription: transcription,
                             highlightThreshold: editingDefaults.podcast.highlightThreshold,
                             holdSeconds: editingDefaults.podcast.speakerHoldSeconds, log: { _ in }, progress: { _, _ in },
@@ -862,13 +866,15 @@ extension AppStore {
         }
     }
 
-    /// `wordTiming` nil uses the default from Settings. Never asks: a
+    /// `engine` nil uses the default from Settings. Never asks: a
     /// control the user pressed goes through `requestTranscription`.
-    func transcribe(video: VideoRecord, force: Bool = false, wordTiming: WordTiming? = nil) {
+    func transcribe(video: VideoRecord, force: Bool = false, engine: TranscriptionEngine? = nil) {
         guard video.isPresent else { presentError(VideoRecord.notPresentReason); return }
         guard let database, !transcribingVideoIDs.contains(video.id) else { return }
         transcribingVideoIDs.insert(video.id)
-        let transcription = transcription(wordTiming: wordTiming)
+        let transcription = transcription(engine: engine)
+        // Scribe runs in the cloud: no recognizer has to be on this Mac.
+        let usesRecognizer = !(engine ?? defaultTranscriptionEngine).isCloud
         let language = transcriptionLanguage(for: video)
         let languages = projectLanguages
         let generation = profileGeneration
@@ -883,7 +889,7 @@ extension AppStore {
                 }
             }
             do {
-                try await requireRecognizers(for: video)
+                if usesRecognizer { try await requireRecognizers(for: video) }
                 guard generation == profileGeneration, activeProjectID == projectID, self.database === database else { throw CancellationError() }
                 _ = try await transcription.transcribeForVideo(video: video, database: database,
                                                        languageCode: language, force: force,

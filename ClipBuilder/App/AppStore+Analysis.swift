@@ -47,7 +47,9 @@ extension AppStore {
         let capturedPlan = AnalysisRequest.capturePlan(defaults: .standard, singleVideo: targets.count == 1,
             provider: provider, model: model, includeFightScoring: includeFightScoring)
         let capturedConfig = AIRoutingResolver.effectiveConfig(local: settings.ai, team: profile.aiRouting)
-        let transcription = transcription
+        // One engine for the whole batch: the recognizer check and the service agree.
+        let engine = defaultTranscriptionEngine
+        let transcription = transcription(engine: engine)
         let localPodcast = OnDevicePolicy.isEnabled(item: "podcast-exchanges", config: settings.ai)
         let podcastAnalysis = podcastAnalysis
         let editingDefaults = editingDefaults
@@ -143,7 +145,7 @@ extension AppStore {
                 // The recognizer check uses the request that will run (a
                 // resumed checkpoint keeps its own languages) and is skipped
                 // when a pinned or existing transcript is reused.
-                if request.requestedPasses.contains("transcript"), request.transcriptKey == nil,
+                if !engine.isCloud, request.requestedPasses.contains("transcript"), request.transcriptKey == nil,
                    !TranscriptionLanguageRules.transcriptUsable(rows: (try? await database.fetchTranscripts(videoID: video.id)) ?? [], video: video) {
                     do {
                         try await requireProjectRecognizers(languages: ProjectLanguages(
@@ -185,7 +187,8 @@ extension AppStore {
                         }
                         if duplicatePolicy == .missingOnly {
                             do {
-                                try await runMissingAnalysisPasses(video: video, request: request, run: duplicate, missing: missing)
+                                try await runMissingAnalysisPasses(video: video, request: request, run: duplicate, missing: missing,
+                                                                   transcription: transcription)
                                 analyzed += 1
                             } catch {
                                 failed += 1
@@ -951,7 +954,7 @@ extension AppStore {
     /// sync. Progress continues from `continueAnalysisStepBatch`, called when
     /// each kind of work finishes.
     func runMissingAnalysisSteps(_ missing: [Int64: [AnalysisSteps.Step]], videos: [VideoRecord], syncWhenDone: Bool, readinessChecked: Bool = false) {
-        if !readinessChecked, missing.values.contains(where: { $0.contains(.transcript) }) {
+        if !readinessChecked, !defaultTranscriptionEngine.isCloud, missing.values.contains(where: { $0.contains(.transcript) }) {
             let generation = profileGeneration
             let projectID = activeProjectID
             Task {
@@ -1044,13 +1047,13 @@ extension AppStore {
     /// tagging and podcast stages land in a new analyze batch like a full
     /// run; people detection and transcription update the video in place.
     func rerun(_ stage: AnalysisStage, video: VideoRecord, provider: String? = nil, model: String? = nil,
-               wordTiming: WordTiming? = nil) {
+               engine: TranscriptionEngine? = nil) {
         guard video.isPresent else { presentError(VideoRecord.notPresentReason); return }
         switch stage {
         case .people:
             detectPeople(in: [video], provider: provider, model: model)
         case .transcript:
-            transcribe(video: video, force: true, wordTiming: wordTiming)
+            transcribe(video: video, force: true, engine: engine)
         case .analysis, .exchanges:
             guard let database, !isAnalyzing else { return }
             let podcast = video.type?.usesPodcastPass == true || stage == .exchanges
@@ -1063,7 +1066,9 @@ extension AppStore {
             analysisStage = podcast ? "grouping exchanges" : "tagging"
             let profile = activeProfile
             let analyzer = analyzer
-            let transcription = transcription
+            let engine = defaultTranscriptionEngine
+            let transcription = transcription(engine: engine)
+            let usesRecognizer = !engine.isCloud
             let podcastAnalysis = podcastAnalysis
             let settings = settings
             let editingDefaults = editingDefaults
@@ -1083,7 +1088,7 @@ extension AppStore {
                         continueAnalysisStepBatch()
                     }
                     do {
-                        if podcast { try await requireRecognizers(for: video) }
+                        if podcast, usesRecognizer { try await requireRecognizers(for: video) }
                         let existingBatches = ((try? await database.fetchAnalysisRuns()) ?? []).count { $0.videoID == video.id }
                         let runName = Self.analysisRunName(for: video, existingBatchCount: existingBatches)
                         let progress: @Sendable (Double, String) -> Void = { fraction, stage in

@@ -65,6 +65,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
     var captionStyleID: String?
     var captionLanguage: String?
     var dubLanguage: String?
+    var lipSync: Bool?
     var pinnedOverlayTemplate: String?
     var overlayStyle: String?
     var overlayAnimation: String?
@@ -132,6 +133,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         case captionStyleID
         case captionLanguage
         case dubLanguage
+        case lipSync
         case pinnedOverlayTemplate
         case overlayStyle
         case overlayAnimation
@@ -205,6 +207,7 @@ nonisolated struct WizardStep2Options: Codable, Sendable {
         try c.encodeIfPresent(captionStyleID, forKey: .captionStyleID)
         try c.encodeIfPresent(captionLanguage, forKey: .captionLanguage)
         try c.encodeIfPresent(dubLanguage, forKey: .dubLanguage)
+        try c.encodeIfPresent(lipSync, forKey: .lipSync)
         try c.encodeIfPresent(pinnedOverlayTemplate, forKey: .pinnedOverlayTemplate)
         try c.encodeIfPresent(overlayStyle, forKey: .overlayStyle)
         try c.encodeIfPresent(overlayAnimation, forKey: .overlayAnimation)
@@ -305,6 +308,7 @@ nonisolated extension WizardOptions {
         result.captionStyleID = captionStyleID
         result.captionLanguage = captionLanguage
         result.dubLanguage = dubLanguage
+        result.lipSync = lipSync
         result.pinnedOverlayTemplate = pinnedOverlayTemplate
         result.overlayStyle = overlayStyle
         result.overlayAnimation = overlayAnimation
@@ -407,6 +411,7 @@ nonisolated extension WizardOptions {
         result.captionStyleID = step2.captionStyleID
         result.captionLanguage = step2.captionLanguage
         result.dubLanguage = step2.dubLanguage
+        result.lipSync = step2.lipSync
         result.pinnedOverlayTemplate = step2.pinnedOverlayTemplate
         result.overlayStyle = step2.overlayStyle
         result.overlayAnimation = step2.overlayAnimation

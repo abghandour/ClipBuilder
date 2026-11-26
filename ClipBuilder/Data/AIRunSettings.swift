@@ -132,7 +132,7 @@ nonisolated struct AISettingsEnvelope: Codable, Sendable {
             ]
         case .options:
             return [
-                "renderSettings", "pacing", "captionLanguage", "dubLanguage", "captionPosition", "speakerCaptionPositions", "captionStyleID", "muteSource",
+                "renderSettings", "pacing", "captionLanguage", "dubLanguage", "lipSync", "captionPosition", "speakerCaptionPositions", "captionStyleID", "muteSource",
                 "addCaptions", "enableTextOverlays", "nameTagsOnly", "nameTags", "nameTagContent", "nameTagStyle", "nameTagStyleID", "nameTagPosition",
                 "safe_area_only", "safe_area_platforms",
                 "strikeStats", "strikeHighlights", "strikeImpactFreeze", "strikeSlowMotion", "strikeFlash", "slowIntoContact", "slowIntoContactStrength", "flashOnContact", "removeFillerWords", "drawnPauses", "strikeHighlightStyle", "pauseOnContact", "pauseOnContactSeconds", "strikeUnits", "strikeSpeedCallouts", "strikeGrapplingCard", "strikeRoundCard",

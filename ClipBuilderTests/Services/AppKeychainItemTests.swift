@@ -68,4 +68,14 @@ struct AppKeychainItemTests {
         KeychainStore.delete(account: "instagram_graph_token:7", api: fake.api)
         #expect(KeychainStore.read(account: "instagram_graph_token:7", api: fake.api) == nil)
     }
+
+    @Test("With the keychain turned off for a launch, keys read as absent and a save is refused")
+    func theDisabledKeychainHoldsNothing() throws {
+        let item = AppKeychain.Item(service: "svc", account: "acct", api: .disabled)
+        #expect(try item.read() == nil)
+        #expect(throws: AppKeychain.Failure(status: errSecInteractionNotAllowed)) {
+            try item.write(Data("key".utf8))
+        }
+        try item.write(nil)
+    }
 }

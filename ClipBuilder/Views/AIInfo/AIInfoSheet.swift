@@ -257,10 +257,10 @@ struct AIInfoSheet: View {
         .modalCloseButton { dismiss() }
             .modifier(ConfirmTranscriptLoss(
                 isRequested: $confirmTranscriptLoss, count: transcriptEditCount,
-                options: pendingTranscriptVideo.map { store.transcriptionTimingOptions(for: [$0], force: true) } ?? [.recognizer]
-            ) { timing in
+                options: pendingTranscriptVideo.map { store.transcriptionOptions(for: [$0], force: true) } ?? [.apple(.recognizer)]
+            ) { engine in
                 guard let video = pendingTranscriptVideo else { return }
-                store.rerun(.transcript, video: video, wordTiming: timing)
+                store.rerun(.transcript, video: video, engine: engine)
                 dismiss()
             })
             .confirmationDialog(

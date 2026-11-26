@@ -352,7 +352,10 @@ struct MiniWizardView: View {
                                 },
                                 onLoad: { preset in
                                     MiniWizardPresetStore.rememberLoaded(.init(name: preset.name, settings: preset.settings), profileName: profileName)
-                                    miniSettings = preset.settings
+                                    var loaded = preset.settings
+                                    // Paid, and shown off without a key: stored off as well.
+                                    if loaded.lipSync, LipSyncService.keyState == false { loaded.lipSync = false }
+                                    miniSettings = loaded
                                     loadedPreset = MiniWizardPresetStore.loaded(profileName: profileName)
                                 },
                                 onRenamed: { oldName, newName in

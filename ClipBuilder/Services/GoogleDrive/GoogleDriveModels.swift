@@ -3,6 +3,10 @@ import Foundation
 nonisolated enum GoogleDriveError: Error, LocalizedError, Equatable {
     case accountMismatch(expected: String)
     case notConfigured, reconnect, quota, notFound, forbidden, offline, cancelled
+    /// The browser never came back with an answer.
+    case signInTimedOut
+    /// Google signed the user in, but the Drive box on its consent page was left unticked.
+    case driveAccessNotGranted
     case invalidResponse, conflict, inUse, cannotReplaceAsset, notShareable
     case server(Int)
     case keychain(Int32)
@@ -24,6 +28,10 @@ nonisolated enum GoogleDriveError: Error, LocalizedError, Equatable {
         case .forbidden: "You don't have permission to change that in Google Drive. Ask its owner for edit access."
         case .offline: "You appear to be offline. We'll retry when you're back."
         case .cancelled: "Google sign-in was cancelled."
+        case .signInTimedOut:
+            "Google sign-in was not finished in your browser. Close any old Google sign-in page, then choose Connect again."
+        case .driveAccessNotGranted:
+            "Google signed you in without access to Drive. Choose Connect again and tick the Google Drive box on Google's permission page."
         case .invalidResponse: "Google Drive couldn't finish that request. Please try again."
         case .cannotReplaceAsset: "cannot replace (not created by Clip Builder)"
         case .notShareable: "Choose a specific folder. The top of My Drive is different for every member."

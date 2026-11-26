@@ -14,12 +14,25 @@ nonisolated enum AppChannel: String, Sendable, CaseIterable {
     static let plistKey = "ClipBuilderChannel"
     static let stableBundleID = "com.mokotti-solutions.clipbuilder"
 
-    /// The running app's channel: the plist key, else the bundle id, else stable.
+    /// The running app's channel: the plist key, else the bundle id, else
+    /// stable. A development build is always the beta: it runs code whose
+    /// library version the installed stable app may not read yet, and opening
+    /// the stable library with it locks that app out (1.166, schema 53). The
+    /// unit-test host stays stable; it works in scratch folders.
     static let current = AppChannel(plistValue: Bundle.main.object(forInfoDictionaryKey: plistKey) as? String,
-                                    bundleID: Bundle.main.bundleIdentifier)
+                                    bundleID: Bundle.main.bundleIdentifier,
+                                    development: isDevelopmentBuild && !BugReporting.isTestHost)
 
-    init(plistValue: String?, bundleID: String? = nil) {
-        if let channel = plistValue.flatMap({ AppChannel(rawValue: $0.lowercased()) }) {
+    #if DEBUG
+    static let isDevelopmentBuild = true
+    #else
+    static let isDevelopmentBuild = false
+    #endif
+
+    init(plistValue: String?, bundleID: String? = nil, development: Bool = false) {
+        if development {
+            self = .beta
+        } else if let channel = plistValue.flatMap({ AppChannel(rawValue: $0.lowercased()) }) {
             self = channel
         } else {
             self = bundleID == AppChannel.beta.bundleID ? .beta : .stable

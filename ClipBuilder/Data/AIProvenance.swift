@@ -185,6 +185,8 @@ nonisolated struct AIProviderBrand: Sendable, Hashable {
                         logoAsset: "logo-moonshot", tintHex: nil),
         AIProviderBrand(key: "apple", label: "Apple", vendor: "Apple",
                         logoAsset: "logo-apple", tintHex: nil),
+        AIProviderBrand(key: "elevenlabs", label: "ElevenLabs", vendor: "ElevenLabs",
+                        logoAsset: "logo-elevenlabs", tintHex: nil),
     ]
 
     static func brand(for key: String) -> AIProviderBrand {

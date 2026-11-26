@@ -222,6 +222,7 @@ nonisolated struct MiniWizardFlow: Sendable {
             if settings.music { audio.append(settings.musicTrackName.map { "Music: \($0)" } ?? "Random music") }
         }
         if settings.dub { audio.append(DubLanguageChoices.summary(settings.dubLanguage ?? DubLanguageChoices.defaultLanguage)) }
+        if settings.dub, settings.lipSync { audio.append("Lip sync") }
         var overlays: [String] = []
         if showsStrikeActions, settings.actionOverlays == true { overlays.append("Action overlays") }
         if showsStrikeActions, settings.slowIntoContact == true { overlays.append("Slow motion into contact (\(settings.resolvedSlowIntoContactStrength))") }

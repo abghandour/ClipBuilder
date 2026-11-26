@@ -41,11 +41,24 @@ nonisolated enum TranscriptSetSwitch {
         return parts.joined(separator: " · ")
     }
 
+    /// What made the set, as a reader names it: "Scribe v3", not the
+    /// provider's model id. Sets from before provenance say "Transcription".
+    static func modelName(_ set: TranscriptionSet) -> String {
+        guard let model = set.model, !model.isEmpty else { return "Transcription" }
+        return ElevenLabsScribe.Model(rawValue: model)?.label ?? model
+    }
+
+    /// Whose mark a set carries in a menu: its provider's, Apple's for sets
+    /// stored before the provider was.
+    static func brand(_ set: TranscriptionSet) -> AIProviderBrand {
+        AIProviderBrand.brand(for: set.provider?.isEmpty == false ? set.provider! : TranscriptionService.providerName)
+    }
+
     /// A short menu label: when it was made, with what, and how long it is.
     static func label(_ set: TranscriptionSet) -> String {
         // A named set reads by its name; the date tells two of one name apart.
         if let name = set.name, !name.isEmpty { return "\(name) · \(date(set.createdAt))" }
-        var parts = [date(set.createdAt), set.model ?? "Transcription", "\(set.segmentCount) segments"]
+        var parts = [date(set.createdAt), modelName(set), "\(set.segmentCount) segments"]
         if set.editedCount > 0 { parts.append("\(set.editedCount) edited") }
         if set.isPinned { parts.append("pinned") }
         return parts.joined(separator: " · ")

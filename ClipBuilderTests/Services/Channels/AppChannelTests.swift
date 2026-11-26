@@ -17,6 +17,12 @@ struct AppChannelTests {
         #expect(AppChannel(plistValue: "stable", bundleID: "com.mokotti-solutions.clipbuilder.beta") == .stable)
     }
 
+    @Test func aDevelopmentBuildNeverOwnsTheStableFiles() {
+        #expect(AppChannel(plistValue: "stable", bundleID: "com.mokotti-solutions.clipbuilder", development: true) == .beta)
+        #expect(AppChannel(plistValue: nil, development: true) == .beta)
+        #expect(AppChannel(plistValue: "stable", development: false) == .stable)
+    }
+
     @Test func namesFilesAndBundleIDsPerChannel() {
         #expect(AppChannel.stable.displayName == "Clip Builder")
         #expect(AppChannel.beta.displayName == "Clip Builder Beta")

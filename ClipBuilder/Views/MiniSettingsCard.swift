@@ -178,7 +178,10 @@ struct MiniSettingsCard: View {
             Toggle("Dub", isOn: $settings.dub)
         }
         if settings.dub {
-            MiniDependents { DubLanguagePicker(language: $settings.dubLanguage) }
+            MiniDependents {
+                DubLanguagePicker(language: $settings.dubLanguage)
+                LipSyncToggleRows(isOn: $settings.lipSync)
+            }
         }
     }
 

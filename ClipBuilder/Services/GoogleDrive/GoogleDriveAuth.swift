@@ -145,8 +145,9 @@ actor GoogleDriveAuth {
             "grant_type": "authorization_code", "code": code,
             "code_verifier": verifier, "redirect_uri": redirectURI,
         ])
-        guard let refresh = token.refreshToken, !refresh.isEmpty,
-            let scope = token.scope, Self.hasDriveScopes(scope)
+        // Google lets the user untick Drive and still signs them in.
+        if let scope = token.scope, !Self.hasDriveScopes(scope) { throw GoogleDriveError.driveAccessNotGranted }
+        guard let refresh = token.refreshToken, !refresh.isEmpty, token.scope != nil
         else { throw GoogleDriveError.reconnect }
         var request = URLRequest(url: URL(string: "https://www.googleapis.com/oauth2/v3/userinfo")!)
         request.setValue("Bearer \(token.accessToken)", forHTTPHeaderField: "Authorization")
@@ -155,6 +156,8 @@ actor GoogleDriveAuth {
         struct User: Decodable { var email: String }
         let user = try JSONDecoder().decode(User.self, from: data)
         guard generations[profile, default: 0] == generation else { throw CancellationError() }
+        // A sign-in the user cancelled saves nothing, however far it got.
+        try Task.checkCancellation()
         // Reconnect must keep the same account: existing Drive ids belong to it.
         if let previous = try credential(profile: profile), previous.email != user.email {
             throw GoogleDriveError.accountMismatch(expected: previous.email)

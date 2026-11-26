@@ -1,27 +1,39 @@
 import AppKit
-import AuthenticationServices
 import Network
 import Security
 
-/// Google Desktop OAuth uses a loopback redirect. ASWebAuthenticationSession owns
-/// the browser; the listener owns the callback. Only a matching state completes it.
+/// Google Desktop OAuth uses a loopback redirect: the consent page opens as
+/// an ordinary tab of the default browser, and the listener owns the
+/// callback. Only a matching state completes it.
+///
+/// Not ASWebAuthenticationSession: with a loopback redirect it never ends by
+/// itself, its window outlives the attempt that opened it, and a second
+/// attempt then shows no window while the old one redirects to a port
+/// nobody listens on (seen 2026-11-25).
 @MainActor
-final class GoogleDriveSignIn: NSObject, ASWebAuthenticationPresentationContextProviding {
-    private var session: ASWebAuthenticationSession?
+final class GoogleDriveSignIn {
     private var listener: NWListener?
     private var continuation: CheckedContinuation<(String, String), Error>?
     private var timeout: Task<Void, Never>?
     private var state = ""
     private var redirectURI = ""
+    /// The token exchange that follows the browser's callback.
+    private var exchange: Task<Void, Error>?
+    private var gaveUp = false
 
-    func presentationAnchor(for session: ASWebAuthenticationSession) -> ASPresentationAnchor {
-        NSApp.keyWindow ?? NSApp.windows.first ?? ASPresentationAnchor()
+    /// Ends a sign-in the user gave up on, in the browser wait or in the
+    /// exchange after it; `connect` throws `cancelled`.
+    func cancel() {
+        gaveUp = true
+        exchange?.cancel()
+        finish(.failure(GoogleDriveError.cancelled))
     }
 
     func connect(auth: GoogleDriveAuth, profile: String) async throws {
         let configuration = await auth.configuration
         guard configuration.isConfigured else { throw GoogleDriveError.notConfigured }
-        guard continuation == nil else { return }
+        guard continuation == nil, exchange == nil else { return }
+        gaveUp = false
         let verifier = try randomToken()
         state = try randomToken()
         let (code, redirect) = try await withTaskCancellationHandler {
@@ -32,7 +44,21 @@ final class GoogleDriveSignIn: NSObject, ASWebAuthenticationPresentationContextP
         } onCancel: {
             Task { @MainActor in self.finish(.failure(CancellationError())) }
         }
-        try await auth.completeSignIn(code: code, verifier: verifier, redirectURI: redirect, profile: profile)
+        // Cancel between the browser's callback and here: nothing is exchanged.
+        if gaveUp { throw GoogleDriveError.cancelled }
+        let exchange = Task {
+            try await auth.completeSignIn(code: code, verifier: verifier, redirectURI: redirect, profile: profile)
+        }
+        self.exchange = exchange
+        defer { self.exchange = nil }
+        do {
+            try await withTaskCancellationHandler { try await exchange.value } onCancel: { exchange.cancel() }
+        } catch {
+            if gaveUp { throw GoogleDriveError.cancelled }
+            throw error
+        }
+        // A cancel that arrives after the exchange saved the account is too
+        // late: the profile is connected, and the caller shows it that way.
     }
 
     private func randomToken() throws -> String {
@@ -78,7 +104,7 @@ final class GoogleDriveSignIn: NSObject, ASWebAuthenticationPresentationContextP
         timeout = Task {
             try? await Task.sleep(for: .seconds(300))
             guard !Task.isCancelled else { return }
-            finish(.failure(GoogleDriveError.cancelled))
+            finish(.failure(GoogleDriveError.signInTimedOut))
         }
     }
 
@@ -112,12 +138,21 @@ final class GoogleDriveSignIn: NSObject, ASWebAuthenticationPresentationContextP
                     connection.cancel()
                     return
                 }
-                let body = "You can close this window and return to Clip Builder."
+                let code = url.queryItems?.first(where: { $0.name == "code" })?.value
+                // Google names what was granted: say so here, where the user is looking.
+                let granted = url.queryItems?.first(where: { $0.name == "scope" })?.value
+                let withoutDrive = code != nil && granted.map { !GoogleDriveAuth.hasDriveScopes($0) } == true
+                let body = withoutDrive
+                    ? "Google signed you in, but without access to Google Drive. Return to Clip Builder, choose Connect again and tick the Google Drive box on Google's permission page."
+                    : code == nil ? "Google sign-in was not completed. You can close this tab and return to Clip Builder."
+                    : "You can close this tab and return to Clip Builder."
                 let response =
-                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
+                    "HTTP/1.1 200 OK\r\nContent-Type: text/plain; charset=utf-8\r\nContent-Length: \(body.utf8.count)\r\nConnection: close\r\n\r\n\(body)"
                 connection.send(
                     content: Data(response.utf8), completion: .contentProcessed { _ in connection.cancel() })
-                if let code = url.queryItems?.first(where: { $0.name == "code" })?.value {
+                if withoutDrive {
+                    self.finish(.failure(GoogleDriveError.driveAccessNotGranted))
+                } else if let code {
                     self.finish(.success((code, self.redirectURI)))
                 } else {
                     self.finish(.failure(GoogleDriveError.cancelled))
@@ -136,14 +171,7 @@ final class GoogleDriveSignIn: NSObject, ASWebAuthenticationPresentationContextP
             "code_challenge_method": "S256", "access_type": "offline", "prompt": "consent",
         ]
         .map { URLQueryItem(name: $0.key, value: $0.value) }
-        let session = ASWebAuthenticationSession(url: url.url!, callbackURLScheme: nil) { [weak self] _, error in
-            Task { @MainActor in
-                if error != nil { self?.finish(.failure(GoogleDriveError.cancelled)) }
-            }
-        }
-        self.session = session
-        session.presentationContextProvider = self
-        if !session.start() { finish(.failure(GoogleDriveError.cancelled)) }
+        if !NSWorkspace.shared.open(url.url!) { finish(.failure(GoogleDriveError.invalidResponse)) }
     }
 
     private func finish(_ result: Result<(String, String), Error>) {
@@ -153,8 +181,6 @@ final class GoogleDriveSignIn: NSObject, ASWebAuthenticationPresentationContextP
         timeout = nil
         listener?.cancel()
         listener = nil
-        session?.cancel()
-        session = nil
         continuation.resume(with: result)
     }
 }

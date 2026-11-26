@@ -1613,6 +1613,8 @@ private struct VideoPreviewPane: View {
     /// Whether any transcript rows exist for this video — shows the editor.
     @State private var hasTranscript = false
     @State private var transcriptSetLabel = ""
+    /// Whose mark the transcript in use carries; nil without a local set.
+    @State private var transcriptSetBrand: AIProviderBrand?
     @State private var transcriptPinMissing = false
     @State private var showTranscript = false
 
@@ -1776,8 +1778,14 @@ private struct VideoPreviewPane: View {
                 HStack {
                     VStack(alignment: .leading, spacing: 2) {
                         Text("Transcript").font(.caption.weight(.medium))
-                        Text(transcriptSetLabel).font(.caption).foregroundStyle(.secondary)
-                            .lineLimit(1).fixedSize()
+                        HStack(spacing: 4) {
+                            if let transcriptSetBrand {
+                                ProviderLogo(brand: transcriptSetBrand, size: 10)
+                                    .help("Transcribed by \(transcriptSetBrand.label)")
+                            }
+                            Text(transcriptSetLabel).font(.caption).lineLimit(1).fixedSize()
+                        }
+                        .foregroundStyle(.secondary)
                         if transcriptPinMissing {
                             Text("Pinned set not on this Mac yet").font(.caption).foregroundStyle(.secondary)
                         }
@@ -2105,8 +2113,10 @@ private struct VideoPreviewPane: View {
             if let index = Array(sets.reversed()).firstIndex(where: { $0.isActive }) {
                 let number = index + 1
                 transcriptSetLabel = "Set \(number) of \(sets.count) (\(resolution?.reason ?? "newest"))"
+                transcriptSetBrand = sets.first(where: \.isActive).map(TranscriptSetSwitch.brand)
             } else {
                 transcriptSetLabel = "No local set"
+                transcriptSetBrand = nil
             }
         }
         .sheet(isPresented: $showTranscript) {

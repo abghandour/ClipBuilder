@@ -16,6 +16,7 @@ nonisolated enum WizardPresetBridge {
         fields["dubLanguage"] = settings.dub ? .string(settings.dubLanguage ?? DubLanguageChoices.defaultLanguage) : .string("")
         // Keep the remembered choice even when the toggle is off in an Express preset.
         fields["dub"] = .bool(settings.dub)
+        fields["lipSync"] = .bool(settings.lipSync)
         fields["miniDubLanguage"] = settings.dubLanguage.map(JSONSetting.string) ?? .null
         fields["drawnPauses"] = settings.drawnPauses.map(JSONSetting.bool) ?? .null
         fields["removeFillerWords"] = settings.removeFillerWords.map(JSONSetting.bool) ?? .null
@@ -102,6 +103,7 @@ nonisolated enum WizardPresetBridge {
         }
         if let value = fields["miniDubLanguage"] { settings.dubLanguage = value.string }
         if let value = fields["dub"]?.bool { settings.dub = value }
+        if let value = fields["lipSync"]?.bool { settings.lipSync = value }
         if let value = fields["drawnPauses"] { settings.drawnPauses = value.bool }
         if let value = fields["removeFillerWords"] { settings.removeFillerWords = value.bool }
         if let value = fields["strikeHighlightStyle"] { settings.strikeHighlightStyle = value.string }

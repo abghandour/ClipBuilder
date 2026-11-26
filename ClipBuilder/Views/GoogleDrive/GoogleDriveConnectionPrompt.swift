@@ -34,10 +34,11 @@ struct GoogleDriveConnectionPrompt: View {
             } else if introducing {
                 Text("Connect to browse and download your Drive videos, and upload source videos or finished reels.")
                 Text("Your projects, timelines, analysis and settings stay on this Mac.")
-                Button(store.googleDrive.connecting.contains(profile) ? "Connecting…" : "Connect") {
-                    store.googleDrive.connect(profile: profile)
+                if store.googleDrive.connecting.contains(profile) {
+                    GoogleDriveConnectingRow(profile: profile)
+                } else {
+                    Button("Connect") { store.googleDrive.connect(profile: profile) }
                 }
-                .disabled(store.googleDrive.connecting.contains(profile))
             } else {
                 Text("Sign in to Google to browse your videos and continue transfers.")
             }

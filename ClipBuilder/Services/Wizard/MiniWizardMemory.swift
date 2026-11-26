@@ -13,7 +13,7 @@ nonisolated enum MiniWizardMemory {
         case introVideo, outroVideo, nameTags, watermark, outputMode
         case overlay, overlayTemplate, overlayStart, overlayDuration, overlayTexts, overlayPosition, overlayEdits
         case introBumper, outroBumper, watermarkOverlay, watermarkOpacity, transition, look
-        case removeFillerWords, muteSourceAudio, music, musicTrack, settingsTab, dub, dubLanguage
+        case removeFillerWords, muteSourceAudio, music, musicTrack, settingsTab, dub, dubLanguage, lipSync
     }
 
     static func key(for field: Field, profileName: String) -> String {

@@ -134,6 +134,9 @@ final class GoogleDriveTransfers {
         for profile in profiles { await refreshState(profile: profile) }
     }
 
+    /// Gives up a sign-in still waiting on the browser.
+    func cancelConnect(profile: String) { signIns[profile]?.cancel() }
+
     func connect(profile: String) {
         guard !connecting.contains(profile) else { return }
         connecting.insert(profile)

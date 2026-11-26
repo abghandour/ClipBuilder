@@ -3,13 +3,13 @@ import AVKit
 import Vision
 
 /// Shared by the analysis re-run controls. With no edits to lose and one
-/// word timing to use it proceeds immediately; otherwise it asks, with one
-/// button per timing in `options` (the default from Settings first).
+/// model to use it proceeds immediately; otherwise it asks, with one
+/// button per model in `options` (the default from Settings first).
 struct ConfirmTranscriptLoss: ViewModifier {
     @Binding var isRequested: Bool
     let count: Int
-    var options: [WordTiming] = [.recognizer]
-    let action: (WordTiming?) -> Void
+    var options: [TranscriptionEngine] = [.apple(.recognizer)]
+    let action: (TranscriptionEngine?) -> Void
 
     static func message(count: Int) -> String {
         "This transcript has \(count) edited lines. Re-transcribing makes a new transcript set; the edited set stays in the sets list but stops being active."
@@ -32,25 +32,25 @@ struct ConfirmTranscriptLoss: ViewModifier {
                 Button("Cancel", role: .cancel) {}
             } message: {
                 Text([count > 0 ? Self.message(count: count) : nil,
-                      options.count > 1 ? TranscriptionModelChoiceDialog.message : nil]
+                      options.count > 1 ? TranscriptionModelChoiceDialog.message(for: options) : nil]
                     .compactMap { $0 }.joined(separator: " "))
             }
     }
 }
 
-/// The confirming buttons of a re-transcribe dialog: one per word timing
+/// The confirming buttons of a re-transcribe dialog: one per model
 /// when there is a choice (the default from Settings first), otherwise the
-/// single discard button. `destructive` marks the per-timing buttons when
+/// single discard button. `destructive` marks the per-model buttons when
 /// confirming also throws something away.
 struct RetranscribeButtons: View {
-    let options: [WordTiming]
+    let options: [TranscriptionEngine]
     let destructive: Bool
-    let action: (WordTiming?) -> Void
+    let action: (TranscriptionEngine?) -> Void
 
     var body: some View {
         if options.count > 1 {
-            ForEach(options) { timing in
-                Button("Re-transcribe with \(timing.label)", role: destructive ? .destructive : nil) { action(timing) }
+            ForEach(options) { engine in
+                Button("Re-transcribe with \(engine.label)", role: destructive ? .destructive : nil) { action(engine) }
             }
         } else {
             Button("Discard Transcript and Re-transcribe", role: .destructive) { action(nil) }

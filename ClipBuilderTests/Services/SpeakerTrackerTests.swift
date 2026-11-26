@@ -324,6 +324,50 @@ extension SpeakerTrackerTests {
         #expect(abs((outcome.turns.first?.end ?? 0) - 10) <= 0.5, "the handover follows the voices")
     }
 
+    /// The Alice Pereira interview (2026-11-25) in small: the guest talks
+    /// 52 of 60 seconds, and the host's tile is the restless one, so both
+    /// voices lean toward it: the guest's 62% of her time, the host's 80%
+    /// of his. By raw sums the guest's long answers own the host's tile.
+    private func longAnswers() -> SpeakerTracker.Input {
+        let tiles = [PodcastTile(index: 0, x: 0, y: 0, w: 0.5, h: 1, personKey: "guest"),
+                     PodcastTile(index: 1, x: 0.5, y: 0, w: 0.5, h: 1, personKey: "host")]
+        let bins = 240, guestBins = 208
+        var motion = [[Double]](repeating: [Double](repeating: 1, count: bins), count: 2)
+        // The host's tile moves four times as much two bins in five while
+        // the guest speaks, and all the time while the host does.
+        for b in 0..<bins where b >= guestBins || b % 5 >= 3 { motion[1][b] = 4 }
+        func window(_ start: Double, _ vector: [Double]) -> SpeakerFeatures.Window {
+            SpeakerFeatures.Window(start: start, end: start + 1, vector: SpeakerClustering.normalized(vector))
+        }
+        var windows: [SpeakerFeatures.Window] = []
+        for i in 0..<52 { windows.append(window(Double(i), [1, Double(i % 3) * 0.05, 0])) }
+        for i in 52..<60 { windows.append(window(Double(i), [Double(i % 3) * 0.05, 1, 0])) }
+        let activity = VisualSpeechActivity.Activity(binSeconds: 0.25, motion: motion)
+        return .init(audioWindows: windows, activity: activity, speech: [0...60], tiles: tiles,
+                     duration: 60, featureKind: .embedding)
+    }
+
+    @Test("the voice that talks longest does not take the tile another voice sits on more of its own time")
+    func talkTimeDoesNotDecideTheTile() throws {
+        let outcome = SpeakerTracker.track(longAnswers(), videoID: 1)
+        #expect(outcome.clusterCount == 2 && outcome.anchors.isEmpty)
+        func tile(at time: Double) -> Int? { outcome.turns.first { $0.start <= time && time < $0.end }?.tile }
+        let guestCluster = try #require(outcome.turns.first { $0.start <= 10 && 10 < $0.end }?.cluster)
+        let hostCluster = try #require(outcome.turns.first { $0.start <= 56 && 56 < $0.end }?.cluster)
+        #expect(guestCluster != hostCluster)
+        // The premise: both voices lean to the host's tile, and the raw sum
+        // there is the guest's by a wide margin.
+        let guest = outcome.affinity[guestCluster], host = outcome.affinity[hostCluster]
+        #expect(guest[1] > guest[0] && host[1] > host[0], "affinity=\(outcome.affinity)")
+        #expect(guest[1] > 3 * host[1], "affinity=\(outcome.affinity)")
+        #expect(host[1] / (host[0] + host[1]) > guest[1] / (guest[0] + guest[1]), "affinity=\(outcome.affinity)")
+        // The ranking: each voice gets the tile it goes with beyond chance.
+        #expect(outcome.clusterSlots[guestCluster] == 0 && outcome.clusterSlots[hostCluster] == 1,
+                "\(outcome.clusterSlots) affinity=\(outcome.affinity)")
+        #expect(tile(at: 10) == 0 && tile(at: 40) == 0 && tile(at: 56) == 1,
+                "\(outcome.turns.map { ($0.start, $0.end, $0.tile) })")
+    }
+
     @Test("a remembered voice anchors its cluster to its tile when the border taught nothing")
     func rememberedVoiceAnchorsCluster() {
         // Only the host's voice is remembered, and it is the first voice.

@@ -1,5 +1,38 @@
 import SwiftUI
 
+/// Settings → General → Transcription: what transcribes when nothing asks.
+/// Apple keeps its word timing choice (the rows below); ElevenLabs is
+/// offered whatever the key's state, and says when the key is missing.
+struct TranscriptionEngineSettingsRow: View {
+    @Environment(AppStore.self) private var store
+    @State private var hasKey = true
+
+    private var usesElevenLabs: Bool { store.settings.transcriptionEngine.isCloud }
+
+    var body: some View {
+        Picker("Default model", selection: Binding(
+            get: { usesElevenLabs ? store.settings.transcriptionEngine : .apple(.recognizer) },
+            set: { engine in
+                // Choosing Apple here keeps the word timing chosen below.
+                store.settings.transcriptionEngine = engine.isCloud ? engine : .apple(store.settings.wordTimingChoice)
+            }
+        )) {
+            Text("Apple SpeechAnalyzer (on this Mac)").tag(TranscriptionEngine.apple(.recognizer))
+            ForEach(ElevenLabsScribe.Model.allCases) { model in
+                Text(TranscriptionEngine.elevenLabs(model).label).tag(TranscriptionEngine.elevenLabs(model))
+            }
+        }
+        .task(id: usesElevenLabs) { hasKey = store.hasElevenLabsKey }
+        .help("What Transcribe, analysis and the wizard use when nothing asks. New Transcript in a transcript, Transcribe and Re-transcribe let you pick another model for that one run.")
+        if usesElevenLabs {
+            Text(hasKey
+                 ? "Every new transcript uploads its audio to ElevenLabs, which bills per hour of audio. Existing transcripts are kept."
+                 : "No ElevenLabs key is saved on this Mac: transcription fails until you add one in Settings › AI.")
+                .font(.caption).foregroundStyle(hasKey ? Color.secondary : Color.orange)
+        }
+    }
+}
+
 /// Settings → General → Transcription: the word timing a new transcript
 /// gets when nothing asks, and the model precise timing needs.
 struct WordTimingSettingsRows: View {
@@ -15,6 +48,7 @@ struct WordTimingSettingsRows: View {
         Picker("Default word timing", selection: $store.settings.wordTimingChoice) {
             ForEach(WordTiming.allCases) { Text($0.label).tag($0) }
         }
+        .disabled(store.settings.transcriptionEngine.isCloud)
         // On the picker, which is always in the form: a modifier on an
         // empty view never runs. Re-read the disk when a job ends.
         .task(id: store.jobs.completionRevision(.wordTimingModel)) { installed = WordAlignerModel.isInstalled }

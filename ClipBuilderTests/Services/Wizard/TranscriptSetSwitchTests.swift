@@ -59,4 +59,15 @@ extension TranscriptSetSwitchTests {
         record.settingsJSON = #"{"options":{},"transcriptKey":"a"}"#
         #expect(TranscriptSetSwitch.transcriptKey(of: record) == "a")
     }
+
+    @Test func aSetCarriesItsProvidersMarkAndAReadableModelName() {
+        let scribe = TranscriptionSet(id: "a", createdAt: "2026-11-25T22:08:03.699", model: "scribe_v3", provider: "elevenlabs", segmentCount: 395)
+        #expect(TranscriptSetSwitch.brand(scribe).logoAsset == "logo-elevenlabs")
+        #expect(TranscriptSetSwitch.label(scribe) == "Nov 25, 22:08 · Scribe v3 · 395 segments")
+        // Sets stored before the provider was are Apple's.
+        let legacy = TranscriptionSet(id: "b", createdAt: "2026-11-05T20:10:20.139", model: "SpeechTranscriber")
+        #expect(TranscriptSetSwitch.brand(legacy).logoAsset == "logo-apple")
+        #expect(TranscriptSetSwitch.modelName(legacy) == "SpeechTranscriber")
+        #expect(TranscriptSetSwitch.modelName(TranscriptionSet(id: "c", createdAt: "")) == "Transcription")
+    }
 }

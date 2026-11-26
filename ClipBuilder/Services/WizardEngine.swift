@@ -25,7 +25,7 @@ import Foundation
 
 nonisolated struct WizardOptions: Codable, Sendable {
     enum CodingKeys: String, CodingKey {
-        case dubLanguage, manualBRoll
+        case dubLanguage, manualBRoll, lipSync
         case voiceOverBedLevel
         case removeFillerWords, drawnPauses, strikeHighlightStyle
         case strikeStats, strikeHighlights, strikeImpactFreeze, strikeSlowMotion, strikeFlash, strikeUnits, strikeSpeedCallouts, strikeGrapplingCard, strikeRoundCard
@@ -46,6 +46,7 @@ nonisolated struct WizardOptions: Codable, Sendable {
     func encode(to encoder: Encoder) throws {
         var c = encoder.container(keyedBy: CodingKeys.self)
         try c.encodeIfPresent(dubLanguage, forKey: .dubLanguage)
+        try c.encodeIfPresent(lipSync, forKey: .lipSync)
         try c.encodeIfPresent(manualBRoll, forKey: .manualBRoll)
         try c.encodeIfPresent(strikeStats, forKey: .strikeStats)
         try c.encodeIfPresent(drawnPauses, forKey: .drawnPauses)
@@ -151,6 +152,8 @@ nonisolated struct WizardOptions: Codable, Sendable {
     var captionStyleID: String?
     var captionLanguage: String?
     var dubLanguage: String?
+    /// Re-time the speakers' mouths to the dub after the render (Sync Labs, paid); nil is off.
+    var lipSync: Bool?
     /// A dubbed reel is captioned in the dub's language; the caption choice only applies without a dub.
     var effectiveCaptionLanguage: String? { dubLanguage.flatMap { $0.isEmpty ? nil : $0 } ?? captionLanguage }
     var workflow: WizardWorkflow?
@@ -4813,6 +4816,26 @@ actor WizardEngine {
             emit("Speech polish (\(polish.strength.label.lowercased()))…")
             try await WizardTiming.measure("speech polish", emit: emit) {
                 try await SpeechPolish.applyInPlace(outputURL, settings: polish)
+            }
+        }
+
+        if options.lipSync == true, document.dub?.enabled == true {
+            // Paid and remote: a failure keeps the finished reel as it is.
+            do {
+                let result = try await WizardTiming.measure("lip sync", emit: emit) {
+                    try await LipSyncService().sync(reel: outputURL, model: LipSyncService.chosenModel(),
+                                                    scratch: scratch, log: emit)
+                }
+                switch result {
+                case .synced: emit("Lip sync done")
+                case .unchanged(let reason): emit("Lip sync changed nothing: \(reason)")
+                }
+            } catch is CancellationError {
+                throw CancellationError()
+            } catch {
+                // Stop during an upload or download surfaces as URLError.cancelled.
+                try Task.checkCancellation()
+                emit("Lip sync skipped, the reel was kept without it: \(error.localizedDescription)")
             }
         }
 

@@ -898,11 +898,11 @@ final class AppStore {
     }
 
     /// Each run captures this profile's cleanup policy before leaving the UI.
-    var transcription: TranscriptionService { transcription(wordTiming: nil) }
-    /// `wordTiming` is the user's choice for this run; nil uses the default from Settings.
-    func transcription(wordTiming: WordTiming?) -> TranscriptionService {
+    var transcription: TranscriptionService { transcription(engine: nil) }
+    /// `engine` is the user's choice for this run; nil uses the default from Settings.
+    func transcription(engine: TranscriptionEngine?) -> TranscriptionService {
         TranscriptionService(podcastSettings: podcastEditingSettings, spokenLocales: projectLanguages.spoken,
-                             wordTiming: wordTiming ?? settings.wordTimingChoice,
+                             engine: engine ?? defaultTranscriptionEngine,
                              corrections: activeProfile.transcriptCorrections ?? [],
                              onFirstTranscript: firstTranscriptHandler())
     }

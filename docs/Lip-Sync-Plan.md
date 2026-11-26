@@ -1,8 +1,47 @@
 # Lip sync for the dub (Sync)
 
-Date: November 14, 2026. Status: draft, not implemented. Requested by the
-user on November 14, 2026: "write a plan for integrating sync.so lip sync
-into the dub".
+Date: November 14, 2026, revised November 26, 2026. Status: the whole-reel
+pass below ("First cut") is implemented and uncommitted, not yet run
+against the live service; the per-clip design is still a draft. Requested
+by the user on November 14, 2026 ("write a plan for integrating sync.so lip
+sync into the dub") and on November 26, 2026 ("add the lipsync as a toggle
+as part of the Audio panel when generating a video").
+
+## First cut (November 26, 2026): a toggle in the Audio panel
+
+The user asked for lip sync as a switch beside Dub where a reel is
+generated, so the first cut is the short route this plan argued against:
+the finished reel is sent once. It is the only route a generate-time toggle
+needs, and it proves the service and the quality before the per-clip work.
+
+- **Controls.** Express (Audio tab) and the full wizard (Sound & music): a
+  "Lip sync" toggle under Dub, shown only while Dub is on, off by default.
+  Its caption states the model and the rate; the summary line lists it.
+  Without a key the toggle is disabled and the row opens Settings.
+  Settings > AI > Lip Sync holds the key, Check and the model.
+- **Pass.** `WizardEngine.renderPrepared`, after speech polish and before
+  the quality gate, when `options.lipSync == true` and the document has an
+  enabled dub: check the account's length limit, extract the reel's audio
+  to WAV, upload both as assets (`reel.mp4`, `reel.wav`: no title, profile
+  or person name leaves the Mac), generate with `sync_mode: cut_off` and
+  `active_speaker_detection.auto_detect`, poll every 5 s, download, mux the
+  synced picture with the reel's own audio (stream copy), require the same
+  length within half a second, replace the file.
+- **Failure.** A lip-sync failure never fails the reel: the unsynced reel
+  is kept and the reel log says why. Stopping the job stops the wait.
+- **What it gives up against the design below.** Captions and overlays are
+  in the picture Sync sees; the whole reel is billed and re-encoded,
+  silent clips included; every regenerate pays again; and here the render
+  does spend, because the toggle asks it to. "The render never spends"
+  still holds for the Builder, which has no lip sync yet.
+- **Names.** `Services/SyncLabs/` (`LipSync` pure rules, `SyncLabsClient`,
+  `SyncLabsKeychain` with item `com.clipbuilder.synclabs`, `LipSyncService`),
+  `AISettings.lipSync: LipSyncSettings?`, `WizardOptions.lipSync`,
+  `WizardOptionsStep2.lipSync`, `MiniWizardSettings.lipSync`,
+  `Views/LipSyncToggleRows.swift`.
+- **Still owed.** Phase 0 (the hand check of quality) was skipped and is
+  the first thing to do with a key: one dubbed two-person reel end to end.
+  Then phases 2 to 5 below replace the whole-reel pass with takes.
 
 ## Goal
 

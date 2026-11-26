@@ -34,6 +34,7 @@ nonisolated extension WizardOptions {
         captionStyleID = try values.decodeIfPresent(String.self, forKey: .captionStyleID)
         captionLanguage = try values.decodeIfPresent(String.self, forKey: .captionLanguage)
         dubLanguage = try values.decodeIfPresent(String.self, forKey: .dubLanguage)
+        lipSync = try values.decodeIfPresent(Bool.self, forKey: .lipSync)
         workflow = try values.decodeIfPresent(WizardWorkflow.self, forKey: .workflow)
         muteSource = try values.decodeIfPresent(Bool.self, forKey: .muteSource) ?? muteSource
         addCaptions = try values.decodeIfPresent(Bool.self, forKey: .addCaptions) ?? addCaptions

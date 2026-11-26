@@ -30,6 +30,28 @@ struct ProviderLogo: View {
     }
 }
 
+/// A menu row that opens with a provider's mark. Menus draw an image at its
+/// own size and in the menu's text color, so the mark is a 14-point
+/// template copy and carries no brand tint here.
+struct ProviderMenuLabel: View {
+    let title: String
+    let brand: AIProviderBrand
+
+    private var mark: Image {
+        guard let asset = brand.logoAsset, let source = NSImage(named: asset),
+              let copy = source.copy() as? NSImage else { return Image(systemName: "sparkles") }
+        copy.size = NSSize(width: 14, height: 14)
+        copy.isTemplate = true
+        return Image(nsImage: copy)
+    }
+
+    var body: some View {
+        // Named, so a closed menu's button shows the mark too.
+        Label { Text(title) } icon: { mark.accessibilityLabel(brand.label) }
+            .labelStyle(.titleAndIcon)
+    }
+}
+
 nonisolated extension Color {
     /// "#RRGGBB" → Color; nil for anything else.
     init?(hex: String) {

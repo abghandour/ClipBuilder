@@ -24,6 +24,25 @@ nonisolated struct AppSettings: Codable, Sendable {
         get { wordTiming.flatMap(WordTiming.init(rawValue:)) ?? .recognizer }
         set { wordTiming = newValue == .recognizer ? nil : newValue.rawValue }
     }
+    /// What transcribes when nothing asks: `transcribeProvider` and, for
+    /// ElevenLabs, `transcribeModel`; Apple carries the default word timing.
+    var transcriptionEngine: TranscriptionEngine {
+        get {
+            transcribeProvider == ElevenLabsScribe.provider
+                ? .elevenLabs(ElevenLabsScribe.Model(rawValue: transcribeModel) ?? .v3) : .apple(wordTimingChoice)
+        }
+        set {
+            switch newValue {
+            case .apple(let timing):
+                transcribeProvider = "apple"
+                transcribeModel = ""
+                wordTimingChoice = timing
+            case .elevenLabs(let model):
+                transcribeProvider = ElevenLabsScribe.provider
+                transcribeModel = model.rawValue
+            }
+        }
+    }
     var theme: String = "default"
     var ai: AIConfig = AIConfig()
     var instagram: InstagramSettings = InstagramSettings()
@@ -244,6 +263,8 @@ nonisolated struct AIConfig: Codable, Sendable {
     var providerCooldownMinutes: Int = 15
     /// Non-secret, Mac-local speech settings. The API key lives only in the keychain.
     var elevenLabs: ElevenLabsSettings?
+    /// Non-secret, Mac-local lip sync settings. The Sync Labs key lives only in the keychain.
+    var lipSync: LipSyncSettings?
 
     init() {}
 
@@ -258,6 +279,7 @@ nonisolated struct AIConfig: Codable, Sendable {
         mutedDispatchPlans = try container.decodeIfPresent([String].self, forKey: .mutedDispatchPlans) ?? []
         providerCooldownMinutes = try container.decodeIfPresent(Int.self, forKey: .providerCooldownMinutes) ?? 15
         elevenLabs = try container.decodeIfPresent(ElevenLabsSettings.self, forKey: .elevenLabs)
+        lipSync = try container.decodeIfPresent(LipSyncSettings.self, forKey: .lipSync)
     }
 
     enum CodingKeys: String, CodingKey {
@@ -269,6 +291,7 @@ nonisolated struct AIConfig: Codable, Sendable {
         case taskModels = "task_models"
         case mutedDispatchPlans = "muted_dispatch_plans"
         case elevenLabs = "eleven_labs"
+        case lipSync = "lip_sync"
     }
 }
 
@@ -277,6 +300,11 @@ nonisolated struct ElevenLabsSettings: Codable, Sendable, Equatable {
     var stability = 0.5
     var similarity = 0.75
     var concurrency = 2
+}
+
+nonisolated struct LipSyncSettings: Codable, Sendable, Equatable {
+    /// A `LipSync.Model` raw value.
+    var model = LipSync.Model.fallback.rawValue
 }
 
 nonisolated struct AIProviderSettings: Codable, Sendable, Equatable {

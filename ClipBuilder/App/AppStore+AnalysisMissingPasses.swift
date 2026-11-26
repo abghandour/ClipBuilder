@@ -1,7 +1,10 @@
 import Foundation
 
 extension AppStore {
-    func runMissingAnalysisPasses(video: VideoRecord, request: AnalysisRequest, run: AnalysisRun, missing: [String]) async throws {
+    /// `transcription` is the batch's own service, so its engine is the one
+    /// the batch's recognizer check was made for.
+    func runMissingAnalysisPasses(video: VideoRecord, request: AnalysisRequest, run: AnalysisRun, missing: [String],
+                                  transcription: TranscriptionService) async throws {
         guard let database else { return }
         var video = video
         video.videoType = request.videoType

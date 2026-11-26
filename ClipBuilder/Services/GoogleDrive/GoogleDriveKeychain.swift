@@ -14,7 +14,23 @@ nonisolated struct KeychainAPI: Sendable {
     var add: @Sendable ([String: Any]) -> OSStatus
     var delete: @Sendable ([String: Any]) -> OSStatus
 
-    static let system = KeychainAPI(
+    /// Launch with `-ClipBuilderNoKeychain YES` to run without the keychain:
+    /// a scratch copy of an ad-hoc build then never raises the login
+    /// keychain's password prompt on a shared screen.
+    static let disabledDefaultsKey = "ClipBuilderNoKeychain"
+
+    /// The real keychain, unless this launch turned it off.
+    static let system = UserDefaults.standard.bool(forKey: disabledDefaultsKey) ? disabled : live
+
+    /// No keychain at all: every key reads as absent, and saving one is
+    /// refused so the app says so instead of pretending it was kept.
+    static let disabled = KeychainAPI(
+        copyMatching: { _ in (errSecItemNotFound, nil) },
+        update: { _, _ in errSecItemNotFound },
+        add: { _ in errSecInteractionNotAllowed },
+        delete: { _ in errSecItemNotFound })
+
+    static let live = KeychainAPI(
         copyMatching: { query in
             var value: CFTypeRef?
             let status = SecItemCopyMatching(query as CFDictionary, &value)

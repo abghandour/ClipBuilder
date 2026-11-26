@@ -1,12 +1,12 @@
 import Foundation
 
-/// A Transcribe waiting for the user to pick a word timing.
+/// A Transcribe waiting for the user to pick a transcription model.
 nonisolated struct TranscriptionChoiceRequest: Identifiable, Equatable, Sendable {
     let id = UUID()
     var videoIDs: [Int64]
     var force: Bool
     /// The default from Settings first.
-    var options: [WordTiming]
+    var options: [TranscriptionEngine]
     /// Where it was asked: an answer after a profile or project switch is dropped.
     var profileGeneration: Int
     var projectID: Int64?
@@ -66,6 +66,33 @@ extension AppStore {
             && (force || transcriptFacts[video.id] == nil || !transcriptUsable(video))
     }
 
+    /// Whether an ElevenLabs key is saved on this Mac. Reads the keychain:
+    /// call it from an action, never from a view body.
+    var hasElevenLabsKey: Bool {
+        ((try? ElevenLabsKeychain().read()) ?? nil)?.isEmpty == false
+    }
+
+    /// What a transcription started without a choice runs on.
+    var defaultTranscriptionEngine: TranscriptionEngine {
+        let preferred = settings.transcriptionEngine
+        // The keychain is only read when the answer depends on it.
+        guard preferred.isCloud else { return preferred }
+        return TranscriptionEngineRules.usable(preferred, elevenLabsKey: hasElevenLabsKey)
+    }
+
+    /// The models a confirming dialog offers for a transcription of
+    /// `videos`, the default from Settings first. One entry: nothing to choose.
+    func transcriptionOptions(for videos: [VideoRecord], force: Bool) -> [TranscriptionEngine] {
+        TranscriptionEngineRules.options(timings: transcriptionTimingOptions(for: videos, force: force),
+                                         elevenLabsKey: hasElevenLabsKey, preferred: settings.transcriptionEngine)
+    }
+
+    /// Every model a transcription of `videos` can use, for a chooser.
+    func availableTranscriptionEngines(for videos: [VideoRecord], force: Bool) -> [TranscriptionEngine] {
+        TranscriptionEngineRules.available(timings: transcriptionTimingOptions(for: videos, force: force),
+                                           elevenLabsKey: hasElevenLabsKey)
+    }
+
     /// The word timings a transcription of `videos` can use, the default
     /// from Settings first. One entry: nothing to choose.
     func transcriptionTimingOptions(for videos: [VideoRecord], force: Bool) -> [WordTiming] {
@@ -80,13 +107,13 @@ extension AppStore {
                                        preferred: settings.wordTimingChoice)
     }
 
-    /// Transcribe from a control in the main window: asks which word timing
+    /// Transcribe from a control in the main window: asks which model
     /// to use when there is a choice, otherwise starts at once.
     /// Returns false when it asked instead of starting; `thenNameSpeakers`
     /// is then run by the answer, after the transcription has started.
     @discardableResult
     func requestTranscription(videos: [VideoRecord], force: Bool = false, thenNameSpeakers: Bool = false) -> Bool {
-        let options = transcriptionTimingOptions(for: videos, force: force)
+        let options = transcriptionOptions(for: videos, force: force)
         guard options.count > 1 else {
             for video in videos { transcribe(video: video, force: force) }
             return true
@@ -108,13 +135,13 @@ extension AppStore {
             : "Transcription cancelled."])
     }
 
-    func resolveTranscriptionChoice(_ request: TranscriptionChoiceRequest, wordTiming: WordTiming) {
+    func resolveTranscriptionChoice(_ request: TranscriptionChoiceRequest, engine: TranscriptionEngine) {
         // Answered: the dialog closing after this is not a cancel.
         if transcriptionChoiceRequest?.id == request.id { transcriptionChoiceRequest = nil }
         guard request.profileGeneration == profileGeneration, request.projectID == activeProjectID else { return }
         let ids = Set(request.videoIDs)
         for video in videos where ids.contains(video.id) {
-            transcribe(video: video, force: request.force, wordTiming: wordTiming)
+            transcribe(video: video, force: request.force, engine: engine)
             // Waits for the transcription just started, as when both steps run unasked.
             if request.thenNameSpeakers { nameSpeakers(video: video) }
         }

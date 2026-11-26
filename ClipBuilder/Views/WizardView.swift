@@ -64,6 +64,7 @@ struct WizardView: View {
     @State var captionOrdinals: [String: Int] = [:]
     @AppStorage("wizard.captionLanguage") var captionLanguage = ""
     @AppStorage("wizard.dubLanguage") var dubLanguage = ""
+    @AppStorage("wizard.lipSync") var lipSync = false
     @AppStorage(WizardDefaults.workflowKey) var reviewWorkflowRaw = WizardWorkflow.automatic.rawValue
     @AppStorage("wizard.musicTrack") var musicTrackRaw = ""
     @AppStorage("wizard.overlayStyle") var overlayStyleRaw = ""
@@ -1607,6 +1608,7 @@ struct WizardView: View {
         options.pacing = effectivePacing
         options.captionLanguage = captionLanguage.isEmpty ? nil : captionLanguage
         options.dubLanguage = dubLanguage.isEmpty ? nil : dubLanguage
+        options.lipSync = !dubLanguage.isEmpty && lipSync ? true : nil
         options.workflow = reviewWorkflow
         options.projectID = store.activeProjectID
         options.musicTrack = musicTrackRaw.isEmpty ? nil : musicTrackRaw

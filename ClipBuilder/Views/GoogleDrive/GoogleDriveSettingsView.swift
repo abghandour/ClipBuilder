@@ -69,8 +69,31 @@ struct GoogleDriveSettingsView: View {
             await drive.refreshState(profile: profile)
         }
     }
+    @ViewBuilder
     private func connectButton(_ title: String) -> some View {
-        Button(drive.connecting.contains(profile) ? "Connecting…" : title) { drive.connect(profile: profile) }
-            .disabled(drive.connecting.contains(profile))
+        if drive.connecting.contains(profile) {
+            GoogleDriveConnectingRow(profile: profile)
+        } else {
+            Button(title) { drive.connect(profile: profile) }
+        }
+    }
+}
+
+/// A sign-in waiting on the browser: where to look, and a way out.
+struct GoogleDriveConnectingRow: View {
+    @Environment(AppStore.self) private var store
+    let profile: String
+
+    var body: some View {
+        HStack(spacing: 8) {
+            ProgressView().controlSize(.small)
+            Text("Finish signing in to Google in your browser, and tick the Google Drive box.")
+                .font(.callout).foregroundStyle(.secondary)
+                .fixedSize(horizontal: false, vertical: true)
+            Spacer(minLength: 8)
+            Button("Cancel") { store.googleDrive.cancelConnect(profile: profile) }
+                .lineLimit(1).fixedSize()
+                .help("Stop waiting for the browser. Connect starts a new sign-in.")
+        }
     }
 }

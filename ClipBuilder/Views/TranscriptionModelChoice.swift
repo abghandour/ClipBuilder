@@ -1,6 +1,6 @@
 import SwiftUI
 
-/// Asks which word timing a Transcribe uses, when the videos can use more
+/// Asks which model a Transcribe uses, when the videos can use more
 /// than one. Lives on the root view; sheets ask in their own dialog.
 struct TranscriptionModelChoiceDialog: ViewModifier {
     @Environment(AppStore.self) private var store
@@ -8,7 +8,14 @@ struct TranscriptionModelChoiceDialog: ViewModifier {
     /// This window: every main window shares the store, one of them asks.
     @State private var windowID = UUID()
 
-    static let message = "Precise re-times each Portuguese word against the audio after Apple's transcription. Speech in other languages keeps Apple's word times."
+    static let preciseMessage = "Precise re-times each Portuguese word against the audio after Apple's transcription. Speech in other languages keeps Apple's word times."
+    static let cloudMessage = "ElevenLabs uploads the audio and bills per hour of it."
+
+    /// What the offered models mean, for the dialog's message.
+    static func message(for options: [TranscriptionEngine]) -> String {
+        [options.contains(.apple(.precise)) ? preciseMessage : nil,
+         options.contains(where: \.isCloud) ? cloudMessage : nil].compactMap { $0 }.joined(separator: " ")
+    }
 
     private var presentsHere: Bool { store.transcriptionChoiceRequest?.presenter == windowID }
 
@@ -27,12 +34,12 @@ struct TranscriptionModelChoiceDialog: ViewModifier {
                 get: { presentsHere },
                 set: { if !$0, presentsHere { store.dismissTranscriptionChoice() } }
             ), presenting: store.transcriptionChoiceRequest) { request in
-                ForEach(request.options) { timing in
-                    Button(timing.label) { store.resolveTranscriptionChoice(request, wordTiming: timing) }
+                ForEach(request.options) { engine in
+                    Button(engine.label) { store.resolveTranscriptionChoice(request, engine: engine) }
                 }
                 Button("Cancel", role: .cancel) {}
             } message: { request in
-                Text((request.videoIDs.count > 1 ? "For \(request.videoIDs.count) videos. " : "") + Self.message)
+                Text((request.videoIDs.count > 1 ? "For \(request.videoIDs.count) videos. " : "") + Self.message(for: request.options))
             }
     }
 }

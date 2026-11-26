@@ -74,7 +74,9 @@ extension AppStore {
         // one on screen when it resumes.
         let languages = resolvedLanguages(for: projects.first { $0.id == pipelineProjectID } ?? activeProject)
         let generation = profileGeneration
-        let transcription = transcription
+        // One engine for the whole run: the recognizer check and the service agree.
+        let engine = defaultTranscriptionEngine
+        let transcription = transcription(engine: engine)
         pipelineTask = Task {
             // Only a video that will actually be recognized needs the model:
             // existing transcripts and finished units are reused as before.
@@ -86,7 +88,8 @@ extension AppStore {
                 let existing = (try? await database.fetchTranscripts(videoID: video.id)) ?? []
                 if existing.isEmpty { needsRecognizer = true; break }
             }
-            if needsRecognizer {
+            // Scribe runs in the cloud: no recognizer has to be on this Mac.
+            if needsRecognizer, !engine.isCloud {
                 do {
                     try await requireProjectRecognizers(languages: languages)
                     guard generation == profileGeneration, self.database === database else { throw CancellationError() }
@@ -495,6 +498,7 @@ extension AppStore {
         step2.captionLanguage = defaults.string(forKey: "wizard.captionLanguage").flatMap { $0.isEmpty ? nil : $0 }
         step2.dubLanguage = (defaults.string(forKey: "wizard.dubLanguage") ?? profileDubLanguage)
             .flatMap { $0.isEmpty ? nil : $0 }
+        step2.lipSync = step2.dubLanguage != nil && defaults.bool(forKey: "wizard.lipSync") ? true : nil
         step2.useBRoll = defaults.object(forKey: "wizard.useBRoll") == nil || defaults.bool(forKey: "wizard.useBRoll")
         step2.brollInstructions = defaults.string(forKey: "wizard.brollInstructions") ?? ""
         var options = WizardOptions.merge(step1: step1, step2: step2, base: base)

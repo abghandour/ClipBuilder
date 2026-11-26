@@ -27,12 +27,17 @@ struct MiniTranscriptSetControl: View {
         Menu {
             Picker("Transcript", selection: selection) {
                 ForEach(sets) { set in
-                    Text(TranscriptSetSwitch.label(set)).tag(set.id)
+                    ProviderMenuLabel(title: TranscriptSetSwitch.label(set), brand: TranscriptSetSwitch.brand(set)).tag(set.id)
                 }
             }
             .pickerStyle(.inline).labelsHidden()
         } label: {
-            Text(active.map(TranscriptSetSwitch.shortLabel) ?? "Transcript").lineLimit(1).truncationMode(.middle)
+            if let active {
+                ProviderMenuLabel(title: TranscriptSetSwitch.shortLabel(active), brand: TranscriptSetSwitch.brand(active))
+                    .lineLimit(1).truncationMode(.middle)
+            } else {
+                Text("Transcript").lineLimit(1)
+            }
         }
         .lineLimit(1)
         .disabled(store.isWizardRunning || store.miniEditsBlocked)
@@ -52,7 +57,10 @@ struct MiniTranscriptSetControl: View {
                     picker
                 }
             } else if let active {
-                Text(TranscriptSetSwitch.shortLabel(active)).lineLimit(1).truncationMode(.middle)
+                HStack(spacing: 4) {
+                    ProviderLogo(brand: TranscriptSetSwitch.brand(active), size: 11)
+                    Text(TranscriptSetSwitch.shortLabel(active)).lineLimit(1).truncationMode(.middle)
+                }
                     .foregroundStyle(.secondary)
                     .help(TranscriptSetSwitch.label(active) + "\nThis video's transcript. Transcribe it again to have another to choose from.")
             } else {
