@@ -18,7 +18,7 @@ struct LipSyncToggleRows: View {
     private var caption: String {
         if hasKey == false { return "Needs a Sync Labs key. Lip sync is a paid service from sync.so." }
         return isOn
-            ? "After the render the reel is uploaded to Sync Labs, which redraws the mouths to the dub: \(LipSync.rateLabel(model)) of reel with \(model.label). If it fails, you keep the reel without it."
+            ? "Before the render each dubbed clip of the recording goes to Sync Labs, which redraws the mouths to the dub: \(LipSync.rateLabel(model)) with \(model.label). A clip is paid for once: later reels reuse it while the clip and its lines stay the same. If it fails, you keep the reel without it."
             : "Redraws the speakers' mouths to match the dub. Paid: \(LipSync.rateLabel(model)) of reel with \(model.label)."
     }
 

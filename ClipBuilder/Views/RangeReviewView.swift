@@ -706,6 +706,9 @@ struct RangeReviewView<Footer: View>: View {
                     .help(keptSummary ?? "\(count) of \(ids.count) kept")
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(Theme.spaceS)
+                LipSyncSummaryLine(clips: items.filter { !$0.isDraft && kept.wrappedValue.contains($0.id.ownerID) }
+                    .map { ($0.video.path, $0.range.lowerBound, $0.range.upperBound) })
+                    .padding(.horizontal, Theme.spaceS)
             } else if let listTitle {
                 SectionLabel(listTitle)
                     .frame(maxWidth: .infinity, alignment: .leading)
@@ -1083,6 +1086,7 @@ struct RangeReviewView<Footer: View>: View {
                         if !item.isDraft {
                             StrikeClipStatusLine(status: strikeStatuses[item.id.ownerID], fallback: strikeStatusFallback,
                                 symbol: strikeStatuses[item.id.ownerID]?.symbol ?? "viewfinder")
+                            LipSyncCoverageLine(path: item.video.path, start: item.range.lowerBound, end: item.range.upperBound)
                         }
                     }
                     // A keep box is 18 wide at 8 in; the text starts 5 past it.

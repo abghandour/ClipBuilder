@@ -81,6 +81,7 @@ struct WizardPreviewList: View {
                     .lineLimit(1).fixedSize(horizontal: false, vertical: true)
                     .help(summary)
             }
+            LipSyncSummaryLine(clips: rows.map { ($0.videoURL.path, $0.start, $0.end) })
             if !rows.isEmpty, config.onSelect != nil || config.onDelete != nil || selectedIsFight { selectedActions }
             if rows.isEmpty {
                 Text(emptyMessage).font(.caption).foregroundStyle(.secondary)
@@ -305,6 +306,7 @@ struct WizardPreviewList: View {
                     }
                     StrikeClipStatusLine(status: config.strikeStatuses[row.id], fallback: config.strikeStatusFallback,
                         symbol: config.strikeStatuses[row.id]?.symbol ?? "viewfinder")
+                    LipSyncCoverageLine(path: row.videoURL.path, start: row.start, end: row.end)
                 }
                 .frame(maxWidth: .infinity, alignment: .leading)
                 .contentShape(Rectangle())

@@ -10,6 +10,26 @@ final class DubReviewCoordinator {
     func review(_ prepared: DubPreparation.Prepared, projectID: Int64?, profileName: String) async throws -> DubPreparation.Prepared {
         try Task.checkCancellation()
         guard let store, store.activeProfile.profileName == profileName else { throw CancellationError() }
+        // A dub whose every line was accepted in an earlier review goes
+        // straight through; new transcript text brings the review back.
+        if let database = store.database {
+            let file = DubAcceptance.file(database: database.path)
+            let lines = prepared.lines
+            if await Task.detached(operation: { DubAcceptance.covers(lines, accepted: DubAcceptance.load(file)) }).value {
+                let final = try await ElevenLabsDubUsage.withLogging(enabled: prepared.settings.engine == .elevenLabs,
+                                                                     log: { _ in }) {
+                    try await DubPreparation.finalize(prepared, database: database)
+                }
+                try Task.checkCancellation()
+                guard store.activeProfile.profileName == profileName, store.database === database else {
+                    throw CancellationError()
+                }
+                store.logEvent("job", "Dub review skipped: every line was accepted in an earlier review.")
+                return final
+            }
+            try Task.checkCancellation()
+            guard store.activeProfile.profileName == profileName else { throw CancellationError() }
+        }
         let id = UUID()
         let generation = store.profileGeneration
         return try await withTaskCancellationHandler {

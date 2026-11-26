@@ -60,6 +60,7 @@ nonisolated struct ElevenLabsVoice: Decodable, Sendable, Equatable {
     var category: String?
     var labels: [String: String]?
     var verifiedLanguages: [VerifiedLanguage]?
+    var createdAtUnix: Int?
 
     nonisolated struct VerifiedLanguage: Decodable, Sendable, Equatable {
         var language: String
@@ -71,6 +72,7 @@ nonisolated struct ElevenLabsVoice: Decodable, Sendable, Equatable {
         case voiceID = "voice_id"
         case name, category, labels
         case verifiedLanguages = "verified_languages"
+        case createdAtUnix = "created_at_unix"
     }
 }
 

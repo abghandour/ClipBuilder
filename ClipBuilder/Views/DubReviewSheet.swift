@@ -43,6 +43,7 @@ struct DubReviewSheet: View {
     }
     private var applyTitle: String {
         if case .render = review.target { return "Apply and render" }
+        if case .beforeRender = review.target { return "Save for Generate" }
         return "Apply"
     }
     private var isElevenLabs: Bool { review.prepared.settings.engine == .elevenLabs }
@@ -165,17 +166,30 @@ struct DubReviewSheet: View {
     }
 
     private func voicePicker(_ key: String) -> some View {
-        Picker("Voice for \(name(key))", selection: voiceBinding(key)) {
-            if let current = settings.voices[key], !voices.contains(where: { $0.identifier == current }) {
-                Text(unavailableVoiceLabel(current, speaker: key)).tag(current)
-            }
-            ForEach(voicesFor(key)) { voice in
-                // Every voice here is ElevenLabs when that engine is on; say it once.
-                Text(isElevenLabs ? voice.name : voice.qualityLabel.map { "\(voice.name) (\($0))" } ?? voice.name)
-                    .tag(voice.identifier)
+        let current = voiceBinding(key)
+        let sections = VoicePickerRules.sections(
+            voices: voicesFor(key), clones: isElevenLabs ? store.editingDefaults.clonedVoices ?? [:] : [:],
+            people: store.people.map { ($0.key, $0.displayName) })
+        return VoicePickerButton(
+            title: "Voice for \(name(key))", sections: sections, selection: current.wrappedValue,
+            placeholder: unavailableVoiceLabel(current.wrappedValue, speaker: key),
+            noClonesHint: isElevenLabs ? "No cloned voices yet. Clone voice… on a speaker's row makes one from their own speech." : nil,
+            preview: VoicePreview(
+                samplePhrase: lines.first { $0.speakerKey == key }?.text ?? "",
+                note: isElevenLabs ? "A phrase a voice has not said yet uses ElevenLabs credits, about one per two characters." : nil,
+                synthesize: { voice, phrase in
+                    // The draft model: fast, and half the credits of a final take.
+                    ElevenLabsVoices.isElevenLabs(voice)
+                        ? try await DubPreparation.Speech.mac.synthesizeDraft(phrase, voice, 1)
+                        : try await DubSynthesizer.shared.synthesize(text: phrase, voice: voice, rate: 1)
+                }),
+            select: { current.wrappedValue = $0 }
+        ) { personKey, size in
+            if let person = store.people.first(where: { $0.key == personKey }) {
+                PersonFaceAvatar(person: person, size: size).environment(store)
             }
         }
-        .labelsHidden().lineLimit(1).frame(minWidth: 160, maxWidth: 300, alignment: .leading)
+        .frame(minWidth: 160, maxWidth: 300, alignment: .leading)
     }
 
     /// A remembered voice this Mac cannot use, usually a teammate's clone made

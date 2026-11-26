@@ -23,6 +23,13 @@ struct KeptClipsPlayer: View {
 
     @State private var player = AVPlayer()
     @State private var loadedURL: URL?
+    /// Lip-synced takes stand in for the recording where one covers the
+    /// whole clip. The player then runs on the take's clock: source seconds
+    /// minus this.
+    @State private var takeIndex = LipSyncTakeIndex.shared
+    @State private var clockOffset = 0.0
+    /// What the player holds, not what the index would choose now.
+    @State private var playingTake = false
     /// Width / height of the loaded recording as displayed (rotation applied).
     @State private var sourceAspect: CGFloat?
     /// The playhead in source seconds.
@@ -80,6 +87,11 @@ struct KeptClipsPlayer: View {
             .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .topLeading)
         }
         .onAppear { attach() }
+        .onChange(of: takeIndex.takes) { _, _ in
+            // A take arrived (or was read) for the clip on screen.
+            guard let clip = current, !isPlaying, pictureSource(clip).url != loadedURL else { return }
+            load(play: false)
+        }
         .onDisappear { detach() }
         .onReceive(player.publisher(for: \.rate).receive(on: RunLoop.main)) { isPlaying = $0 != 0 }
         .onChange(of: speed) { _, speed in player.setReviewSpeed(speed) }
@@ -116,6 +128,16 @@ struct KeptClipsPlayer: View {
                     // The whole recording, uncropped; the frame already has its shape.
                     InlinePlayerLayerView(player: player, gravity: .resizeAspect)
                         .accessibilityLabel("\(noun) video")
+                        .overlay(alignment: .topLeading) {
+                            if playingTake {
+                                Label("Lip-synced", systemImage: "mouth")
+                                    .font(.caption).lineLimit(1).fixedSize()
+                                    .padding(.horizontal, Theme.spaceS).padding(.vertical, Theme.spaceXS)
+                                    .background(.regularMaterial, in: Capsule())
+                                    .padding(Theme.spaceS)
+                                    .help("Playing this clip's lip-synced picture, with the recording's own sound")
+                            }
+                        }
                 }
             }
             .clipShape(RoundedRectangle(cornerRadius: Theme.mediaRadius))
@@ -198,9 +220,19 @@ struct KeptClipsPlayer: View {
             forInterval: CMTime(seconds: 0.05, preferredTimescale: 600), queue: .main
         ) { current in
             let seconds = current.seconds
-            Task { @MainActor in tick(seconds, player: observed) }
+            Task { @MainActor in tick(seconds + clockOffset, player: observed) }
         }
+        takeIndex.ensureLoaded()
         load(play: false)
+    }
+
+    /// Where a clip's picture plays from: its lip-synced take when one covers all of it.
+    private func pictureSource(_ clip: WizardPreviewClip) -> (url: URL, offset: Double, isTake: Bool) {
+        let source = clip.scene.videoURL
+        guard let take = takeIndex.coverage(path: source.path, start: clip.start, end: clip.end).take else {
+            return (source, 0, false)
+        }
+        return (LipSyncTakes.video(take.key), take.sourceStart, true)
     }
 
     private func detach() {
@@ -251,20 +283,24 @@ struct KeptClipsPlayer: View {
             stop()
             player.replaceCurrentItem(with: nil)
             loadedURL = nil
+            playingTake = false
             return
         }
-        let url = clip.scene.videoURL
+        let (url, offset, isTake) = pictureSource(clip)
+        clockOffset = offset
+        playingTake = isTake
         if url != loadedURL {
             player.replaceCurrentItem(with: AVPlayerItem(url: url))
             loadedURL = url
             Task {
-                let shape = await Self.displayAspect(of: url)
+                // A take has the recording's shape.
+                let shape = await Self.displayAspect(of: clip.scene.videoURL)
                 guard loadedURL == url else { return }
                 sourceAspect = shape
             }
         }
         time = clip.start
-        player.seek(to: CMTime(seconds: clip.start, preferredTimescale: 600),
+        player.seek(to: CMTime(seconds: max(0, clip.start - offset), preferredTimescale: 600),
                     toleranceBefore: .zero, toleranceAfter: .zero) { finished in
             Task { @MainActor in
                 // A seek a newer one replaced reports unfinished; the newest settles.
@@ -279,17 +315,25 @@ struct KeptClipsPlayer: View {
     private func seek(to seconds: Double) {
         time = seconds
         let tolerance = CMTime(seconds: 0.05, preferredTimescale: 600)
-        player.seek(to: CMTime(seconds: seconds, preferredTimescale: 600),
+        player.seek(to: CMTime(seconds: max(0, seconds - clockOffset), preferredTimescale: 600),
                     toleranceBefore: tolerance, toleranceAfter: tolerance)
     }
 
     private func togglePlay() {
         guard playbackActive, let clip = current else { return }
+        // Takes are checked against their recordings again (throttled) on every Play.
+        takeIndex.ensureLoaded()
         if isPlaying {
             stop()
         } else if time >= clip.end - KeptClipsPlayback.endTolerance || time < clip.start {
             // At the end (or outside the clip) Play starts the clip over.
             load(play: true)
+        } else if pictureSource(clip).url != loadedURL {
+            // A take arrived while this clip was playing: pick it up where the playhead is.
+            let at = time
+            load(play: false)
+            seek(to: at)
+            player.play()
         } else {
             player.play()
         }

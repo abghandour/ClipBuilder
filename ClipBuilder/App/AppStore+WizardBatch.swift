@@ -10,6 +10,8 @@ import Foundation
 /// Editor), or render each one small and plain for a framing check (Rough cut).
 nonisolated enum WizardBatchMode: Sendable {
     case render, openInEditor, roughCut
+    /// Prepare the reel's dub and open its review; nothing is rendered.
+    case dubReview
 }
 
 /// The batch's takes after the shared preparation, and the options they render with.
@@ -79,6 +81,10 @@ extension AppStore {
         case .openInEditor:
             openWizardBatchInEditor(database: database, projectID: projectID, options: options, oneReel: oneReel,
                                     cameraFocus: cameraFocus, gatherTakes: gatherTakes, combine: combine)
+            return
+        case .dubReview:
+            reviewWizardBatchDub(database: database, projectID: projectID, options: options, oneReel: oneReel,
+                                 cameraFocus: cameraFocus, gatherTakes: gatherTakes, combine: combine)
             return
         case .roughCut:
             // Preview opens the sheet with the cuts prepared, not rendered;
@@ -237,6 +243,7 @@ extension AppStore {
     /// runs for this project; Generate and both buttons wait for it.
     func isWizardBatchJobRunning(projectID: Int64?) -> Bool {
         isOpeningWizardInEditor(projectID: projectID) || isRoughCutRunning(projectID: projectID)
+            || isPreparingDubReview(projectID: projectID)
     }
 
     /// Where one rough cut job's files live: per profile database and per
@@ -422,6 +429,76 @@ extension AppStore {
                                          oneReel: request.oneReel, cameraFocus: request.cameraFocus,
                                          gatherTakes: request.gatherTakes, combine: request.combine,
                                          namespace: request.namespace, requestID: requestID, extras: extras)
+    }
+
+    /// True while a review-only dub is being prepared for this project.
+    func isPreparingDubReview(projectID: Int64?) -> Bool {
+        guard let projectID else { return false }
+        return jobs.running.contains { $0.kind == .dub && $0.subjectID == "wizard-dub-review-\(projectID)" }
+    }
+
+    /// Review dub, without Generate: the batch's shared preparation, then the
+    /// first reel's take becomes the document Generate would render
+    /// (`WizardEngine.editorDocument`, which also prepares its dub) and its
+    /// dub opens for review. Saving the review remembers the voices and the
+    /// reworded lines, which the next Generate picks up; no video is rendered.
+    private func reviewWizardBatchDub(database: Database, projectID: Int64, options: WizardOptions,
+                                      oneReel: Bool, cameraFocus: Bool,
+                                      gatherTakes: @escaping @Sendable (Database) async throws -> [WizardSelectionTake],
+                                      combine: @escaping @Sendable (Database, [WizardSelectionTake]) async throws -> WizardSelectionTake) {
+        guard !isPreparingDubReview(projectID: projectID), !isWizardBatchJobRunning(projectID: projectID) else { return }
+        guard let language = options.dubLanguage, !language.isEmpty else {
+            presentNotice("Review dub", "Turn Dub on and choose a language first.")
+            return
+        }
+        let profile = activeProfile
+        let generation = profileGeneration
+        let wizard = wizard
+        let project = projects.first { $0.id == projectID } ?? activeProject
+        let names = Dictionary(people.map { ($0.key, $0.displayName) }, uniquingKeysWith: { first, _ in first })
+        jobs.start(.dub, title: "Prepare dub review — \(project?.name ?? "Project")", project: project,
+                   profileGeneration: generation, subjectID: "wizard-dub-review-\(projectID)") { [weak self] log in
+            guard let self else { return nil }
+            try await self.wizardSelectionSaveTask?.value
+            try await self.sceneEditSaveTask?.value
+            let prepared = try await self.prepareWizardBatchTakes(database: database, profile: profile,
+                options: options, oneReel: oneReel, cameraFocus: cameraFocus,
+                gatherTakes: gatherTakes, combine: combine,
+                stage: { log($0) }, preparationSink: { _ in log })
+            func checkContext() throws {
+                try Task.checkCancellation()
+                guard self.profileGeneration == generation, self.database === database else { throw CancellationError() }
+            }
+            try checkContext()
+            guard let take = prepared.takes.first else {
+                throw AppJobEmptyResult(message: "There is no reel to dub yet. Keep footage first.")
+            }
+            if prepared.takes.count > 1 { log("Reviewing the first of \(prepared.takes.count) reels.") }
+            log("Preparing the dub…")
+            let document = try await WizardStrikeHighlightSnapshot.$current.withValue(WizardStrikeHighlightSnapshot()) {
+                try await wizard.editorDocument(take: take, options: prepared.options, profile: profile,
+                    database: database, tagTextPrepared: true, preparedTagFields: prepared.tagFields, emit: log)
+            }
+            // The cards the document points at are only needed by a timeline that is kept.
+            let cardFolders = Set(document.videoTrack.compactMap(\.videoFile)
+                .filter { WizardEngine.isWizardCard($0) }
+                .map { URL(fileURLWithPath: $0).deletingLastPathComponent() })
+            defer {
+                for folder in cardFolders where folder.deletingLastPathComponent().path == WizardEngine.wizardCardsRoot.path {
+                    try? FileManager.default.removeItem(at: folder)
+                }
+            }
+            try checkContext()
+            guard let settings = document.dub, let lines = document.dubLines, !lines.isEmpty else {
+                throw AppJobEmptyResult(message: "This reel has no speech to dub.")
+            }
+            let scenes = try await database.fetchScenes(ids: Set(document.videoTrack.compactMap(\.sceneID)))
+            try checkContext()
+            let review = await DubPreparation.reopening(document: document, scenes: scenes, settings: settings,
+                                                        lines: lines, speakerNames: names, database: database)
+            try checkContext()
+            return .dub(DubReview(prepared: review, target: .beforeRender, profileGeneration: generation))
+        }
     }
 
     /// Open in Editor: the batch's shared preparation, then each reel's take

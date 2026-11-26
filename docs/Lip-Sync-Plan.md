@@ -1,11 +1,65 @@
 # Lip sync for the dub (Sync)
 
-Date: November 14, 2026, revised November 26, 2026. Status: the whole-reel
-pass below ("First cut") is implemented and uncommitted, not yet run
-against the live service; the per-clip design is still a draft. Requested
-by the user on November 14, 2026 ("write a plan for integrating sync.so lip
-sync into the dub") and on November 26, 2026 ("add the lipsync as a toggle
-as part of the Audio panel when generating a video").
+Date: November 14, 2026, revised November 26, 2026 (twice). Status: per-clip
+takes ("Takes" below) are implemented and uncommitted, not yet run against
+the live service; they replace the whole-reel pass of the "First cut", which
+Generate no longer calls. Requested by the user on November 14, 2026 ("write
+a plan for integrating sync.so lip sync into the dub"), on November 26, 2026
+("add the lipsync as a toggle as part of the Audio panel when generating a
+video") and later that day ("do option 2, but make sure that lipsync is done
+at the raw video before camera and any overlays are added. this way we can
+make modifications and reuse the same lipsync video. add some way to
+visualize how much of the video is already lipsynched. in the preview panel
+when cache is available use the lipsync video for preview instead of the
+raw.").
+
+## Takes (November 26, 2026): lip sync per clip of the raw recording
+
+A take is a lip-synced copy of one stretch of a source video: full frame, the
+source's own speed, the source's own sound under it. It is a drop-in for the
+source over its range, so camera, crops, captions, overlays, music and the
+dub mix all happen afterwards exactly as before, and a take survives every
+edit that keeps its range and its dubbed lines.
+
+- Rules and storage: `Services/SyncLabs/LipSyncTakes.swift`. Takes live in
+  `<cache>/lip-sync/<key>.mp4` with a `<key>.json` sidecar (source path,
+  range, model, date, cues). The key hashes the source's content
+  fingerprint, the range, the model and each dubbed line's audio file,
+  offset and stretch; it is also the Sync Labs idempotency key.
+- Planning: `LipSyncTakes.requests(document:)` joins the pieces of one kept
+  clip that continue each other in the source (a pause splits a clip) into
+  one stretch, and places each dubbed line where it is heard.
+- Making: `LipSyncService.takes(for:model:scratch:)` reuses what is on disk,
+  sends only the missing stretches (silent raw picture plus the lines on
+  silence), checks length and frame size, muxes the source sound back in.
+  A stretch that fails is logged and that clip renders from its source.
+- Generate: `WizardEngine.renderPrepared` makes the takes before the cuts
+  are extracted and sets `LipSyncTakes.current` around the extraction.
+- Renderer: `ResolvedClip.pictureTake` (Codable, so it is in the segment
+  cache key) and `pictureRead`. Only the two pixel reads change: the
+  placement's FFmpeg input and the framing prepass's picture source.
+  Tracking, content boxes, strikes and transcripts keep the source's path
+  and clock. Holds and clips with strike highlights keep the source.
+- Seeing it: `LipSyncCoverageLine` under each row and `LipSyncSummaryLine`
+  above the list ("Lip sync: 3 of 5 clips ready · 42 s of 60 s", with a
+  bar) in both the Reel panel and the Footage list; the preview column
+  plays the take, with a "Lip-synced" badge, when one covers the clip.
+
+- Sharing (user request, November 26, 2026: "share lipsync takes between
+  team members like dub takes"): `Services/SyncLabs/LipSyncTakeDrive.swift`.
+  Takes go to "Lip sync takes" in the team's Drive folder as `<key>.mp4`
+  plus `<key>.json` (sidecar last, with no path or file name in it).
+  The folder is the index: no database row, no Supabase column, no schema
+  bump. Before paying, Generate downloads any missing key the folder has.
+  Keys match between teammates because they hash the recording's content
+  and each line's identity (dub take id, text, voice, span, rate), not the
+  local cut file's name.
+
+Known limits: a teammate's takes show in the coverage lines only after a
+Generate has downloaded them; a teammate's longer take is not reused for a
+trimmed clip (exact key only); coverage is by range only, so a take made for an older wording of the
+dub shows as synced though Generate would redo it; a changed fitted rate of
+a line changes its audio file and so the take; nothing prunes old takes.
 
 ## First cut (November 26, 2026): a toggle in the Audio panel
 

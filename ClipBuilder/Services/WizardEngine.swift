@@ -4698,9 +4698,36 @@ actor WizardEngine {
                 return owner.videoFile == job.scene.videoPath && !owner.muted
             })
         })
+        // Lip sync: each dubbed stretch of raw source gets a take before any
+        // clip is cut, cropped or captioned, so the extraction reads the
+        // synced picture and every later edit of the reel reuses it.
+        var lipSyncTakes: [LipSyncTakes.Substitute] = []
+        if options.lipSync == true, document.dub?.enabled == true {
+            let requests = LipSyncTakes.requests(document: document) { clip in
+                clip.videoFile ?? clip.sceneID.flatMap { sceneMap[$0]?.videoPath }
+            }
+            if requests.isEmpty {
+                emit("Lip sync: no dubbed speech to sync in this reel")
+            } else {
+                // Paid and remote: a failure keeps the reel, without lip sync where it failed.
+                do {
+                    lipSyncTakes = try await WizardTiming.measure("lip sync", emit: emit) {
+                        try await LipSyncService().takes(for: requests, model: LipSyncService.chosenModel(),
+                                                         scratch: scratch, sharing: .drive(database), log: emit)
+                    }
+                    emit("Lip sync: \(lipSyncTakes.count) of \(requests.count) clips use lip-synced picture")
+                } catch is CancellationError {
+                    throw CancellationError()
+                } catch {
+                    try Task.checkCancellation()
+                    emit("Lip sync skipped, the reel is made without it: \(error.localizedDescription)")
+                }
+            }
+        }
         // Review flags: every framing fallback the extraction and compositor renders hit.
         let framingFallbacks = RenderFramingFallbackCollector()
-        let extracted = try await RenderFramingFallbackCollector.$current.withValue(framingFallbacks) {
+        let extracted = try await LipSyncTakes.$current.withValue(lipSyncTakes) {
+          try await RenderFramingFallbackCollector.$current.withValue(framingFallbacks) {
             try await WizardTiming.measure("extract clips", emit: emit) {
                 try await BoundedConcurrency.map(jobs, limit: FFmpeg.jobLimit) { _, job in
                     guard let cutDocument = cutDocuments[job.index] else {
@@ -4721,6 +4748,7 @@ actor WizardEngine {
                                                       strikeHighlightTracks: strikeHighlightTracks, emit: emit)
                 }
             }
+          }
         }
 
         for url in extracted {
@@ -4816,26 +4844,6 @@ actor WizardEngine {
             emit("Speech polish (\(polish.strength.label.lowercased()))…")
             try await WizardTiming.measure("speech polish", emit: emit) {
                 try await SpeechPolish.applyInPlace(outputURL, settings: polish)
-            }
-        }
-
-        if options.lipSync == true, document.dub?.enabled == true {
-            // Paid and remote: a failure keeps the finished reel as it is.
-            do {
-                let result = try await WizardTiming.measure("lip sync", emit: emit) {
-                    try await LipSyncService().sync(reel: outputURL, model: LipSyncService.chosenModel(),
-                                                    scratch: scratch, log: emit)
-                }
-                switch result {
-                case .synced: emit("Lip sync done")
-                case .unchanged(let reason): emit("Lip sync changed nothing: \(reason)")
-                }
-            } catch is CancellationError {
-                throw CancellationError()
-            } catch {
-                // Stop during an upload or download surfaces as URLError.cancelled.
-                try Task.checkCancellation()
-                emit("Lip sync skipped, the reel was kept without it: \(error.localizedDescription)")
             }
         }
 

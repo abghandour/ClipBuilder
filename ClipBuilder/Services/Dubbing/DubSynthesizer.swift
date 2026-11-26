@@ -14,6 +14,10 @@ actor DubSynthesizer {
         /// Higher is better: 3 Siri/Premium, 2 Enhanced, 1 compact, 0 Eloquence.
         var quality: Int = 1
         var gender: DubVoiceGender = .unknown
+        /// A clone or other voice added to the account, as opposed to one that ships with the engine.
+        var isCloned = false
+        /// When the account's voice was made; nil for stock voices.
+        var createdAt: Date? = nil
         var id: String { identifier }
 
         /// Novelty voices (Bells, Boing, Zarvox…) never dub anyone.

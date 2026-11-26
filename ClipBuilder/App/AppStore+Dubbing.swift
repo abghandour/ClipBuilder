@@ -166,6 +166,7 @@ extension AppStore {
             }
             return true
         case .render(let id): return dubReviews.isPending(id)
+        case .beforeRender: return true
         }
     }
 
@@ -175,6 +176,16 @@ extension AppStore {
             builder.setDub(settings: prepared.settings, lines: prepared.lines)
         case .render(let id):
             dubReviews.apply(id, prepared: prepared)
+        case .beforeRender:
+            break
+        }
+        // Accepted once: Generate does not ask again until the transcript has new text.
+        if let path = database?.path {
+            let lines = prepared.lines
+            Task.detached {
+                do { try DubAcceptance.remember(lines, file: DubAcceptance.file(database: path)) }
+                catch { await ErrorLog.record("Dub review", "Could not remember the accepted dub: \(error.localizedDescription)") }
+            }
         }
         if remember {
             var editing = editingDefaults

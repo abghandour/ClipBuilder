@@ -136,6 +136,10 @@ actor MultitrackRenderer {
         var screenStay: TelestrationScreenStay.Mapping? = nil
         /// Original-video time, independent of a framing intermediate's seek time.
         var transcriptSourceStart: Double?
+        /// A lip-synced copy of this clip's stretch of the source. Only pixel
+        /// and sound reads go to it; every lookup stays on the source's path
+        /// and clock. In the cache identity, so a take changes the result.
+        var pictureTake: PictureTake? = nil
 
         // Render-only linger is deliberately excluded from Codable. Cache
         // evidence carries it separately, and nil leaves old keys unchanged.
@@ -150,7 +154,7 @@ actor MultitrackRenderer {
             case captionsPosition, speed, cameraPath, staticAreaFilter, areaPathSource
             case areaPathArea, effectiveEffect, framingIdentity, originalSourcePath, sourceFingerprint
             case programAudioFingerprint, cacheable, strikeHighlights, strikeHighlightStyle, strikeTracks
-            case telestration, transcriptSourceStart
+            case telestration, transcriptSourceStart, pictureTake
         }
 
         var sourceSpan: Double { hold ? 0 : duration * speed }
@@ -159,7 +163,17 @@ actor MultitrackRenderer {
             (transcriptSourceStart ?? sourceStart) + (hold ? 0 : (timelineTime - startTime) * speed)
         }
 
+        /// Where this clip's picture is read: its take when one covers it.
+        /// Holds freeze one source frame and strike highlights are drawn on
+        /// the source's own clock, so both keep the source.
+        var pictureRead: (path: String, start: Double) {
+            guard let take = pictureTake, !hold, strikeTracks == nil, abs(speed - 1) < 0.0005 else { return (sourcePath, sourceStart) }
+            return (take.path, max(0, sourceStart - take.sourceStart))
+        }
+
         mutating func useFramedSource(_ url: URL, identity: String, areaPass: Bool, reusable: Bool) {
+            // The take was read into the intermediate.
+            pictureTake = nil
             transcriptSourceStart = transcriptSourceStart ?? sourceStart
             framingIdentity = (framingIdentity ?? "") + identity
             sourcePath = url.path
@@ -195,6 +209,13 @@ actor MultitrackRenderer {
     }
 
     /// One clip's contribution to a single composited segment.
+    nonisolated struct PictureTake: Codable, Sendable, Equatable {
+        var path: String
+        /// The source second the take's first frame shows.
+        var sourceStart: Double
+        var key: String
+    }
+
     nonisolated struct Placement: Sendable {
         var sourcePath: String
         var sourceStart: Double
@@ -867,6 +888,15 @@ actor MultitrackRenderer {
                     // Highlights go on before the camera crops the picture.
                     var clip = clip, source = source
                     var tracking: (source: URL, start: Double)?
+                    if clip.pictureTake != nil {
+                        let read = clip.pictureRead
+                        if read.path != clip.sourcePath {
+                            // Cameras keep following the source; only the picture is the take's.
+                            tracking = (source: source, start: clip.sourceStart)
+                            source = URL(fileURLWithPath: read.path)
+                            clip.sourceStart = read.start
+                        }
+                    }
                     var burnedSources: [URL] = []
                     var drawingFailed = false
                     defer {
@@ -2124,6 +2154,12 @@ actor MultitrackRenderer {
                                             || captionsResolved == "none" ? nil : captionsResolved,
                                          speed: clip.effectiveSpeed,
                                          cameraPath: cameraPath, staticAreaFilter: reactionFilter(for: clip), effectiveEffect: effectiveEffect))
+            if !clip.bumper, clip.hold != true, !LipSyncTakes.current.isEmpty {
+                let made = resolved[resolved.count - 1]
+                resolved[resolved.count - 1].pictureTake = LipSyncTakes.substitute(
+                    path: made.sourcePath, start: made.sourceStart, span: made.sourceSpan
+                ).map { PictureTake(path: $0.path, sourceStart: $0.takeStart, key: $0.key) }
+            }
             resolved[resolved.count - 1].slowGroup = clip.slowGroup
             resolved[resolved.count - 1].slowLineage = clip.slowLineage
             resolved[resolved.count - 1].stayCut = clip.stayCut
@@ -2283,8 +2319,9 @@ actor MultitrackRenderer {
                     transformInterpolation: clip.continuityTransform == true, continuityGrid: clip.continuityGrid,
                     preserveSourceTiming: clip.continuityTransform == false)
             } else { areaFilter = clip.staticAreaFilter }
-            placements.append(Placement(sourcePath: clip.sourcePath,
-                                        sourceStart: clip.sourceStart + clipOffset,
+            let pictureRead = clip.pictureRead
+            placements.append(Placement(sourcePath: pictureRead.path,
+                                        sourceStart: pictureRead.start + clipOffset,
                                         sourceDur: clip.hold ? 0 : segment.duration * clip.speed,
                                         isWide: clip.wide,
                                         bumper: clip.bumper, hold: clip.hold,
@@ -2610,6 +2647,7 @@ actor MultitrackRenderer {
             /// Set only for a slice of this render's own run path, so a
             /// result cached for the same keyframes as a saved path is not reused.
             var runPath: Bool?
+            var pictureTake: String?
         }
         // A job that only tracks a camera path reads the untouched source.
         let drawsPicture = !(area != nil && (clip.areaRegion != nil || clip.cameraPath != nil))
@@ -2626,7 +2664,8 @@ actor MultitrackRenderer {
             strikeBurn: drawsPicture && clip.strikeTracks != nil ? StrikeHighlightBurn.version : nil,
             strikeHighlightStyle: drawsPicture && clip.strikeTracks != nil ? clip.strikeHighlightStyle : nil,
             lingering: lingering, lingeringSpeed: lingering == nil ? nil : clip.speed,
-            runPath: clip.continuityRunPath ? true : nil), version: version)
+            runPath: clip.continuityRunPath ? true : nil,
+            pictureTake: drawsPicture && clip.pictureRead.path != clip.sourcePath ? clip.pictureTake?.key : nil), version: version)
     }
 
     /// Tests only: the music catalog by name, instead of the music library.

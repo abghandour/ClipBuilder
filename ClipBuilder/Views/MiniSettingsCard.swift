@@ -180,8 +180,29 @@ struct MiniSettingsCard: View {
         if settings.dub {
             MiniDependents {
                 DubLanguagePicker(language: $settings.dubLanguage)
+                dubReviewRow
                 LipSyncToggleRows(isOn: $settings.lipSync)
             }
+        }
+    }
+
+    /// Opens the reel's dub for review without rendering it.
+    private var dubReviewRow: some View {
+        let preparing = store.isPreparingDubReview(projectID: run.projectID)
+        let empty = store.miniReelItems.isEmpty
+        return VStack(alignment: .leading, spacing: Theme.spaceXS) {
+            SettingsRow("Lines") {
+                Button {
+                    store.generateMiniReel(settings: settings, flow: flow, mode: .dubReview)
+                } label: {
+                    Label(preparing ? "Preparing…" : "Review dub…", systemImage: "text.bubble")
+                        .lineLimit(1).fixedSize()
+                }
+                .disabled(preparing || empty || store.isWizardRunning || store.isWizardBatchJobRunning(projectID: run.projectID))
+                .help("Hear and edit the dubbed lines and choose each speaker's voice, before generating the reel")
+            }
+            FormCaption(empty ? "Keep footage for the reel first."
+                        : "Generate asks for a review only when the transcript has text you have not accepted yet.")
         }
     }
 

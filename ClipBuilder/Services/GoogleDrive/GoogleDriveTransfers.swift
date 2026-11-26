@@ -87,12 +87,16 @@ final class GoogleDriveTransfers {
             contexts[name] = context
             await DubTakeDrive.shared.register(database: database, client: context.client,
                 teamFolderID: profile.teamDriveFolder?.id, transfers: self)
+            await LipSyncTakeDrive.shared.register(database: database, client: context.client,
+                teamFolderID: profile.teamDriveFolder?.id, transfers: self)
             return
         }
         let client = suppliedClient ?? GoogleDriveClient(auth: auth, profile: name)
         let media = DriveMediaStore(database: database, client: client, inputFolder: profile.sourceFolderURL)
         contexts[name] = Context(database: database, client: client, media: media, profile: profile)
         await DubTakeDrive.shared.register(database: database, client: client,
+            teamFolderID: profile.teamDriveFolder?.id, transfers: self)
+        await LipSyncTakeDrive.shared.register(database: database, client: client,
             teamFolderID: profile.teamDriveFolder?.id, transfers: self)
         await DriveMediaResolver.shared.register(database: database, profile: name)
         await refreshState(profile: name)

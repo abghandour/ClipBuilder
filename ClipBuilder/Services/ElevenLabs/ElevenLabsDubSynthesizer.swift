@@ -69,6 +69,15 @@ actor ElevenLabsDubSynthesizer {
         return output
     }
 
+    /// True when the configured (final) model already spoke this text in this
+    /// voice: asking for it again costs nothing.
+    func hasFinalAudio(text: String, voice: String, directory: URL) -> Bool {
+        guard ElevenLabsVoices.isElevenLabs(voice),
+              let name = try? DubSynthesizer.cacheName(language: "elevenlabs",
+                  voice: DubTake.cacheVoice(voice, settings: settings()), rate: 1, text: text) else { return false }
+        return hasAudio(directory.appendingPathComponent(name))
+    }
+
     private func hasAudio(_ url: URL) -> Bool {
         (try? DubSynthesizer.fileDuration(of: url)) ?? 0 > 0
     }

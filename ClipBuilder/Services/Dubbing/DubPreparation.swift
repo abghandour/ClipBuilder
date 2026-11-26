@@ -11,6 +11,9 @@ nonisolated enum DubPreparation {
             try await ElevenLabsDubSynthesizer.shared.synthesize(text: $0, voice: $1, rate: $2,
                 directory: DubSynthesizer.cacheDirectory, model: "eleven_flash_v2_5")
         }
+        /// Whether the final model's audio for this text and voice is already
+        /// paid for and on disk, so a review need not buy a draft of it.
+        var hasFinalAudio: @Sendable (String, String) async -> Bool = { _, _ in false }
 
         static let mac = Speech(voices: { DubSynthesizer.installedVoices(language: $0) },
             synthesize: { try await DubSynthesizer.shared.synthesize(text: $0, voice: $1, rate: $2) },
@@ -24,7 +27,9 @@ nonisolated enum DubPreparation {
 
         static let elevenLabs = Speech(voices: {
             await DubLanguageChoices.voices(engine: .elevenLabs, language: $0)
-        }, synthesize: mac.synthesize, duration: mac.duration)
+        }, synthesize: mac.synthesize, duration: mac.duration, hasFinalAudio: {
+            await ElevenLabsDubSynthesizer.shared.hasFinalAudio(text: $0, voice: $1, directory: DubSynthesizer.cacheDirectory)
+        })
 
         static func forEngine(_ engine: DubVoiceEngine?) -> Speech {
             switch engine ?? .mac {
@@ -258,7 +263,10 @@ nonisolated enum DubPreparation {
             take = try await takeStore.audio(for: line, database: database, directory: directory, reuseOnly: preview)
         } else { take = nil }
         if let take { result = take.line; result.rate = 1; result.draft = nil }
-        let isDraft = preview && ElevenLabsVoices.isElevenLabs(line.voice) && take == nil
+        // A line with no take can still have its final audio cached (a
+        // fragment spoken before takes could cut it): that is free, a draft is not.
+        var isDraft = preview && ElevenLabsVoices.isElevenLabs(line.voice) && take == nil
+        if isDraft, await speech.hasFinalAudio(line.text, line.voice) { isDraft = false }
         let synthesize = isDraft ? speech.synthesizeDraft : speech.synthesize
         result.draft = isDraft ? true : nil
         var url: URL

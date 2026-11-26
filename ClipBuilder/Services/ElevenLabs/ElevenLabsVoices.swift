@@ -35,7 +35,9 @@ nonisolated enum ElevenLabsVoices {
             let name = cloned && voice.name.hasSuffix(cloneNameSuffix)
                 ? String(voice.name.dropLast(cloneNameSuffix.count)) : voice.name
             return .init(identifier: identifierPrefix + voice.voiceID, language: language,
-                         name: name + (cloned ? " (cloned)" : ""), quality: 3, gender: gender)
+                         name: name + (cloned ? " (cloned)" : ""), quality: 3, gender: gender,
+                         isCloned: cloned,
+                         createdAt: cloned ? voice.createdAtUnix.map { Date(timeIntervalSince1970: TimeInterval($0)) } : nil)
         })
     }
 }
