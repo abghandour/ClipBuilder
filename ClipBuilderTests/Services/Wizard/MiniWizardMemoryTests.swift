@@ -47,7 +47,7 @@ struct MiniWizardMemoryTests {
             "interviewZoomMoves", "interviewCuts", "interviewPunchIn", "captions", "englishCaptions", "captionPosition", "speakerCaptionPositions", "captionStyleID", "introVideo", "outroVideo", "nameTags", "nameTagContent", "nameTagStyle", "nameTagStyleID", "nameTagPosition", "watermark", "outputMode",
             "overlay", "overlayTemplate", "overlayStart", "overlayDuration", "overlayTexts", "overlayPosition", "overlayEdits", "introBumper", "outroBumper", "watermarkOverlay", "watermarkOpacity", "transition", "look",
                                   "removeFillerWords", "muteSourceAudio", "music", "musicTrack", "settingsTab", "safeAreaOnly", "safeAreaPlatforms",
-                                  "dub", "dubLanguage", "actionOverlays", "pauseOnContact", "pauseOnContactSeconds"]
+                                  "dub", "dubLanguage", "lipSync", "actionOverlays", "pauseOnContact", "pauseOnContactSeconds"]
         #expect(Set(MiniWizardMemory.Field.allCases.map(\.rawValue)) == names)
         for profile in ["First", "First.Second", "Profile with spaces", "عربي"] {
             let keys = MiniWizardMemory.Field.allCases.map { MiniWizardMemory.key(for: $0, profileName: profile) }
