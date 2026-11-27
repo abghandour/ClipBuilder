@@ -35,7 +35,8 @@ run_tests() {
 # run (any argument) is a single phase.
 TIMING_SUITES=(ScriptEngineTests ScriptReplayTests ScriptValidationTests ScriptExamplesTests
                BuilderScriptSessionTests MainThreadWatchdogTests SourceScanTests WizardReelBatchTests
-               BuilderClaudeClientTests BuilderAgentRunTests)
+               BuilderClaudeClientTests BuilderAgentRunTests ProviderAuthTests AssistantModelTests
+               MediaSchedulingTests)
 if (( $# > 0 )); then
     run_tests "$@"
     exit 0
