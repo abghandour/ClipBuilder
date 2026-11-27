@@ -36,7 +36,7 @@ run_tests() {
 TIMING_SUITES=(ScriptEngineTests ScriptReplayTests ScriptValidationTests ScriptExamplesTests
                BuilderScriptSessionTests MainThreadWatchdogTests SourceScanTests WizardReelBatchTests
                BuilderClaudeClientTests BuilderAgentRunTests ProviderAuthTests AssistantModelTests
-               MediaSchedulingTests)
+               MediaSchedulingTests MCPServerTests SyncMergeTests)
 if (( $# > 0 )); then
     run_tests "$@"
     exit 0
