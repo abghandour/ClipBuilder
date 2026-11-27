@@ -254,7 +254,7 @@ struct FightActionDetailSheet: View {
                             .contentShape(Rectangle())
                         }.buttonStyle(.plain)
                         Button("Not an action", systemImage: "trash") { remove(row) }
-                            .labelStyle(.iconOnly).buttonStyle(.borderless)
+                            .labelStyle(.iconOnly).buttonStyle(.borderlessHover)
                             .help("Not an action: remove it from the count. It stays under Removed, where it can be brought back.")
                             .disabled(store.fightScoringInFlight.contains(video.id))
                         }

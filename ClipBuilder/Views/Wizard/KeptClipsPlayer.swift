@@ -160,7 +160,7 @@ struct KeptClipsPlayer: View {
         let shown = min(clip.duration, max(0, (scrubbing ?? time) - clip.start))
         return HStack(spacing: Theme.spaceS) {
             Button(isPlaying ? "Pause" : "Play", systemImage: isPlaying ? "pause.fill" : "play.fill") { togglePlay() }
-                .labelStyle(.iconOnly).buttonStyle(.borderless).fixedSize()
+                .labelStyle(.iconOnly).buttonStyle(.borderlessHover).fixedSize()
                 .help(isPlaying ? "Pause" : "Play this \(noun.lowercased())")
             Slider(value: Binding(
                 get: { shown },

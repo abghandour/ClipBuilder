@@ -213,7 +213,7 @@ private struct TextLooksCaptionSample: View {
                     }
                     .overlay { Rectangle().strokeBorder(selectedState == state.kind.rawValue ? Color.accentColor : .clear) }
                 }
-                .buttonStyle(.borderless)
+                .buttonStyle(.borderlessHover)
                 .accessibilityLabel("Edit \(state.kind.rawValue)")
                 .help("Edit the \(state.kind.rawValue.lowercased()) word state")
             }

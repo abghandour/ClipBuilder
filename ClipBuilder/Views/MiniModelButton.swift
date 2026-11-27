@@ -16,7 +16,7 @@ struct MiniModelButton: View {
     var body: some View {
         Button("AI model for \(labels)", systemImage: "gearshape") { showing = true }
             .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
+            .buttonStyle(.borderlessHover)
             .help("Choose the AI model for: \(labels). Now: "
                   + tasks.map { TaskModelPickers.routingSummary(task: $0, config: store.effectiveAIConfig) }.joined(separator: "; "))
             .popover(isPresented: $showing, arrowEdge: .trailing) {

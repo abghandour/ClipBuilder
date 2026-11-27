@@ -350,7 +350,7 @@ struct DispatchPlanSheet: View {
                     .font(.caption.monospacedDigit())
                     .foregroundStyle(.tint)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.borderlessHover)
             .help("Jump the player to this marker's moment")
 
             Menu(markerPersonName(marker) ?? "Who is this?") {
@@ -395,7 +395,7 @@ struct DispatchPlanSheet: View {
                 Task { panelMarkers = await store.deletePersonMarker(marker) }
             }
             .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
+            .buttonStyle(.borderlessHover)
             .controlSize(.small)
             .help("Delete this person marker")
         }
@@ -936,7 +936,7 @@ private struct ManagePromptsSheet: View {
                             PromptStore.save(prompts)
                         }
                         .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.borderlessHover)
                         .controlSize(.small)
                         .help("Delete this saved prompt")
                     }
@@ -1395,13 +1395,13 @@ private struct VideoNotesPanel: View {
                                         }
                                         .contentShape(Rectangle())
                                     }
-                                    .buttonStyle(.borderless)
+                                    .buttonStyle(.borderlessHover)
                                     .help("Jump the player to this pinned framing")
                                     Button("Delete Framing Hint", systemImage: "trash") {
                                         Task { framingHints = await store.deleteCameraHint(hint) }
                                     }
                                     .labelStyle(.iconOnly)
-                                    .buttonStyle(.borderless)
+                                    .buttonStyle(.borderlessHover)
                                     .controlSize(.small)
                                     .help("Delete this pinned framing")
                                 }
@@ -1442,13 +1442,13 @@ private struct VideoNotesPanel: View {
                                     }
                                     .contentShape(Rectangle())
                                 }
-                                .buttonStyle(.borderless)
+                                .buttonStyle(.borderlessHover)
                                 .help("Jump the player to this note's moment")
                                 Button("Delete Note", systemImage: "trash") {
                                     Task { notes = await store.deleteVideoNote(note) }
                                 }
                                 .labelStyle(.iconOnly)
-                                .buttonStyle(.borderless)
+                                .buttonStyle(.borderlessHover)
                                 .controlSize(.small)
                                 .help("Delete this note")
                             }

@@ -76,7 +76,7 @@ struct LogActions: View {
             .help("Clear the log")
         }
         .labelStyle(.iconOnly)
-        .buttonStyle(.borderless)
+        .buttonStyle(.borderlessHover)
         .controlSize(.small)
         .disabled(lines.isEmpty)
     }

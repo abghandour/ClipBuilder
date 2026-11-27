@@ -71,7 +71,7 @@ struct BuilderWizardRequestHeader: View {
                 .help("Recent Requests: the last ten distinct requests for this profile")
                 Button("Supported requests", systemImage: "questionmark.circle") { showHelp.toggle() }
                     .labelStyle(.iconOnly)
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.borderlessHover)
                     .help("See all supported examples and how B-roll, tracks, and clip numbers work")
                     .popover(isPresented: $showHelp) {
                         ScrollView {

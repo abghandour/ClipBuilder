@@ -83,13 +83,13 @@ struct PersonTagFieldsView: View {
                                     store.researchPeople([person], fields: [field.field], reason: "refresh")
                                 }
                                 .labelStyle(.iconOnly)
-                                .buttonStyle(.borderless).controlSize(.small)
+                                .buttonStyle(.borderlessHover).controlSize(.small)
                                 .lineLimit(1).fixedSize()
                                 .disabled(person.isUnnamed || store.personResearchInFlight.contains(person.id))
                                 .help("Search the web again for this field")
                                 Button("Save", systemImage: "checkmark.circle") { save(field) }
                                     .labelStyle(.iconOnly)
-                                    .buttonStyle(.borderless).controlSize(.small)
+                                    .buttonStyle(.borderlessHover).controlSize(.small)
                                     .lineLimit(1).fixedSize()
                                     .disabled(field.value == savedField.value
                                         || (!TagTextWriter.isHandleField(field.field)
@@ -97,7 +97,7 @@ struct PersonTagFieldsView: View {
                                     .help("Save this value")
                                 Button("Clear", systemImage: "trash", role: .destructive) { clear(field) }
                                     .labelStyle(.iconOnly)
-                                    .buttonStyle(.borderless).controlSize(.small)
+                                    .buttonStyle(.borderlessHover).controlSize(.small)
                                     .lineLimit(1).fixedSize()
                                     .disabled(field.value.isEmpty)
                                     .help("Clear this field")

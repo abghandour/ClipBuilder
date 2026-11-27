@@ -345,7 +345,7 @@ private struct ProfileSettingsTab: View {
                             store.activeProfile.tagSchema.removeValue(forKey: category)
                         }
                         .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.borderlessHover)
                         .help("Remove this tag category")
                     }
                 }

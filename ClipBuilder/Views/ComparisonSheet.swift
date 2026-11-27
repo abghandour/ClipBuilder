@@ -59,7 +59,7 @@ struct ComparisonSheet: View {
             Button("Skip — don't record a preference") {
                 store.resolveComparison(batch, winner: nil)
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.borderlessHover)
             .controlSize(.small)
             .padding()
         }

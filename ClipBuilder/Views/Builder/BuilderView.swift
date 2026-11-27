@@ -491,7 +491,7 @@ struct BuilderView: View {
                     .help(undo?.canRedo == true ? undo?.redoMenuItemTitle ?? "Redo" : "Nothing to redo")
             }
             .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
+            .buttonStyle(.borderlessHover)
 
             BuilderAddMenu(showScenePicker: $showScenePicker,
                            showImagePicker: $showImagePicker,

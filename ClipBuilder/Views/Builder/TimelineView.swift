@@ -285,7 +285,7 @@ struct TrackHeader: View {
                     showSettings = true
                 }
                 .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
+                .buttonStyle(.borderlessHover)
                 .controlSize(.small)
                 .help("Volume, sequential playback, and other track settings")
                 .popover(isPresented: $showSettings) {
@@ -299,7 +299,7 @@ struct TrackHeader: View {
                 }
                 .foregroundStyle(settings.muted ? .red : .secondary)
                 .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
+                .buttonStyle(.borderlessHover)
                 .controlSize(.small)
                 .help(settings.muted ? "Unmute layer" : "Mute layer")
 
@@ -1010,7 +1010,7 @@ struct CropLaneHeader: View {
                 showAdd = true
             }
             .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
+            .buttonStyle(.borderlessHover)
             .controlSize(.small)
             .help("Add a Screen Layout or a bumper at the playhead. Layouts come from Resources > Screen Layouts, bumpers from Resources > Bumpers.")
             .popover(isPresented: $showAdd) {

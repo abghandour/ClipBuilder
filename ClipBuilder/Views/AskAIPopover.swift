@@ -112,7 +112,7 @@ struct AskAIPopover: View {
             } label: {
                 Image(systemName: "xmark")
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.borderlessHover)
             .controlSize(.small)
             .help("Hide this suggestion until its reason changes")
             .accessibilityLabel("Dismiss \(suggestion.title)")

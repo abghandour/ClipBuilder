@@ -54,7 +54,7 @@ struct ScrubbingPlayerView<Overlay: View>: View {
                        systemImage: stale ? "arrow.clockwise.circle.fill" : transport.isPlaying ? "pause.fill" : "play.fill") {
                     play()
                 }
-                .labelStyle(.iconOnly).buttonStyle(.borderless).fixedSize()
+                .labelStyle(.iconOnly).buttonStyle(.borderlessHover).fixedSize()
                 .tint(stale ? .accentColor : nil)
                 .disabled(player == nil && !stale)
                 .help(stale ? (player == nil ? "Render this cut with the settings on the right, then play it"

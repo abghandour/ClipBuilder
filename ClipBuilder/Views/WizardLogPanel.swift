@@ -31,7 +31,7 @@ struct GenerationFailureNotice: View {
                     store.wizardFailureMessage = nil
                 }
                 .controlSize(.small)
-                .buttonStyle(.borderless)
+                .buttonStyle(.borderlessHover)
             }
         }
         .padding(Theme.cardPadding)

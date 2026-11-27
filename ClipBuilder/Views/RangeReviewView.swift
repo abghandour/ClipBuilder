@@ -926,7 +926,7 @@ struct RangeReviewView<Footer: View>: View {
     private func deleteButton(_ item: RangeReviewItem, onDelete: @escaping (RangeReviewItem) -> Void) -> some View {
         Button("Delete", systemImage: "trash") { onDelete(item) }
             .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
+            .buttonStyle(.borderlessHover)
             .controlSize(.small)
             .fixedSize()
             .disabled(!isEnabled)
@@ -1092,7 +1092,7 @@ struct RangeReviewView<Footer: View>: View {
                     // A keep box is 18 wide at 8 in; the text starts 5 past it.
                     .padding(.leading, (isChild ? 0 : kept != nil ? 15 : 0) + (item.isDraft ? 0 : RangeReviewPalette.barWidth + Theme.spaceXS))
                     // Room for the pencil (and its count), then unlink and delete.
-                    .padding(.trailing, (item.isDraft ? 0 : 36) + (onDelete != nil && !item.isDraft && !isChild
+                    .padding(.trailing, (item.isDraft ? 0 : 58) + (onDelete != nil && !item.isDraft && !isChild
                              ? (onUnlink != nil && !item.children.isEmpty ? 56 : 30) : 0))
                     .frame(maxWidth: .infinity, alignment: .leading)
                     .padding(.vertical, Theme.spaceS)
@@ -1138,6 +1138,21 @@ struct RangeReviewView<Footer: View>: View {
                 // Compact, at the row's right edge, over the space the label keeps free.
                 HStack(spacing: Theme.spaceXS) {
                     if !item.isDraft {
+                        // The same button the Reel list's rows have: this item, from its start.
+                        Button("Play", systemImage: "play.fill") {
+                            dropDraft()
+                            highlighted = []
+                            selectedID = item.id
+                            userCleared = false
+                            // After the selection has become the player's range.
+                            Task { @MainActor in playRequested() }
+                        }
+                        .labelStyle(.iconOnly)
+                        .buttonStyle(.borderlessHover)
+                        .controlSize(.small)
+                        .fixedSize()
+                        .disabled(!isEnabled || !item.isAvailable)
+                        .help("Play this item")
                         TelestrationRowMenu(videoID: item.video.id, videoURL: item.video.url, range: item.range,
                             areaName: item.drawingCompanions.first?.mainAreaName,
                             companions: item.drawingCompanions)
@@ -1149,7 +1164,7 @@ struct RangeReviewView<Footer: View>: View {
                                 onUnlink(item)
                             }
                             .labelStyle(.iconOnly)
-                            .buttonStyle(.borderless)
+                            .buttonStyle(.borderlessHover)
                             .controlSize(.small)
                             .fixedSize()
                             .disabled(!isEnabled)

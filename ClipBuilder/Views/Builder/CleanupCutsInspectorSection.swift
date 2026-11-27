@@ -21,7 +21,7 @@ struct CleanupCutsInspectorSection: View {
                         .monospacedDigit()
                     Button("Refresh", systemImage: "arrow.clockwise") { Task { await reload(videoIDs) } }
                         .labelStyle(.iconOnly)
-                        .buttonStyle(.borderless)
+                        .buttonStyle(.borderlessHover)
                         .help("Read the cut decisions from Cleanup Cuts again")
                 }
             }

@@ -56,6 +56,8 @@ struct WizardPreviewList: View {
     @State private var rowFrames: [String: CGRect] = [:]
     @FocusState private var listFocused: Bool
     @State private var confirmRemoveAll = false
+    /// The clips' sound, from a row's play button or Play All.
+    @State private var audio = ReelClipAudioPlayer()
 
     private static let listSpace = "wizardPreview.list"
     private static let collapsedLines = 2
@@ -82,7 +84,7 @@ struct WizardPreviewList: View {
                     .help(summary)
             }
             LipSyncSummaryLine(clips: rows.map { ($0.videoURL.path, $0.start, $0.end) })
-            if !rows.isEmpty, config.onSelect != nil || config.onDelete != nil || selectedIsFight { selectedActions }
+            if !rows.isEmpty, selectedIsFight { selectedActions }
             if rows.isEmpty {
                 Text(emptyMessage).font(.caption).foregroundStyle(.secondary)
                     .frame(maxWidth: .infinity, maxHeight: .infinity, alignment: .center)
@@ -98,10 +100,38 @@ struct WizardPreviewList: View {
         .onChange(of: linesVersion) { _, _ in rebuildRows() }
         // A renamed fighter shows in the action text at once.
         .onChange(of: store.people.map { "\($0.key)=\($0.displayName)" }) { _, _ in rebuildRows() }
-        .onChange(of: rows.map(\.id)) { _, ids in expanded.formIntersection(ids) }
+        .onChange(of: rows.map(\.id)) { _, ids in
+            expanded.formIntersection(ids)
+            // The reel changed under the playback: its order is no longer what is heard.
+            audio.stop()
+        }
+        .onDisappear { audio.stop() }
     }
 
+    private func audioItem(_ row: WizardPreviewRow) -> ReelClipAudioPlayer.Item {
+        .init(id: row.id, url: row.videoURL, start: row.start, end: row.end)
+    }
+
+    /// Play All keeps its title while the header has room for it.
     private var header: some View {
+        ViewThatFits(in: .horizontal) {
+            headerRow(playTitle: true)
+            headerRow(playTitle: false)
+        }
+    }
+
+    @ViewBuilder
+    private func playAllButton(title: Bool) -> some View {
+        let button = Button(audio.playsAll ? "Stop" : "Play All", systemImage: audio.playsAll ? "stop.fill" : "play.fill") {
+            audio.toggleAll(rows.map(audioItem))
+        }
+        .disabled(rows.isEmpty)
+        .lineLimit(1).fixedSize()
+        .help(audio.playsAll ? "Stop playing" : "Play the sound of every clip in the reel, in order")
+        if title { button } else { button.labelStyle(.iconOnly) }
+    }
+
+    private func headerRow(playTitle: Bool) -> some View {
         HStack(spacing: Theme.spaceS) {
             SectionLabel(rows.count == 1 ? "1 clip" : "\(rows.count) clips")
             if !rows.isEmpty {
@@ -111,6 +141,7 @@ struct WizardPreviewList: View {
                     .accessibilityLabel("Total length \(Self.clock(rows.reduce(0) { $0 + $1.duration }))")
             }
             Spacer(minLength: 0)
+            playAllButton(title: playTitle)
             // One toggle: expands while any clip is collapsed, else collapses.
             let expandable = Set(rows.filter { !$0.text.isEmpty }.map(\.id))
             let allExpanded = !expandable.isEmpty && expandable.isSubset(of: expanded)
@@ -118,6 +149,7 @@ struct WizardPreviewList: View {
                 expanded = allExpanded ? [] : expandable
             }
             .disabled(expandable.isEmpty)
+            .lineLimit(1).fixedSize()
             .help(allExpanded ? "Show two lines of text per clip" : "Show every clip's full text")
             if config.onDeleteAll != nil {
                 Button("Remove All", systemImage: "trash") { confirmRemoveAll = true }
@@ -141,44 +173,18 @@ struct WizardPreviewList: View {
         .lineLimit(1).fixedSize(horizontal: false, vertical: true)
     }
 
-    /// What the selected clip can do, as buttons: where it came from, and
-    /// out of the reel. The rows themselves carry no buttons.
+    /// A new drawing on the selected clip, fight footage only. Show in
+    /// Footage, Remove from Reel and Play are on every row.
     private var selectedIsFight: Bool {
         guard rows.indices.contains(selectedIndex) else { return false }
         return store.videos.first { $0.id == rows[selectedIndex].videoID }?.type == .fight
     }
 
     private var selectedActions: some View {
-        let row = rows.indices.contains(selectedIndex) ? rows[selectedIndex] : nil
-        return ViewThatFits(in: .horizontal) {
-            selectedActions(row, compact: false)
-            selectedActions(row, compact: true)
-        }
-        .controlSize(.small)
-    }
-
-    private func selectedActions(_ row: WizardPreviewRow?, compact: Bool) -> some View {
         HStack(spacing: Theme.spaceS) {
-            if let onSelect = config.onSelect {
-                Button { if let row { onSelect(row.id) } } label: {
-                    actionLabel("Show in Footage", systemImage: "arrow.up.left.square", compact: compact)
-                }
-                .disabled(row == nil)
-                .help("Show in Footage: open the selected clip's Footage section with its item selected")
-                .accessibilityLabel("Show in Footage")
-            }
-            if config.onDelete != nil {
-                Button { deleteSelected() } label: {
-                    actionLabel("Remove from Reel", systemImage: "minus.circle", compact: compact)
-                }
-                .disabled(row == nil || !canDelete)
-                // A Fight-metrics stretch has no keep box: out of the reel is deleted.
-                .help(removeHelp(row))
-                .accessibilityLabel("Remove from Reel")
-            }
-            // A new drawing on the selected clip, fight footage only. Rows
-            // show the pencil only where a drawing already exists.
-            if let row, store.videos.first(where: { $0.id == row.videoID })?.type == .fight {
+            // Rows show the pencil only where a drawing already exists.
+            if rows.indices.contains(selectedIndex) {
+                let row = rows[selectedIndex]
                 let companions = clips.first { $0.id == row.id }?.drawingCompanions ?? []
                 TelestrationRowMenu(videoID: row.videoID, videoURL: row.videoURL,
                     range: row.start...max(row.start, row.end),
@@ -186,24 +192,16 @@ struct WizardPreviewList: View {
             }
             Spacer(minLength: 0)
         }
+        .controlSize(.small)
     }
 
-    /// What Remove from Reel does to the selected clip, which depends on
+    /// What Remove from Reel does to a clip, which depends on
     /// the section it came from.
     private func removeHelp(_ row: WizardPreviewRow?) -> String {
         switch row.flatMap({ MiniReelRules.key(of: $0.id) })?.kind {
-        case .fightMetrics: "Remove from Reel: the selected Fight-metrics stretch is deleted"
+        case .fightMetrics: "Remove from Reel: this Fight-metrics stretch is deleted"
         case .highlights: "Remove from Reel: the whole Highlight this clip belongs to, with all its cuts, is unselected in Highlights, where it can be kept again"
-        default: "Remove from Reel: the selected clip is unselected in its Footage section, where it can be kept again"
-        }
-    }
-
-    @ViewBuilder
-    private func actionLabel(_ title: String, systemImage: String, compact: Bool) -> some View {
-        if compact {
-            Label(title, systemImage: systemImage).labelStyle(.iconOnly).fixedSize()
-        } else {
-            Label(title, systemImage: systemImage).labelStyle(.titleAndIcon).lineLimit(1).fixedSize()
+        default: "Remove from Reel: this clip is unselected in its Footage section, where it can be kept again"
         }
     }
 
@@ -285,8 +283,12 @@ struct WizardPreviewList: View {
                 // stepper carries the clip number and time.
                 VStack(alignment: .leading, spacing: Theme.spaceXS) {
                     if row.text.isEmpty {
-                        Text(events[row.videoID] != nil ? "Nothing scored in this clip" : "No words or description for this clip")
-                            .font(.body).foregroundStyle(.secondary)
+                        HStack(spacing: Theme.spaceS) {
+                            Text(events[row.videoID] != nil ? "Nothing scored in this clip" : "No words or description for this clip")
+                                .font(.body).foregroundStyle(.secondary)
+                            Spacer(minLength: Theme.spaceS)
+                            playSlot
+                        }
                     } else if !row.segments.isEmpty {
                         speakerTurns(row, expanded: isExpanded)
                     } else {
@@ -294,6 +296,7 @@ struct WizardPreviewList: View {
                             HStack(spacing: Theme.spaceS) {
                                 if row.textKind == .action { sourcePill("Fight Metrics") }
                                 Spacer(minLength: Theme.spaceS)
+                                playSlot
                                 durationLabel(row.duration)
                             }
                             Text(row.text)
@@ -323,6 +326,40 @@ struct WizardPreviewList: View {
                 areaName: clips.first { $0.id == row.id }?.drawingCompanions.first?.mainAreaName,
                 companions: clips.first { $0.id == row.id }?.drawingCompanions ?? [])
                 .frame(maxWidth: .infinity, alignment: .trailing)
+        }
+        // The play button sits in the slot the first line keeps free, left of
+        // the clip's length. Outside the text's button so its click is its own.
+        .overlay(alignment: .topTrailing) {
+            let playing = audio.playingID == row.id
+            HStack(spacing: Theme.spaceS) {
+                HStack(spacing: Self.rowButtonSpacing) {
+                    if let onSelect = config.onSelect {
+                        rowButton("Show in Footage", systemImage: "arrow.up.left.square",
+                                  help: "Show in Footage: open this clip's Footage section with its item selected") {
+                            selectedIndex = index
+                            onSelect(row.id)
+                        }
+                        .accessibilityLabel("Show clip \(index + 1) in Footage")
+                    }
+                    if config.onDelete != nil {
+                        // A Fight-metrics stretch has no keep box: out of the reel is deleted.
+                        rowButton("Remove from Reel", systemImage: "trash", help: removeHelp(row)) {
+                            guard canDelete else { return }
+                            config.onDelete?(row.id)
+                        }
+                        .disabled(!canDelete)
+                        .accessibilityLabel("Remove clip \(index + 1) from the reel")
+                    }
+                    rowButton(playing ? "Stop" : "Play", systemImage: playing ? "stop.fill" : "play.fill",
+                              tint: playing ? Color.accentColor : Color.secondary,
+                              help: playing ? "Stop" : "Play this clip's sound") {
+                        audio.toggle(audioItem(row))
+                    }
+                    .accessibilityLabel(playing ? "Stop clip \(index + 1)" : "Play clip \(index + 1)")
+                }
+                // Keeps the buttons the clip's length away from the edge.
+                if !row.text.isEmpty { durationLabel(row.duration).hidden() }
+            }
         }
         .padding(Theme.spaceS)
         // Air between the item's bar and the words.
@@ -378,6 +415,7 @@ struct WizardPreviewList: View {
                             // Words nobody was matched to still say what the row is.
                             if let speaker = turn.speaker { SpeakerPill(speaker: speaker) } else { sourcePill("Speaker") }
                             Spacer(minLength: Theme.spaceS)
+                            playSlot
                             durationLabel(row.duration)
                         }
                     } else if let speaker = turn.speaker {
@@ -404,6 +442,29 @@ struct WizardPreviewList: View {
             .padding(.horizontal, Theme.spaceS)
             .padding(.vertical, 2)
             .background(Color.gray.opacity(0.18), in: Capsule())
+    }
+
+    /// The first line's height, and the square each of a row's buttons is drawn in.
+    private static let playSlotSize: CGFloat = 20
+    private static let rowButtonSpacing: CGFloat = 2
+
+    /// Show in Footage and Remove from Reel where the list offers them, then Play.
+    private var rowButtonCount: Int { 1 + (config.onSelect != nil ? 1 : 0) + (config.onDelete != nil ? 1 : 0) }
+
+    /// Room on a row's first line for the buttons drawn over it.
+    private var playSlot: some View {
+        Color.clear.frame(width: CGFloat(rowButtonCount) * Self.playSlotSize + CGFloat(rowButtonCount - 1) * Self.rowButtonSpacing,
+                          height: Self.playSlotSize)
+    }
+
+    private func rowButton(_ title: String, systemImage: String, tint: Color = .secondary, help: String,
+                           action: @escaping () -> Void) -> some View {
+        Button(title, systemImage: systemImage, action: action)
+            .labelStyle(.iconOnly).buttonStyle(.borderlessHover).controlSize(.small)
+            .foregroundStyle(tint)
+            .frame(width: Self.playSlotSize, height: Self.playSlotSize)
+            .contentShape(Rectangle())
+            .help(help)
     }
 
     private func durationLabel(_ seconds: Double) -> some View {

@@ -39,7 +39,7 @@ struct AnalysisBatchControl: View {
             }
         }
         .lineLimit(1).fixedSize()
-        .buttonStyle(.borderless)
+        .buttonStyle(.borderlessHover)
         .accessibilityLabel("Change analysis batch")
         .help("\(active.run?.sceneCount ?? 0) active scenes · \(runs.count) batches"
               + (active.missingPin ? " · pinned batch not on this Mac yet" : ""))

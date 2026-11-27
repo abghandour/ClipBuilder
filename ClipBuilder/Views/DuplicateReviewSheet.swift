@@ -87,7 +87,7 @@ struct DuplicateReviewSheet: View {
                                                 NSWorkspace.shared.activateFileViewerSelecting([video.url])
                                             }
                                             .labelStyle(.iconOnly)
-                                            .buttonStyle(.borderless)
+                                            .buttonStyle(.borderlessHover)
                                             .help("Show this file in Finder")
                                         }
                                     }

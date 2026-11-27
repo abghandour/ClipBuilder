@@ -62,7 +62,7 @@ struct TimelineRowView: View {
                     .help("Delete this timeline")
             }
             .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
+            .buttonStyle(.borderlessHover)
             .imageScale(.large)
         }
         .padding(.vertical, Theme.spaceS)

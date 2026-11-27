@@ -1253,7 +1253,7 @@ struct SceneCard: View {
                 .help("Toggle this scene's B-roll mark")
             }
             .labelStyle(.iconOnly)
-            .buttonStyle(.borderless)
+            .buttonStyle(.borderlessHover)
             .controlSize(.small)
         }
         .padding(Theme.spaceS)

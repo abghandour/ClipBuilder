@@ -200,7 +200,7 @@ struct SceneStackPicker: View {
                     Label("Large Preview", systemImage: "play.rectangle")
                 }
                 .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
+                .buttonStyle(.borderlessHover)
                 .controlSize(.small)
                 .help("Open this take in the large preview player")
             }

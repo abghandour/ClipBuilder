@@ -405,7 +405,7 @@ struct OpenPostButton: View {
             } label: {
                 Image(systemName: "arrow.up.right.square")
             }
-            .buttonStyle(.borderless)
+            .buttonStyle(.borderlessHover)
             .help("Open on Instagram")
         }
     }

@@ -342,7 +342,7 @@ struct AssetBrowserView: View {
                                 Text(asset.displayName).lineLimit(1)
                                 Spacer()
                                 Button("Edit Bumper", systemImage: "pencil") { editingBumper = asset }
-                                    .labelStyle(.iconOnly).buttonStyle(.borderless)
+                                    .labelStyle(.iconOnly).buttonStyle(.borderlessHover)
                             }
                             Text(asset.duration.map { String(format: "%.1f seconds", $0) } ?? "Duration unavailable")
                                 .font(.caption).foregroundStyle(.secondary)

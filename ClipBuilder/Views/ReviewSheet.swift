@@ -222,6 +222,6 @@ struct ThumbsToggle: View {
             }
         }
         .labelStyle(.iconOnly)
-        .buttonStyle(.borderless)
+        .buttonStyle(.borderlessHover)
     }
 }

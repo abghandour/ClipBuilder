@@ -157,7 +157,7 @@ private struct BoundaryWaveform: View {
                 .disabled(zoom >= AudioPeaks.zoomLevels.count - 1)
                 .help("Show less around each edge, to place it more precisely")
         }
-        .labelStyle(.iconOnly).buttonStyle(.borderless).controlSize(.small).fixedSize()
+        .labelStyle(.iconOnly).buttonStyle(.borderlessHover).controlSize(.small).fixedSize()
     }
 
     private var wave: some View {

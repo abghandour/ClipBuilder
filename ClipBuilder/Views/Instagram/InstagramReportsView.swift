@@ -822,7 +822,7 @@ struct InstagramReportsView: View {
                         store.removeIGIgnoredAccount(username)
                         ignoredAccounts.removeAll { $0 == username }
                     } label: { Image(systemName: "minus.circle") }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.borderlessHover)
                 }
             }
             HStack {

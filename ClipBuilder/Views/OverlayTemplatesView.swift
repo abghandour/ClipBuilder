@@ -444,7 +444,7 @@ private struct OverlayTemplateItems: View {
             Spacer()
             Button("Delete", systemImage: "trash", action: onDelete)
                 .labelStyle(.iconOnly)
-                .buttonStyle(.borderless)
+                .buttonStyle(.borderlessHover)
                 .controlSize(.small)
         }
         .padding(6)

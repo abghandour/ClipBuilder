@@ -183,10 +183,10 @@ struct PresetLoadSheet<P: NamedPreset>: View {
                 }
                 Spacer(minLength: Theme.spaceS)
                 Button("Rename", systemImage: "pencil") { beginRename(preset) }
-                    .labelStyle(.iconOnly).buttonStyle(.borderless).controlSize(.small)
+                    .labelStyle(.iconOnly).buttonStyle(.borderlessHover).controlSize(.small)
                     .help("Rename these saved settings")
                 Button("Delete", systemImage: "trash", role: .destructive) { deleting = preset }
-                    .labelStyle(.iconOnly).buttonStyle(.borderless).controlSize(.small)
+                    .labelStyle(.iconOnly).buttonStyle(.borderlessHover).controlSize(.small)
                     .help("Delete these saved settings")
             }
         }

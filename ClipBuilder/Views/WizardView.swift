@@ -1163,7 +1163,7 @@ struct WizardView: View {
             Label(title, systemImage: "line.3.horizontal.decrease.circle")
                 .font(.caption).lineLimit(1)
             Button("Remove restriction", systemImage: "xmark.circle.fill", action: remove)
-                .labelStyle(.iconOnly).buttonStyle(.borderless)
+                .labelStyle(.iconOnly).buttonStyle(.borderlessHover)
         }
     }
 

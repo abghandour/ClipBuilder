@@ -1695,7 +1695,7 @@ private struct VideoPreviewPane: View {
                         Image(systemName: "wand.and.sparkles")
                             .font(.caption2)
                     }
-                    .buttonStyle(.borderless)
+                    .buttonStyle(.borderlessHover)
                     .controlSize(.mini)
                     .help("File Name Wizard: builds a descriptive name for this file from what's on record — people, type, fight research, scene stories — reviewed before renaming")
                     AIInfoButton(size: 12, video: video)
